@@ -43,14 +43,15 @@ The owner keeps a private list of names that must never appear in the repository
 - Test data is made up: fictional companies and people. Never personal data or real company data.
 - Commit messages, the PR title and the PR body are written with the same care as code. A merge is a squash, so the title and body become the commit on `main`.
 
-A PR can merge when four checks pass on its head commit:
+A PR can merge when five checks pass on its head commit:
 
 - **CI OK**: every CI job passed.
-- **Owner OK**: the names check found nothing, and a PR that changes an owner path carries the owner-ok label, set by the owner on its head commit. A push after the label needs the label again. The owner paths (`.github/owner-paths.txt`) are the database migrations, the licence files and the exceptions to the names rule, and the list itself. Nothing else needs the label.
+- **Names**: the names check found nothing in the PR's files, paths, commits, title, body and branch name.
+- **Owner OK**: the names check passed, and a PR that changes an owner path carries the owner-ok label, set by the owner on its head commit. A push after the label needs the label again. The owner paths (`.github/owner-paths.txt`) are the database migrations, the licence files and the exceptions to the names rule, and the list itself. Nothing else needs the label.
 - **Outside approval**: the owner wrote the PR or approved its head commit.
 - **Review OK**: the owner's review agent passed it. It is a commit status that the review agent posts.
 
-The owner merges a pull request from another account by hand, after reading the whole diff. GitHub holds the CI of a first-time contributor until the owner approves the run, so a first PR may wait a little before its checks start.
+The owner merges a pull request from another account by hand, after reading the whole diff; agents never merge such a pull request. Pull requests from the owner's own account are approved by the review agent. GitHub holds the CI of a first-time contributor until the owner approves the run, so a first PR may wait a little before its checks start.
 
 ## Licence of contributions
 
