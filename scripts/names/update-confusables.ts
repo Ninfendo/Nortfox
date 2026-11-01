@@ -3,18 +3,21 @@
 // Writes scripts/names/confusables.txt, the look-alike table of the names
 // check, from Unicode's confusables data (UTS #39):
 //
-//   node scripts/names/update-confusables.ts
+//   node scripts/names/update-confusables.ts           writes the table
+//   node scripts/names/update-confusables.ts --check   writes nothing, and fails
+//                                                      when the committed table is not
+//                                                      the one the pinned file gives
 //
 // It downloads the pinned version, checks its SHA-256 and keeps the entries
 // that fold() does not read as their letters yet: a letter, digit or symbol
 // outside ASCII that looks like Latin letters. A new Unicode version is a
-// reviewed change to the three constants below.
+// reviewed change to the three constants below. The table also depends on
+// the hand-made tables of fold.ts, so run --check after a change to them.
 
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { nodeTransport, type Transport } from "../github/api.ts";
 import { foldWith, isHandMade } from "./fold.ts";
+import { runGenerator } from "./tables.ts";
 
 export const UNICODE_VERSION = "18.0.0";
 export const SOURCE_URL = `https://www.unicode.org/Public/${UNICODE_VERSION}/security/confusables.txt`;
@@ -151,6 +154,7 @@ export async function buildTable(transport: Transport, sha256 = SOURCE_SHA256): 
 }
 
 if (import.meta.main) {
-  writeFileSync(TABLE_FILE, await buildTable(nodeTransport));
-  console.log(`Wrote ${fileURLToPath(TABLE_FILE)}.`);
+  const { code, line } = await runGenerator(process.argv.slice(2), { file: TABLE_FILE, build: buildTable }, nodeTransport);
+  (code === 0 ? console.log : console.error)(line);
+  process.exitCode = code;
 }

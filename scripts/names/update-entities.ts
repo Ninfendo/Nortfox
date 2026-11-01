@@ -3,7 +3,10 @@
 // Writes scripts/names/entities.txt, the table of named character references
 // that the names check decodes, from the list in the HTML standard:
 //
-//   node scripts/names/update-entities.ts
+//   node scripts/names/update-entities.ts           writes the table
+//   node scripts/names/update-entities.ts --check   writes nothing, and fails
+//                                                   when the committed table is not
+//                                                   the one the pinned file gives
 //
 // It downloads the list, checks its SHA-256 and keeps every name, with and
 // without its semicolon, as the standard lists them. GitHub decodes the same
@@ -11,10 +14,9 @@
 // one, so a newer list is a reviewed change to the pinned SHA-256 below.
 
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { nodeTransport, type Transport } from "../github/api.ts";
 import type { Entities } from "./entities.ts";
+import { runGenerator } from "./tables.ts";
 
 export const SOURCE_URL = "https://html.spec.whatwg.org/entities.json";
 export const SOURCE_SHA256 = "d741d877ac77c4194c4ad526b5b4a19aef8dfe411ab840a466891cdbb9f362e6";
@@ -123,6 +125,7 @@ export async function buildTable(transport: Transport, sha256 = SOURCE_SHA256): 
 }
 
 if (import.meta.main) {
-  writeFileSync(TABLE_FILE, await buildTable(nodeTransport));
-  console.log(`Wrote ${fileURLToPath(TABLE_FILE)}.`);
+  const { code, line } = await runGenerator(process.argv.slice(2), { file: TABLE_FILE, build: buildTable }, nodeTransport);
+  (code === 0 ? console.log : console.error)(line);
+  process.exitCode = code;
 }

@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Transport } from "../github/api.ts";
 import { ENTITIES, parseEntities } from "./entities.ts";
+import { runGenerator } from "./tables.ts";
 import { buildTable, renderTable, SOURCE_SHA256, SOURCE_URL, TABLE_FILE, upstreamEntities } from "./update-entities.ts";
 
 /** Entries in the form the HTML standard publishes them in. */
@@ -53,12 +57,41 @@ describe("the entity table", () => {
     expect([...parseEntities(table)]).toEqual([...upstreamEntities(UPSTREAM)].sort(([a], [b]) => (a < b ? -1 : 1)));
   });
 
-  it("on disk is what the generator writes from its own entries: no entry was edited by hand", () => {
+  // The pinned file is not in the repository, so this test cannot see a
+  // changed code point. "node scripts/names/update-entities.ts --check" does.
+  it("on disk has the generator's header, form and order, and each name once", () => {
     const committed = readFileSync(TABLE_FILE, "utf8");
     expect(renderTable(ENTITIES)).toBe(committed);
     expect(ENTITIES.size).toBe(2231);
     expect(ENTITIES.get("zopf;")).toBe(String.fromCodePoint(0x1d56b));
     expect(ENTITIES.get("amp")).toBe("&");
+    // A table out of order, or with a name twice, does not render back to itself.
+    const table = renderTable(upstreamEntities(UPSTREAM));
+    for (const bad of [table.replace("amp 0026\namp; 0026", "amp; 0026\namp 0026"), table.replace("amp; 0026", "amp; 0026\namp; 0026")]) {
+      expect(bad).not.toBe(table);
+      expect(renderTable(parseEntities(bad))).not.toBe(bad);
+    }
+  });
+
+  it("--check fails a table with one changed code point, and passes the table the pinned file gives", async () => {
+    const sha = createHash("sha256").update(UPSTREAM, "utf8").digest("hex");
+    const transport: Transport = () => Promise.resolve({ status: 200, headers: {}, body: UPSTREAM });
+    const dir = mkdtempSync(join(tmpdir(), "nortfox-entities-"));
+    try {
+      const file = pathToFileURL(join(dir, "entities.txt"));
+      const generator = { file, build: (via: Transport) => buildTable(via, sha) };
+      const table = renderTable(upstreamEntities(UPSTREAM));
+      writeFileSync(file, table);
+      await expect(runGenerator(["--check"], generator, transport)).resolves.toMatchObject({ code: 0 });
+      writeFileSync(file, table.replace("zopf; 1D56B", "zopf; 0020"));
+      const line = String(table.split("\n").indexOf("zopf; 1D56B") + 1);
+      await expect(runGenerator(["--check"], generator, transport)).resolves.toEqual({
+        code: 1,
+        line: `${fileURLToPath(file)} is not the table the pinned file gives. At line ${line}, the table has "zopf; 0020", and the pinned file gives "zopf; 1D56B".`,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("is built only from the pinned file", async () => {

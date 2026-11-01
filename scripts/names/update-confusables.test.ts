@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Transport } from "../github/api.ts";
-import { CONFUSABLES } from "./fold.ts";
+import { CONFUSABLES, parseLookAlikes } from "./fold.ts";
+import { runGenerator } from "./tables.ts";
 import { buildTable, entryFor, renderTable, SOURCE_SHA256, SOURCE_URL, TABLE_FILE, upstreamEntries } from "./update-confusables.ts";
 
 /** Lines in the form Unicode publishes them in, with the reason each is kept or dropped. */
@@ -67,12 +71,20 @@ describe("the look-alike table", () => {
     ]);
   });
 
-  it("on disk is what the generator writes from its own entries: no entry was edited by hand", () => {
+  // The pinned file is not in the repository, so this test cannot see a
+  // changed letter. "node scripts/names/update-confusables.ts --check" does.
+  it("on disk has the generator's header, form and order, and only entries that the generator keeps", () => {
     const committed = readFileSync(TABLE_FILE, "utf8");
     const kept = new Map([...CONFUSABLES].filter(([char, letters]) => entryFor(char, letters) === letters));
     expect(kept.size).toBe(CONFUSABLES.size);
     expect(renderTable(kept)).toBe(committed);
     expect(CONFUSABLES.size).toBeGreaterThan(500);
+    // A table out of order, or with a code point twice, does not render back to itself.
+    const table = renderTable(upstreamEntries(UPSTREAM));
+    for (const bad of [table.replace("00A2 c\n01B7 e", "01B7 e\n00A2 c"), table.replace("0251 a", "0251 a\n0251 a")]) {
+      expect(bad).not.toBe(table);
+      expect(renderTable(parseLookAlikes(bad))).not.toBe(bad);
+    }
   });
 
   it("on disk holds look-alike symbols and the lunate sigma, and no ASCII", () => {
@@ -81,6 +93,27 @@ describe("the look-alike table", () => {
     expect(CONFUSABLES.get("×")).toBe("x");
     expect(CONFUSABLES.get("Ϲ")).toBe("c");
     expect([...CONFUSABLES.keys()].filter((char) => (char.codePointAt(0) ?? 0) < 0x80)).toEqual([]);
+  });
+
+  it("--check fails a table with one changed letter, and passes the table the pinned file gives", async () => {
+    const sha = createHash("sha256").update(UPSTREAM, "utf8").digest("hex");
+    const transport: Transport = () => Promise.resolve({ status: 200, headers: {}, body: UPSTREAM });
+    const dir = mkdtempSync(join(tmpdir(), "nortfox-confusables-"));
+    try {
+      const file = pathToFileURL(join(dir, "confusables.txt"));
+      const generator = { file, build: (via: Transport) => buildTable(via, sha) };
+      const table = renderTable(upstreamEntries(UPSTREAM));
+      writeFileSync(file, table);
+      await expect(runGenerator(["--check"], generator, transport)).resolves.toMatchObject({ code: 0 });
+      writeFileSync(file, table.replace("0B66 o", "0B66 x"));
+      const line = String(table.split("\n").indexOf("0B66 o") + 1);
+      await expect(runGenerator(["--check"], generator, transport)).resolves.toEqual({
+        code: 1,
+        line: `${fileURLToPath(file)} is not the table the pinned file gives. At line ${line}, the table has "0B66 x", and the pinned file gives "0B66 o".`,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("is built only from the pinned file", async () => {
