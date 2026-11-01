@@ -33,20 +33,24 @@ NortFox is an open-source Swedish accounting system. Everything in it works thro
 - An AI agent ends every PR body with the line its tool adds, for example `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - Merges are squash only, so the PR title and body become the commit on `main`. Write them with the same care as code, and keep them free of everything in the first section.
 
-## The four required checks
+## The required checks
 
-`main` merges a PR only when all four pass on its head commit ([plan, section 6](docs/plan.md#the-four-required-checks)):
+`main` merges a PR only when all five pass on its head commit ([plan, section 6](docs/plan.md#the-required-checks)):
 
 - **CI OK:** every CI job passed.
-- **Owner OK:** the names check found nothing, and a PR that changes an owner path carries the owner-ok label on its head commit.
+- **Names:** the names check found nothing.
+- **Owner OK:** Names passed, and a PR that changes an owner path (`.github/owner-paths.txt`) carries the owner-ok label on its head commit.
 - **Outside approval:** the PR comes from the owner's account, or the owner approved its head commit.
-- **Review OK:** the owner's code review passed the PR.
+- **Review OK:** the owner's review agent passed the PR's head commit.
 
-Never post any of these checks yourself: not by the API, and not through a job or a commit status that carries one of their names.
+Never post any of these checks yourself: not by the API, and not through a job or a commit status that carries one of their names. Only the owner's review agent posts Review OK.
 
 ## What only the owner does
 
+You work as the owner's GitHub account, so GitHub cannot tell what you do from what the owner does. These rules, and the owner's local setup, keep the two apart.
+
 - Only the owner sets the owner-ok label. Never add it or remove it; the approval workflow removes it when a new commit is pushed.
+- A PR whose author is not the owner's account is merged only by the owner, by hand, after reading its whole diff. Never merge such a PR. A check can be faked by a job that the PR adds, so a green PR from someone else is not safe to merge ([plan, section 6](docs/plan.md#where-the-checks-come-from)).
 - Never merge with `--admin`, and never bypass branch protection.
 - Never change the repository's settings, branch protection, rulesets, environments, secrets or GitHub Apps.
 

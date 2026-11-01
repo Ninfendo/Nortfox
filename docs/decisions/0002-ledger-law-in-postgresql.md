@@ -19,7 +19,7 @@ PostgreSQL enforces the ledger law itself, with constraints and triggers:
 
 `packages/engine` checks the same rules first, to give clear error messages. The database is the authority.
 
-A change to a ledger rule needs the owner's approval. The migrations and the engine's ledger checks are owner paths, so a PR that changes them passes Owner OK only with the owner-ok label on its head commit ([plan, section 6](../plan.md#owner-paths)).
+A change to a ledger rule needs the owner's approval. The law lives in the SQL migrations, and `db/migrations/**` is an owner path, so a PR that changes a migration passes Owner OK only with the owner-ok label on its head commit ([plan, section 6](../plan.md#owner-paths)).
 
 ## Consequences
 
