@@ -122,7 +122,7 @@ This is the repository setup. It lands before every other PR: until it does, not
 - **Owner steps** (agents cannot do these). There is no GitHub App and no bot account: the approval workflow uses its own `GITHUB_TOKEN`.
   - Put the list of protected names in a repository secret. The owner may keep it instead in an environment that only `main` can use.
   - Require every action to be pinned to a full commit SHA.
-  - Set "Names", "Owner OK" and "Outside approval" by hand, once, on the frame PR and on the plan PR. They are the bootstrap: both were opened before the approval workflow was on `main`.
+  - Set "Names", "Owner OK" and "Outside approval" by hand, once, on the frame PR's head commit. This is the bootstrap. GitHub runs a `pull_request_target` workflow from the file on `main` at each event, and every head commit of the frame PR was pushed while `main` had no approval workflow, so nothing can run those checks on the PR that adds them. The plan PR needs no such step. After the frame merges, the plan PR's branch is updated from `main`, which branch protection asks for anyway, and that push runs the approval checks from `main` on its new head. A check set by hand belongs to one commit, so one set on the plan PR's current head would be lost at that push.
   - After the frame PR merges, add "Names" to the required checks.
   - After the bootstrap, the owner may pin "CI OK", "Names", "Owner OK" and "Outside approval" to GitHub Actions. "Review OK" stays open to any source, because it is a commit status. A pin to GitHub Actions does not stop a PR from adding its own job with a required check's name, since that job runs in GitHub Actions too. The merge rule is the gate against that.
 
