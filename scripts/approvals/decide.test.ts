@@ -75,6 +75,43 @@ describe("owner paths", () => {
     expect(ownerPathsIn([path], GLOBS).length > 0).toBe(expected);
   });
 
+  it.each([
+    // A line break or a line separator in a name: git and GitHub keep it, and most views do not show it.
+    "db/migrations/a .sql",
+    "db/migrations/a\n.sql",
+    "db/migrations/a\r.sql",
+    "db/migrations/x y/b.sql",
+    "db/migrations/\r\n",
+    "a\rb/COPYING",
+    "x y/LICENSE",
+    "packages/client/LICENSE\n.md",
+    "x\ny/.protected-name-ok",
+    // A letter that Unicode's case folding, or capitals, read as an ASCII one.
+    "packages/client/LICENſE",
+    "packages/client/LıCENSE",
+    "adapters/a1/.protected-name-oK",
+    ".github/protected-name-allowliﬆ.txt",
+  ])("finds the owner path %j, and Owner OK fails on it without the label", (path) => {
+    expect(ownerPathsIn([path], GLOBS)).toEqual([path]);
+    expect(decideOwnerOk({ namesResult: "success", paths: [path], globs: GLOBS, labels: [] })).toEqual({
+      pass: false,
+      why: "The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label.",
+      ownerPaths: [path],
+    });
+  });
+
+  it("lets *, ? and ** match a line break, U+2028 and U+2029, but never a slash", () => {
+    for (const char of ["\n", "\r", " ", " "]) {
+      expect(globToRegExp("a/?.ts").test(`a/${char}.ts`)).toBe(true);
+      expect(globToRegExp("a/*.ts").test(`a/b${char}c.ts`)).toBe(true);
+      expect(globToRegExp("a/**").test(`a/b${char}/c`)).toBe(true);
+      expect(globToRegExp("**/b").test(`a${char}/b`)).toBe(true);
+      expect(globToRegExp("a**b").test(`a${char}/${char}b`)).toBe(true);
+    }
+    expect(globToRegExp("a/?.ts").test("a///.ts")).toBe(false);
+    expect(globToRegExp("a/*.ts").test("a/b/c.ts")).toBe(false);
+  });
+
   it("matches a pattern without a slash at the root only", () => {
     expect(ownerPathsIn(["CLAUDE.md", "docs/CLAUDE.md", "claude.md"], ["CLAUDE.md"])).toEqual(["CLAUDE.md", "claude.md"]);
   });

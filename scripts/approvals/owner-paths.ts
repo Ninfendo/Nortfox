@@ -2,10 +2,14 @@
 
 // The owner path list (.github/owner-paths.txt): one glob per line, matched
 // from the repository root. "**" matches any number of folders, "*" and "?"
-// stay inside one folder or file name. A pattern without a slash matches at
-// the root only. Matching ignores case, so LICENSE, License.md and license
-// all match: a laptop that ignores case treats them as one file, and the
-// owner should see every one of them.
+// stay inside one folder or file name. All three match every character in a
+// name, also a line break, U+2028 and U+2029: git and GitHub keep such a
+// character in a path, and most views do not show it. A pattern without a
+// slash matches at the root only. Matching ignores case as Unicode does, and
+// each path is matched in capitals too, so LICENSE, License.md, license,
+// LICENſE (a long s) and LıCENSE (a dotless i) all match: a laptop that
+// ignores case may treat them as one file, and the owner should see every one
+// of them.
 
 export const OWNER_PATHS_FILE = ".github/owner-paths.txt";
 
@@ -39,11 +43,14 @@ export function globToRegExp(glob: string): RegExp {
       index += 1;
     }
   }
-  return new RegExp(`${source}$`, "i");
+  // "s": "." matches a line break too. "iu": case is ignored as Unicode folds it.
+  return new RegExp(`${source}$`, "isu");
 }
 
-/** The paths that match at least one owner path. */
+/** The paths that match at least one owner path, as they are or in capitals. */
 export function ownerPathsIn(paths: readonly string[], globs: readonly string[]): string[] {
   const patterns = globs.map(globToRegExp);
-  return paths.filter((path) => patterns.some((pattern) => pattern.test(path)));
+  return paths.filter((path) =>
+    [path, path.toUpperCase()].some((spelling) => patterns.some((pattern) => pattern.test(spelling))),
+  );
 }
