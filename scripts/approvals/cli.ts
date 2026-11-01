@@ -5,20 +5,21 @@
 //
 //   node scripts/approvals/cli.ts outside-approval
 //   node scripts/approvals/cli.ts owner-ok
-//   node scripts/approvals/cli.ts names-mirror
 //
 // Settings come from the environment: GITHUB_TOKEN, GITHUB_REPOSITORY,
-// PR_NUMBER and OWNER_LOGIN; owner-ok also reads NAMES_RESULT. Each command
-// fails a PR that is not aimed at the default branch.
+// PR_NUMBER, HEAD_SHA and OWNER_LOGIN; owner-ok also reads NAMES_RESULT. Each
+// command fails a PR that is not aimed at the default branch, and a PR whose
+// head is not HEAD_SHA, the commit that the event which started the run names.
 //
-// Each command decides from the PR as it is when it runs, never from the
-// event that started it. So a run that is missed, fails or is dropped leaves
-// nothing behind that a later run would trust.
+// Each command decides from the PR as it is when it runs. From the event it
+// takes only the head commit, to refuse a PR that has moved on. So a run that
+// is missed, fails or is dropped leaves nothing behind that a later run would
+// trust.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { field, stringField } from "../github/api.ts";
-import { loadPullRequest, outsideApprovalOf, requireEnv, type PullRequest } from "../github/pull-request.ts";
+import { field, numberField, stringField } from "../github/api.ts";
+import { loadPullRequest, outsideApprovalOf, requireEnv, requireUnchanged, type PullRequest } from "../github/pull-request.ts";
 import { decideLabelHolds, decideOwnerOk, OWNER_OK_LABEL, type BranchMove, type LabelEvent, type Verdict } from "./decide.ts";
 import { OWNER_PATHS_FILE, parseOwnerPaths } from "./owner-paths.ts";
 
@@ -27,8 +28,10 @@ export interface Io {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
-  readonly sleep: (ms: number) => Promise<void>;
 }
+
+/** The most changed files GitHub lists for one PR. */
+export const MAX_LISTED_FILES = 3000;
 
 async function outsideApproval(io: Io): Promise<boolean> {
   const owner = requireEnv(io.env, "OWNER_LOGIN");
@@ -118,7 +121,19 @@ async function ownerOk(io: Io): Promise<boolean> {
     }
   }
 
+  // A listing cut off at GitHub's limit could leave out an owner path, so it never counts.
+  const changed = numberField(pr.data, "changed_files");
+  if (changed > MAX_LISTED_FILES) {
+    io.err(`Owner OK: The PR changes more than ${String(MAX_LISTED_FILES)} files, and GitHub lists only ${String(MAX_LISTED_FILES)}. Split it.`);
+    return false;
+  }
   const files = await pr.github.list(`${pr.prefix}/pulls/${pr.number}/files?per_page=100`);
+  if (files.length !== changed) {
+    io.err(`Owner OK: GitHub listed ${String(files.length)} changed files, but the PR changes ${String(changed)}. Run the check again.`);
+    return false;
+  }
+  // The file list is read live, so the head must still be the commit this run judges.
+  await requireUnchanged(pr);
   const verdict = decideOwnerOk({
     namesResult: io.env["NAMES_RESULT"] ?? "missing",
     paths: changedPaths(files),
@@ -133,61 +148,9 @@ async function ownerOk(io: Io): Promise<boolean> {
   return verdict.pass;
 }
 
-const MIRROR_WAIT_MS = 15_000;
-const MIRROR_ROUNDS = 40;
-
-/**
- * On a review in a run without the list (a PR from a fork), the names check
- * repeats the verdict of the last full check on the head commit (a
- * pull_request_target run, which has the list), waiting for it if it still
- * runs.
- */
-async function namesMirror(io: Io): Promise<boolean> {
-  const pr = await loadPullRequest(io.env);
-  for (let round = 0; round < MIRROR_ROUNDS; round += 1) {
-    const answer = await pr.github.get(
-      `${pr.prefix}/commits/${pr.headSha}/check-runs?check_name=Names&filter=all&per_page=100`,
-    );
-    const runs = field(answer, "check_runs");
-    let waiting = false;
-    let latest: { completedAt: string; conclusion: string } | undefined;
-    for (const run of Array.isArray(runs) ? (runs as unknown[]) : []) {
-      const suite = field(field(run, "check_suite"), "id");
-      const workflows = await pr.github.get(
-        `${pr.prefix}/actions/runs?check_suite_id=${String(suite)}&event=pull_request_target&per_page=1`,
-      );
-      const found = field(workflows, "workflow_runs");
-      if (!Array.isArray(found) || found.length === 0) {
-        continue;
-      }
-      if (stringField(run, "status") !== "completed") {
-        waiting = true;
-        continue;
-      }
-      const completedAt = stringField(run, "completed_at");
-      if (latest === undefined || completedAt > latest.completedAt) {
-        latest = { completedAt, conclusion: stringField(run, "conclusion") };
-      }
-    }
-    if (!waiting && latest !== undefined) {
-      const pass = latest.conclusion === "success";
-      (pass ? io.out : io.err)(`Names: the last full check on this commit ended in ${latest.conclusion}.`);
-      return pass;
-    }
-    if (!waiting) {
-      io.err("Names: no full check has run on this commit yet. Its own run will report.");
-      return false;
-    }
-    await io.sleep(MIRROR_WAIT_MS);
-  }
-  io.err("Names: the full check on this commit did not finish in time.");
-  return false;
-}
-
 const COMMANDS: Readonly<Record<string, (io: Io) => Promise<boolean>>> = {
   "outside-approval": outsideApproval,
   "owner-ok": ownerOk,
-  "names-mirror": namesMirror,
 };
 
 export async function main(args: readonly string[], io: Io): Promise<number> {
@@ -214,6 +177,5 @@ if (import.meta.main) {
     err: (line) => {
       console.error(line);
     },
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   });
 }

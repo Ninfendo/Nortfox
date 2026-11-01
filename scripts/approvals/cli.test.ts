@@ -47,34 +47,57 @@ async function run(
       GITHUB_API_URL: server.url,
       PR_NUMBER: "7",
       OWNER_LOGIN: "owner",
+      HEAD_SHA: head,
       ...env,
     },
     out: (line) => out.push(line),
     err: (line) => err.push(line),
-    sleep: () => Promise.resolve(),
   };
   const code = await main(command, io);
   return { code, out, err, requests: server.requests };
 }
 
-function pr(author: string, labels: string[] = [], baseRef = "main"): Routes[string] {
+/** The PR as the API gives it. `changed` is how many files it changes. */
+function prData(author: string, labels: string[] = [], baseRef = "main", changed = 1): Record<string, unknown> {
   return {
-    body: {
-      user: { login: author },
-      head: { sha: head, ref: "feature/x", repo: { full_name: "o/r" } },
-      base: { ref: baseRef, repo: { default_branch: "main" } },
-      labels: labels.map((name) => ({ name })),
-    },
+    title: "Add the ledger",
+    body: null,
+    user: { login: author },
+    head: { sha: head, ref: "feature/x", repo: { full_name: "o/r" } },
+    base: { ref: baseRef, repo: { default_branch: "main" } },
+    labels: labels.map((name) => ({ name })),
+    changed_files: changed,
   };
 }
 
+function pr(author: string, labels: string[] = [], baseRef = "main", changed = 1): Routes[string] {
+  return { body: prData(author, labels, baseRef, changed) };
+}
+
 describe("every command", () => {
-  it.each(["outside-approval", "owner-ok", "names-mirror"])("%s fails a PR that is not aimed at the default branch", async (command) => {
+  it.each(["outside-approval", "owner-ok"])("%s fails a PR that is not aimed at the default branch", async (command) => {
     const result = await run([command], { [`GET ${p}/pulls/7`]: pr("owner", [], "feature/base") }, { NAMES_RESULT: "success" });
     expect(result).toMatchObject({
       code: 1,
       err: ["Failed: The PR is not aimed at the default branch. The approval checks pass only a PR into the default branch."],
     });
+  });
+
+  it.each(["outside-approval", "owner-ok"])("%s fails when the PR's head is not the commit the event names", async (command) => {
+    const result = await run([command], { [`GET ${p}/pulls/7`]: pr("owner") }, { NAMES_RESULT: "success", HEAD_SHA: "d".repeat(40) });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        "Failed: The PR's head commit is not the one this run was started for. The run for its new head commit checks it.",
+      ],
+      requests: [`GET ${p}/pulls/7`],
+    });
+  });
+
+  it.each(["outside-approval", "owner-ok"])("%s needs HEAD_SHA", async (command) => {
+    const result = await run([command], {}, { HEAD_SHA: "" });
+    expect(result).toMatchObject({ code: 1, err: ["Failed: HEAD_SHA must be set."], requests: [] });
   });
 });
 
@@ -134,7 +157,7 @@ describe("owner-ok", () => {
     ],
   });
   const ownerPathPr = (routes: Routes): Routes => ({
-    [`GET ${p}/pulls/7`]: pr("owner", ["owner-ok"]),
+    [`GET ${p}/pulls/7`]: pr("owner", ["owner-ok"], "main", 2),
     [`GET ${p}/pulls/7/files?per_page=100`]: files(["LICENSE", "README.md"]),
     [remove]: { body: [] },
     ...routes,
@@ -145,7 +168,7 @@ describe("owner-ok", () => {
     const result = await run(
       ["owner-ok"],
       {
-        [`GET ${p}/pulls/7`]: pr("owner"),
+        [`GET ${p}/pulls/7`]: pr("owner", [], "main", 4),
         [`GET ${p}/pulls/7/files?per_page=100`]: files([
           "README.md",
           ".github/workflows/approvals.yml",
@@ -256,6 +279,51 @@ describe("owner-ok", () => {
     );
   });
 
+  it("fails a PR with more files than GitHub lists, without listing them", async () => {
+    const result = await run(["owner-ok"], { [`GET ${p}/pulls/7`]: pr("owner", [], "main", 3001) }, env);
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: ["Owner OK: The PR changes more than 3000 files, and GitHub lists only 3000. Split it."],
+      requests: [`GET ${p}/pulls/7`],
+    });
+  });
+
+  it("fails when GitHub lists another number of files than the PR changes", async () => {
+    const result = await run(
+      ["owner-ok"],
+      { [`GET ${p}/pulls/7`]: pr("owner", [], "main", 3), [`GET ${p}/pulls/7/files?per_page=100`]: files(["README.md"]) },
+      env,
+    );
+    expect(result).toMatchObject({
+      code: 1,
+      out: [],
+      err: ["Owner OK: GitHub listed 1 changed files, but the PR changes 3. Run the check again."],
+    });
+  });
+
+  it("fails, and lists no path, when the PR's head commit moved while it read the files", async () => {
+    let reads = 0;
+    const result = await run(
+      ["owner-ok"],
+      {
+        [`GET ${p}/pulls/7`]: () => {
+          reads += 1;
+          const data = prData("owner");
+          return { body: reads === 1 ? data : { ...data, head: { sha: "d".repeat(40), ref: "feature/x" } } };
+        },
+        [`GET ${p}/pulls/7/files?per_page=100`]: files(["LICENSE"]),
+      },
+      env,
+    );
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: ["Failed: The PR changed while the check read it, so this run gives no result. The run for that change checks it."],
+      requests: [`GET ${p}/pulls/7`, `GET ${p}/pulls/7/files?per_page=100`, `GET ${p}/pulls/7`],
+    });
+  });
+
   it("fails when the label cannot be removed", async () => {
     const result = await run(
       ["owner-ok"],
@@ -266,96 +334,11 @@ describe("owner-ok", () => {
   });
 });
 
-describe("names-mirror", () => {
-  const checkRuns = `GET ${p}/commits/${head}/check-runs?check_name=Names&filter=all&per_page=100`;
-  const suite = (id: number) => `GET ${p}/actions/runs?check_suite_id=${String(id)}&event=pull_request_target&per_page=1`;
-  const fromTarget = { body: { workflow_runs: [{ event: "pull_request_target" }] } };
-  const fromReview = { body: { workflow_runs: [] } };
-
-  it("repeats the latest full check on the head commit", async () => {
-    const result = await run(["names-mirror"], {
-      [`GET ${p}/pulls/7`]: pr("someone"),
-      [checkRuns]: {
-        body: {
-          check_runs: [
-            { status: "completed", conclusion: "failure", completed_at: "2026-11-01T10:00:00Z", check_suite: { id: 1 } },
-            { status: "completed", conclusion: "success", completed_at: "2026-11-01T11:00:00Z", check_suite: { id: 2 } },
-            { status: "completed", conclusion: "failure", completed_at: "2026-11-01T12:00:00Z", check_suite: { id: 3 } },
-          ],
-        },
-      },
-      [suite(1)]: fromTarget,
-      [suite(2)]: fromTarget,
-      [suite(3)]: fromReview,
-    });
-    expect(result).toMatchObject({ code: 0, out: ["Names: the last full check on this commit ended in success."] });
-  });
-
-  it("fails when the latest full check failed", async () => {
-    const result = await run(["names-mirror"], {
-      [`GET ${p}/pulls/7`]: pr("someone"),
-      [checkRuns]: {
-        body: {
-          check_runs: [
-            { status: "completed", conclusion: "success", completed_at: "2026-11-01T10:00:00Z", check_suite: { id: 1 } },
-            { status: "completed", conclusion: "failure", completed_at: "2026-11-01T11:00:00Z", check_suite: { id: 2 } },
-          ],
-        },
-      },
-      [suite(1)]: fromTarget,
-      [suite(2)]: fromTarget,
-    });
-    expect(result.code).toBe(1);
-  });
-
-  it("waits for a full check that still runs", async () => {
-    let calls = 0;
-    const result = await run(["names-mirror"], {
-      [`GET ${p}/pulls/7`]: pr("someone"),
-      [checkRuns]: () => {
-        calls += 1;
-        return {
-          body: {
-            check_runs: [
-              calls === 1
-                ? { status: "in_progress", check_suite: { id: 1 } }
-                : { status: "completed", conclusion: "success", completed_at: "2026-11-01T10:00:00Z", check_suite: { id: 1 } },
-            ],
-          },
-        };
-      },
-      [suite(1)]: fromTarget,
-    });
-    expect(calls).toBe(2);
-    expect(result.code).toBe(0);
-  });
-
-  it("gives up after waiting too long", async () => {
-    const result = await run(["names-mirror"], {
-      [`GET ${p}/pulls/7`]: pr("someone"),
-      [checkRuns]: { body: { check_runs: [{ status: "queued", check_suite: { id: 1 } }] } },
-      [suite(1)]: fromTarget,
-    });
-    expect(result).toMatchObject({ code: 1, err: ["Names: the full check on this commit did not finish in time."] });
-  });
-
-  it("fails when no full check ran yet", async () => {
-    const result = await run(["names-mirror"], {
-      [`GET ${p}/pulls/7`]: pr("someone"),
-      [checkRuns]: { body: { check_runs: [] } },
-    });
-    expect(result).toMatchObject({
-      code: 1,
-      err: ["Names: no full check has run on this commit yet. Its own run will report."],
-    });
-  });
-});
-
 describe("the command line", () => {
   it.each([[[]], [["nope"]], [["owner-ok", "extra"]]])("refuses %j", async (args) => {
     const result = await run(args, {});
     expect(result.code).toBe(2);
-    expect(result.err[0]).toBe("Usage: node scripts/approvals/cli.ts outside-approval | owner-ok | names-mirror");
+    expect(result.err[0]).toBe("Usage: node scripts/approvals/cli.ts outside-approval | owner-ok");
   });
 
   it("fails when GitHub fails", async () => {

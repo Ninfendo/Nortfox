@@ -14,6 +14,7 @@ export interface PullRequest {
   readonly number: string;
   /** The PR as the API gives it. */
   readonly data: unknown;
+  /** The head commit the run judges: the one the event that started the run named. */
   readonly headSha: string;
   readonly author: string;
 }
@@ -22,13 +23,22 @@ export class WrongBaseError extends Error {
   override readonly name = "WrongBaseError";
 }
 
+/** The PR moved on from what the run judges: a new head commit, title, body, branch or base. */
+export class PullRequestMovedError extends Error {
+  override readonly name = "PullRequestMovedError";
+}
+
 /**
  * Reads the PR named by GITHUB_REPOSITORY and PR_NUMBER. It refuses a PR that
  * is not aimed at the repository's default branch: a check that passed for a
- * PR into another branch would count for any PR with the same head commit.
+ * PR into another branch would count for any PR with the same head commit. It
+ * also refuses a PR whose head is not HEAD_SHA, the commit named by the event
+ * that started the run. GitHub writes the run's verdict on that commit, so a
+ * check never judges another one.
  */
 export async function loadPullRequest(env: Readonly<Record<string, string | undefined>>): Promise<PullRequest> {
   const { github, repository, number } = pullRequestContext(env);
+  const expected = requireEnv(env, "HEAD_SHA");
   const prefix = `/repos/${repository}`;
   const data = await github.get(`${prefix}/pulls/${String(number)}`);
   const base = field(data, "base");
@@ -37,15 +47,48 @@ export async function loadPullRequest(env: Readonly<Record<string, string | unde
       "The PR is not aimed at the default branch. The approval checks pass only a PR into the default branch.",
     );
   }
+  const headSha = stringField(field(data, "head"), "sha");
+  if (headSha !== expected) {
+    throw new PullRequestMovedError(
+      "The PR's head commit is not the one this run was started for. The run for its new head commit checks it.",
+    );
+  }
   return {
     github,
     repository,
     prefix,
     number: String(number),
     data,
-    headSha: stringField(field(data, "head"), "sha"),
+    headSha,
     author: stringField(field(data, "user"), "login"),
   };
+}
+
+/** What a check reads from the PR itself: its head commit, title, body, branch and base. */
+function snapshotOf(data: unknown): string {
+  const head = field(data, "head");
+  const body = field(data, "body");
+  return JSON.stringify([
+    stringField(head, "sha"),
+    stringField(head, "ref"),
+    stringField(data, "title"),
+    typeof body === "string" ? body : "",
+    stringField(field(data, "base"), "ref"),
+  ]);
+}
+
+/**
+ * Reads the PR again, at the end of a check, and fails when its head commit,
+ * title, body, branch or base is not what the check read at the start. Every
+ * such change starts a run of its own, which judges the PR as it is then.
+ */
+export async function requireUnchanged(pr: PullRequest): Promise<void> {
+  const now = await pr.github.get(`${pr.prefix}/pulls/${pr.number}`);
+  if (snapshotOf(now) !== snapshotOf(pr.data)) {
+    throw new PullRequestMovedError(
+      "The PR changed while the check read it, so this run gives no result. The run for that change checks it.",
+    );
+  }
 }
 
 /** The PR's reviews, oldest first. */

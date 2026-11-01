@@ -5,7 +5,7 @@
 
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
-import { field, numberField, stringField, type GitHub } from "../github/api.ts";
+import { changesBetween, commitsBetween, fetchCommit, mergeBase, parseCommit, readObjects, treePaths } from "../github/snapshot.ts";
 import { gitBytes, gitText, gitTextOrUndefined, nulList } from "./git.ts";
 import { ALLOWLIST_FILE, isMarker, parseAllowlist } from "./markers.ts";
 
@@ -140,87 +140,78 @@ export function textSource(text: string, label: string): Source {
   return { files: [], fields: [{ field: label, text }], markers: [], allowlist: [] };
 }
 
-/** The most files and commits the API lists for one PR. */
-export const MAX_PR_FILES = 3000;
-export const MAX_PR_COMMITS = 250;
+/** What --pr reads from the PR itself, through the API. */
+export interface PullRequestText {
+  readonly number: string;
+  readonly title: string;
+  readonly body: string;
+  /** The PR's branch: its head ref. */
+  readonly branch: string;
+  /** The head commit the run judges. */
+  readonly headSha: string;
+}
 
-/** "Name <address>" of a commit's author or committer, as the API gives it. */
-function identityOf(person: unknown): string {
-  const name = field(person, "name");
-  const email = field(person, "email");
-  return `${typeof name === "string" ? name : ""} <${typeof email === "string" ? email : ""}>`;
+const short = (sha: string): string => sha.slice(0, 7);
+
+/** The mode git gives a submodule. */
+const SUBMODULE = "160000";
+
+/**
+ * The texts that a squash merge writes into the default branch: the title, a
+ * blank line and the body. One text checks them together, so a name split
+ * between the title and the body is found. A second one is the commit
+ * message exactly as GitHub writes it, with the PR number after the title,
+ * because the number's digits fold to letters too.
+ */
+function squashFields(pr: PullRequestText): TextField[] {
+  const title = `${pr.title} (#${pr.number})`;
+  return [
+    { field: "PR title and body", text: `${pr.title}\n\n${pr.body}` },
+    { field: "squash commit message", text: pr.body === "" ? title : `${title}\n\n${pr.body}` },
+  ];
 }
 
 /**
- * --pr: the PR's changed files at its head commit, their paths, its title,
- * body and branch name, and every commit's message, author and committer, all
- * read through the API as data. The PR's code is never checked out or run.
- * `pr` is the PR as the API gives it.
+ * --pr: the PR's changed files at its head commit, their paths, every marker
+ * in the head commit, the PR's title, body and branch name, and every commit's
+ * message, author and committer. `cwd` is a checkout of the default branch,
+ * with its history. The head commit is fetched there by its SHA and read with
+ * git as data (../github/snapshot.ts): the PR's code is never checked out or
+ * run, and nothing newer than that commit is read.
  */
-export async function pullRequestSource(
-  github: GitHub,
-  repository: string,
-  pr: unknown,
-  allowlist: readonly string[],
-): Promise<Source> {
-  const prefix = `/repos/${repository}`;
-  const number = String(numberField(pr, "number"));
-  const head = field(pr, "head");
-  const headSha = stringField(head, "sha");
-  if (numberField(pr, "changed_files") > MAX_PR_FILES) {
-    throw new Error(`The PR changes more than ${String(MAX_PR_FILES)} files; the API cannot list them all. Split it.`);
-  }
-  if (numberField(pr, "commits") > MAX_PR_COMMITS) {
-    throw new Error(`The PR has more than ${String(MAX_PR_COMMITS)} commits; the API cannot list them all. Squash or split it.`);
-  }
-
+export function pullRequestSource(cwd: string, pr: PullRequestText, allowlist: readonly string[]): Source {
+  const head = pr.headSha;
+  fetchCommit(cwd, head);
+  const base = mergeBase(cwd, "HEAD", head);
+  const changes = changesBetween(cwd, base, head);
+  const readable = changes.filter((change) => change.status !== "D" && change.mode !== SUBMODULE);
+  const blob = readObjects(cwd, readable.map((change) => change.sha), "blob");
   const files: SourceFile[] = [];
-  const changed = await github.list(`${prefix}/pulls/${number}/files?per_page=100`);
-  for (const [index, entry] of changed.entries()) {
-    if (stringField(entry, "status") === "removed") {
+  for (const [index, change] of changes.entries()) {
+    if (change.status === "D") {
       continue;
     }
-    const sha = field(entry, "sha");
     const file = {
-      path: stringField(entry, "filename"),
-      alias: `changed file ${String(index + 1)} (in the PR's Files tab)`,
+      path: change.path,
+      alias: `changed file ${String(index + 1)} (git diff --name-only --no-renames ${short(base)} ${short(head)})`,
     };
-    if (typeof sha === "string" && sha !== "") {
-      const blob = await github.get(`${prefix}/git/blobs/${sha}`);
-      files.push({ ...file, bytes: Buffer.from(stringField(blob, "content"), "base64") });
-    } else {
-      // A file the API gives no blob for is never passed unread.
-      files.push({ ...file, bytes: undefined, unreadable: true });
-    }
-  }
-
-  const markers = files.map((file) => file.path).filter(isMarker);
-  for (const folder of allowlist) {
-    const path = `${folder}/.protected-name-ok`;
-    if (!markers.includes(path)) {
-      const found = await github.find(`${prefix}/contents/${encodeURI(path)}?ref=${headSha}`);
-      if (found !== undefined) {
-        markers.push(path);
-      }
-    }
+    // A submodule's contents are in another repository, so the check cannot read them.
+    files.push(
+      change.mode === SUBMODULE ? { ...file, bytes: undefined, unreadable: true } : { ...file, bytes: blob(change.sha) },
+    );
   }
 
   const fields: TextField[] = [
-    { field: "PR title", text: stringField(pr, "title") },
-    { field: "PR body", text: typeof field(pr, "body") === "string" ? stringField(pr, "body") : "" },
-    { field: "branch name", text: stringField(head, "ref") },
+    { field: "PR title", text: pr.title },
+    { field: "PR body", text: pr.body },
+    ...squashFields(pr),
+    { field: "branch name", text: pr.branch },
   ];
-  const commits = await github.list(`${prefix}/pulls/${number}/commits?per_page=100`);
-  for (const commit of commits) {
-    const data = field(commit, "commit");
-    fields.push(
-      ...commitFields(
-        stringField(commit, "sha"),
-        stringField(data, "message"),
-        identityOf(field(data, "author")),
-        identityOf(field(data, "committer")),
-      ),
-    );
+  const commits = commitsBetween(cwd, "HEAD", head);
+  const commit = readObjects(cwd, commits, "commit");
+  for (const sha of commits) {
+    const { message, author, committer } = parseCommit(commit(sha));
+    fields.push(...commitFields(sha, message, author, committer));
   }
-  return { files, fields, markers, allowlist };
+  return { files, fields, markers: treePaths(cwd, head).filter(isMarker), allowlist };
 }

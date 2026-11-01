@@ -4,10 +4,10 @@ import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
-import { startFakeGitHub, type FakeGitHub } from "../testing/fake-github.ts";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { startFakeGitHub, type FakeAnswer, type FakeGitHub, type Routes } from "../testing/fake-github.ts";
 import { createTestRepo, FAKE_LIST, FAKE_WORDS, type TestRepo } from "../testing/repo.ts";
-import { main, type Io } from "./cli.ts";
+import { main, WAITING, type Io } from "./cli.ts";
 
 const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
 const base64 = (text: string): string => Buffer.from(text, "utf8").toString("base64");
@@ -320,56 +320,109 @@ describe("arguments", () => {
 
 describe("--pr", () => {
   const p = "/repos/o/r";
-  const head = "h".repeat(40);
-  const person = (name: string) => ({ name, email: `${name.toLowerCase()}@example.invalid` });
+  /** Repositories that several tests read and none changes, removed after the last test. */
+  const kept: TestRepo[] = [];
 
-  async function fakeApi(pr: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<FakeGitHub> {
+  afterAll(() => {
+    for (const r of kept.splice(0)) {
+      r.remove();
+    }
+  });
+
+  interface Pr {
+    /** The repository the PR lives in. */
+    readonly origin: TestRepo;
+    /** The default branch's checkout, with its history, as the workflow makes it. */
+    readonly checkout: TestRepo;
+    /** The PR's head commit. Only origin has it. */
+    readonly head: string;
+  }
+
+  /**
+   * A default branch with an empty marker allowlist, a checkout of it, and a
+   * PR on top of it that only origin has, under refs/pull/7/head as GitHub
+   * keeps it.
+   */
+  function pullRequest(
+    build: (origin: TestRepo) => void,
+    options: { readonly base?: (origin: TestRepo) => void; readonly keep?: boolean } = {},
+  ): Pr {
+    const owned = options.keep === true ? kept : repos;
+    const origin = createTestRepo();
+    owned.push(origin);
+    origin.write(".github/protected-name-allowlist.txt", "");
+    origin.write("docs/old.md", "Gone in the PR: zarquon\n");
+    options.base?.(origin);
+    origin.commitAll("Base");
+    const checkout = createTestRepo({ origin });
+    owned.push(checkout);
+    origin.git("checkout", "--quiet", "-b", "feature/x");
+    build(origin);
+    const head = origin.git("rev-parse", "HEAD").trim();
+    origin.git("update-ref", "refs/pull/7/head", head);
+    origin.git("checkout", "--quiet", "main");
+    origin.git("branch", "--quiet", "-D", "feature/x");
+    return { origin, checkout, head };
+  }
+
+  /** A PR with a planted name in each place it can hide, a removed file and a submodule. */
+  function plantEverything(origin: TestRepo): void {
+    origin.git("rm", "--quiet", "docs/old.md");
+    origin.write("docs/a.md", "fine\nzarquon\n");
+    origin.write("adapters/a1/.protected-name-ok", "");
+    origin.write("adapters/a2/notes.md", "reads zarquon");
+    origin.commitAll("Start");
+    origin.git("update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},vendor/sub`);
+    origin.git("commit", "--quiet", "--author=Blirvex <blirvex@example.invalid>", "-m", "Add\n\nAbout zarquon");
+  }
+
+  function plantNothing(origin: TestRepo): void {
+    origin.write("docs/a.md", "fine\n");
+    origin.commitAll("Start");
+  }
+
+  let planted: Pr | undefined;
+  let clean: Pr | undefined;
+  /** The PR with every planted name, made once. */
+  const everything = (): Pr => (planted ??= pullRequest(plantEverything, { keep: true }));
+  /** A clean PR with one file and one commit, made once. */
+  const nothing = (): Pr => (clean ??= pullRequest(plantNothing, { keep: true }));
+
+  /** The PR as the API gives it. */
+  function prData(head: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      number: 7,
+      title: "Add the zarquon import",
+      body: "Line one\n\nb1irvex",
+      state: "open",
+      user: { login: "owner" },
+      head: { sha: head, ref: "feature/x" },
+      base: { ref: "main", repo: { default_branch: "main" } },
+      ...overrides,
+    };
+  }
+
+  /** The API. Each read of the PR gives the next of `reads`, and the last one from then on. */
+  async function fakeApi(reads: readonly FakeAnswer[], extra: Routes = {}, number = 7): Promise<FakeGitHub> {
+    let calls = 0;
     const server = await startFakeGitHub({
-      [`GET ${p}/pulls/7`]: {
-        body: {
-          number: 7,
-          title: "Add the zarquon import",
-          body: "Line one\n\nb1irvex",
-          user: { login: "owner" },
-          head: { sha: head, ref: "feature/x" },
-          base: { ref: "main", repo: { default_branch: "main" } },
-          changed_files: 4,
-          commits: 2,
-          ...pr,
-        },
+      [`GET ${p}/pulls/${String(number)}`]: () => {
+        const answer = reads[Math.min(calls, reads.length - 1)] ?? { status: 500 };
+        calls += 1;
+        return answer;
       },
-      [`GET ${p}/pulls/7/files?per_page=100`]: {
-        body: [{ filename: "docs/a.md", status: "added", sha: "blob1" }],
-        headers: { link: `<{base}/other>; rel="last", <{base}${p}/pulls/7/files?page=2>; rel="next"` },
-      },
-      [`GET ${p}/pulls/7/files?page=2`]: {
-        body: [
-          { filename: "docs/old.md", status: "removed", sha: "blob2" },
-          { filename: "vendor/sub", status: "added", sha: null },
-          { filename: "adapters/a1/.protected-name-ok", status: "added", sha: "blob3" },
-          { filename: "adapters/a2/notes.md", status: "modified", sha: "blob4" },
-        ],
-      },
-      [`GET ${p}/git/blobs/blob1`]: { body: { content: Buffer.from("fine\nzarquon\n").toString("base64") } },
-      [`GET ${p}/git/blobs/blob3`]: { body: { content: "" } },
-      [`GET ${p}/git/blobs/blob4`]: { body: { content: Buffer.from("reads zarquon").toString("base64") } },
-      [`GET ${p}/pulls/7/commits?per_page=100`]: {
-        body: [
-          { sha: "a".repeat(40), commit: { message: "Start", author: person("Ann"), committer: person("Ann") } },
-          {
-            sha: "b".repeat(40),
-            commit: { message: "Add\n\nAbout zarquon", author: person("Blirvex"), committer: { name: "Ann" } },
-          },
-        ],
-      },
-      [`GET ${p}/pulls/7/reviews?per_page=100`]: { body: [] },
+      [`GET ${p}/pulls/${String(number)}/reviews?per_page=100`]: { body: [] },
       ...extra,
     });
     servers.push(server);
     return server;
   }
 
-  function prEnv(server: FakeGitHub): Record<string, string> {
+  function prEnv(
+    server: FakeGitHub,
+    head: string,
+    extra: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> {
     return {
       PROTECTED_NAMES: FAKE_LIST,
       GITHUB_ACTIONS: "true",
@@ -378,142 +431,271 @@ describe("--pr", () => {
       GITHUB_API_URL: server.url,
       PR_NUMBER: "7",
       OWNER_LOGIN: "owner",
+      HEAD_SHA: head,
+      TRIGGERING_ACTOR: "owner",
+      ...extra,
     };
   }
 
-  function baseCheckout(allowlist: string): TestRepo {
-    const r = repo();
-    r.write(".github/protected-name-allowlist.txt", allowlist);
-    r.commitAll("Base");
-    return r;
-  }
+  const MOVED = "names: The PR changed while the check read it, so this run gives no result. The run for that change checks it.";
+  const read = `GET ${p}/pulls/7`;
 
-  it("checks the files, paths, title, body, branch, and each commit's message, author and committer", async () => {
-    const server = await fakeApi({});
-    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
-    expect(result.code).toBe(1);
+  it("checks the files at the head commit, their paths, the markers, the title, the body, the squash commit message, the branch and each commit", async () => {
+    const pr = everything();
+    const server = await fakeApi([{ body: prData(pr.head) }]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+    const commit = pr.head.slice(0, 7);
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        "names: adapters/a1/.protected-name-ok is a .protected-name-ok marker outside the marker allowlist.",
+        "names: adapters/a2/notes.md:1 holds a protected name.",
+        "names: docs/a.md:2 holds a protected name.",
+        "names: vendor/sub has contents the names check cannot get, such as a submodule.",
+        "names: PR title holds a protected name.",
+        "names: PR body line 3 holds a protected name.",
+        "names: PR title and body line 1 holds a protected name.",
+        "names: PR title and body line 5 holds a protected name.",
+        "names: squash commit message line 1 holds a protected name.",
+        "names: squash commit message line 5 holds a protected name.",
+        `names: commit ${commit} line 3 holds a protected name.`,
+        `names: commit ${commit} author holds a protected name.`,
+        "names: checked 4 files and 11 texts; 12 to fix. The check never shows what it found. Reword the text at each place.",
+      ],
+    });
+    // The PR is read at the start and at the end. Its files and commits come from git, at no cost in requests.
+    expect(server.requests).toEqual([read, read]);
+    expectNoWord([...result.out, ...result.err]);
+  });
+
+  it("reads the head commit that the event names, never a newer commit on the PR's branch", async () => {
+    const pr = pullRequest(plantNothing);
+    pr.origin.git("checkout", "--quiet", "-b", "later", pr.head);
+    pr.origin.write("docs/a.md", "zarquon\n");
+    pr.origin.commitAll("About zarquon");
+    pr.origin.git("update-ref", "refs/pull/7/head", "HEAD");
+    pr.origin.git("checkout", "--quiet", "main");
+    const server = await fakeApi([{ body: prData(pr.head, { title: "Fine", body: null }) }]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+    expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 8 texts. Nothing found."], err: [] });
+  });
+
+  it.each([
+    ["head commit", (data: Record<string, unknown>) => ({ ...data, head: { sha: "f".repeat(40), ref: "feature/x" } })],
+    ["branch", (data: Record<string, unknown>) => ({ ...data, head: { ...(data["head"] as object), ref: "feature/y" } })],
+    ["title", (data: Record<string, unknown>) => ({ ...data, title: "Add the import" })],
+    ["body", (data: Record<string, unknown>) => ({ ...data, body: "Line one" })],
+    ["base", (data: Record<string, unknown>) => ({ ...data, base: { ref: "next", repo: { default_branch: "main" } } })],
+  ])("gives no result, not even a count, when the PR's %s changed while the check read it", async (_what, change) => {
+    const pr = everything();
+    for (const author of ["owner", "someone"]) {
+      const first = prData(pr.head, { user: { login: author } });
+      const server = await fakeApi([{ body: first }, { body: change(first) }], {
+        [`GET ${p}/pulls/7/reviews?per_page=100`]: {
+          body: [{ user: { login: "owner" }, state: "APPROVED", commit_id: pr.head }],
+        },
+      });
+      const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+      expect(result).toEqual({ code: 1, out: [], err: [MOVED] });
+    }
+  });
+
+  it("reads nothing when the PR's head is not the commit that the event names", async () => {
+    const pr = everything();
+    const server = await fakeApi([{ body: prData(pr.head) }]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, "e".repeat(40)) });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        "names: could not read what to check: The PR's head commit is not the one this run was started for. The run for its new head commit checks it.",
+      ],
+    });
+    expect(server.requests).toEqual([read]);
+  });
+
+  it("fails when the PR cannot be read again at the end", async () => {
+    const pr = nothing();
+    const server = await fakeApi([{ body: prData(pr.head) }, { status: 502 }]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: ["names: could not read what to check: GitHub answered 502 to GET /repos/o/r/pulls/7."],
+    });
+  });
+
+  it("finds a name split between the title and the body, as the squash merge joins them", async () => {
+    const pr = nothing();
+    const server = await fakeApi([{ body: prData(pr.head, { title: "Add zar", body: "quon support" }) }]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
     expect(result.err).toEqual([
-      "names: adapters/a1/.protected-name-ok is a .protected-name-ok marker outside the marker allowlist.",
-      "names: docs/a.md:2 holds a protected name.",
-      "names: vendor/sub has contents the names check cannot get, such as a submodule.",
-      "names: adapters/a2/notes.md:1 holds a protected name.",
-      "names: PR title holds a protected name.",
-      "names: PR body line 3 holds a protected name.",
-      "names: commit bbbbbbb line 3 holds a protected name.",
-      "names: commit bbbbbbb author holds a protected name.",
-      "names: checked 4 files and 9 texts; 8 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: PR title and body line 1 holds a protected name.",
+      "names: checked 1 files and 8 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
-    expect(server.requests).not.toContain(`GET ${p}/git/blobs/blob2`);
-    expect(server.requests).not.toContain(`GET ${p}/pulls/7/reviews?per_page=100`);
   });
 
-  it("finds a name wrapped across two lines of the body", async () => {
+  it("finds a name that the PR number completes in the squash commit message", async () => {
+    // "(#20)" folds to the letter o, which joins the end of the title to the start of the body.
+    const pr = nothing();
     const server = await fakeApi(
-      { title: "Fine", body: "We read the files of Zar\nquon, one by one." },
-      { [`GET ${p}/pulls/7/commits?per_page=100`]: { body: [] }, [`GET ${p}/git/blobs/blob1`]: { body: { content: "" } } },
+      [{ body: prData(pr.head, { number: 20, title: "Add zarqu", body: "n support" }) }],
+      {},
+      20,
     );
-    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
-    expect(result.err).toContain("names: PR body line 1 holds a protected name.");
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head, { PR_NUMBER: "20" }) });
+    expect(result.err).toEqual([
+      "names: squash commit message line 1 holds a protected name.",
+      "names: checked 1 files and 8 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
+    ]);
   });
 
-  it("finds a name in a title shaped like an integrity digest", async () => {
-    const server = await fakeApi(
-      { title: "Add the sha1-ZarquonImportAdapterForSIE", body: null },
-      { [`GET ${p}/pulls/7/commits?per_page=100`]: { body: [] }, [`GET ${p}/git/blobs/blob1`]: { body: { content: "" } } },
-    );
-    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
-    expect(result.err).toContain("names: PR title holds a protected name.");
+  it("finds a name wrapped across two lines of the body, and one in a title shaped like an integrity digest", async () => {
+    const pr = nothing();
+    for (const [data, place] of [
+      [{ title: "Fine", body: "We read the files of Zar\nquon, one by one." }, "names: PR body line 1 holds a protected name."],
+      [{ title: "Add the sha1-ZarquonImportAdapterForSIE", body: null }, "names: PR title holds a protected name."],
+    ] as const) {
+      const server = await fakeApi([{ body: prData(pr.head, data) }]);
+      const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+      expect(result.err).toContain(place);
+    }
   });
 
-  it("honours a marker that the head commit has in an allowlisted folder", async () => {
-    const server = await fakeApi(
-      { title: "Add an import", body: null },
+  it("honours a marker in an allowlisted folder of the head commit, also one that the PR does not change", async () => {
+    const pr = pullRequest(
+      (origin) => {
+        origin.write("adapters/a1/.protected-name-ok", "");
+        origin.write("adapters/a2/notes.md", "reads zarquon");
+        origin.commitAll("Start");
+      },
       {
-        [`GET ${p}/contents/adapters/a2/.protected-name-ok?ref=${head}`]: { body: { type: "file" } },
-        [`GET ${p}/pulls/7/commits?per_page=100`]: { body: [] },
-        [`GET ${p}/git/blobs/blob1`]: { body: { content: "" } },
+        base: (origin) => {
+          origin.write(".github/protected-name-allowlist.txt", "adapters/a2\nadapters/a3\n");
+          origin.write("adapters/a2/.protected-name-ok", "");
+        },
       },
     );
-    const result = await run(["--pr"], { cwd: baseCheckout("adapters/a2\nadapters/a3\n").dir, env: prEnv(server) });
+    const server = await fakeApi([{ body: prData(pr.head, { title: "Add an import", body: null }) }]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
     expect(result.err).toEqual([
       "names: adapters/a1/.protected-name-ok is a .protected-name-ok marker outside the marker allowlist.",
-      "names: vendor/sub has contents the names check cannot get, such as a submodule.",
-      "names: checked 4 files and 3 texts; 2 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: checked 2 files and 8 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
-    expect(server.requests).toContain(`GET ${p}/contents/adapters/a3/.protected-name-ok?ref=${head}`);
+  });
+
+  it("fails, and passes nothing, in a checkout without the history of the default branch", async () => {
+    const origin = repo();
+    origin.write(".github/protected-name-allowlist.txt", "");
+    origin.commitAll("Base");
+    const base = origin.git("rev-parse", "HEAD").trim();
+    origin.write("b.md", "fine\n");
+    origin.commitAll("Later on main");
+    origin.git("checkout", "--quiet", "-b", "feature/x", base);
+    origin.write("a.md", "zarquon\n");
+    origin.commitAll("Start");
+    const head = origin.git("rev-parse", "HEAD").trim();
+    origin.git("update-ref", "refs/pull/7/head", head);
+    origin.git("checkout", "--quiet", "main");
+    const checkout = createTestRepo({ origin, depth: 1 });
+    repos.push(checkout);
+    const server = await fakeApi([{ body: prData(head, { title: "Fine", body: null }) }]);
+    const result = await run(["--pr"], { cwd: checkout.dir, env: prEnv(server, head) });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: ["names: could not read what to check: git could not find where the PR branched off the default branch."],
+    });
   });
 
   describe("from outside the owner's account", () => {
     const outside = { user: { login: "someone" } };
-    const approval = (commit: string) => ({
+    const approval = (commit: string): Routes => ({
       [`GET ${p}/pulls/7/reviews?per_page=100`]: {
         body: [{ user: { login: "owner" }, state: "APPROVED", commit_id: commit }],
       },
     });
 
-    it("waits for the owner's approval of the head commit, and reads nothing before it", async () => {
-      for (const extra of [{}, approval("e".repeat(40))]) {
-        const server = await fakeApi(outside, extra);
-        const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
-        expect(result).toEqual({
-          code: 1,
-          out: [],
-          err: [
-            "names: The PR comes from outside the owner's account, so the check reads it only once the owner has approved its head commit. After approving, run this check again.",
-          ],
-        });
-        expect(server.requests.some((request) => request.includes("/files") || request.includes("/blobs/"))).toBe(false);
+    it("in a run that the author started, reads neither the PR's files nor the list, even once approved", async () => {
+      const pr = pullRequest(plantEverything);
+      const server = await fakeApi([{ body: prData(pr.head, outside) }], approval(pr.head));
+      for (const extra of [
+        { TRIGGERING_ACTOR: "someone" },
+        // A list that the check would refuse, if it read it.
+        { TRIGGERING_ACTOR: "someone", PROTECTED_NAMES: "ab" },
+        { TRIGGERING_ACTOR: undefined },
+      ]) {
+        const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head, extra) });
+        expect(result).toEqual({ code: 1, out: [], err: [`names: ${WAITING}`] });
+      }
+      expect(server.requests).toEqual([read, read, read]);
+      expect(() => pr.checkout.git("cat-file", "-e", pr.head)).toThrow();
+    });
+
+    it("in a run that the owner started, waits for the owner's approval of the head commit, on an open PR", async () => {
+      const pr = everything();
+      for (const [data, routes] of [
+        [outside, {}],
+        [outside, approval("e".repeat(40))],
+        [{ ...outside, state: "closed" }, approval(pr.head)],
+      ] as const) {
+        const server = await fakeApi([{ body: prData(pr.head, data) }], routes);
+        const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+        expect(result).toEqual({ code: 1, out: [], err: [`names: ${WAITING}`] });
       }
     });
 
-    it("once approved, says how many places it found, but never where", async () => {
-      const server = await fakeApi(outside, approval(head));
-      const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
+    it("once approved, in a run that the owner started, says how many places it found, but never where", async () => {
+      const pr = everything();
+      const server = await fakeApi([{ body: prData(pr.head, outside) }], approval(pr.head));
+      const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
       expect(result).toEqual({
         code: 1,
         out: [],
         err: [
-          "names: checked 4 files and 9 texts; 8 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
+          "names: checked 4 files and 11 texts; 12 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
         ],
       });
     });
 
-    it("once approved, passes a clean PR", async () => {
+    it("once approved, in a run that the owner started, passes a clean PR", async () => {
+      const pr = nothing();
       const server = await fakeApi(
-        { ...outside, title: "Fine", body: null },
-        {
-          ...approval(head),
-          [`GET ${p}/pulls/7/files?per_page=100`]: { body: [{ filename: "docs/a.md", status: "added", sha: "blob1" }] },
-          [`GET ${p}/git/blobs/blob1`]: { body: { content: "" } },
-          [`GET ${p}/pulls/7/commits?per_page=100`]: { body: [] },
-        },
+        [{ body: prData(pr.head, { ...outside, title: "Fine", body: null }) }],
+        approval(pr.head),
       );
-      const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
-      expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 3 texts. Nothing found."], err: [] });
+      const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+      expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 8 texts. Nothing found."], err: [] });
     });
   });
 
-  it.each([
-    [{ changed_files: 3001 }, "The PR changes more than 3000 files; the API cannot list them all. Split it."],
-    [{ commits: 251 }, "The PR has more than 250 commits; the API cannot list them all. Squash or split it."],
-    [
-      { base: { ref: "feature/base", repo: { default_branch: "main" } } },
-      "The PR is not aimed at the default branch. The approval checks pass only a PR into the default branch.",
-    ],
-  ])("refuses a PR it cannot judge: %j", async (pr, message) => {
-    const server = await fakeApi(pr);
-    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
-    expect(result).toEqual({ code: 1, out: [], err: [`names: could not read what to check: ${message}`] });
+  it("refuses a PR that is not aimed at the default branch", async () => {
+    const pr = everything();
+    const server = await fakeApi([
+      { body: prData(pr.head, { base: { ref: "feature/base", repo: { default_branch: "main" } } }) },
+    ]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        "names: could not read what to check: The PR is not aimed at the default branch. The approval checks pass only a PR into the default branch.",
+      ],
+    });
   });
 
   it("needs the pull request settings", async () => {
-    const env = { PROTECTED_NAMES: FAKE_LIST, OWNER_LOGIN: "owner" };
-    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env });
-    expect(result.err).toEqual([
-      "names: could not read what to check: GITHUB_TOKEN, GITHUB_REPOSITORY and PR_NUMBER must be set.",
-    ]);
-    const noOwner = await run(["--pr"], { cwd: baseCheckout("").dir, env: { PROTECTED_NAMES: FAKE_LIST } });
-    expect(noOwner.err).toEqual(["names: could not read what to check: OWNER_LOGIN must be set."]);
+    const cwd = repo().dir;
+    const settings = { GITHUB_TOKEN: "t", GITHUB_REPOSITORY: "o/r", PR_NUMBER: "7", OWNER_LOGIN: "owner" };
+    for (const [env, message] of [
+      [{ OWNER_LOGIN: "owner" }, "GITHUB_TOKEN, GITHUB_REPOSITORY and PR_NUMBER must be set."],
+      [{}, "OWNER_LOGIN must be set."],
+      [settings, "HEAD_SHA must be set."],
+    ] as const) {
+      const result = await run(["--pr"], { cwd, env: { PROTECTED_NAMES: FAKE_LIST, ...env } });
+      expect(result.err).toEqual([`names: could not read what to check: ${message}`]);
+    }
   });
 });
 
