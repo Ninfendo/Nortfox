@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/Ninfendo/Nortfox/security/advisories/new
+    about: Privately, so that it can be fixed before anyone else learns of it.

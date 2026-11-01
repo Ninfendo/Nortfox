@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+packages:
+  - apps/*
+  - packages/*
+
+# Exact versions only. A new version arrives through a reviewed PR.
+saveExact: true
+engineStrict: true
+
+# Supply chain: a version is installed only after it has been public for three
+# days, a package whose trust level drops is refused, and no dependency runs an
+# install script unless it is listed in allowBuilds.
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude:
+  # A security release (GHSA-4m76-xfj5-7975 and four more). Remove this line
+  # once it is three days old, on 2026-11-04.
+  - hono@4.13.16
+trustPolicy: no-downgrade
+strictDepBuilds: true
+allowBuilds: {}
+
+catalog:
+  "@changesets/cli": 3.0.3
+  "@eslint/js": 10.0.1
+  "@hono/node-server": 2.1.5
+  "@hono/zod-openapi": 1.6.3
+  "@tailwindcss/vite": 4.3.3
+  "@types/node": 24.19.2
+  "@types/react": 19.3.0
+  "@types/react-dom": 19.3.0
+  "@typescript/native": npm:typescript@7.0.2
+  "@vitejs/plugin-react": 6.1.2
+  "@vitest/coverage-v8": 5.0.5
+  eslint: 10.13.0
+  fast-check: 4.10.2
+  globals: 17.13.0
+  hono: 4.13.16
+  react: 19.3.1
+  react-dom: 19.3.1
+  tailwindcss: 4.3.3
+  turbo: 2.11.10
+  typescript: 7.0.2
+  typescript-eslint: 8.72.1
+  vite: 8.3.5
+  vitest: 5.0.5
+  zod: 4.6.7
+
+catalogs:
+  # typescript-eslint drives the compiler through its API, which TypeScript 7
+  # does not ship yet. It gets TypeScript 6 under the name "typescript"; every
+  # tsc run uses TypeScript 7.
+  ts-api:
+    typescript: npm:@typescript/typescript6@6.0.2

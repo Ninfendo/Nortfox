@@ -1,0 +1,18 @@
+# The owner paths (.github/owner-paths.txt): the database migrations, the
+# licences and the exceptions to the names rule. GitHub asks the owner to
+# review every PR that touches one. CODEOWNERS matches case, so each licence
+# name is listed in its three usual spellings.
+
+/db/migrations/ @Ninfendo
+LICENSE* @Ninfendo
+LICENCE* @Ninfendo
+COPYING* @Ninfendo
+license* @Ninfendo
+licence* @Ninfendo
+copying* @Ninfendo
+License* @Ninfendo
+Licence* @Ninfendo
+Copying* @Ninfendo
+.protected-name-ok @Ninfendo
+/.github/protected-name-allowlist.txt @Ninfendo
+/.github/owner-paths.txt @Ninfendo

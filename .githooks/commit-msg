@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Checks the commit message for protected names.
+set -euo pipefail
+
+exec node scripts/names/cli.ts --text --label "commit message" < "$1"
