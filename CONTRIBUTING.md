@@ -30,7 +30,7 @@ Other commands:
 The owner keeps a private list of names that must never appear in the repository ([decision 11](docs/decisions/0011-names-policy.md)). The list is not in the repository in any form. The check runs in the git hooks and in CI.
 
 - Without the list on your machine, the hooks print a one-line note and pass. CI checks every pull request.
-- It checks the files and their paths, the PR title and body, the commit message that the squash merge will write, the branch name, and each commit's message and the name and e-mail address of its author and committer.
+- It checks the files and their paths, the PR title and body, the commit message that the squash merge will write, the name and e-mail address it will give the PR's author, the branch name, and each commit's message and the name and e-mail address of its author and committer. The squash merge names the GitHub account that opened the PR, by its profile name and its noreply or public e-mail address.
 - When the check fails on a PR from the owner's account, it shows only the place: the file and line, or a field such as the PR title. Reword the text at that place.
 - A PR from any other account is checked in a run that the owner starts, after the owner has approved its head commit. A failure then says only how many places there are, never where, and the owner tells you what to change. Until the owner starts that run, and again after each push or edit of yours, Names fails and waits for the owner.
 - Never try to work out the list, and never work around the check.
@@ -46,12 +46,12 @@ The owner keeps a private list of names that must never appear in the repository
 A PR can merge when five checks pass on its head commit:
 
 - **CI OK**: every CI job passed.
-- **Names**: the names check found nothing in the PR's files, paths, commits, title, body and branch name.
+- **Names**: the names check found nothing in the PR's files, paths, commits, title, body, author and branch name.
 - **Owner OK**: the names check passed, and a PR that changes an owner path carries the owner-ok label, set by the owner on its head commit. A push after the label removes it, and Owner OK fails until the owner sets it again. The owner paths (`.github/owner-paths.txt`) are the database migrations, the licence files and the exceptions to the names rule, and the list itself. Nothing else needs the label.
 - **Outside approval**: the owner opened the PR from a branch in this repository, or approved its head commit. A PR that the owner opens from a branch in another account's fork counts as from another account, because that account can push to the branch. A review starts no check run. After approving a PR from another account, the owner re-runs the failed jobs of its latest Approvals run. After asking for changes or dismissing a review, the owner re-runs all of that run's jobs.
 - **Review OK**: the owner's review agent passed it. It is a commit status that the review agent posts.
 
-The owner merges a pull request from another account by hand, after reading the whole diff; agents never merge such a pull request. Pull requests from the owner's own account are approved by the review agent. GitHub holds the CI of a first-time contributor until the owner approves the run, so a first PR may wait a little before its checks start.
+The owner merges a pull request from another account by hand, after reading the whole diff; agents never merge such a pull request. Just before that merge, the owner re-runs all the jobs of its latest Approvals run: its author can change the name on their GitHub account at any time, and that starts no run. Pull requests from the owner's own account are approved by the review agent. GitHub holds the CI of a first-time contributor until the owner approves the run, so a first PR may wait a little before its checks start.
 
 ## Licence of contributions
 

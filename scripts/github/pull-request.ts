@@ -4,7 +4,7 @@
 // the API as data.
 
 import { decideOutsideApproval, fromOwnersAccount, type HeadRepository, type Origin, type Review, type Verdict } from "../approvals/decide.ts";
-import { field, pullRequestContext, stringField, type GitHub } from "./api.ts";
+import { field, numberField, pullRequestContext, stringField, type GitHub } from "./api.ts";
 
 export interface PullRequest {
   readonly github: GitHub;
@@ -97,6 +97,37 @@ export async function requireUnchanged(pr: PullRequest): Promise<void> {
       "The PR changed while the check read it, so this run gives no result. The run for that change checks it.",
     );
   }
+}
+
+/** The account that opened a PR, as GET /users/{login} gives it. */
+export interface PullRequestAuthor {
+  readonly login: string;
+  readonly id: number;
+  /** The profile name; undefined when the account has none. */
+  readonly name: string | undefined;
+  /** The public e-mail address; undefined when the account shows none. */
+  readonly email: string | undefined;
+}
+
+/** A text field that the API may give as null or as an empty text. */
+function optionalText(value: unknown, key: string): string | undefined {
+  const found = field(value, key);
+  return typeof found === "string" && found !== "" ? found : undefined;
+}
+
+/**
+ * The account that opened the PR. A squash merge names it as the author of
+ * the commit on the default branch, so the names check reads it. The account
+ * can change its profile name at any time, and that starts no run.
+ */
+export async function authorOf(pr: PullRequest): Promise<PullRequestAuthor> {
+  const user = await pr.github.get(`/users/${encodeURIComponent(pr.author)}`);
+  return {
+    login: stringField(user, "login"),
+    id: numberField(user, "id"),
+    name: optionalText(user, "name"),
+    email: optionalText(user, "email"),
+  };
 }
 
 /** The PR's reviews, oldest first. */

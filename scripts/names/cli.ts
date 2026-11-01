@@ -5,7 +5,7 @@
 //   --all      every tracked file, its path and contents, and the last commit
 //   --staged   the staged files, the branch name and the next commit's author (the pre-commit hook)
 //   --text     standard input, for example a commit message (the commit-msg hook)
-//   --pr       a pull request: its head commit read with git, its title and body through the GitHub API
+//   --pr       a pull request: its head commit read with git; its title, body and author through the GitHub API
 //
 // Options: --base <ref> (where the marker allowlist is read; default
 // origin/main) and --label <name> (what --text calls its input).
@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs";
 import { field, stringField } from "../github/api.ts";
 import {
+  authorOf,
   isOwnersPullRequest,
   loadPullRequest,
   outsideApprovalOf,
@@ -138,12 +139,14 @@ function gatherLocal(mode: Exclude<Mode, "--pr">, options: Options, io: Io): Gat
 }
 
 /**
- * Reads an admitted PR at the head commit the run judges, then reads the PR
- * again. When the head commit, title, body, branch or base changed in
- * between, the run gives no result at all, not even a count.
+ * Reads an admitted PR at the head commit the run judges, and the account
+ * that opened it, then reads the PR again. When the head commit, title, body,
+ * branch or base changed in between, the run gives no result at all, not
+ * even a count.
  */
 async function gatherPullRequest({ pr, fromOwner }: Admitted, io: Io): Promise<Gathered> {
   const body = field(pr.data, "body");
+  const author = await authorOf(pr);
   // The approval workflow checks out the default branch only, so HEAD is the base.
   const source = pullRequestSource(
     io.cwd,
@@ -153,6 +156,7 @@ async function gatherPullRequest({ pr, fromOwner }: Admitted, io: Io): Promise<G
       body: typeof body === "string" ? body : "",
       branch: stringField(field(pr.data, "head"), "ref"),
       headSha: pr.headSha,
+      author,
     },
     baseAllowlist(io.cwd, "HEAD"),
   );

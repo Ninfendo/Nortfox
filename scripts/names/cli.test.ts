@@ -402,6 +402,11 @@ describe("--pr", () => {
     };
   }
 
+  /** The accounts, as GET /users/{login} gives them. */
+  const user = (login: string, id: number, name: string | null, email: string | null): Routes => ({
+    [`GET /users/${encodeURIComponent(login)}`]: { body: { login, id, name, email, type: "User" } },
+  });
+
   /** The API. Each read of the PR gives the next of `reads`, and the last one from then on. */
   async function fakeApi(reads: readonly FakeAnswer[], extra: Routes = {}, number = 7): Promise<FakeGitHub> {
     let calls = 0;
@@ -412,6 +417,8 @@ describe("--pr", () => {
         return answer;
       },
       [`GET ${p}/pulls/${String(number)}/reviews?per_page=100`]: { body: [] },
+      ...user("owner", 1, "Ann Owner", null),
+      ...user("someone", 2, null, "someone@example.invalid"),
       ...extra,
     });
     servers.push(server);
@@ -440,7 +447,7 @@ describe("--pr", () => {
   const MOVED = "names: The PR changed while the check read it, so this run gives no result. The run for that change checks it.";
   const read = `GET ${p}/pulls/7`;
 
-  it("checks the files at the head commit, their paths, the markers, the title, the body, the squash commit message, the branch and each commit", async () => {
+  it("checks the files at the head commit, their paths, the markers, the title, the body, the squash commit message, the PR's author, the branch and each commit", async () => {
     const pr = everything();
     const server = await fakeApi([{ body: prData(pr.head) }]);
     const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
@@ -461,12 +468,56 @@ describe("--pr", () => {
         "names: squash commit message line 5 holds a protected name.",
         `names: commit ${commit} line 3 holds a protected name.`,
         `names: commit ${commit} author holds a protected name.`,
-        "names: checked 4 files and 11 texts; 12 to fix. The check never shows what it found. Reword the text at each place.",
+        "names: checked 4 files and 12 texts; 12 to fix. The check never shows what it found. Reword the text at each place.",
       ],
     });
-    // The PR is read at the start and at the end. Its files and commits come from git, at no cost in requests.
-    expect(server.requests).toEqual([read, read]);
+    // The PR is read at the start and at the end, and its author once. Its
+    // files and commits come from git, at no cost in requests.
+    expect(server.requests).toEqual([read, "GET /users/owner", read]);
     expectNoWord([...result.out, ...result.err]);
+  });
+
+  it("finds a name in the name or e-mail address that the squash merge gives the PR's author", async () => {
+    // A squash merge names the account that opened the PR as the author of the
+    // commit on main, by its profile name, or its login, and an e-mail address.
+    const pr = nothing();
+    const data = prData(pr.head, { title: "Fine", body: null });
+    for (const [account, found] of [
+      [user("owner", 1, "Ann Zarquon", null), true],
+      [user("owner", 1, null, "ann@b1irvex.example"), true],
+      // An empty name is no name: GitHub then writes the login.
+      [user("owner", 1, "", ""), false],
+    ] as const) {
+      const server = await fakeApi([{ body: data }], account);
+      const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+      expect(result).toEqual(
+        found
+          ? {
+              code: 1,
+              out: [],
+              err: [
+                "names: PR author holds a protected name.",
+                "names: checked 1 files and 9 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
+              ],
+            }
+          : { code: 0, out: ["names: checked 1 files and 9 texts. Nothing found."], err: [] },
+      );
+      expectNoWord([...result.out, ...result.err]);
+    }
+  });
+
+  it("fails when GitHub does not give the account that opened the PR", async () => {
+    const pr = nothing();
+    for (const [answer, message] of [
+      [{ status: 404 }, "GitHub answered 404 to GET /users/owner."],
+      [{ body: { login: "owner", name: "Ann" } }, 'GitHub\'s answer has no number field "id".'],
+    ] as const) {
+      const server = await fakeApi([{ body: prData(pr.head, { title: "Fine", body: null }) }], {
+        "GET /users/owner": answer,
+      });
+      const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+      expect(result).toEqual({ code: 1, out: [], err: [`names: could not read what to check: ${message}`] });
+    }
   });
 
   it("reads the head commit that the event names, never a newer commit on the PR's branch", async () => {
@@ -478,7 +529,7 @@ describe("--pr", () => {
     pr.origin.git("checkout", "--quiet", "main");
     const server = await fakeApi([{ body: prData(pr.head, { title: "Fine", body: null }) }]);
     const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
-    expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 8 texts. Nothing found."], err: [] });
+    expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 9 texts. Nothing found."], err: [] });
   });
 
   it.each([
@@ -532,7 +583,7 @@ describe("--pr", () => {
     const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
     expect(result.err).toEqual([
       "names: PR title and body line 1 holds a protected name.",
-      "names: checked 1 files and 8 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: checked 1 files and 9 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
   });
 
@@ -547,7 +598,7 @@ describe("--pr", () => {
     const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head, { PR_NUMBER: "20" }) });
     expect(result.err).toEqual([
       "names: squash commit message line 1 holds a protected name.",
-      "names: checked 1 files and 8 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: checked 1 files and 9 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
   });
 
@@ -602,7 +653,7 @@ describe("--pr", () => {
           const field = `names: commit ${commit.slice(0, 7)}`;
           return [`${field} holds a protected name.`, `${field} author holds a protected name.`, `${field} committer holds a protected name.`];
         }),
-        "names: checked 1 files and 17 texts; 12 to fix. The check never shows what it found. Reword the text at each place.",
+        "names: checked 1 files and 18 texts; 12 to fix. The check never shows what it found. Reword the text at each place.",
       ],
     });
     expectNoWord([...result.out, ...result.err]);
@@ -626,7 +677,7 @@ describe("--pr", () => {
     const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
     expect(result.err).toEqual([
       "names: adapters/a1/.protected-name-ok is a .protected-name-ok marker outside the marker allowlist.",
-      "names: checked 2 files and 8 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: checked 2 files and 9 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
   });
 
@@ -699,7 +750,7 @@ describe("--pr", () => {
         code: 1,
         out: [],
         err: [
-          "names: checked 4 files and 11 texts; 12 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
+          "names: checked 4 files and 12 texts; 12 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
         ],
       });
     });
@@ -730,9 +781,35 @@ describe("--pr", () => {
         code: 1,
         out: [],
         err: [
-          "names: checked 4 files and 11 texts; 12 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
+          "names: checked 4 files and 12 texts; 12 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
         ],
       });
+    });
+
+    it("once approved, in a run that the owner started, counts a name that is only in the account of the PR's author", async () => {
+      // The squash merge writes that account into main as the commit's author.
+      const pr = nothing();
+      for (const [login, account] of [
+        ["someone", user("someone", 2, "Zarquon", null)],
+        ["someone", user("someone", 2, null, "zarquon@example.invalid")],
+        // The login is in the noreply address.
+        ["blirvex", user("blirvex", 3, null, null)],
+        // The brackets of a bot's login are escaped in the request.
+        ["zarquon[bot]", user("zarquon[bot]", 4, null, null)],
+      ] as const) {
+        const server = await fakeApi([{ body: prData(pr.head, { user: { login }, title: "Fine", body: null }) }], {
+          ...approval(pr.head),
+          ...account,
+        });
+        const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+        expect(result).toEqual({
+          code: 1,
+          out: [],
+          err: [
+            "names: checked 1 files and 9 texts; 1 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
+          ],
+        });
+      }
     });
 
     it("once approved, in a run that the owner started, passes a clean PR", async () => {
@@ -742,7 +819,7 @@ describe("--pr", () => {
         approval(pr.head),
       );
       const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
-      expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 8 texts. Nothing found."], err: [] });
+      expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 9 texts. Nothing found."], err: [] });
     });
   });
 

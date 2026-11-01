@@ -5,6 +5,7 @@
 
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
+import type { PullRequestAuthor } from "../github/pull-request.ts";
 import { changesBetween, commitsBetween, fetchCommit, mergeBase, parseCommit, readObjects, treePaths } from "../github/snapshot.ts";
 import { gitBytes, gitText, gitTextOrUndefined, nulList } from "./git.ts";
 import { ALLOWLIST_FILE, isMarker, parseAllowlist } from "./markers.ts";
@@ -162,6 +163,8 @@ export interface PullRequestText {
   readonly branch: string;
   /** The head commit the run judges. */
   readonly headSha: string;
+  /** The account that opened the PR. */
+  readonly author: PullRequestAuthor;
 }
 
 const short = (sha: string): string => sha.slice(0, 7);
@@ -185,9 +188,31 @@ function squashFields(pr: PullRequestText): TextField[] {
 }
 
 /**
+ * The author that a squash merge writes into the commit on the default
+ * branch: the account that opened the PR, by its profile name, or its login
+ * when it has none, and by an e-mail address. That is the account's noreply
+ * address, in its newer form with the account's number or its older one, or
+ * the account's own address. The check reads the public one. A private
+ * address is not in the API, so the check cannot read it.
+ */
+function squashAuthorField(author: PullRequestAuthor): TextField {
+  const name = author.name ?? author.login;
+  const addresses = [
+    `${String(author.id)}+${author.login}@users.noreply.github.com`,
+    `${author.login}@users.noreply.github.com`,
+    ...(author.email === undefined ? [] : [author.email]),
+  ];
+  return fieldOf(
+    "PR author",
+    addresses.map((address) => `${name} <${address}>`),
+  );
+}
+
+/**
  * --pr: the PR's changed files at its head commit, their paths, every marker
- * in the head commit, the PR's title, body and branch name, and every commit's
- * message, author and committer. `cwd` is a checkout of the default branch,
+ * in the head commit, the PR's title, body and branch name, the author that
+ * the squash merge will name, and every commit's message, author and
+ * committer. `cwd` is a checkout of the default branch,
  * with its history. The head commit is fetched there by its SHA and read with
  * git as data (../github/snapshot.ts): the PR's code is never checked out or
  * run, and nothing newer than that commit is read.
@@ -218,6 +243,7 @@ export function pullRequestSource(cwd: string, pr: PullRequestText, allowlist: r
     { field: "PR title", text: pr.title },
     { field: "PR body", text: pr.body },
     ...squashFields(pr),
+    squashAuthorField(pr.author),
     { field: "branch name", text: pr.branch },
   ];
   const commits = commitsBetween(cwd, "HEAD", head);
