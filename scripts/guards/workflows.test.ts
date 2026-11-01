@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The approval workflow keeps the triggers, the checkout, the concurrency and
-// the settings that its checks depend on (docs/plan.md, section 6).
+// the settings that its checks depend on (docs/plan.md, section 6). The CI
+// workflow checks every commit that a push to main adds.
 
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { createTestRepo, FAKE_LIST, FAKE_WORDS, type TestRepo } from "../testing/repo.ts";
 import { APPROVAL_EVENT_TYPES, approvalsProblems, block, children, listOf } from "./workflows.ts";
 
 const approvals = readFileSync(new URL("../../.github/workflows/approvals.yml", import.meta.url), "utf8");
@@ -145,12 +149,7 @@ describe("the approval workflow guard", () => {
 });
 
 // The CI workflow's "names (main)" job checks every commit that a push to main
-// adds, and no newer run cancels a run on main. These imports sit with the
-// tests that use them.
-
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { createTestRepo, FAKE_LIST, FAKE_WORDS, type TestRepo } from "../testing/repo.ts";
+// adds, and no newer run cancels a run on main.
 
 describe("the CI workflow", () => {
   const ci = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8").replaceAll("\r\n", "\n");
