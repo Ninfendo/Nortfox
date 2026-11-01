@@ -5,9 +5,12 @@
 // branch's copy, in the default branch's context, and never the PR's. It
 // checks out the default branch only. One run per PR runs at a time. Each
 // check gets the head commit that the event names, and Names gets who started
-// the run, both through env and never inside a run: line. Only Names gets the
-// list, and it checks out the whole history so that it can find where the PR
-// branched off.
+// the run, both through env and never inside a run: line. The workflow names
+// its secrets in one line only: the list, in the env of the Names step that
+// runs the check. Names checks out the whole history so that it can find
+// where the PR branched off. The guard reads the text, so the workflow also
+// does without what would build a line it looks for out of sight: toJSON, a
+// YAML anchor or alias, and a backslash escape.
 
 /** The types of pull_request_target event that start the workflow. */
 export const APPROVAL_EVENT_TYPES = ["opened", "synchronize", "reopened", "edited", "ready_for_review", "labeled", "unlabeled"];
@@ -21,6 +24,9 @@ const DEFAULT_BRANCH = "${{ github.event.repository.default_branch }}";
 const HEAD_SHA_LINE = "HEAD_SHA: ${{ github.event.pull_request.head.sha }}";
 const ACTOR_LINE = "TRIGGERING_ACTOR: ${{ github.triggering_actor }}";
 const SECRET_LINE = "PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}";
+const NAMES_RUN = "run: node scripts/names/cli.ts --pr";
+/** The PR's head or base, in each way an expression can name them. GitHub reads names in any case. */
+const HEAD_OR_BASE = /pull_request\s*(?:\.\s*|\[\s*'\s*)(?:head|base)\b|\b(?:head|base)_ref\b/i;
 
 const isContent = (line: string): boolean => line.trim() !== "" && !line.trimStart().startsWith("#");
 
@@ -62,23 +68,93 @@ export function listOf(lines: readonly string[], key: string): string[] {
   return [];
 }
 
-/** The lines of every run: step, a block scalar with its body included. */
-function runLines(lines: readonly string[]): string[] {
-  const found: string[] = [];
+const indentOf = (line: string): number => line.length - line.trimStart().length;
+
+/** Where the lines of every run: step are, a block scalar with its body included. */
+function runLines(lines: readonly string[]): Set<number> {
+  const found = new Set<number>();
   let indent: number | undefined;
-  for (const line of lines) {
-    const width = line.length - line.trimStart().length;
+  for (const [index, line] of lines.entries()) {
+    const width = indentOf(line);
     if (indent !== undefined && (width > indent || line.trim() === "")) {
-      found.push(line);
+      found.add(index);
       continue;
     }
     indent = undefined;
     if (/^\s*(?:- )?run:/.test(line)) {
-      found.push(line);
+      found.add(index);
       indent = width;
     }
   }
   return found;
+}
+
+/**
+ * Where the lines that hold the line at `index` are, nearest first: its
+ * parent, the parent's parent, and so on. A line's parent is the closest
+ * line above it that is indented less.
+ */
+function parents(lines: readonly string[], index: number): number[] {
+  const found: number[] = [];
+  let indent = indentOf(lines[index] ?? "");
+  for (let at = index - 1; at >= 0 && indent > 0; at -= 1) {
+    const line = lines[at] ?? "";
+    if (isContent(line) && indentOf(line) < indent) {
+      found.push(at);
+      indent = indentOf(line);
+    }
+  }
+  return found;
+}
+
+/** The step that starts at `index`, a "- " line: that line and the lines under it, trimmed. */
+function stepAt(lines: readonly string[], index: number): string[] {
+  const indent = indentOf(lines[index] ?? "");
+  const end = lines.findIndex((line, at) => at > index && isContent(line) && indentOf(line) <= indent);
+  return lines
+    .slice(index, end === -1 ? undefined : end)
+    .filter(isContent)
+    .map((line) => line.trim());
+}
+
+const isSecretLine = (trimmed: string): boolean => trimmed === SECRET_LINE || trimmed.startsWith(`${SECRET_LINE} #`);
+
+/**
+ * Where the workflow names its secrets. Only one line may: SECRET_LINE, in
+ * the env of the Names step that runs the check. GitHub reads `secrets` in
+ * any case, and `secrets: inherit` and `toJSON(secrets)` pass every secret,
+ * so the word itself counts, on any line.
+ */
+function secretProblems(lines: readonly string[]): string[] {
+  const problems = new Set<string>();
+  for (const [index, line] of lines.entries()) {
+    if (!isContent(line) || !/\bsecrets\b/i.test(line)) {
+      continue;
+    }
+    if (!isSecretLine(line.trim())) {
+      problems.add(`The workflow may name its secrets only in the line "${SECRET_LINE}".`);
+      continue;
+    }
+    const chain = parents(lines, index).map((at) => ({ at, text: (lines[at] ?? "").trim() }));
+    const job = chain.at(-1)?.text === "jobs:" ? chain.at(-2)?.text.replace(/:$/, "") : undefined;
+    // Inside the job, the line must sit in an env, of a step, of the job's steps.
+    const inJob = chain.slice(0, -2);
+    const [env, step, steps] = inJob;
+    if (job === undefined) {
+      problems.add("Only the Names job may read the protected names list, and the workflow reads it outside its jobs.");
+    } else if (job !== "names") {
+      problems.add(`Only the Names job may read the protected names list, and ${job} reads it.`);
+    } else if (
+      inJob.length !== 3 ||
+      env?.text !== "env:" ||
+      steps?.text !== "steps:" ||
+      step?.text.startsWith("- ") !== true ||
+      !stepAt(lines, step.at).includes(NAMES_RUN)
+    ) {
+      problems.add(`In the Names job, only the env of the step that runs "${NAMES_RUN}" may read the protected names list.`);
+    }
+  }
+  return [...problems];
 }
 
 /** What is wrong with the approval workflow, in plain words; empty when nothing is. */
@@ -114,28 +190,40 @@ export function approvalsProblems(text: string): string[] {
   }
 
   // Comments may name anything; only what the workflow does counts.
-  const lines = text.split(/\r?\n/).filter(isContent);
+  const all = text.split(/\r?\n/);
+  const lines = all.filter(isContent);
   const outsideEnv = (pattern: RegExp, allowed: string): boolean =>
     lines.some((line) => pattern.test(line) && line.trim() !== allowed);
-  if (outsideEnv(/pull_request\.(?:base|head)\.(?:ref|sha)/, HEAD_SHA_LINE)) {
+  if (outsideEnv(HEAD_OR_BASE, HEAD_SHA_LINE)) {
     problems.push(`The PR's head and base may appear only in the line "${HEAD_SHA_LINE}".`);
   }
-  if (outsideEnv(/triggering_actor/, ACTOR_LINE)) {
+  if (outsideEnv(/triggering_actor/i, ACTOR_LINE)) {
     problems.push(`Who started the run may appear only in the line "${ACTOR_LINE}".`);
   }
   // A run: block is read whole: GitHub fills in an expression even inside a shell comment.
-  if (runLines(text.split(/\r?\n/)).some((line) => line.includes("${{"))) {
+  const runs = runLines(all);
+  if ([...runs].some((index) => all[index]?.includes("${{") === true)) {
     problems.push("A run: step holds an expression. Pass the value in through env instead.");
   }
+  if (lines.some((line) => /\btoJSON\s*\(/i.test(line))) {
+    problems.push("The workflow passes no whole object with toJSON. Pass each value it needs on its own.");
+  }
+  // Outside run: blocks, YAML itself could build a line that the guard looks for.
+  const yaml = all.filter((line, index) => isContent(line) && !runs.has(index)).map((line) => line.replace(/\s+#.*$/, ""));
+  if (yaml.some((line) => /(?:^|[\s[{,])[&*][\w-]/.test(line) || /^\s*(?:- )?<<\s*:/.test(line))) {
+    problems.push("The workflow uses a YAML anchor or alias. They copy lines without the guard seeing them.");
+  }
+  if (yaml.some((line) => line.includes("\\"))) {
+    problems.push("The workflow holds a backslash outside run:. YAML reads it as an escape in a quoted text.");
+  }
+
+  problems.push(...secretProblems(all));
 
   const jobs = children(block(text, "jobs") ?? []);
   for (const [job, jobLines] of jobs) {
     const trimmed = jobLines.map((line) => line.trim());
     if (!trimmed.includes(HEAD_SHA_LINE)) {
       problems.push(`The job ${job} must pass "${HEAD_SHA_LINE}" to its check.`);
-    }
-    if (job !== "names" && trimmed.includes(SECRET_LINE)) {
-      problems.push(`Only the Names job may read the protected names list, and ${job} reads it.`);
     }
   }
   const names = (jobs.get("names") ?? []).map((line) => line.trim());

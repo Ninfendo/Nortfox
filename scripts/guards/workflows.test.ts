@@ -118,14 +118,92 @@ describe("the approval workflow guard", () => {
     ]);
   });
 
-  it("fails the list in another job", () => {
-    const text = changed(
-      "          NAMES_RESULT: ${{ needs.names.result }}\n",
-      "          NAMES_RESULT: ${{ needs.names.result }}\n          PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}\n",
-    );
+  const NAMES_RESULT = "          NAMES_RESULT: ${{ needs.names.result }}\n";
+  const SECRETS_ONLY_IN_ONE_LINE = 'The workflow may name its secrets only in the line "PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}".';
+  const ONLY_THE_CHECK_STEP =
+    'In the Names job, only the env of the step that runs "run: node scripts/names/cli.ts --pr" may read the protected names list.';
+
+  it("fails the list in another job, in its step or in its own env", () => {
+    for (const text of [
+      changed(NAMES_RESULT, `${NAMES_RESULT}          PROTECTED_NAMES: \${{ secrets.PROTECTED_NAMES }}\n`),
+      changed("    needs: names\n", "    needs: names\n    env:\n      PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}\n"),
+    ]) {
+      expect(approvalsProblems(text)).toEqual(["Only the Names job may read the protected names list, and owner-ok reads it."]);
+    }
+  });
+
+  it("fails the list in the workflow's own env, which every job gets", () => {
+    const text = changed("  OWNER_LOGIN: Ninfendo\n", "  OWNER_LOGIN: Ninfendo\n  PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}\n");
     expect(approvalsProblems(text)).toEqual([
-      "Only the Names job may read the protected names list, and owner-ok reads it.",
+      "Only the Names job may read the protected names list, and the workflow reads it outside its jobs.",
     ]);
+  });
+
+  it("fails the list anywhere in the Names job but the env of the step that runs the check", () => {
+    for (const text of [
+      changed("    timeout-minutes: 15\n", "    timeout-minutes: 15\n    env:\n      PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}\n"),
+      changed(
+        "          package-manager-cache: false\n      - name: Check the PR's files",
+        "          package-manager-cache: false\n        env:\n          PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}\n      - name: Check the PR's files",
+      ),
+      changed(
+        "          persist-credentials: false\n      - uses: actions/setup-node",
+        "          persist-credentials: false\n          PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}\n      - uses: actions/setup-node",
+      ),
+    ]) {
+      expect(approvalsProblems(text)).toContain(ONLY_THE_CHECK_STEP);
+    }
+  });
+
+  it("fails every other way to name a secret, in any case, also all of them at once", () => {
+    for (const line of [
+      "          LIST: ${{ secrets.PROTECTED_NAMES }}\n",
+      "          PROTECTED_NAMES: ${{ SECRETS.protected_names }}\n",
+      "          PROTECTED_NAMES: ${{ secrets['PROTECTED_NAMES'] }}\n",
+      "          ALL: ${{ toJSON(secrets) }}\n",
+      '          PROTECTED_NAMES: "${{ secrets.PROTECTED_NAMES }}"\n',
+    ]) {
+      expect(approvalsProblems(changed(NAMES_RESULT, `${NAMES_RESULT}${line}`))).toContain(SECRETS_ONLY_IN_ONE_LINE);
+    }
+    const inherit = changed("  owner-ok:\n", "  reuse:\n    uses: ./.github/workflows/other.yml\n    secrets: inherit\n  owner-ok:\n");
+    expect(approvalsProblems(inherit)).toContain(SECRETS_ONLY_IN_ONE_LINE);
+  });
+
+  it("fails a whole object passed with toJSON", () => {
+    expect(approvalsProblems(changed(NAMES_RESULT, `${NAMES_RESULT}          EVENT: \${{ toJSON(github.event) }}\n`))).toEqual([
+      "The workflow passes no whole object with toJSON. Pass each value it needs on its own.",
+    ]);
+  });
+
+  it("fails the PR's head and base in any form an expression names them", () => {
+    for (const value of [
+      "github.head_ref",
+      "github.base_ref",
+      "github['head_ref']",
+      "github.event.pull_request.head.repo.full_name",
+      "github.event.pull_request.base.sha",
+      "github.event.pull_request['head']['ref']",
+      "github.event.PULL_REQUEST.Head.Sha",
+    ]) {
+      expect(approvalsProblems(changed(NAMES_RESULT, `${NAMES_RESULT}          BRANCH: \${{ ${value} }}\n`))).toEqual([
+        'The PR\'s head and base may appear only in the line "HEAD_SHA: ${{ github.event.pull_request.head.sha }}".',
+      ]);
+    }
+  });
+
+  it("fails a YAML anchor, alias or merge key, which could copy the list into another job", () => {
+    const anchored = changed("        env:\n          PROTECTED_NAMES", "        env: &names\n          PROTECTED_NAMES");
+    for (const text of [anchored, anchored.replace(NAMES_RESULT, `${NAMES_RESULT}          <<: *names\n`)]) {
+      expect(approvalsProblems(text)).toContain("The workflow uses a YAML anchor or alias. They copy lines without the guard seeing them.");
+    }
+    expect(approvalsProblems(changed("    needs: names\n", "    needs: names\n    env: *names\n"))).toEqual([
+      "The workflow uses a YAML anchor or alias. They copy lines without the guard seeing them.",
+    ]);
+  });
+
+  it("fails a backslash outside run:, which YAML can read as an escape", () => {
+    const text = changed(NAMES_RESULT, `${NAMES_RESULT}          LIST: "\${{ \\x73ecrets.PROTECTED_NAMES }}"\n`);
+    expect(approvalsProblems(text)).toEqual(["The workflow holds a backslash outside run:. YAML reads it as an escape in a quoted text."]);
   });
 
   it("fails a workflow that has none of what it needs", () => {
