@@ -15,8 +15,10 @@ From the first commit:
 - Vitest with v8 coverage and real floors for each package. The pure engine has a floor of 100%. Floors only go up.
 - Property-based tests with fast-check for every invariant: debit equals credit, gap-free numbers, exact sums, SIE round trips.
 - Database tests against real PostgreSQL, run as the app role. The database is never mocked.
-- Every guard is proven to fail: each check has a test that gives it a bad case and expects it to fail.
-- Every test suite runs in CI, and no suite runs with `--passWithNoTests`. One aggregator job, "CI OK", passes only when every CI job passed.
+- Every guard is proven to fail: each check has a test that gives it a bad case and expects it to fail. The names check's tests use fake words, so the real names never enter the repository.
+- Every test suite runs in CI, and no suite runs with `--passWithNoTests`. One aggregator job, "CI OK", passes only when every CI job passed; a failed, cancelled or skipped job fails it.
+- The GitHub Actions workflows pass zizmor and actionlint. Every action is pinned to a full commit SHA, and a job gets a write scope only when it needs one.
+- The required checks come from sources that a PR cannot control ([plan, section 6](../plan.md#where-the-checks-come-from)).
 - Shell scripts start with `set -euo pipefail`.
 - Changesets record the release notes.
 
