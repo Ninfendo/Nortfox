@@ -17,8 +17,9 @@
 # after the last run, and the squash merge copies the title and body into the
 # default branch.
 #
-# A review starts no run. After reviewing a PR from outside the owner's
-# account, the owner re-runs the failed jobs of its latest run, so that the
+# A review starts no run. After approving a PR from outside the owner's
+# account, the owner re-runs the failed jobs of its latest run; after asking
+# for changes or dismissing a review, all of that run's jobs. Only then do the
 # checks see the review. Names reads such a PR with the list only in a run that
 # the owner started (github.triggering_actor), never in a run that the
 # author's own push or edit started.

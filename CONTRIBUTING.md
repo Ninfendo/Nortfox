@@ -30,9 +30,9 @@ Other commands:
 The owner keeps a private list of names that must never appear in the repository ([decision 11](docs/decisions/0011-names-policy.md)). The list is not in the repository in any form. The check runs in the git hooks and in CI.
 
 - Without the list on your machine, the hooks print a one-line note and pass. CI checks every pull request.
-- It checks the files and their paths, the PR title and body, the branch name, and each commit's message and the name and e-mail address of its author and committer.
+- It checks the files and their paths, the PR title and body, the commit message that the squash merge will write, the branch name, and each commit's message and the name and e-mail address of its author and committer.
 - When the check fails on a PR from the owner's account, it shows only the place: the file and line, or a field such as the PR title. Reword the text at that place.
-- A PR from any other account is checked once the owner has approved its head commit, and a failure says only how many places there are, never where. The owner tells you what to change.
+- A PR from any other account is checked in a run that the owner starts, after the owner has approved its head commit. A failure then says only how many places there are, never where, and the owner tells you what to change. Until the owner starts that run, and again after each push or edit of yours, Names fails and waits for the owner.
 - Never try to work out the list, and never work around the check.
 
 ## Pull requests
@@ -47,15 +47,15 @@ A PR can merge when five checks pass on its head commit:
 
 - **CI OK**: every CI job passed.
 - **Names**: the names check found nothing in the PR's files, paths, commits, title, body and branch name.
-- **Owner OK**: the names check passed, and a PR that changes an owner path carries the owner-ok label, set by the owner on its head commit. A push after the label needs the label again. The owner paths (`.github/owner-paths.txt`) are the database migrations, the licence files and the exceptions to the names rule, and the list itself. Nothing else needs the label.
-- **Outside approval**: the owner wrote the PR or approved its head commit.
+- **Owner OK**: the names check passed, and a PR that changes an owner path carries the owner-ok label, set by the owner on its head commit. A push after the label removes it, and Owner OK fails until the owner sets it again. The owner paths (`.github/owner-paths.txt`) are the database migrations, the licence files and the exceptions to the names rule, and the list itself. Nothing else needs the label.
+- **Outside approval**: the owner wrote the PR or approved its head commit. A review starts no check run. After approving a PR from another account, the owner re-runs the failed jobs of its latest Approvals run. After asking for changes or dismissing a review, the owner re-runs all of that run's jobs.
 - **Review OK**: the owner's review agent passed it. It is a commit status that the review agent posts.
 
 The owner merges a pull request from another account by hand, after reading the whole diff; agents never merge such a pull request. Pull requests from the owner's own account are approved by the review agent. GitHub holds the CI of a first-time contributor until the owner approves the run, so a first PR may wait a little before its checks start.
 
 ## Licence of contributions
 
-NortFox is under the GNU Affero General Public License v3.0 only, and so are contributions to it. Each source file starts with its `SPDX-License-Identifier` line.
+NortFox is under the GNU Affero General Public License v3.0 only, and so are contributions to it. Each source file starts with one `SPDX-License-Identifier` line: exactly `AGPL-3.0-only`, or exactly `MIT` in `packages/client`.
 
 The API client in `packages/client` and the API description `packages/client/openapi.json` are under the MIT licence, so that any program can use them ([decision 4](docs/decisions/0004-licences.md)). They are generated from the server's routes. A contribution to the routes is therefore also offered under the MIT licence for those generated files.
 
