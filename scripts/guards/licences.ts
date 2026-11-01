@@ -6,8 +6,16 @@
 // else, each licence file is where it belongs, and the MIT licence names the
 // NortFox authors as its holder.
 
-/** File types that carry an SPDX line. JSON and Markdown cannot or need not. */
-const SOURCE = /\.(?:ts|tsx|js|mjs|cjs|css|html|ya?ml|sh)$|^\.githooks\//;
+/**
+ * File types that carry an SPDX line: every kind of TypeScript and JavaScript
+ * file, CSS, HTML, YAML and shell. JSON and Markdown cannot or need not.
+ */
+const SOURCE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|css|html|ya?ml|sh)$|^\.githooks\//;
+
+const TAG = "SPDX-License-Identifier:";
+
+/** The end of an SPDX line that is not part of the licence: a comment's end and spaces. */
+const LINE_END = /\s*(?:\*\/|-->)?\s*$/;
 
 /** Files that are not ours to label: the licence texts themselves and the like. */
 const EXEMPT = new Set(["pnpm-lock.yaml", "pnpm-workspace.yaml"]);
@@ -25,19 +33,31 @@ export function needsSpdx(path: string): boolean {
   return SOURCE.test(path) && !EXEMPT.has(path);
 }
 
-/** The problems with one file, or none. */
+/**
+ * The problems with one file, or none. Its first lines hold one SPDX line, and
+ * that line names exactly the licence of its folder: one identifier, with no
+ * OR, AND, WITH or parentheses.
+ */
 export function spdxProblem(path: string, text: string): string | undefined {
   if (!needsSpdx(path)) {
     return undefined;
   }
-  const head = text.split("\n").slice(0, 3).join("\n");
-  const match = /SPDX-License-Identifier: ([A-Za-z0-9.+-]+)/.exec(head);
   const expected = expectedLicence(path);
-  if (match === null) {
+  const lines = text
+    .split("\n")
+    .slice(0, 3)
+    .filter((line) => line.includes(TAG));
+  const [line] = lines;
+  if (line === undefined) {
     return `${path} has no SPDX-License-Identifier line at the top. Add "SPDX-License-Identifier: ${expected}".`;
   }
-  if (match[1] !== expected) {
-    return `${path} says ${String(match[1])}, but files there are ${expected}.`;
+  if (lines.length > 1) {
+    return `${path} has ${String(lines.length)} SPDX-License-Identifier lines at the top. Keep one: "SPDX-License-Identifier: ${expected}".`;
+  }
+  // Everything after the tag, the space after the colon included, so only the exact form matches.
+  const licence = line.slice(line.indexOf(TAG) + TAG.length).replace(LINE_END, "");
+  if (licence !== ` ${expected}`) {
+    return `${path} says "${licence.trim()}", but files there say exactly "SPDX-License-Identifier: ${expected}".`;
   }
   return undefined;
 }

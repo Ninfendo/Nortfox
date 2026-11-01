@@ -111,6 +111,35 @@ describe("generateClient", () => {
     expect(generateClient({ openapi: "3.1.1", paths: {} })).toContain("export interface Operations {");
   });
 
+  it("passes over the keys that only document", () => {
+    const source = generateClient({
+      openapi: "3.1.0",
+      info: { title: "Zorbex API", version: "1.0.0" },
+      tags: [{ name: "kilvant" }],
+      externalDocs: { url: "https://docs.example.com" },
+      webhooks: {},
+      paths: {
+        "/v1/x": {
+          summary: "The x",
+          description: "All about x.",
+          get: {
+            operationId: "getX",
+            tags: ["kilvant"],
+            externalDocs: { url: "https://docs.example.com/x" },
+            responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } },
+          },
+        },
+      },
+    });
+    expect(source).toContain("  getX(options?: CallOptions): Promise<string>;");
+  });
+
+  it("writes nothing for a path item without an operation", () => {
+    expect(generateClient(documentWith({}, { "/v1/x": { summary: "Not yet" } }))).toContain(
+      "export interface Operations {\n}",
+    );
+  });
+
   it.each([
     [null, "The API description must be an object."],
     [{ openapi: "3.0.3", paths: {} }, "openapi must be 3.1.x, not 3.0.3."],
@@ -131,11 +160,78 @@ describe("generateClient", () => {
     [documentWith({ Bad: { type: "object", properties: { a: { type: "string", description: 1 } } } }), "components.schemas.Bad.properties.a.description must be a string."],
     [documentWith({ "1Bad": { type: "string" } }), 'components.schemas.1Bad "1Bad" is not a TypeScript identifier.'],
     [documentWith({}, { "/v1/x": { post: {} } }), 'paths["/v1/x"].post: only GET operations are supported yet.'],
+    [documentWith({}, { "/v1/x": { put: {} } }), 'paths["/v1/x"].put: only GET operations are supported yet.'],
+    [documentWith({}, { "/v1/x": { delete: {} } }), 'paths["/v1/x"].delete: only GET operations are supported yet.'],
+    [documentWith({}, { "/v1/x": { patch: {} } }), 'paths["/v1/x"].patch: only GET operations are supported yet.'],
+    [
+      documentWith({}, { "/v1/x": { ...(getOperation({ type: "string" }) as object), head: {} } }),
+      'paths["/v1/x"].head: only GET operations are supported yet.',
+    ],
+    [documentWith({}, { "/v1/x": { options: {} } }), 'paths["/v1/x"].options: only GET operations are supported yet.'],
+    [documentWith({}, { "/v1/x": { trace: {} } }), 'paths["/v1/x"].trace: only GET operations are supported yet.'],
+    [documentWith({}, { "/v1/x": { query: {} } }), 'paths["/v1/x"].query: only GET operations are supported yet.'],
+    [
+      documentWith({}, {
+        "/v1/x": { ...(getOperation({ type: "string" }) as object), parameters: [{ name: "q", in: "query", required: true }] },
+      }),
+      'paths["/v1/x"] uses "parameters", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": { $ref: "#/components/pathItems/X" } }),
+      'paths["/v1/x"] uses "$ref", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": { ...(getOperation({ type: "string" }) as object), servers: [{ url: "https://x.example" }] } }),
+      'paths["/v1/x"] uses "servers", which the generator does not support yet.',
+    ],
+    [documentWith({}, { "/v1/x": { GET: {} } }), 'paths["/v1/x"] uses "GET", which the generator does not support yet.'],
+    [documentWith({}, { "/v1/x": { "x-zorbex": true } }), 'paths["/v1/x"] uses "x-zorbex", which the generator does not support yet.'],
     [documentWith({}, { "/v1/x/{id}": getOperation({ type: "string" }) }), 'paths["/v1/x/{id}"].get: parameters are not supported yet.'],
     [
       documentWith({}, { "/v1/x": getOperation({ type: "string" }, { parameters: [{ name: "q", in: "query" }] }) }),
       'paths["/v1/x"].get: parameters are not supported yet.',
     ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { parameters: { q: 1 } }) }),
+      'paths["/v1/x"].get: parameters are not supported yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { parameters: null }) }),
+      'paths["/v1/x"].get: parameters are not supported yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { security: [{ bearer: [] }] }) }),
+      'paths["/v1/x"].get uses "security", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { servers: [{ url: "https://x.example" }] }) }),
+      'paths["/v1/x"].get uses "servers", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { callbacks: {} }) }),
+      'paths["/v1/x"].get uses "callbacks", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { deprecated: true }) }),
+      'paths["/v1/x"].get uses "deprecated", which the generator does not support yet.',
+    ],
+    [
+      { openapi: "3.1.0", paths: {}, servers: [{ url: "https://x.example/api" }] },
+      'The API description uses "servers", which the generator does not support yet.',
+    ],
+    [
+      { openapi: "3.1.0", paths: {}, security: [{ bearer: [] }] },
+      'The API description uses "security", which the generator does not support yet.',
+    ],
+    [
+      { openapi: "3.1.0", paths: {}, jsonSchemaDialect: "https://json-schema.org/draft/2020-12/schema" },
+      'The API description uses "jsonSchemaDialect", which the generator does not support yet.',
+    ],
+    [
+      { openapi: "3.1.0", paths: {}, webhooks: { kilvant: { post: {} } } },
+      'The API description uses "webhooks", which the generator does not support yet.',
+    ],
+    [{ openapi: "3.1.0", paths: {}, webhooks: [] }, "webhooks must be an object."],
     [documentWith({}, { "/v1/x": getOperation({ type: "string" }, { requestBody: {} }) }), 'paths["/v1/x"].get: a request body is not supported yet.'],
     [documentWith({}, { "/v1/x": getOperation({ type: "string" }, { operationId: 7 }) }), 'paths["/v1/x"].get.operationId must be a string.'],
     [

@@ -3,7 +3,9 @@
 // Turns openapi.json into src/generated.ts: one TypeScript type per schema and
 // one method per operation. It knows the parts of OpenAPI 3.1 that the API
 // uses so far, and refuses anything else by name, so a new kind of operation
-// fails here instead of turning into a wrong type.
+// fails here instead of turning into a wrong type or a missing method. Each
+// key of the document, of a path item and of an operation is one it reads,
+// one that only documents, or one it refuses.
 
 export class GeneratorError extends Error {
   override readonly name = "GeneratorError";
@@ -12,8 +14,22 @@ export class GeneratorError extends Error {
 type Json = Readonly<Record<string, unknown>>;
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-const METHODS = ["get", "put", "post", "delete", "patch"] as const;
-const SUPPORTED_METHODS = new Set<string>(["get"]);
+/** Every HTTP method a path item can hold. Only GET is supported yet. */
+const METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace", "query"]);
+
+/** The keys the generator reads or that only document. Any other key is refused. */
+const DOCUMENT_KEYS = new Set(["openapi", "info", "components", "paths", "webhooks", "tags", "externalDocs"]);
+const PATH_ITEM_KEYS = new Set(["get", "summary", "description"]);
+const OPERATION_KEYS = new Set([
+  "operationId",
+  "summary",
+  "description",
+  "tags",
+  "externalDocs",
+  "parameters",
+  "requestBody",
+  "responses",
+]);
 
 /** Keys that would change a type, which the generator cannot express yet. */
 const UNSUPPORTED_KEYS = [
@@ -50,6 +66,14 @@ function text(value: unknown, where: string): string {
 
 function optionalText(value: unknown, where: string): string | undefined {
   return value === undefined ? undefined : text(value, where);
+}
+
+function refuseOtherKeys(value: Json, known: ReadonlySet<string>, where: string): void {
+  for (const key of Object.keys(value)) {
+    if (!known.has(key)) {
+      throw new GeneratorError(`${where} uses "${key}", which the generator does not support yet.`);
+    }
+  }
 }
 
 function identifier(value: string, where: string): string {
@@ -204,36 +228,43 @@ function resultType(responses: Json, where: string): string {
   throw new GeneratorError(`${where} needs a 200 or 201 response with JSON.`);
 }
 
+function operation(path: string, value: unknown): Operation {
+  const where = `paths["${path}"].get`;
+  const entry = record(value, where);
+  refuseOtherKeys(entry, OPERATION_KEYS, where);
+  const parameters = entry["parameters"];
+  const noParameters = parameters === undefined || (Array.isArray(parameters) && parameters.length === 0);
+  if (path.includes("{") || !noParameters) {
+    throw new GeneratorError(`${where}: parameters are not supported yet.`);
+  }
+  if (entry["requestBody"] !== undefined) {
+    throw new GeneratorError(`${where}: a request body is not supported yet.`);
+  }
+  return {
+    id: identifier(text(entry["operationId"], `${where}.operationId`), `${where}.operationId`),
+    method: "GET",
+    path,
+    summary: optionalText(entry["summary"], `${where}.summary`),
+    description: optionalText(entry["description"], `${where}.description`),
+    result: resultType(record(entry["responses"], `${where}.responses`), `${where}.responses`),
+  };
+}
+
 function operations(document: Json): Operation[] {
   const paths = record(document["paths"], "paths");
   const found: Operation[] = [];
   for (const path of Object.keys(paths).sort()) {
-    const item = record(paths[path], `paths["${path}"]`);
-    for (const method of METHODS) {
-      const value = item[method];
-      if (value === undefined) {
-        continue;
+    const where = `paths["${path}"]`;
+    const item = record(paths[path], where);
+    for (const key of Object.keys(item)) {
+      if (METHODS.has(key) && key !== "get") {
+        throw new GeneratorError(`${where}.${key}: only GET operations are supported yet.`);
       }
-      const where = `paths["${path}"].${method}`;
-      if (!SUPPORTED_METHODS.has(method)) {
-        throw new GeneratorError(`${where}: only GET operations are supported yet.`);
-      }
-      const operation = record(value, where);
-      const parameters = operation["parameters"];
-      if (path.includes("{") || (Array.isArray(parameters) && parameters.length > 0)) {
-        throw new GeneratorError(`${where}: parameters are not supported yet.`);
-      }
-      if (operation["requestBody"] !== undefined) {
-        throw new GeneratorError(`${where}: a request body is not supported yet.`);
-      }
-      found.push({
-        id: identifier(text(operation["operationId"], `${where}.operationId`), `${where}.operationId`),
-        method: method.toUpperCase(),
-        path,
-        summary: optionalText(operation["summary"], `${where}.summary`),
-        description: optionalText(operation["description"], `${where}.description`),
-        result: resultType(record(operation["responses"], `${where}.responses`), `${where}.responses`),
-      });
+    }
+    // Parameters, servers or a $ref on the path item would change every call under it.
+    refuseOtherKeys(item, PATH_ITEM_KEYS, where);
+    if (item["get"] !== undefined) {
+      found.push(operation(path, item["get"]));
     }
   }
   return found;
@@ -252,6 +283,11 @@ export function generateClient(input: unknown): string {
   const openapi = text(document["openapi"], "openapi");
   if (!openapi.startsWith("3.1.")) {
     throw new GeneratorError(`openapi must be 3.1.x, not ${openapi}.`);
+  }
+  refuseOtherKeys(document, DOCUMENT_KEYS, "The API description");
+  // A webhook is a call from the server, which this client does not type yet.
+  if (Object.keys(record(document["webhooks"] ?? {}, "webhooks")).length > 0) {
+    throw new GeneratorError('The API description uses "webhooks", which the generator does not support yet.');
   }
   const components = record(document["components"] ?? {}, "components");
   const schemas = record(components["schemas"] ?? {}, "components.schemas");
