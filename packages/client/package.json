@@ -1,0 +1,39 @@
+{
+  "name": "@nortfox/client",
+  "version": "0.0.0",
+  "description": "A typed client for the NortFox API.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ninfendo/Nortfox.git",
+    "directory": "packages/client"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@nortfox/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./openapi.json": "./openapi.json"
+  },
+  "files": [
+    "dist",
+    "openapi.json",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "generate": "node scripts/generate.ts"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

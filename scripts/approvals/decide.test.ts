@@ -1,0 +1,250 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { decideCiOk, decideLabelHolds, decideOutsideApproval, decideOwnerOk } from "./decide.ts";
+import { globToRegExp, ownerPathsIn, parseOwnerPaths } from "./owner-paths.ts";
+
+/** The repository's own list, as the workflow reads it from the default branch. */
+const GLOBS = parseOwnerPaths(readFileSync(new URL("../../.github/owner-paths.txt", import.meta.url), "utf8"));
+
+describe("owner paths", () => {
+  it("reads one glob per line, without comments", () => {
+    expect(parseOwnerPaths("# Owner paths\n\ndb/migrations/**\r\n  LICENSE  \n")).toEqual(["db/migrations/**", "LICENSE"]);
+  });
+
+  it("are the database, the licences, the exceptions to the names rule and the list itself", () => {
+    expect(GLOBS).toEqual([
+      "db/migrations/**",
+      "**/LICENSE*",
+      "**/LICENCE*",
+      "**/COPYING*",
+      "**/.protected-name-ok",
+      ".github/protected-name-allowlist.txt",
+      ".github/owner-paths.txt",
+    ]);
+  });
+
+  it.each([
+    // The database.
+    ["db/migrations/0001_start.sql", true],
+    ["db/migrations/sub/x.sql", true],
+    ["db/migrations", true],
+    ["DB/Migrations/0001_start.sql", true],
+    ["db/migrationsx/a.sql", false],
+    ["db/seed.sql", false],
+    // The licences, in any case and at any depth.
+    ["LICENSE", true],
+    ["packages/client/LICENSE", true],
+    ["packages/client/LICENSE.md", true],
+    ["packages/client/LICENCE", true],
+    ["packages/client/license.md", true],
+    ["License.txt", true],
+    ["COPYING", true],
+    ["apps/web/copying.lesser", true],
+    // The exceptions to the names rule, and this list.
+    ["adapters/a1/.protected-name-ok", true],
+    [".protected-name-ok", true],
+    [".github/protected-name-allowlist.txt", true],
+    [".GitHub/owner-paths.txt", true],
+    [".github/owner-paths.txt", true],
+    ["docs/.github/protected-name-allowlist.txt", false],
+    ["docs/.github/owner-paths.txt", false],
+    // Everything else is the review agent's, and an outside PR needs the
+    // owner's approving review anyway.
+    [".github/workflows/ci.yml", false],
+    [".github/workflows/approvals.yml", false],
+    [".github/CODEOWNERS", false],
+    ["scripts/approvals/owner-paths.ts", false],
+    ["scripts/names/check.ts", false],
+    [".githooks/pre-commit", false],
+    ["package.json", false],
+    ["pnpm-workspace.yaml", false],
+    ["tsconfig.json", false],
+    ["eslint.config.js", false],
+    ["vitest.config.ts", false],
+    ["CLAUDE.md", false],
+    ["AGENTS.md", false],
+    ["docs/decisions/0011-names-policy.md", false],
+    ["apps/server/src/modules/auth/login.ts", false],
+    ["packages/client/openapi.json", false],
+    ["packages/engine/src/money.ts", false],
+    ["packages/engine/src/ledger/checks.ts", false],
+    ["README.md", false],
+  ])("%s is an owner path: %s", (path, expected) => {
+    expect(ownerPathsIn([path], GLOBS).length > 0).toBe(expected);
+  });
+
+  it("matches a pattern without a slash at the root only", () => {
+    expect(ownerPathsIn(["CLAUDE.md", "docs/CLAUDE.md", "claude.md"], ["CLAUDE.md"])).toEqual(["CLAUDE.md", "claude.md"]);
+  });
+
+  it("supports ? and ** inside a path, and escapes the rest", () => {
+    expect(globToRegExp("a/?.ts").test("a/b.ts")).toBe(true);
+    expect(globToRegExp("a/?.ts").test("a/bc.ts")).toBe(false);
+    expect(globToRegExp("a/**.md").test("a/b/c.md")).toBe(true);
+    expect(globToRegExp("a+(b).md").test("a+(b).md")).toBe(true);
+    expect(globToRegExp("a.md").test("aXmd")).toBe(false);
+  });
+});
+
+describe("Outside approval", () => {
+  const head = "h1";
+  const base = { owner: "owner", author: "someone", headSha: head };
+
+  it("passes a PR from the owner's account", () => {
+    expect(decideOutsideApproval({ ...base, author: "owner", reviews: [] })).toEqual({
+      pass: true,
+      why: "The PR comes from the owner's account.",
+    });
+  });
+
+  it("passes when the owner's latest deciding review approves the head commit", () => {
+    const verdict = decideOutsideApproval({
+      ...base,
+      reviews: [
+        { login: "owner", state: "CHANGES_REQUESTED", commitId: "h0" },
+        { login: "owner", state: "APPROVED", commitId: head },
+        { login: "owner", state: "COMMENTED", commitId: head },
+        { login: "other", state: "CHANGES_REQUESTED", commitId: head },
+      ],
+    });
+    expect(verdict).toEqual({ pass: true, why: "The owner approved this PR's head commit." });
+  });
+
+  it.each([
+    [[], "The owner has not approved this PR yet."],
+    [[{ login: "other", state: "APPROVED", commitId: "h1" }], "The owner has not approved this PR yet."],
+    [[{ login: "owner", state: "COMMENTED", commitId: "h1" }], "The owner has not approved this PR yet."],
+    [
+      [
+        { login: "owner", state: "APPROVED", commitId: "h1" },
+        { login: "owner", state: "DISMISSED", commitId: "h1" },
+      ],
+      "The owner's latest review does not approve this PR.",
+    ],
+    [
+      [
+        { login: "owner", state: "APPROVED", commitId: "h1" },
+        { login: "owner", state: "CHANGES_REQUESTED", commitId: "h1" },
+      ],
+      "The owner's latest review does not approve this PR.",
+    ],
+    [
+      [{ login: "owner", state: "APPROVED", commitId: "h0" }],
+      "The owner approved an earlier commit. The new commits need the owner's approval too.",
+    ],
+  ])("fails with %j", (reviews, why) => {
+    expect(decideOutsideApproval({ ...base, reviews })).toEqual({ pass: false, why });
+  });
+});
+
+describe("Owner OK", () => {
+  it("passes a PR that changes no owner path", () => {
+    expect(decideOwnerOk({ namesResult: "success", paths: ["README.md"], globs: GLOBS, labels: [] })).toEqual({
+      pass: true,
+      why: "The PR changes no owner path.",
+      ownerPaths: [],
+    });
+  });
+
+  it("fails a PR that changes an owner path, until the owner-ok label is set", () => {
+    const input = { namesResult: "success", paths: ["README.md", "db/migrations/0001_start.sql"], globs: GLOBS };
+    expect(decideOwnerOk({ ...input, labels: ["other"] })).toEqual({
+      pass: false,
+      why: "The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label.",
+      ownerPaths: ["db/migrations/0001_start.sql"],
+    });
+    expect(decideOwnerOk({ ...input, labels: ["owner-ok"] })).toMatchObject({ pass: true });
+  });
+
+  it.each(["failure", "cancelled", "skipped", "missing"])("fails when the names check ended in %s", (namesResult) => {
+    expect(decideOwnerOk({ namesResult, paths: [], globs: GLOBS, labels: ["owner-ok"] })).toEqual({
+      pass: false,
+      why: `The names check did not pass (${namesResult}). Owner OK waits for it.`,
+      ownerPaths: [],
+    });
+  });
+});
+
+describe("whether the owner-ok label counts", () => {
+  const input = {
+    owner: "owner",
+    headSha: "h2",
+    label: { actor: "owner", at: "2026-11-01T10:00:05Z" },
+    lastMove: { after: "h2", at: "2026-11-01T10:00:00Z" },
+  };
+
+  it("counts when the owner set it after the last push, which left the branch at the head commit", () => {
+    expect(decideLabelHolds(input)).toEqual({ pass: true, why: "The owner set the owner-ok label on the PR's head commit." });
+  });
+
+  it.each([
+    ["GitHub has no record of the label", { label: undefined }, "GitHub has no record of who set the owner-ok label, or when."],
+    [
+      "another account set it",
+      { label: { actor: "someone", at: "2026-11-01T10:00:05Z" } },
+      "The owner-ok label was set by an account that is not the owner's.",
+    ],
+    [
+      "the branch history cannot be read",
+      { lastMove: undefined },
+      "The history of the PR's branch does not end at the PR's head commit, so the label cannot be tied to it.",
+    ],
+    [
+      "the last push is not the head commit",
+      { lastMove: { after: "h3", at: "2026-11-01T10:00:00Z" } },
+      "The history of the PR's branch does not end at the PR's head commit, so the label cannot be tied to it.",
+    ],
+    [
+      "the owner set it before the last push",
+      { lastMove: { after: "h2", at: "2026-11-01T10:00:06Z" } },
+      "The owner-ok label was set before the last push to the PR's branch. It counts only for the head commit it was set on.",
+    ],
+    [
+      "the owner set it in the same second as the last push",
+      { lastMove: { after: "h2", at: "2026-11-01T10:00:05Z" } },
+      "The owner-ok label was set before the last push to the PR's branch. It counts only for the head commit it was set on.",
+    ],
+    [
+      "a time cannot be read",
+      { label: { actor: "owner", at: "soon" } },
+      "The owner-ok label was set before the last push to the PR's branch. It counts only for the head commit it was set on.",
+    ],
+  ])("does not count when %s", (_case, change, why) => {
+    expect(decideLabelHolds({ ...input, ...change })).toEqual({ pass: false, why });
+  });
+});
+
+describe("CI OK", () => {
+  it("passes when every job succeeded", () => {
+    expect(decideCiOk({ build: { result: "success" }, workflows: { result: "success" } })).toEqual({
+      pass: true,
+      why: "Every CI job passed.",
+      lines: ["build: success", "workflows: success"],
+    });
+  });
+
+  it.each(["failure", "cancelled", "skipped"])("fails when a job ended in %s", (result) => {
+    expect(decideCiOk({ build: { result: "success" }, workflows: { result } })).toEqual({
+      pass: false,
+      why: "1 CI job(s) did not succeed.",
+      lines: ["build: success", `workflows: ${result}`],
+    });
+  });
+
+  it.each([
+    [null, "CI OK got no list of jobs."],
+    [[], "CI OK got no list of jobs."],
+    [{}, "CI OK needs at least one job."],
+  ])("fails on %j", (needs, why) => {
+    expect(decideCiOk(needs)).toMatchObject({ pass: false, why });
+  });
+
+  it("fails on a job without a result", () => {
+    expect(decideCiOk({ build: {}, test: { result: 1 }, lint: null })).toMatchObject({
+      pass: false,
+      lines: ["build: unknown", "test: unknown", "lint: unknown"],
+    });
+  });
+});

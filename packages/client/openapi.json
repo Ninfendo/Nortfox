@@ -1,0 +1,64 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "NortFox API",
+    "version": "0.0.0",
+    "description": "The API of NortFox, an open-source Swedish accounting system. Amounts travel as decimal strings, never as JSON numbers.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    }
+  },
+  "components": {
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ],
+            "description": "Always \"ok\" when the server answers."
+          },
+          "version": {
+            "type": "string",
+            "description": "The version of the server that answered.",
+            "example": "0.0.0"
+          }
+        },
+        "required": [
+          "status",
+          "version"
+        ],
+        "description": "Whether the server is up."
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/v1/health": {
+      "get": {
+        "operationId": "getHealth",
+        "tags": [
+          "status"
+        ],
+        "summary": "Check that the server is up",
+        "description": "Answers as soon as the server runs. It reads no data.",
+        "responses": {
+          "200": {
+            "description": "The server is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}

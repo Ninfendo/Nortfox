@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Weekly updates, one grouped PR per ecosystem. A version is proposed once it
+# is a week old, well past the three-day minimum release age that
+# pnpm-workspace.yaml sets for every install.
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]

@@ -1,0 +1,26 @@
+{
+  "name": "@nortfox/server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The NortFox server: the API under /v1.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "dev": "node --watch src/main.ts",
+    "start": "node dist/main.js",
+    "openapi": "node scripts/write-openapi.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "catalog:",
+    "@hono/zod-openapi": "catalog:",
+    "hono": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

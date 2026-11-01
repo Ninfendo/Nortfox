@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Checks the staged files and the branch name for protected names. Without the
+# owner's list on this machine it prints a note and passes; CI checks every PR.
+set -euo pipefail
+
+exec node scripts/names/cli.ts --staged
