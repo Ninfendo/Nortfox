@@ -104,6 +104,16 @@ describe("the licence guard", () => {
     expect(spdxProblem("pnpm-lock.yaml", "lockfileVersion: '9.0'\n")).toBeUndefined();
   });
 
+  it("holds pnpm-workspace.yaml to the rule, and skips only the lockfile at the root, which pnpm writes", () => {
+    expect(spdxProblem("pnpm-workspace.yaml", "packages:\n  - apps/*\n")).toBe(
+      'pnpm-workspace.yaml has no SPDX-License-Identifier line at the top. Add "SPDX-License-Identifier: AGPL-3.0-only".',
+    );
+    expect(spdxProblem("pnpm-workspace.yaml", "# SPDX-License-Identifier: MIT\n")).toContain('says "MIT"');
+    expect(spdxProblem("pnpm-workspace.yaml", "# SPDX-License-Identifier: AGPL-3.0-only\n\npackages:\n")).toBeUndefined();
+    expect(spdxProblem("pnpm-lock.yaml", "lockfileVersion: '9.0'\n")).toBeUndefined();
+    expect(spdxProblem("apps/web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n")).toContain("has no SPDX");
+  });
+
   it("fails a missing licence file and a wrong package licence", () => {
     const files: Record<string, string> = {
       LICENSE: "MIT License",

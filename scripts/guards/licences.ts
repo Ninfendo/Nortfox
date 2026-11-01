@@ -17,8 +17,13 @@ const TAG = "SPDX-License-Identifier:";
 /** The end of an SPDX line that is not part of the licence: a comment's end and spaces. */
 const LINE_END = /\s*(?:\*\/|-->)?\s*$/;
 
-/** Files that are not ours to label: the licence texts themselves and the like. */
-const EXEMPT = new Set(["pnpm-lock.yaml", "pnpm-workspace.yaml"]);
+/**
+ * The one file of those types that is not source: pnpm writes pnpm-lock.yaml
+ * itself, and writes it whole again on each change, so a line added by hand
+ * would not stay. pnpm-workspace.yaml is written by hand, so it carries the
+ * line like every other file.
+ */
+const EXEMPT = new Set(["pnpm-lock.yaml"]);
 
 export const MIT_FOLDER = "packages/client/";
 
