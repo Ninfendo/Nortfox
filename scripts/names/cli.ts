@@ -17,7 +17,10 @@
 // open PR whose head commit the owner has approved, and its report then gives
 // no places: otherwise anyone could fill a PR with guesses and read from the
 // public log which of them are on the list. It reads the PR at HEAD_SHA only,
-// and gives no result when the PR changed while it read it.
+// and gives no result when the PR changed while it read it. RUN_ACTOR
+// (github.actor) is whose rights the run has, which a re-run keeps: GitHub
+// gives a run that Dependabot started no secrets, so there the check says
+// why the list is missing.
 
 import { readFileSync } from "node:fs";
 import { field, stringField } from "../github/api.ts";
@@ -98,6 +101,13 @@ type Gathered =
 /** The one line for every run that does not read a PR from another account. */
 export const WAITING =
   "The PR comes from outside the owner's account. The check reads it only in a run that the owner starts, on an open PR whose head commit the owner has approved. It waits for the owner.";
+
+/** The account whose runs GitHub gives no secrets, also when someone else re-runs them. */
+export const DEPENDABOT = "dependabot[bot]";
+
+/** Why the list is missing in a run that Dependabot started, and what the owner does instead. */
+export const DEPENDABOT_RUN =
+  "Dependabot started this run, and GitHub gives such a run no secrets, also when someone re-runs it. So the protected names list is missing, and the check does not pass. The owner starts a new run from the owner's account instead: add a label to the PR, any but owner-ok, and remove it again.";
 
 /** A PR that --pr may read, and whether its report may name places. */
 interface Admitted {
@@ -218,7 +228,11 @@ export async function main(args: readonly string[], io: Io): Promise<number> {
   }
   if (list.kind === "missing") {
     if (list.required) {
-      io.err("names: the protected names list is missing. CI reads it from the PROTECTED_NAMES secret, and the check never passes without it.");
+      io.err(
+        options.mode === "--pr" && io.env["RUN_ACTOR"] === DEPENDABOT
+          ? `names: ${DEPENDABOT_RUN}`
+          : "names: the protected names list is missing. CI reads it from the PROTECTED_NAMES secret, and the check never passes without it.",
+      );
       return 1;
     }
     io.out("names: no protected names list on this machine, so the check is skipped here. CI runs it on every pull request.");

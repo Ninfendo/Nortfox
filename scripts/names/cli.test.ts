@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { startFakeGitHub, type FakeAnswer, type FakeGitHub, type Routes } from "../testing/fake-github.ts";
 import { createTestRepo, FAKE_LIST, FAKE_WORDS, type TestRepo } from "../testing/repo.ts";
-import { main, WAITING, type Io } from "./cli.ts";
+import { DEPENDABOT, DEPENDABOT_RUN, main, WAITING, type Io } from "./cli.ts";
 
 const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
 const base64 = (text: string): string => Buffer.from(text, "utf8").toString("base64");
@@ -19,6 +19,9 @@ const base64 = (text: string): string => Buffer.from(text, "utf8").toString("bas
 const LATIN1_PATH = Buffer.from("docs/zarqu\xF3n.md", "latin1");
 /** The same, as the folder of a marker. */
 const LATIN1_MARKER = Buffer.from("adapters/zarqu\xF3n/.protected-name-ok", "latin1");
+
+const MISSING =
+  "names: the protected names list is missing. CI reads it from the PROTECTED_NAMES secret, and the check never passes without it.";
 
 /** Neither the path nor any part of the word that it spells is in the output. */
 function expectNoPath(lines: readonly string[]): void {
@@ -940,6 +943,30 @@ describe("--pr", () => {
           ],
         });
       }
+    });
+
+    it("says why the list is missing in a run that Dependabot started, also when the owner re-runs it", async () => {
+      const pr = nothing();
+      const dependabot = { user: { login: DEPENDABOT }, title: "Bump a package", body: null };
+      const server = await fakeApi([{ body: prData(pr.head, dependabot) }], approval(pr.head));
+      // A re-run by the owner: the owner triggered it, but it keeps Dependabot's rights and gets no secrets.
+      const rerun = prEnv(server, pr.head, { PROTECTED_NAMES: "", RUN_ACTOR: DEPENDABOT });
+      expect(await run(["--pr"], { cwd: pr.checkout.dir, env: rerun })).toEqual({
+        code: 1,
+        out: [],
+        err: [`names: ${DEPENDABOT_RUN}`],
+      });
+      // A run that Dependabot itself triggered waits for the owner before it looks for the list.
+      expect(await run(["--pr"], { cwd: pr.checkout.dir, env: { ...rerun, TRIGGERING_ACTOR: DEPENDABOT } })).toEqual({
+        code: 1,
+        out: [],
+        err: [`names: ${WAITING}`],
+      });
+      // Without a list for any other reason, the check says only that it is missing.
+      for (const env of [{ ...rerun, RUN_ACTOR: "owner" }, { ...rerun, RUN_ACTOR: undefined }]) {
+        expect((await run(["--pr"], { cwd: pr.checkout.dir, env })).err).toEqual([MISSING]);
+      }
+      expect((await run(["--text"], { cwd: pr.checkout.dir, env: rerun })).err).toEqual([MISSING]);
     });
 
     it("once approved, in a run that the owner started, passes a clean PR", async () => {

@@ -24,6 +24,13 @@
 # the owner started (github.triggering_actor), never in a run that the
 # author's own push or edit started.
 #
+# Dependabot's PRs come from another account too, but a re-run does not work
+# there. A re-run keeps the rights of the account that started the first run
+# (github.actor), and GitHub gives a run that Dependabot started no secrets.
+# So Names has no list and fails, and says why. On such a PR the owner starts
+# a new run from the owner's account instead: adds a label, any but owner-ok,
+# and removes it again.
+#
 # Each check judges the head commit that the event names (HEAD_SHA), and fails
 # when the PR's head is another commit, so a verdict lands only on the commit
 # it judged.
@@ -83,6 +90,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          RUN_ACTOR: ${{ github.actor }} # whose rights the run has, which a re-run keeps
 
   outside-approval:
     name: Outside approval

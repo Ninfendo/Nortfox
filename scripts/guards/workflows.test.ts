@@ -52,13 +52,16 @@ describe("the approval workflow", () => {
     expect(listOf(triggers.get("pull_request_target") ?? [], "branches")).toEqual(["main"]);
   });
 
-  it("passes every check the event's head commit, and Names who started the run", () => {
+  it("passes every check the event's head commit, and Names who started the run and whose rights it has", () => {
     const jobs = children(block(approvals, "jobs") ?? []);
     expect([...jobs.keys()]).toEqual(["names", "outside-approval", "owner-ok"]);
     for (const lines of jobs.values()) {
       expect(lines.map((line) => line.trim())).toContain("HEAD_SHA: ${{ github.event.pull_request.head.sha }}");
     }
-    expect((jobs.get("names") ?? []).map((line) => line.trim())).toContain("TRIGGERING_ACTOR: ${{ github.triggering_actor }}");
+    const names = (jobs.get("names") ?? []).map((line) => line.trim());
+    expect(names).toContain("TRIGGERING_ACTOR: ${{ github.triggering_actor }}");
+    // So that a run Dependabot started says why it has no list.
+    expect(names).toContain("RUN_ACTOR: ${{ github.actor }} # whose rights the run has, which a re-run keeps");
   });
 });
 
