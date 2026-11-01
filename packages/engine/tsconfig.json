@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    // The tests run on Node; the source itself builds with no types at all
+    // (tsconfig.build.json), so it cannot reach for Node.
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

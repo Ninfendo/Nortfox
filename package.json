@@ -1,0 +1,38 @@
+{
+  "name": "nortfox",
+  "private": true,
+  "description": "An open-source Swedish accounting system.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "node scripts/turbo.ts run build",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "node scripts/turbo.ts run typecheck && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "check": "pnpm names && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
+    "names": "node scripts/names/cli.ts --all",
+    "openapi": "pnpm --filter @nortfox/server run openapi && pnpm --filter @nortfox/client run generate",
+    "changeset": "changeset",
+    "prepare": "git config core.hooksPath .githooks"
+  },
+  "devDependencies": {
+    "@changesets/cli": "catalog:",
+    "@eslint/js": "catalog:",
+    "@types/node": "catalog:",
+    "@typescript/native": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "eslint": "catalog:",
+    "fast-check": "catalog:",
+    "globals": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:ts-api",
+    "typescript-eslint": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}
