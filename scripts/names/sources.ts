@@ -3,16 +3,31 @@
 // What each mode checks. A source gathers the files and the text fields;
 // check.ts does the checking.
 
+import { isUtf8 } from "node:buffer";
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { PullRequestAuthor } from "../github/pull-request.ts";
-import { changesBetween, commitsBetween, fetchCommit, mergeBase, parseCommit, readObjects, treePaths } from "../github/snapshot.ts";
-import { gitBytes, gitText, gitTextOrUndefined, nulList } from "./git.ts";
+import {
+  changesBetween,
+  commitsBetween,
+  fetchCommit,
+  mergeBase,
+  nulSeparated,
+  parseCommit,
+  parseRawChanges,
+  readObjects,
+  treePaths,
+} from "../github/snapshot.ts";
+import { gitBytes, gitTextOrUndefined } from "./git.ts";
 import { ALLOWLIST_FILE, isMarker, parseAllowlist } from "./markers.ts";
+import { gitForWindowsName, pathOf, type PathText } from "./scan.ts";
 
-export interface SourceFile {
-  readonly path: string;
-  /** How to name the file if its path holds a name. */
+/**
+ * A file. Its path is read from the bytes git gives for it, in every way
+ * that someone who looks at it may see (scan.ts, pathOf).
+ */
+export interface SourceFile extends PathText {
+  /** How to name the file if some reading of its path holds a name. */
   readonly alias: string;
   /** Undefined for a file whose contents are not checked (a submodule). */
   readonly bytes: Uint8Array | undefined;
@@ -35,10 +50,13 @@ export interface Source {
   readonly files: readonly SourceFile[];
   readonly fields: readonly TextField[];
   /** Every marker the check can see, also those in files it does not check. */
-  readonly markers: readonly string[];
+  readonly markers: readonly PathText[];
   /** The marker allowlist, read from the base branch. */
   readonly allowlist: readonly string[];
 }
+
+/** The mode git gives a submodule. */
+const SUBMODULE = "160000";
 
 /** The marker allowlist on the base branch. A base that cannot be read means an empty list. */
 export function baseAllowlist(cwd: string, base: string): string[] {
@@ -46,23 +64,42 @@ export function baseAllowlist(cwd: string, base: string): string[] {
   return text === undefined ? [] : parseAllowlist(text);
 }
 
-function readWorkingFile(cwd: string, path: string): Uint8Array | undefined {
-  const full = join(cwd, path);
+/** The paths of every marker among these paths, which are bytes as git gives them. */
+function markersAmong(paths: readonly Buffer[]): PathText[] {
+  return paths.map(pathOf).filter((path) => isMarker(path.path));
+}
+
+/**
+ * Where git wrote a tracked file in the working tree. On Windows that is the
+ * name Git for Windows gives the path. Elsewhere it is the path's own bytes,
+ * which the file system keeps as they are.
+ */
+function workingPath(cwd: string, path: Buffer): string | Buffer {
+  return process.platform === "win32"
+    ? join(cwd, gitForWindowsName(path))
+    : Buffer.concat([Buffer.from(`${cwd}${sep}`, "utf8"), path]);
+}
+
+/** A tracked file's contents in the working tree, from its path as git gives it. */
+function readWorkingFile(cwd: string, path: Buffer): Pick<SourceFile, "bytes" | "unreadable"> {
+  const full = workingPath(cwd, path);
   let stats;
   try {
     stats = lstatSync(full);
   } catch {
-    // Tracked but deleted in the working tree: nothing to read.
-    return undefined;
+    // Tracked but deleted in the working tree: nothing to read. A path that
+    // is not UTF-8 may also be one that the check could not find, so it
+    // fails instead.
+    return isUtf8(path) ? { bytes: undefined } : { bytes: undefined, unreadable: true };
   }
   if (stats.isSymbolicLink()) {
-    return Buffer.from(readlinkSync(full), "utf8");
+    return { bytes: readlinkSync(full, { encoding: "buffer" }) };
   }
   if (stats.isDirectory()) {
     // A submodule.
-    return undefined;
+    return { bytes: undefined };
   }
-  return readFileSync(full);
+  return { bytes: readFileSync(full) };
 }
 
 /** One field, read every way in `readings`. */
@@ -98,15 +135,15 @@ function lastCommit(cwd: string): TextField[] {
 
 /** --all: every tracked file and its contents, and the last commit. */
 export function allSource(cwd: string, base: string): Source {
-  const paths = nulList(gitText(cwd, ["ls-files", "-z"]));
+  const paths = nulSeparated(gitBytes(cwd, ["ls-files", "-z"]));
   return {
     files: paths.map((path, index) => ({
-      path,
+      ...pathOf(path),
       alias: `tracked file ${String(index + 1)} (git ls-files)`,
-      bytes: readWorkingFile(cwd, path),
+      ...readWorkingFile(cwd, path),
     })),
     fields: lastCommit(cwd),
-    markers: paths.filter(isMarker),
+    markers: markersAmong(paths),
     allowlist: baseAllowlist(cwd, base),
   };
 }
@@ -126,9 +163,13 @@ function nextIdentity(cwd: string, variable: string): string | undefined {
     .replace(/ \d+ [+-]\d{4}$/, "");
 }
 
-/** --staged: the staged files, as staged, the branch name, and who the next commit names. */
+/**
+ * --staged: the staged files, as staged, the branch name, and who the next
+ * commit names. Each file is read by the object that the index holds for it,
+ * so its path is never handed back to git as text.
+ */
 export function stagedSource(cwd: string, base: string): Source {
-  const paths = nulList(gitText(cwd, ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRT"]));
+  const changes = parseRawChanges(gitBytes(cwd, ["diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev"]));
   const branch = gitTextOrUndefined(cwd, ["symbolic-ref", "--short", "-q", "HEAD"])?.trim();
   const fields: TextField[] = branch === undefined || branch === "" ? [] : [{ field: "branch name", text: branch }];
   for (const [label, variable] of IDENTITIES) {
@@ -137,14 +178,26 @@ export function stagedSource(cwd: string, base: string): Source {
       fields.push({ field: label, text });
     }
   }
+  const files: SourceFile[] = [];
+  for (const [index, change] of changes.entries()) {
+    // A deleted file has nothing to read, and git commits nothing while a file is unmerged.
+    if (change.status === "D" || change.status === "U") {
+      continue;
+    }
+    const file = {
+      ...pathOf(change.path),
+      alias: `staged file ${String(index + 1)} (git diff --cached --name-only --no-renames)`,
+    };
+    files.push(
+      change.mode === SUBMODULE
+        ? { ...file, bytes: undefined, unreadable: true }
+        : { ...file, bytes: gitBytes(cwd, ["cat-file", "blob", change.sha]) },
+    );
+  }
   return {
-    files: paths.map((path, index) => ({
-      path,
-      alias: `staged file ${String(index + 1)} (git diff --cached --name-only)`,
-      bytes: gitBytes(cwd, ["cat-file", "blob", `:${path}`]),
-    })),
+    files,
     fields,
-    markers: nulList(gitText(cwd, ["ls-files", "-z"])).filter(isMarker),
+    markers: markersAmong(nulSeparated(gitBytes(cwd, ["ls-files", "-z"]))),
     allowlist: baseAllowlist(cwd, base),
   };
 }
@@ -168,9 +221,6 @@ export interface PullRequestText {
 }
 
 const short = (sha: string): string => sha.slice(0, 7);
-
-/** The mode git gives a submodule. */
-const SUBMODULE = "160000";
 
 /**
  * The texts that a squash merge writes into the default branch: the title, a
@@ -230,7 +280,7 @@ export function pullRequestSource(cwd: string, pr: PullRequestText, allowlist: r
       continue;
     }
     const file = {
-      path: change.path,
+      ...pathOf(change.path),
       alias: `changed file ${String(index + 1)} (git diff --name-only --no-renames ${short(base)} ${short(head)})`,
     };
     // A submodule's contents are in another repository, so the check cannot read them.
@@ -252,5 +302,5 @@ export function pullRequestSource(cwd: string, pr: PullRequestText, allowlist: r
     const { message, author, committer } = parseCommit(commit(sha));
     fields.push(...commitFields(sha, message, author, committer));
   }
-  return { files, fields, markers: treePaths(cwd, head).filter(isMarker), allowlist };
+  return { files, fields, markers: markersAmong(treePaths(cwd, head)), allowlist };
 }

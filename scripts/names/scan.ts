@@ -413,6 +413,76 @@ export function fileTexts(bytes: Uint8Array): string[] {
   return texts;
 }
 
+const HEX_DIGITS = "0123456789abcdef";
+
+/** How many bytes a UTF-8 sequence that starts with this byte has, or 0 for a byte that starts none. */
+function utf8Length(byte: number): number {
+  if (byte < 0x80) {
+    return 1;
+  }
+  if (byte >= 0xc2 && byte <= 0xdf) {
+    return 2;
+  }
+  if (byte >= 0xe0 && byte <= 0xef) {
+    return 3;
+  }
+  return byte >= 0xf0 && byte <= 0xf4 ? 4 : 0;
+}
+
+/**
+ * The name that Git for Windows gives a path on disk. It reads the bytes as
+ * UTF-8 where they are UTF-8. A byte that is not is read as Latin-1 from 0xA0
+ * up, and written as its two hex digits below that. So a path that mixes the
+ * two shows a reading that neither UTF-8 nor Latin-1 gives on its own. Git
+ * also writes a surrogate as it is; it is read byte by byte here, which can
+ * only find more.
+ */
+export function gitForWindowsName(bytes: Uint8Array): string {
+  let name = "";
+  for (let at = 0; at < bytes.length; ) {
+    const byte = bytes[at] ?? 0;
+    const length = utf8Length(byte);
+    const sequence = bytes.subarray(at, at + length);
+    if (length > 0 && sequence.length === length && isUtf8(sequence)) {
+      name += Buffer.from(sequence).toString("utf8");
+      at += length;
+    } else {
+      name += byte >= 0xa0 ? String.fromCharCode(byte) : `${HEX_DIGITS[byte >> 4] ?? ""}${HEX_DIGITS[byte & 0xf] ?? ""}`;
+      at += 1;
+    }
+  }
+  return name;
+}
+
+/** A path, read from its bytes in every way that someone who looks at it may see. */
+export interface PathText {
+  /** The path read as UTF-8, which is how the report names the file. */
+  readonly path: string;
+  /** Its other readings when it has bytes above ASCII: Latin-1, CP437 and the name Git for Windows gives it. */
+  readonly pathAlsoReadAs?: readonly string[];
+}
+
+/**
+ * A path from the bytes git gives for it. git stores a path as bytes, which
+ * need not be UTF-8, so a path is read each way a file is (fileTexts), and as
+ * the name that Git for Windows gives it.
+ */
+export function pathOf(bytes: Uint8Array): PathText {
+  const [path = "", ...others] = fileTexts(bytes);
+  const pathAlsoReadAs = [...new Set([...others, gitForWindowsName(bytes)])].filter((reading) => reading !== path);
+  return pathAlsoReadAs.length === 0 ? { path } : { path, pathAlsoReadAs };
+}
+
+/** Every reading of a path, the UTF-8 one first. */
+export function pathReadings(path: PathText): string[] {
+  return [path.path, ...(path.pathAlsoReadAs ?? [])];
+}
+
+/** True when some reading of the path holds a word, once folded. */
+export function pathHasName(path: PathText, words: readonly string[]): boolean {
+  return pathReadings(path).some((reading) => lineHasName(reading, words));
+}
+
 /**
  * The first bytes of file types that hold compressed or encoded data: PDF,
  * zip (and the office formats and jars built on it), gzip, zlib, bzip2, xz,
@@ -483,9 +553,8 @@ export function isLfsPointer(bytes: Uint8Array): boolean {
   return Buffer.from(bytes.subarray(0, LFS_POINTER.length)).toString("latin1") === LFS_POINTER;
 }
 
-export interface FileToCheck {
-  readonly path: string;
-  /** How to name the file when its path holds a name, for example "changed file 3". */
+export interface FileToCheck extends PathText {
+  /** How to name the file when some reading of its path holds a name, for example "changed file 3". */
   readonly alias: string;
   readonly bytes: Uint8Array | undefined;
   /** True when the file has contents the check cannot get, such as a blob the API does not give. */
@@ -495,15 +564,29 @@ export interface FileToCheck {
 }
 
 /**
- * Checks a file's path and its contents. When the path holds a name, the
- * report names the file by its alias, so the log never shows the path.
+ * The readings of the path to check: the whole path, or in an honoured
+ * folder only the folder, which is the same number of parts in every
+ * reading, because a "/" is the same byte in each of them.
+ */
+function pathToCheck(file: FileToCheck): PathText {
+  if (file.honouredFolder === undefined) {
+    return file;
+  }
+  const parts = file.honouredFolder.split("/").length;
+  const [path = "", ...others] = pathReadings(file).map((reading) => reading.split("/").slice(0, parts).join("/"));
+  return { path, pathAlsoReadAs: others };
+}
+
+/**
+ * Checks a file's path and its contents. When any reading of the path holds
+ * a name, the report names the file by its alias, so the log never shows the
+ * path.
  */
 export function scanFile(file: FileToCheck, words: readonly string[]): Finding[] {
-  const pathToCheck = file.honouredFolder ?? file.path;
-  const pathHasName = lineHasName(pathToCheck, words);
-  const label = pathHasName ? file.alias : file.path;
+  const named = pathHasName(pathToCheck(file), words);
+  const label = named ? file.alias : file.path;
   const findings: Finding[] = [];
-  if (pathHasName) {
+  if (named) {
     findings.push({ place: `${label} (its path)`, reason: "name" });
   }
   if (file.honouredFolder !== undefined) {

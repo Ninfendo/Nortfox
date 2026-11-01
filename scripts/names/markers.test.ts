@@ -22,10 +22,11 @@ describe("isMarker", () => {
 });
 
 describe("judgeMarkers", () => {
-  const alias = (path: string) => `alias of ${path}`;
+  const alias = ({ path }: { readonly path: string }) => `alias of ${path}`;
+  const markers = (...paths: string[]) => paths.map((path) => ({ path }));
 
   it("honours a marker only in an allowlisted folder", () => {
-    expect(judgeMarkers(["adapters/a1/.protected-name-ok"], ["adapters/a1"], alias)).toEqual({
+    expect(judgeMarkers(markers("adapters/a1/.protected-name-ok"), ["adapters/a1"], alias)).toEqual({
       honoured: ["adapters/a1"],
       findings: [],
     });
@@ -33,7 +34,11 @@ describe("judgeMarkers", () => {
 
   it("refuses a marker anywhere else, also at the root", () => {
     expect(
-      judgeMarkers([".protected-name-ok", "docs/.protected-name-ok", "adapters/a1/sub/.protected-name-ok"], ["adapters/a1"], alias),
+      judgeMarkers(
+        markers(".protected-name-ok", "docs/.protected-name-ok", "adapters/a1/sub/.protected-name-ok"),
+        ["adapters/a1"],
+        alias,
+      ),
     ).toEqual({
       honoured: [],
       findings: [

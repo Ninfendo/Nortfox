@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { honouredFolderOf, judgeMarkers } from "./markers.ts";
-import { lineHasName, scanField, scanFile, type Finding } from "./scan.ts";
+import { pathHasName, pathReadings, scanField, scanFile, type Finding, type PathText } from "./scan.ts";
 import type { Source } from "./sources.ts";
+
+/**
+ * One key per path as git stores it. Two paths may read the same as UTF-8,
+ * but never the same as Latin-1, which every path above ASCII is also read as.
+ */
+const keyOf = (path: PathText): string => pathReadings(path).join("\0");
 
 /** Checks everything a source gathered. */
 export function check(source: Source, words: readonly string[]): Finding[] {
-  const aliases = new Map(source.files.map((file) => [file.path, file.alias]));
-  const verdict = judgeMarkers(source.markers, source.allowlist, (path) =>
-    lineHasName(path, words) ? (aliases.get(path) ?? "a marker file") : path,
+  const aliases = new Map(source.files.map((file) => [keyOf(file), file.alias]));
+  const verdict = judgeMarkers(source.markers, source.allowlist, (marker) =>
+    pathHasName(marker, words) ? (aliases.get(keyOf(marker)) ?? "a marker file") : marker.path,
   );
   const findings: Finding[] = [...verdict.findings];
   for (const file of source.files) {

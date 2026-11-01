@@ -49,6 +49,27 @@ function lines(output: Buffer, separator: string): string[] {
     .filter((item) => item !== "");
 }
 
+/** Splits bytes at each NUL, as String.split does: n NULs give n + 1 parts. */
+function splitAtNul(bytes: Buffer): Buffer[] {
+  const parts: Buffer[] = [];
+  let at = 0;
+  for (let end = bytes.indexOf(0); end !== -1; end = bytes.indexOf(0, at)) {
+    parts.push(bytes.subarray(at, end));
+    at = end + 1;
+  }
+  parts.push(bytes.subarray(at));
+  return parts;
+}
+
+/**
+ * The paths in a list that git ends each of with a NUL, such as `-z` output,
+ * as bytes. git stores a path as bytes, which need not be UTF-8, so a path is
+ * never read as text here: the check reads it every way it may be seen.
+ */
+export function nulSeparated(bytes: Buffer): Buffer[] {
+  return splitAtNul(bytes).filter((part) => part.length > 0);
+}
+
 /**
  * Fetches one commit by its SHA from origin, with the objects it needs. It
  * writes no branch, no tag and no FETCH_HEAD.
@@ -73,8 +94,9 @@ export function mergeBase(cwd: string, base: string, head: string): string {
 }
 
 export interface Change {
-  readonly path: string;
-  /** A for added, D for deleted, M for modified, T for a changed type. */
+  /** The path as git stores it: bytes, which need not be UTF-8. */
+  readonly path: Buffer;
+  /** A for added, D for deleted, M for modified, T for a changed type, U for unmerged. */
   readonly status: string;
   /** The file's mode at the head: 100644, 100755, 120000 (a link) or 160000 (a submodule). */
   readonly mode: string;
@@ -85,22 +107,24 @@ export interface Change {
 const RAW_CHANGE = /^:\d{6} (\d{6}) [0-9a-f]+ ([0-9a-f]+) ([A-Z])$/;
 
 /**
- * Reads what `git diff-tree -r -z --raw --no-renames` prints: a line of
- * modes, objects and a status, then a path, each ended by a NUL. Anything
+ * Reads what `git diff-tree -r -z --raw --no-renames` prints, and `git diff
+ * --cached` with the same options: a line of modes, objects and a status,
+ * then a path, each ended by a NUL. The path is kept as its bytes. Anything
  * else fails, so no file is ever passed unread.
  */
-export function parseRawChanges(output: string): Change[] {
-  const parts = output.split("\0");
-  if (parts.pop() !== "" || parts.length % 2 !== 0) {
+export function parseRawChanges(output: Buffer): Change[] {
+  const parts = splitAtNul(output);
+  if (parts.pop()?.length !== 0 || parts.length % 2 !== 0) {
     throw new SnapshotError("git listed the changed files in a form the check cannot read.");
   }
   const changes: Change[] = [];
   for (let index = 0; index < parts.length; index += 2) {
-    const match = RAW_CHANGE.exec(String(parts[index]));
-    if (match === null) {
+    const match = RAW_CHANGE.exec(parts[index]?.toString("latin1") ?? "");
+    const path = parts[index + 1];
+    if (match === null || path === undefined) {
       throw new SnapshotError("git listed the changed files in a form the check cannot read.");
     }
-    changes.push({ path: String(parts[index + 1]), mode: String(match[1]), sha: String(match[2]), status: String(match[3]) });
+    changes.push({ path, mode: String(match[1]), sha: String(match[2]), status: String(match[3]) });
   }
   return changes;
 }
@@ -112,7 +136,7 @@ export function changesBetween(cwd: string, from: string, to: string): Change[] 
       cwd,
       ["diff-tree", "-r", "-z", "--raw", "--no-renames", requireObjectName(from), requireObjectName(to)],
       "list the PR's changed files",
-    ).toString("utf8"),
+    ),
   );
 }
 
@@ -121,11 +145,10 @@ export function commitsBetween(cwd: string, base: string, head: string): string[
   return lines(git(cwd, ["rev-list", "--reverse", requireObjectName(head), "--not", base], "list the PR's commits"), "\n");
 }
 
-/** Every path in a commit's tree. */
-export function treePaths(cwd: string, commit: string): string[] {
-  return lines(
+/** Every path in a commit's tree, as its bytes. */
+export function treePaths(cwd: string, commit: string): Buffer[] {
+  return nulSeparated(
     git(cwd, ["ls-tree", "-r", "-z", "--name-only", "--full-tree", requireObjectName(commit)], "list the files of the PR's head commit"),
-    "\0",
   );
 }
 

@@ -5,9 +5,13 @@ import { FAKE_WORDS } from "../testing/repo.ts";
 import { fold } from "./fold.ts";
 import {
   fileTexts,
+  gitForWindowsName,
   isBinary,
   isLfsPointer,
   lineHasName,
+  pathHasName,
+  pathOf,
+  pathReadings,
   readings,
   scanField,
   scanFile,
@@ -408,5 +412,72 @@ describe("scanFile", () => {
 
   it("checks only the path of a file without contents", () => {
     expect(scanFile(file("vendor/sub", undefined), words)).toEqual([]);
+  });
+
+  it("uses the alias when any reading of the path holds a name, for the path and for the lines", () => {
+    // 0xF3 alone is not UTF-8. Read as Latin-1 it is "ó", and the path spells the word.
+    const path = pathOf(Buffer.from("docs/zarqu\xF3n.md", "latin1"));
+    expect(lineHasName(path.path, words)).toBe(false);
+    expect(scanFile({ ...file("", "fine\nblirvex\n"), ...path }, words)).toEqual([
+      { place: "changed file 7 (its path)", reason: "name" },
+      { place: "changed file 7:2", reason: "name" },
+    ]);
+  });
+
+  it("reads every reading of an honoured folder's own path", () => {
+    const path = pathOf(Buffer.from("adapters/zarqu\xF3n/x.md", "latin1"));
+    expect(scanFile({ ...file("", "", path.path.slice(0, path.path.lastIndexOf("/"))), ...path }, words)).toEqual([
+      { place: "changed file 7 (its path)", reason: "name" },
+    ]);
+    // In an honoured folder, only the folder's part of each reading counts.
+    const inside = pathOf(Buffer.from("adapters/a1/zarqu\xF3n.md", "latin1"));
+    expect(scanFile({ ...file("", "", "adapters/a1"), ...inside }, words)).toEqual([]);
+  });
+});
+
+describe("pathOf", () => {
+  const latin1 = (text: string): Buffer => Buffer.from(text, "latin1");
+  const readingsOf = (bytes: Uint8Array): string[] => pathReadings(pathOf(bytes));
+
+  it("reads an ASCII path once, and a UTF-8 path as UTF-8 first", () => {
+    expect(pathOf(Buffer.from("docs/a.md"))).toEqual({ path: "docs/a.md" });
+    expect(readingsOf(Buffer.from("docs/räkenskap.md"))[0]).toBe("docs/räkenskap.md");
+  });
+
+  it("reads a path that is not UTF-8 as Latin-1, as CP437 and as Git for Windows names it", () => {
+    // Git for Windows writes the Latin-1 reading here, so it is there once.
+    expect(readingsOf(latin1("a\xF3"))).toEqual(["a�", "aó", "a≤"]);
+    expect(pathHasName(pathOf(latin1("docs/zarqu\xF3n.md")), words)).toBe(true);
+    // In CP437, 0xA2 is "ó"; in Latin-1 it is "¢".
+    expect(pathHasName(pathOf(latin1("docs/zarqu\xA2n.md")), words)).toBe(true);
+  });
+
+  it("reads a path that mixes UTF-8 and Latin-1 as Git for Windows names it", () => {
+    // A UTF-8 Cyrillic "а", then a Latin-1 "ó": only the name Git for Windows gives it spells the word.
+    const [utf8 = "", asLatin1 = "", asCp437 = "", onWindows = ""] = readingsOf(
+      Buffer.from([0x7a, 0xd0, 0xb0, 0x72, 0x71, 0x75, 0xf3, 0x6e]),
+    );
+    expect([utf8, asLatin1, asCp437].map((reading) => lineHasName(reading, words))).toEqual([false, false, false]);
+    expect(onWindows).toBe("zаrquón");
+    expect(lineHasName(onWindows, words)).toBe(true);
+  });
+
+  it("finds no name in a clean path in any reading", () => {
+    expect(pathHasName(pathOf(latin1("docs/b\xF3k.md")), words)).toBe(false);
+  });
+});
+
+describe("gitForWindowsName", () => {
+  // Each name is what Git for Windows 2.55 wrote to disk for these bytes.
+  it.each([
+    ["UTF-8 and a Latin-1 byte", [0x72, 0xc3, 0xa4, 0x78, 0xe0], "räxà"],
+    ["a sequence cut short", [0xe0, 0xa0], "à "],
+    ["an overlong form", [0xc0, 0xaf], "À¯"],
+    ["a four-byte letter", [0xf0, 0x9f, 0x98, 0x80], "\u{1f600}"],
+    ["bytes below 0xA0, which it writes as hex digits", [0xf0, 0x9f, 0x98], "ð9f98"],
+    ["a lead byte that starts nothing", [0xf5, 0x80], "õ80"],
+    ["U+FFFD itself", [0xef, 0xbf, 0xbd, 0x41], "�A"],
+  ])("reads %s", (_what, bytes, name) => {
+    expect(gitForWindowsName(Uint8Array.from(bytes))).toBe(name);
   });
 });

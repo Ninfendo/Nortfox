@@ -16,6 +16,12 @@ export interface TestRepo {
   readonly dir: string;
   write(path: string, contents: string | Uint8Array): void;
   git(...args: string[]): string;
+  /**
+   * Stages a file under a path given as bytes, which need not be UTF-8, as
+   * git stores it. git reads the path from its input, so no argument has to
+   * carry it. The working tree is left as it is.
+   */
+  stageBytes(path: Uint8Array, contents: string): void;
   commitAll(message: string): void;
   remove(): void;
 }
@@ -34,17 +40,18 @@ export interface CloneOf {
  */
 export function createTestRepo(clone?: CloneOf): TestRepo {
   const dir = mkdtempSync(join(tmpdir(), "nortfox-names-"));
-  const git = (...args: string[]): string => {
+  const gitWith = (input: Uint8Array | undefined, args: readonly string[]): string => {
     const result = spawnSync(
       "git",
       ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", ...args],
-      { cwd: dir, encoding: "utf8" },
+      { cwd: dir, encoding: "utf8", input },
     );
     if (result.status !== 0) {
       throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
     }
     return result.stdout;
   };
+  const git = (...args: string[]): string => gitWith(undefined, args);
   if (clone === undefined) {
     git("init", "--quiet", "--initial-branch=main");
   } else {
@@ -66,6 +73,10 @@ export function createTestRepo(clone?: CloneOf): TestRepo {
       writeFileSync(full, contents);
     },
     git,
+    stageBytes(path, contents) {
+      const blob = gitWith(Buffer.from(contents, "utf8"), ["hash-object", "-w", "--stdin"]).trim();
+      gitWith(Buffer.concat([Buffer.from(`100644 ${blob}\t`), path, Buffer.from([0])]), ["update-index", "--add", "-z", "--index-info"]);
+    },
     commitAll(message) {
       git("add", "--all");
       git("commit", "--quiet", "--allow-empty", "-m", message);

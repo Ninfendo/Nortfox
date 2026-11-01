@@ -36,22 +36,24 @@ export interface MarkerVerdict {
 }
 
 /**
- * Sorts markers into honoured and refused. `markerPaths` are every marker the
- * check can see; `aliasOf` names a marker whose path itself holds a name.
+ * Sorts markers into honoured and refused. `markers` are every marker the
+ * check can see, each with its path read as UTF-8 and any other readings of
+ * it; `placeOf` names a refused marker for the report, by an alias when some
+ * reading of its path holds a name.
  */
-export function judgeMarkers(
-  markerPaths: readonly string[],
+export function judgeMarkers<Marker extends { readonly path: string }>(
+  markers: readonly Marker[],
   allowlist: readonly string[],
-  aliasOf: (path: string) => string,
+  placeOf: (marker: Marker) => string,
 ): MarkerVerdict {
   const honoured: string[] = [];
   const findings: Finding[] = [];
-  for (const path of markerPaths) {
-    const folder = folderOf(path);
+  for (const marker of markers) {
+    const folder = folderOf(marker.path);
     if (folder !== "" && allowlist.includes(folder)) {
       honoured.push(folder);
     } else {
-      findings.push({ place: aliasOf(path), reason: "marker" });
+      findings.push({ place: placeOf(marker), reason: "marker" });
     }
   }
   return { honoured, findings };

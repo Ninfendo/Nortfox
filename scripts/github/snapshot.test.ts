@@ -7,6 +7,7 @@ import {
   commitsBetween,
   fetchCommit,
   mergeBase,
+  nulSeparated,
   parseCommit,
   parseRawChanges,
   readObjects,
@@ -128,7 +129,7 @@ describe("reading the head commit", () => {
     const { checkout, base, head } = fetched();
     expect(mergeBase(checkout.dir, "HEAD", head)).toBe(base);
     const changes = changesBetween(checkout.dir, base, head);
-    expect(changes.map(({ path, status, mode }) => `${status} ${mode} ${path}`)).toEqual([
+    expect(changes.map(({ path, status, mode }) => `${status} ${mode} ${path.toString("utf8")}`)).toEqual([
       "D 000000 gone.md",
       "M 100644 kept.md",
       "A 120000 link",
@@ -138,8 +139,10 @@ describe("reading the head commit", () => {
       "A 100644 same-b.md",
       "A 160000 vendor/sub",
     ]);
-    expect(changes.find((change) => change.path === "kept.md")?.sha).toBe(checkout.git("rev-parse", `${head}:kept.md`).trim());
-    expect(treePaths(checkout.dir, head)).toEqual(["kept.md", "link", "new-name.md", "same-a.md", "same-b.md", "vendor/sub"]);
+    expect(changes.find((change) => change.path.toString("utf8") === "kept.md")?.sha).toBe(
+      checkout.git("rev-parse", `${head}:kept.md`).trim(),
+    );
+    expect(treePaths(checkout.dir, head).map(String)).toEqual(["kept.md", "link", "new-name.md", "same-a.md", "same-b.md", "vendor/sub"]);
     expect(commitsBetween(checkout.dir, "HEAD", head)).toEqual([
       checkout.git("rev-parse", `${head}~1`).trim(),
       head,
@@ -170,16 +173,49 @@ describe("reading the head commit", () => {
   });
 });
 
+describe("paths that are not UTF-8", () => {
+  // git stores a path as bytes. 0xF3 alone is not UTF-8; in Latin-1 it is "ó".
+  const path = Buffer.concat([Buffer.from("docs/b"), Buffer.from([0xf3]), Buffer.from("k.md")]);
+
+  it("are given as the bytes git stores, in a change and in the tree", () => {
+    const origin = track(createTestRepo());
+    origin.write("a.md", "a\n");
+    origin.commitAll("Base");
+    const base = origin.git("rev-parse", "HEAD").trim();
+    origin.stageBytes(path, "a\n");
+    origin.git("commit", "--quiet", "-m", "Add a path in Latin-1");
+    const head = origin.git("rev-parse", "HEAD").trim();
+    const blob = origin.git("rev-parse", "HEAD:a.md").trim();
+    expect(changesBetween(origin.dir, base, head)).toEqual([{ path, mode: "100644", sha: blob, status: "A" }]);
+    expect(treePaths(origin.dir, head)).toEqual([Buffer.from("a.md"), path]);
+  });
+
+  it("are split from git's -z lists on their NUL bytes only", () => {
+    expect(nulSeparated(Buffer.concat([path, Buffer.from([0]), Buffer.from("b.md"), Buffer.from([0])]))).toEqual([
+      path,
+      Buffer.from("b.md"),
+    ]);
+    expect(nulSeparated(Buffer.alloc(0))).toEqual([]);
+  });
+});
+
 describe("parseRawChanges", () => {
   const sha = "b".repeat(40);
   const zero = "0".repeat(40);
+  const raw = (text: string): Buffer => Buffer.from(text, "latin1");
 
   it("reads each change, and nothing from no change", () => {
-    expect(parseRawChanges(`:000000 100644 ${zero} ${sha} A\0a b.md\0:100644 000000 ${sha} ${zero} D\0c.md\0`)).toEqual([
-      { path: "a b.md", mode: "100644", sha, status: "A" },
-      { path: "c.md", mode: "000000", sha: zero, status: "D" },
+    expect(parseRawChanges(raw(`:000000 100644 ${zero} ${sha} A\0a b.md\0:100644 000000 ${sha} ${zero} D\0c.md\0`))).toEqual([
+      { path: Buffer.from("a b.md"), mode: "100644", sha, status: "A" },
+      { path: Buffer.from("c.md"), mode: "000000", sha: zero, status: "D" },
     ]);
-    expect(parseRawChanges("")).toEqual([]);
+    expect(parseRawChanges(Buffer.alloc(0))).toEqual([]);
+  });
+
+  it("keeps a path as its bytes, also bytes that are not UTF-8", () => {
+    expect(parseRawChanges(raw(`:000000 100644 ${zero} ${sha} A\0b\xF3k.md\0`))).toEqual([
+      { path: raw("b\xF3k.md"), mode: "100644", sha, status: "A" },
+    ]);
   });
 
   it.each([
@@ -187,7 +223,7 @@ describe("parseRawChanges", () => {
     ["a change without its path", `:000000 100644 ${zero} ${sha} A\0`],
     ["a list that stops short", `:000000 100644 ${zero} ${sha} A\0a.md`],
   ])("fails on %s", (_what, output) => {
-    expect(() => parseRawChanges(output)).toThrow("git listed the changed files in a form the check cannot read.");
+    expect(() => parseRawChanges(raw(output))).toThrow("git listed the changed files in a form the check cannot read.");
   });
 });
 

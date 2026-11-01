@@ -11,6 +11,19 @@ import { main, WAITING, type Io } from "./cli.ts";
 
 const CLI = fileURLToPath(new URL("./cli.ts", import.meta.url));
 const base64 = (text: string): string => Buffer.from(text, "utf8").toString("base64");
+/**
+ * A path with a byte that is not UTF-8. Read as Latin-1, 0xF3 is "ó", so the
+ * path spells a made-up word there, and Git for Windows writes it so on disk.
+ * Read as UTF-8 it does not.
+ */
+const LATIN1_PATH = Buffer.from("docs/zarqu\xF3n.md", "latin1");
+/** The same, as the folder of a marker. */
+const LATIN1_MARKER = Buffer.from("adapters/zarqu\xF3n/.protected-name-ok", "latin1");
+
+/** Neither the path nor any part of the word that it spells is in the output. */
+function expectNoPath(lines: readonly string[]): void {
+  expect(lines.join("\n")).not.toMatch(/zarqu|�/i);
+}
 
 /** Every planted form of the fake words, one file each. */
 const PLANTED: Readonly<Record<string, string>> = {
@@ -143,6 +156,37 @@ describe("--all", () => {
     const result = await run(["--all"], { cwd: r.dir });
     expect(result.code).toBe(0);
   });
+
+  it("reads a path that is not UTF-8 every way, finds the file where git wrote it, and names it only by its alias", async () => {
+    const r = repo();
+    r.write("a.md", "fine\n");
+    r.git("add", "a.md");
+    r.stageBytes(LATIN1_PATH, "fine\nblirvex\n");
+    r.git("commit", "--quiet", "-m", "Start");
+    // git writes the file under the name it gives the path on this system.
+    r.git("checkout-index", "--all", "--force");
+    const result = await run(["--all"], { cwd: r.dir });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        "names: tracked file 2 (git ls-files) (its path) holds a protected name.",
+        "names: tracked file 2 (git ls-files):2 holds a protected name.",
+        "names: checked 2 files and 3 texts; 2 to fix. The check never shows what it found. Reword the text at each place.",
+      ],
+    });
+    expectNoPath(result.err);
+    expectNoWord(result.err);
+  });
+
+  it("fails on a tracked path that is not UTF-8 when it cannot find the file in the working tree", async () => {
+    const r = repo();
+    r.stageBytes(Buffer.from("docs/b\xF3k.md", "latin1"), "fine\n");
+    r.git("commit", "--quiet", "-m", "Start");
+    const result = await run(["--all"], { cwd: r.dir });
+    expect(result.code).toBe(1);
+    expect(result.err[0]).toBe("names: docs/b�k.md has contents the names check cannot get, such as a submodule.");
+  });
 });
 
 describe("the marker", () => {
@@ -232,6 +276,51 @@ describe("--staged", () => {
     r.git("checkout", "--quiet", "--detach");
     const result = await run(["--staged"], { cwd: r.dir });
     expect(result).toEqual({ code: 0, out: ["names: checked 0 files and 2 texts. Nothing found."], err: [] });
+  });
+
+  it("reads a staged path that is not UTF-8 every way, by the object the index holds, and names it only by its alias", async () => {
+    const r = repo();
+    r.write("a.md", "fine\n");
+    r.commitAll("Start");
+    r.git("rm", "--quiet", "--cached", "a.md");
+    r.stageBytes(LATIN1_PATH, "fine\nblirvex\n");
+    const result = await run(["--staged"], { cwd: r.dir });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        "names: staged file 2 (git diff --cached --name-only --no-renames) (its path) holds a protected name.",
+        "names: staged file 2 (git diff --cached --name-only --no-renames):2 holds a protected name.",
+        "names: checked 1 files and 3 texts; 2 to fix. The check never shows what it found. Reword the text at each place.",
+      ],
+    });
+    // The alias counts the files as that command lists them, the deleted one too.
+    expect(r.git("diff", "--cached", "--name-only", "--no-renames", "-z").split("\0")[0]).toBe("a.md");
+    expectNoPath(result.err);
+    expectNoWord(result.err);
+  });
+
+  it("refuses a staged submodule, whose contents it cannot get", async () => {
+    const r = repo();
+    r.git("update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},vendor/sub`);
+    const result = await run(["--staged"], { cwd: r.dir });
+    expect(result.code).toBe(1);
+    expect(result.err[0]).toBe("names: vendor/sub has contents the names check cannot get, such as a submodule.");
+  });
+
+  it("skips a file that is not merged yet, which git does not commit", async () => {
+    const r = repo();
+    r.write("a.md", "one\n");
+    r.commitAll("Start");
+    r.git("checkout", "--quiet", "-b", "other");
+    r.write("a.md", "two\n");
+    r.commitAll("Two");
+    r.git("checkout", "--quiet", "main");
+    r.write("a.md", "three\n");
+    r.commitAll("Three");
+    expect(() => r.git("merge", "--quiet", "other")).toThrow();
+    const result = await run(["--staged"], { cwd: r.dir });
+    expect(result).toEqual({ code: 0, out: ["names: checked 0 files and 3 texts. Nothing found."], err: [] });
   });
 });
 
@@ -679,6 +768,47 @@ describe("--pr", () => {
       "names: adapters/a1/.protected-name-ok is a .protected-name-ok marker outside the marker allowlist.",
       "names: checked 2 files and 9 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
+  });
+
+  it("reads a path that is not UTF-8 every way, and names its file and its marker only by their aliases", async () => {
+    const pr = pullRequest((origin) => {
+      origin.stageBytes(LATIN1_MARKER, "");
+      origin.stageBytes(LATIN1_PATH, "fine\nblirvex\n");
+      origin.git("commit", "--quiet", "-m", "Add the notes");
+    });
+    const base = pr.checkout.git("rev-parse", "HEAD").trim();
+    const alias = (index: number): string =>
+      `changed file ${String(index)} (git diff --name-only --no-renames ${base.slice(0, 7)} ${pr.head.slice(0, 7)})`;
+    const fine = { title: "Add the notes", body: null };
+    const owners = await fakeApi([{ body: prData(pr.head, fine) }]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(owners, pr.head) });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        `names: ${alias(1)} is a .protected-name-ok marker outside the marker allowlist.`,
+        `names: ${alias(1)} (its path) holds a protected name.`,
+        `names: ${alias(2)} (its path) holds a protected name.`,
+        `names: ${alias(2)}:2 holds a protected name.`,
+        "names: checked 2 files and 9 texts; 4 to fix. The check never shows what it found. Reword the text at each place.",
+      ],
+    });
+    expectNoPath(result.err);
+    expectNoWord(result.err);
+
+    // From another account, once the owner approved the head commit: the same count, and no place.
+    const outside = await fakeApi([{ body: prData(pr.head, { ...fine, user: { login: "someone" } }) }], {
+      [`GET ${p}/pulls/7/reviews?per_page=100`]: {
+        body: [{ user: { login: "owner" }, state: "APPROVED", commit_id: pr.head }],
+      },
+    });
+    expect(await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(outside, pr.head) })).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        "names: checked 2 files and 9 texts; 4 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
+      ],
+    });
   });
 
   it("fails, and passes nothing, in a checkout without the history of the default branch", async () => {
