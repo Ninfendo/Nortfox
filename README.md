@@ -21,4 +21,4 @@ Copyright (C) 2026 The NortFox authors.
 
 NortFox is free software under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE).
 
-The API client package and the API description (`openapi.json`) are under the MIT licence, so any program can use them. Each of them carries its own licence file.
+The API client package and the API description (`openapi.json`) are under the MIT licence, so any program can use them. The MIT licence file sits next to them.

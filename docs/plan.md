@@ -46,7 +46,7 @@ AGENTS.md          the rules for every change, by a person or an AI agent
 Who may import whom (checked in CI):
 
 - `engine` imports nothing from the repository. It does no I/O; the time and the reference data are passed in.
-- `i18n` imports nothing from the repository. It formats plain values: an amount as a `bigint` with its currency code, a date, a number.
+- `i18n` imports nothing from the repository. It formats plain values: an amount as a `bigint` with its currency code, a date, a number. Until `i18n` exists (slice 2d), the Swedish form of an amount sits in `engine`. The slice that adds `i18n` moves it there.
 - `contract` may import `engine`.
 - `server` may import `engine`, `contract` and `i18n`. It needs `i18n` for what it writes in Swedish or English: PDF reports, the archive, invitations and the texts in problem details. Only `server` talks to the database.
 - `ui` may import `i18n` and `engine`. It never calls the server; `web` passes the data in.
@@ -115,14 +115,15 @@ This is the repository setup. It lands before every other PR: until it does, not
   - zizmor and actionlint run in CI and find nothing. Every workflow starts with `permissions: {}` and grants a write scope only to the job that needs it. Every action is pinned to a full commit SHA. No `${{ github.event.* }}` or `github.head_ref` appears inside `run:`; such values pass through `env`. Checkout uses `persist-credentials: false`. No `pull_request` job needs a secret, so a PR from a fork runs every CI job. No required workflow has a paths filter.
   - "CI OK" runs with `if: always()` and fails when a job it needs failed, was cancelled or was skipped. A test feeds it each case.
   - CI installs with `pnpm install --frozen-lockfile`. Only the dependencies on an allowlist may run install scripts, and a new version of a dependency is installed only after a minimum age. `TURBO_TELEMETRY_DISABLED=1` is set. No remote cache exists that a PR run can write.
-  - The names check fails on the fake words that its tests inject, in each form it folds, and in a file name, a commit message and a PR title. A `.protected-name-ok` marker outside the marker allowlist fails it too. A missing secret fails it. It prints only where a match is.
+  - The names check fails on the fake words that its tests inject, in each form it folds, and in a file name, a commit message and a PR title. A `.protected-name-ok` marker outside the marker allowlist fails it too. A missing secret fails it. On a PR from the owner's account it prints only where a match is. A PR from any other account it reads only in a run that the owner starts, after the owner has approved its head commit, and then it prints only how many matches it found.
   - The fixture guard refuses a real-looking personal identity number, e-mail address or organisation number that is not on its short list of test values.
   - `AGENTS.md` carries the merge rule from [section 6](#where-the-checks-come-from): a PR whose author is not the owner's account is merged only by the owner, by hand, after reading its whole diff. Agents never merge such a PR, and the owner's own local setup stops them.
-  - After the owner steps below, a test PR shows that a push after the owner-ok label turns Owner OK back to pending.
+  - After the owner steps below, a test PR shows that a push after the owner-ok label removes the label, and that Owner OK then fails until the owner sets the label again.
 - **Owner steps** (agents cannot do these). There is no GitHub App and no bot account: the approval workflow uses its own `GITHUB_TOKEN`.
   - Put the list of protected names in a repository secret. The owner may keep it instead in an environment that only `main` can use.
   - Require every action to be pinned to a full commit SHA.
   - Set "Names", "Owner OK" and "Outside approval" by hand, once, on the frame PR and on the plan PR. They are the bootstrap: both were opened before the approval workflow was on `main`.
+  - After the frame PR merges, add "Names" to the required checks.
   - After the bootstrap, the owner may pin "CI OK", "Names", "Owner OK" and "Outside approval" to GitHub Actions. "Review OK" stays open to any source, because it is a commit status. A pin to GitHub Actions does not stop a PR from adding its own job with a required check's name, since that job runs in GitHub Actions too. The merge rule is the gate against that.
 
 ### Step 2: the foundation
@@ -164,7 +165,7 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 **2d. Web frame with the theme switcher**
 
-- **What:** `apps/web` with React 19, Vite and Tailwind v4; `packages/ui` with the first shadcn components on Base UI; `packages/i18n` with Swedish and English; login, company picker and an empty app frame with the menu; the theme switcher over the appearance values.
+- **What:** `apps/web` with React 19, Vite and Tailwind v4; `packages/ui` with the first shadcn components on Base UI; `packages/i18n` with Swedish and English, and the Swedish amount form moved there from `packages/engine`; login, company picker and an empty app frame with the menu; the theme switcher over the appearance values.
 - **Done when:**
   - Login, company choice and logout work in the browser through the generated client only. A guard refuses any other way of calling the server.
   - The theme changes at once, without a reload, and is saved per user through the API.
@@ -330,9 +331,9 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 ### The required checks
 
 - **CI OK:** the aggregator job of the CI workflow. It passes only when every CI job passed. A failed, cancelled or skipped job fails it.
-- **Names:** from the approval workflow. It fails when the names check finds a protected name in the PR ([the names check](#the-names-check)).
+- **Names:** from the approval workflow. It fails when the names check finds a protected name in the PR. On a PR from another account, it also fails until the owner has approved the head commit and started a run ([the names check](#the-names-check)).
 - **Owner OK:** from the approval workflow. It fails when Names fails. Otherwise it passes when the PR changes no owner path, or when the owner has set the owner-ok label on the PR's current head commit.
-- **Outside approval:** from the approval workflow. It passes when the PR's author is the owner's account. For any other author, it passes only after the owner approves the PR's current head commit.
+- **Outside approval:** from the approval workflow. It passes when the PR's author is the owner's account. For any other author, it passes only after the owner approves the PR's current head commit. A review starts no run, so after the review the owner re-runs the PR's latest approval run ([where the checks come from](#where-the-checks-come-from)).
 - **Review OK:** a commit status that the owner's review agent posts when it has reviewed the PR's head commit and passes it. The agents that build slices never post it.
 
 ### Where the checks come from
@@ -340,8 +341,12 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 NortFox uses no GitHub App and no bot account. Agents work as the owner's own GitHub account.
 
 - "CI OK" is a job of the CI workflow.
-- "Names", "Owner OK" and "Outside approval" are jobs of the approval workflow. It runs on `pull_request_target`, so GitHub runs the workflow file from `main`, never the PR's copy. The workflow never checks out, installs or runs the PR's code. It reads the PR's files, paths, commits, title, body, labels and reviews through the API, as data, with the run's own `GITHUB_TOKEN`.
+- "Names", "Owner OK" and "Outside approval" are jobs of the approval workflow. It runs on `pull_request_target` only, so GitHub runs the workflow file from `main`, never the PR's copy. The workflow never checks out, installs or runs the PR's code. Names fetches the PR's head commit by its SHA into a checkout of `main`, and reads the PR's files, paths and commits from it with git, as data. The title, body, labels and reviews come through the API, as data, with the run's own `GITHUB_TOKEN`.
 - "Review OK" is a commit status that the owner's review agent posts. The review agent approves the PRs that agents open from the owner's account, which GitHub does not let the same account approve.
+
+Each approval check judges one head commit: the one named by the event that started its run. It fails when the PR's head is another commit, so a verdict lands only on the commit it judged. Names and Owner OK read the PR again at the end, and give no result when it changed while they read it. The run for that change judges the PR again.
+
+A review starts no run, so the owner starts one after reviewing a PR from another account. After approving it, the owner re-runs the failed jobs of the PR's latest approval run. After asking for changes or dismissing a review, the owner re-runs all of that run's jobs, so that a pass that no longer holds turns red. Only then do Outside approval and Names see the review. The run must be the latest one, because a re-run judges the head commit of the event that started it.
 
 Branch protection accepts a required check with the right name from any source, until the check is pinned to one. After the bootstrap (step 1), the owner may pin "CI OK", "Names", "Owner OK" and "Outside approval" to GitHub Actions. "Review OK" stays open to any source.
 
@@ -353,7 +358,7 @@ A pin to GitHub Actions shuts out commit statuses and checks from any other sour
 
 ### Owner paths
 
-Owner OK decides from the files a PR changes. Labels on the PR or on its issue play no part. The list of owner paths is `.github/owner-paths.txt`. The workflow reads it from `main`, so a PR cannot shorten it for itself, and the list names itself, so a PR that shortens it for later PRs needs the owner too. The list is exactly:
+Only the files a PR changes decide whether it needs the owner. When it does, the owner-ok label on the PR, set on its head commit, is the only label that counts: other labels, and labels on a linked issue, play no part. The list of owner paths is `.github/owner-paths.txt`. The workflow reads it from `main`, so a PR cannot shorten it for itself, and the list names itself, so a PR that shortens it for later PRs needs the owner too. The list is exactly:
 
 ```
 db/migrations/**
@@ -367,7 +372,7 @@ db/migrations/**
 
 These are the changes that only the owner approves: the database, where the ledger law lives; the licences; and the exceptions to the names rule, which are the markers and the marker allowlist. Everything else is read by the owner's review agent, and every PR from someone other than the owner needs the owner's approving review anyway (Outside approval).
 
-The owner-ok label counts only for the head commit it was set on. A push after the label removes it, and Owner OK goes back to pending.
+The owner-ok label counts only for the head commit it was set on. A push after the label removes it, and Owner OK fails until the owner sets the label again.
 
 Agents work as the owner's GitHub account, so GitHub cannot tell a label that an agent sets from one the owner sets. A local hook stops agents from setting owner-ok, and that hook is part of this gate.
 
@@ -376,13 +381,16 @@ Agents work as the owner's GitHub account, so GitHub cannot tell a label that an
 The repository never contains a name on the owner's list of protected names ([decision 11](decisions/0011-names-policy.md)). The names check enforces it.
 
 - The list is a repository secret, or a secret of an environment that only `main` can use. It is never in the repository, not even as hashes, because the hash of a short name is reversed in moments. Locally, the same check reads the list from a file outside the repository.
-- The check runs in the approval workflow as "Names", over the PR's files, file and folder names, commit messages, branch name, title and body. A second job checks issue titles, bodies and comments when they change, and tells the owner.
+- The check runs in the approval workflow as "Names", over the PR's files, file and folder names, commits (each message, author and committer), branch name, title and body, and the commit message that the squash merge will write. A second job checks issue titles, bodies and comments when they change, and tells the owner.
 - A missing secret fails the check. It never skips.
-- It prints only where a match is (the file and line, or the field), never the match itself, because the logs are public.
-- Before it compares, it folds each text: Unicode NFKC; it strips combining marks (`\p{M}`) and format characters (`\p{Cf}`); it maps Unicode confusables to the letters they look like; it reads the digits 0, 1, 3, 4, 5 and 7, and `$`, as letters; it drops separators; and it decodes base64, percent-encoding and HTML entities.
+- On a PR from the owner's account, it prints only where a match is (the file and line, or the field), never the match itself, because the logs are public.
+- A PR from any other account is read with the list only in a run that the owner starts, while the PR is open, and after the owner has approved its head commit. The check then prints only how many matches it found, never where. A place would let anyone open a PR with one guess per line and read from the public log which guesses are on the list. A run that the author's own push or edit starts fails Names, which then waits for the owner.
+- The second job treats an issue or a comment from any other account the same way: it reads the text with the list only in a run that the owner starts, and prints only a count.
+- Before it compares, it folds each text: Unicode NFKC; it strips combining marks (`\p{M}`) and format characters (`\p{Cf}`); it maps Unicode confusables, letters and symbols alike, to the letters they look like; it reads the digits 0, 1, 3, 4, 5 and 7, and `$`, as letters; it drops separators; and it decodes base64, percent-encoding and the character references of the HTML standard. A look-alike symbol is read both as its letters and as a separator. An encoding wrapped across lines is put back together before it is decoded.
 - It reads each file by its type: text as UTF-8, and also as CP437 and Latin-1; PDF files with their streams inflated, and their Info and XMP metadata; EXIF data and PNG text chunks; the members of a zip file. A file type it cannot read is refused until the check learns to read it.
 - Dropping separators makes ordinary words match across a space. Such a text is reworded. The check keeps no allowlist of false positives: the only exceptions to the names rule are the markers and the marker allowlist, and both are owner paths.
-- A `.protected-name-ok` marker counts only in a folder on the marker allowlist, `.github/protected-name-allowlist.txt`, which holds one import adapter's folder. A marker anywhere else fails the check.
+- A digest is data, so the check reads it the way it reads base64: it decodes it and searches what it decodes to. In `pnpm-lock.yaml`, the value of pnpm's own integrity key at the start of a line, at the exact length of its algorithm, is read only that way, because so many random letters spell a short word by chance. Anywhere else, also on a comment line or later on the same line, a run shaped like a digest is read as letters too.
+- A `.protected-name-ok` marker counts only in a folder on the marker allowlist, `.github/protected-name-allowlist.txt`. The allowlist is empty until the first import adapter (slice 4f), and then holds that adapter's folder. A marker anywhere else fails the check.
 - Its tests inject fake words. The real names never appear in a test.
 
 ## 7. The legal frame

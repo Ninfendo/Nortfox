@@ -10,7 +10,7 @@ NortFox is an open-source Swedish accounting system. Everything in it works thro
 ## What never enters the repository
 
 - **Protected names.** The owner keeps a private list of names that must never appear in the repository, in any case or spelling. That covers file contents, file and folder names, code, comments, tests, fixtures, docs, commit messages, branch names, PR titles and bodies, and issue texts. The list is not in the repository in any form, so reading the code will not tell you what is on it. The names check knows it ([plan, section 6](docs/plan.md#the-names-check)).
-- When the names check fails, it shows only the file and line, or the field. Reword that text. Never try to work out the list, for example by probing the check with guesses, and never work around the check.
+- When the names check fails on a PR from the owner's account, which is how you work, it shows only the file and line, or the field. Reword that text. On a PR from any other account it shows only how many places there are. Never try to work out the list, for example by probing the check with guesses, and never work around the check.
 - The tools, services and open standards that NortFox is built on or connects to may be named, for example PostgreSQL, Hono or BankID.
 - **Never:** personal data, real company data, private e-mail addresses, internal hostnames or IP addresses, or issue numbers of other repositories.
 - **Test data is made up:** fictional companies and people, and the test identity and organisation numbers on the fixture guard's list. Nothing is recorded from a real account. A file made by another program has its program record and its metadata rewritten. A file from a third party carries a note with its source and its terms.
@@ -50,6 +50,7 @@ Never post any of these checks yourself: not by the API, and not through a job o
 You work as the owner's GitHub account, so GitHub cannot tell what you do from what the owner does. These rules, and the owner's local setup, keep the two apart.
 
 - Only the owner sets the owner-ok label. Never add it or remove it; the approval workflow removes it when a new commit is pushed.
+- Only the owner reviews a PR from another account, and only the owner re-runs its approval checks after the review. Never approve such a PR, ask for changes on it or dismiss a review of it, and never re-run its checks. Outside approval and Names trust a review and a run from the owner's account ([plan, section 6](docs/plan.md#where-the-checks-come-from)).
 - A PR whose author is not the owner's account is merged only by the owner, by hand, after reading its whole diff. Never merge such a PR. A check can be faked by a job that the PR adds, so a green PR from someone else is not safe to merge ([plan, section 6](docs/plan.md#where-the-checks-come-from)).
 - Never merge with `--admin`, and never bypass branch protection.
 - Never change the repository's settings, branch protection, rulesets, environments, secrets or GitHub Apps.

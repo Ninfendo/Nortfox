@@ -21,4 +21,4 @@ A JavaScript number is a binary float: `0.1 + 0.2` is not `0.3`. In accounting, 
 - Sums are exact. A balance is a sum of `bigint` values.
 - Every API client must read decimal strings. The generated client keeps them as strings.
 - TypeScript refuses to mix `bigint` and `number`, and the lint rule `restrict-plus-operands` catches an amount glued to a string.
-- Display formats such as `1 234,50 kr` come from `packages/i18n`.
+- Display formats such as `1 234,50 kr` come from `packages/i18n`. Until `packages/i18n` exists ([plan, slice 2d](../plan.md#step-2-the-foundation)), the Swedish form of an amount (`formatSwedish` and `parseSwedish`) sits in `packages/engine`. The slice that adds `packages/i18n` moves it there, and the engine then keeps only the wire form.
