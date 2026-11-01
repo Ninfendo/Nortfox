@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs";
 import { field, stringField } from "../github/api.ts";
 import {
+  isOwnersPullRequest,
   loadPullRequest,
   outsideApprovalOf,
   PullRequestMovedError,
@@ -105,15 +106,18 @@ interface Admitted {
 
 /**
  * Decides whether --pr reads the PR at all, before the list is read. A PR
- * from the owner's account is always read. Any other PR is read only in a run
- * that the owner started, while the PR is open, and once the owner has
+ * from the owner's account is always read: the owner opened it, from a branch
+ * in this repository or in the owner's own fork. Any other PR is read only in
+ * a run that the owner started, while the PR is open, and once the owner has
  * approved its head commit: the author's own pushes and edits start runs too,
- * and they must never learn anything from the list.
+ * and they must never learn anything from the list. A PR that the owner
+ * opened from another account's fork is such a PR, because that account can
+ * push to its branch.
  */
 async function admit(io: Io): Promise<Admitted | string> {
   const owner = requireEnv(io.env, "OWNER_LOGIN");
   const pr = await loadPullRequest(io.env);
-  if (pr.author === owner) {
+  if (isOwnersPullRequest(pr, owner)) {
     return { pr, fromOwner: true };
   }
   if (io.env["TRIGGERING_ACTOR"] !== owner || field(pr.data, "state") !== "open") {

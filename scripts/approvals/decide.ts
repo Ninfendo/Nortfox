@@ -21,25 +21,62 @@ export interface Review {
 /** Review states that change whether a PR is approved. A comment does not. */
 const DECIDING_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "DISMISSED"]);
 
+/** The repository that holds a PR's branch, and the account that owns it. */
+export interface HeadRepository {
+  /** "<owner>/<name>". */
+  readonly fullName: string;
+  readonly owner: string;
+}
+
+/** Who wrote a PR, and where its branch is. */
+export interface Origin {
+  readonly owner: string;
+  readonly author: string;
+  /** The repository the PR is in: "<owner>/<name>". */
+  readonly repository: string;
+  /** Undefined when the fork that held the branch is gone. */
+  readonly head: HeadRepository | undefined;
+}
+
+/**
+ * Whether a PR comes from the owner's account: the owner opened it, from a
+ * branch in this repository or in a fork that the owner owns. Anyone who can
+ * push to the PR's branch can change what the checks read, so a PR that the
+ * owner opened from another account's fork counts as from outside.
+ */
+export function fromOwnersAccount(origin: Origin): boolean {
+  return (
+    origin.author === origin.owner &&
+    origin.head !== undefined &&
+    (origin.head.fullName === origin.repository || origin.head.owner === origin.owner)
+  );
+}
+
 /**
  * Outside approval: a PR from the owner's account passes. Any other PR passes
  * only when the owner's latest deciding review approves its head commit.
  * `reviews` are in the order GitHub lists them, oldest first.
  */
-export function decideOutsideApproval(input: {
-  readonly owner: string;
-  readonly author: string;
-  readonly headSha: string;
-  readonly reviews: readonly Review[];
-}): Verdict {
-  if (input.author === input.owner) {
+export function decideOutsideApproval(
+  input: Origin & {
+    readonly headSha: string;
+    readonly reviews: readonly Review[];
+  },
+): Verdict {
+  if (fromOwnersAccount(input)) {
     return { pass: true, why: "The PR comes from the owner's account." };
   }
   const latest = input.reviews
     .filter((review) => review.login === input.owner && DECIDING_STATES.has(review.state))
     .at(-1);
   if (latest === undefined) {
-    return { pass: false, why: "The owner has not approved this PR yet." };
+    return {
+      pass: false,
+      why:
+        input.author === input.owner
+          ? "The owner opened this PR from a branch in another account's fork, and that account can push to it. So it needs the owner's approval of its head commit, which GitHub does not let the owner give to their own PR. Open it again from a branch in this repository."
+          : "The owner has not approved this PR yet.",
+    };
   }
   if (latest.state !== "APPROVED") {
     return { pass: false, why: "The owner's latest review does not approve this PR." };

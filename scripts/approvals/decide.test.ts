@@ -90,13 +90,38 @@ describe("owner paths", () => {
 
 describe("Outside approval", () => {
   const head = "h1";
-  const base = { owner: "owner", author: "someone", headSha: head };
+  const here = { fullName: "owner/r", owner: "owner" };
+  const base = { owner: "owner", author: "someone", repository: "owner/r", head: here, headSha: head };
+  const FORK =
+    "The owner opened this PR from a branch in another account's fork, and that account can push to it. So it needs the owner's approval of its head commit, which GitHub does not let the owner give to their own PR. Open it again from a branch in this repository.";
 
-  it("passes a PR from the owner's account", () => {
-    expect(decideOutsideApproval({ ...base, author: "owner", reviews: [] })).toEqual({
-      pass: true,
-      why: "The PR comes from the owner's account.",
-    });
+  it("passes a PR that the owner opened from a branch in this repository, or in the owner's own fork", () => {
+    for (const where of [base, { ...base, repository: "org/r", head: { fullName: "owner/r", owner: "owner" } }]) {
+      expect(decideOutsideApproval({ ...where, author: "owner", reviews: [] })).toEqual({
+        pass: true,
+        why: "The PR comes from the owner's account.",
+      });
+    }
+  });
+
+  it("counts a PR that the owner opened from another account's fork, or from a fork that is gone, as from outside", () => {
+    for (const fork of [{ fullName: "someone/r", owner: "someone" }, undefined]) {
+      const owners = { ...base, author: "owner", head: fork };
+      expect(decideOutsideApproval({ ...owners, reviews: [] })).toEqual({ pass: false, why: FORK });
+      expect(decideOutsideApproval({ ...owners, reviews: [{ login: "owner", state: "COMMENTED", commitId: head }] })).toEqual({
+        pass: false,
+        why: FORK,
+      });
+      // GitHub does not let an author approve their own PR. If it ever did, the approval would count as for any other PR.
+      expect(decideOutsideApproval({ ...owners, reviews: [{ login: "owner", state: "APPROVED", commitId: head }] })).toEqual({
+        pass: true,
+        why: "The owner approved this PR's head commit.",
+      });
+    }
+  });
+
+  it("never counts a PR from another author as the owner's, wherever its branch is", () => {
+    expect(decideOutsideApproval({ ...base, reviews: [] })).toEqual({ pass: false, why: "The owner has not approved this PR yet." });
   });
 
   it("passes when the owner's latest deciding review approves the head commit", () => {

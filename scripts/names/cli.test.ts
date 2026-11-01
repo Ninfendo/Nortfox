@@ -396,7 +396,7 @@ describe("--pr", () => {
       body: "Line one\n\nb1irvex",
       state: "open",
       user: { login: "owner" },
-      head: { sha: head, ref: "feature/x" },
+      head: { sha: head, ref: "feature/x", repo: { full_name: "o/r", owner: { login: "o" } } },
       base: { ref: "main", repo: { default_branch: "main" } },
       ...overrides,
     };
@@ -694,6 +694,37 @@ describe("--pr", () => {
     it("once approved, in a run that the owner started, says how many places it found, but never where", async () => {
       const pr = everything();
       const server = await fakeApi([{ body: prData(pr.head, outside) }], approval(pr.head));
+      const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+      expect(result).toEqual({
+        code: 1,
+        out: [],
+        err: [
+          "names: checked 4 files and 11 texts; 12 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
+        ],
+      });
+    });
+
+    it("counts a PR that the owner opened from another account's fork, or from a fork that is gone, as from outside", async () => {
+      const pr = pullRequest(plantEverything);
+      for (const repo of [{ full_name: "someone/r", owner: { login: "someone" } }, null]) {
+        const fork = { user: { login: "owner" }, head: { sha: pr.head, ref: "feature/x", repo } };
+        // The fork's owner can push to the branch, and each push starts a run.
+        for (const [actor, routes] of [
+          ["someone", approval(pr.head)],
+          ["owner", {}],
+        ] as const) {
+          const server = await fakeApi([{ body: prData(pr.head, fork) }], routes);
+          const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head, { TRIGGERING_ACTOR: actor }) });
+          expect(result).toEqual({ code: 1, out: [], err: [`names: ${WAITING}`] });
+        }
+      }
+      expect(() => pr.checkout.git("cat-file", "-e", pr.head)).toThrow();
+      // GitHub does not let the owner approve their own PR. If it ever did, the
+      // check would read such a PR as one from outside: a count, never places.
+      const server = await fakeApi(
+        [{ body: prData(pr.head, { head: { sha: pr.head, ref: "feature/x", repo: { full_name: "someone/r", owner: { login: "someone" } } } }) }],
+        approval(pr.head),
+      );
       const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
       expect(result).toEqual({
         code: 1,

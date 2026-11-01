@@ -63,7 +63,7 @@ function prData(author: string, labels: string[] = [], baseRef = "main", changed
     title: "Add the ledger",
     body: null,
     user: { login: author },
-    head: { sha: head, ref: "feature/x", repo: { full_name: "o/r" } },
+    head: { sha: head, ref: "feature/x", repo: { full_name: "o/r", owner: { login: "o" } } },
     base: { ref: baseRef, repo: { default_branch: "main" } },
     labels: labels.map((name) => ({ name })),
     changed_files: changed,
@@ -126,6 +126,20 @@ describe("outside-approval", () => {
     expect(stale).toMatchObject({
       code: 1,
       err: ["Outside approval: The owner approved an earlier commit. The new commits need the owner's approval too."],
+    });
+  });
+
+  it("fails a PR that the owner opened from a branch in another account's fork", async () => {
+    const data = { ...prData("owner"), head: { sha: head, ref: "feature/x", repo: { full_name: "someone/r", owner: { login: "someone" } } } };
+    const result = await run(["outside-approval"], {
+      [`GET ${p}/pulls/7`]: { body: data },
+      [`GET ${p}/pulls/7/reviews?per_page=100`]: { body: [] },
+    });
+    expect(result).toMatchObject({
+      code: 1,
+      err: [
+        "Outside approval: The owner opened this PR from a branch in another account's fork, and that account can push to it. So it needs the owner's approval of its head commit, which GitHub does not let the owner give to their own PR. Open it again from a branch in this repository.",
+      ],
     });
   });
 

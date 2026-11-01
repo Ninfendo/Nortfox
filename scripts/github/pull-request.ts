@@ -3,7 +3,7 @@
 // The pull request that a check in the approval workflow judges, read through
 // the API as data.
 
-import { decideOutsideApproval, type Review, type Verdict } from "../approvals/decide.ts";
+import { decideOutsideApproval, fromOwnersAccount, type HeadRepository, type Origin, type Review, type Verdict } from "../approvals/decide.ts";
 import { field, pullRequestContext, stringField, type GitHub } from "./api.ts";
 
 export interface PullRequest {
@@ -17,6 +17,8 @@ export interface PullRequest {
   /** The head commit the run judges: the one the event that started the run named. */
   readonly headSha: string;
   readonly author: string;
+  /** The repository that holds the PR's branch; undefined when that fork is gone. */
+  readonly headRepository: HeadRepository | undefined;
 }
 
 export class WrongBaseError extends Error {
@@ -61,7 +63,13 @@ export async function loadPullRequest(env: Readonly<Record<string, string | unde
     data,
     headSha,
     author: stringField(field(data, "user"), "login"),
+    headRepository: headRepositoryOf(field(field(data, "head"), "repo")),
   };
+}
+
+/** The API gives null for a fork that is gone. */
+function headRepositoryOf(repo: unknown): HeadRepository | undefined {
+  return repo === null ? undefined : { fullName: stringField(repo, "full_name"), owner: stringField(field(repo, "owner"), "login") };
 }
 
 /** What a check reads from the PR itself: its head commit, title, body, branch and base. */
@@ -101,9 +109,19 @@ export async function reviewsOf(pr: PullRequest): Promise<Review[]> {
   }));
 }
 
-/** Outside approval: the owner wrote the PR, or approved its head commit. */
+/** Who wrote the PR, and where its branch is: what decides whether it comes from the owner's account. */
+function originOf(pr: PullRequest, owner: string): Origin {
+  return { owner, author: pr.author, repository: pr.repository, head: pr.headRepository };
+}
+
+/** Whether the owner opened the PR, from a branch in this repository or in the owner's own fork. */
+export function isOwnersPullRequest(pr: PullRequest, owner: string): boolean {
+  return fromOwnersAccount(originOf(pr, owner));
+}
+
+/** Outside approval: the PR comes from the owner's account, or the owner approved its head commit. */
 export async function outsideApprovalOf(pr: PullRequest, owner: string): Promise<Verdict> {
-  return decideOutsideApproval({ owner, author: pr.author, headSha: pr.headSha, reviews: await reviewsOf(pr) });
+  return decideOutsideApproval({ ...originOf(pr, owner), headSha: pr.headSha, reviews: await reviewsOf(pr) });
 }
 
 export function requireEnv(env: Readonly<Record<string, string | undefined>>, name: string): string {
