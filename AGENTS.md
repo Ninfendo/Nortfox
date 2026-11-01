@@ -40,7 +40,7 @@ NortFox is an open-source Swedish accounting system. Everything in it works thro
 - **CI OK:** every CI job passed.
 - **Names:** the names check found nothing.
 - **Owner OK:** Names passed, and a PR that changes an owner path (`.github/owner-paths.txt`) carries the owner-ok label on its head commit.
-- **Outside approval:** the PR comes from the owner's account, or the owner approved its head commit.
+- **Outside approval:** the PR comes from the owner's account, or the owner approved its head commit. A PR comes from the owner's account only when the owner opened it from a branch in this repository or in the owner's own fork.
 - **Review OK:** the owner's review agent passed the PR's head commit.
 
 Never post any of these checks yourself: not by the API, and not through a job or a commit status that carries one of their names. Only the owner's review agent posts Review OK.
@@ -50,7 +50,8 @@ Never post any of these checks yourself: not by the API, and not through a job o
 You work as the owner's GitHub account, so GitHub cannot tell what you do from what the owner does. These rules, and the owner's local setup, keep the two apart.
 
 - Only the owner sets the owner-ok label. Never add it or remove it; the approval workflow removes it when a new commit is pushed.
-- Only the owner reviews a PR from another account, and only the owner re-runs its approval checks after the review. Never approve such a PR, ask for changes on it or dismiss a review of it, and never re-run its checks. Outside approval and Names trust a review and a run from the owner's account ([plan, section 6](docs/plan.md#where-the-checks-come-from)).
+- Only the owner reviews a PR from another account, and only the owner starts its approval checks. Never approve such a PR, ask for changes on it or dismiss a review of it. Never do anything to it that starts an approval run: no label of any kind, no edit of its title, body or base, no close or reopen, and no re-run of its checks. Outside approval and Names trust a review and a run from the owner's account, and in such a run Names reads the PR with the list ([plan, section 6](docs/plan.md#the-names-check)).
+- Only the owner takes over work from another account, after reading it, in a branch of this repository. Never open a PR from a branch in another account's fork. That account can push to the branch, so the checks treat the PR as one from that account.
 - A PR whose author is not the owner's account is merged only by the owner, by hand, after reading its whole diff. Never merge such a PR. A check can be faked by a job that the PR adds, so a green PR from someone else is not safe to merge ([plan, section 6](docs/plan.md#where-the-checks-come-from)).
 - Never merge with `--admin`, and never bypass branch protection.
 - Never change the repository's settings, branch protection, rulesets, environments, secrets or GitHub Apps.
