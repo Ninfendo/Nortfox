@@ -13,8 +13,12 @@ on:
 
 permissions: {}
 
+# A newer run of a PR cancels the older one. Each run for a push to main has
+# a group of its own, so no newer run ever cancels it. In a shared group,
+# GitHub drops a waiting run when a newer one joins, and "names (main)" would
+# then never check that push's commits.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -113,6 +117,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The whole history, so that every commit the push added is here.
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
@@ -121,3 +127,47 @@ jobs:
         run: node scripts/names/cli.ts --all --base HEAD
         env:
           PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}
+      # The step above reads only the last commit. A push can add more than
+      # one, and a merge made by hand, or a squash message edited in the merge
+      # box, is text that the PR's Names check never saw. This step runs even
+      # when the one above fails, because the next push checks only its own
+      # commits.
+      - name: No protected name in a commit the push added
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          id='^([0-9a-f]{40}|[0-9a-f]{64})$'
+          if [[ ! "$AFTER" =~ $id ]]; then
+            echo "names: the pushed commit is not a commit id." >&2
+            exit 1
+          fi
+          if [[ "$BEFORE" =~ ^0+$ ]]; then
+            # The push made the branch, so there is no commit before it.
+            git rev-list --max-count=1 "$AFTER" -- > "$RUNNER_TEMP/commits"
+          elif [[ "$BEFORE" =~ $id ]] && git cat-file -e "$BEFORE^{commit}" 2> /dev/null; then
+            git rev-list "$BEFORE..$AFTER" -- > "$RUNNER_TEMP/commits"
+          else
+            echo "names: the commit before the push is not in the clone, so the check cannot tell which commits the push added." >&2
+            exit 1
+          fi
+          count=0
+          failed=0
+          # The three texts that the names check reads from a commit, each
+          # without the line breaks at its end, as the names check reads them.
+          check() {
+            local text
+            text=$(git log -1 --format="$2" "$commit" --)
+            printf '%s' "$text" | node scripts/names/cli.ts --text --label "$1" || failed=1
+          }
+          while IFS= read -r commit <&3; do
+            check "commit ${commit:0:7}" "%B"
+            check "commit ${commit:0:7} author" "%an <%ae>"
+            check "commit ${commit:0:7} committer" "%cn <%ce>"
+            count=$((count + 1))
+          done 3< "$RUNNER_TEMP/commits"
+          echo "names: checked ${count} commits that the push added."
+          exit "$failed"
+        env:
+          PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
