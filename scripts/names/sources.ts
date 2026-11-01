@@ -23,6 +23,11 @@ export interface TextField {
   /** "PR title", "branch name", "commit 1a2b3c4", "commit 1a2b3c4 author". */
   readonly field: string;
   readonly text: string;
+  /**
+   * More readings of the same bytes, such as a commit's message read in
+   * another encoding. A name in any of them is found at the field's place.
+   */
+  readonly alsoReadAs?: readonly string[];
 }
 
 export interface Source {
@@ -59,18 +64,26 @@ function readWorkingFile(cwd: string, path: string): Uint8Array | undefined {
   return readFileSync(full);
 }
 
+/** One field, read every way in `readings`. */
+function fieldOf(field: string, readings: readonly string[]): TextField {
+  const [text = "", ...alsoReadAs] = readings;
+  return alsoReadAs.length === 0 ? { field, text } : { field, text, alsoReadAs };
+}
+
 /**
  * The fields of one commit: its message, and the name and e-mail address of
- * its author and of its committer. They are public on every commit, and a
- * squash merge copies the authors into the commit on main.
+ * its author and of its committer, each in every reading given. They are
+ * public on every commit, and a squash merge copies the authors into the
+ * commit on main.
  */
-function commitFields(sha: string, message: string, author: string, committer: string): TextField[] {
+function commitFields(
+  sha: string,
+  message: readonly string[],
+  author: readonly string[],
+  committer: readonly string[],
+): TextField[] {
   const commit = `commit ${sha.slice(0, 7)}`;
-  return [
-    { field: commit, text: message },
-    { field: `${commit} author`, text: author },
-    { field: `${commit} committer`, text: committer },
-  ];
+  return [fieldOf(commit, message), fieldOf(`${commit} author`, author), fieldOf(`${commit} committer`, committer)];
 }
 
 function lastCommit(cwd: string): TextField[] {
@@ -79,7 +92,7 @@ function lastCommit(cwd: string): TextField[] {
     return [];
   }
   const [sha = "", author = "", committer = "", ...message] = text.split("\n");
-  return commitFields(sha, message.join("\n").trimEnd(), author, committer);
+  return commitFields(sha, [message.join("\n").trimEnd()], [author], [committer]);
 }
 
 /** --all: every tracked file and its contents, and the last commit. */

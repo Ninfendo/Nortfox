@@ -563,6 +563,51 @@ describe("--pr", () => {
     }
   });
 
+  it("finds a name in each commit whose encoding header git cannot use, in its message, author and committer", async () => {
+    // git writes the text as it is and only adds the header. Where git cannot
+    // convert the text, git log shows it as it is, so the check reads it so too.
+    // The texts are not ASCII, so their UTF-8 and Latin-1 readings differ, and
+    // a place that both find is still counted once.
+    const encodings = ["unicodefffe", "csunicode", "utf-16le", "utf-16le"];
+    const pr = pullRequest((origin) => {
+      origin.write("docs/a.md", "fine\n");
+      origin.git("add", "--all");
+      for (const [index, encoding] of encodings.entries()) {
+        origin.git(
+          "-c",
+          "user.name=Åsa Zarquon",
+          "-c",
+          "user.email=ann@example.invalid",
+          "-c",
+          `i18n.commitEncoding=${encoding}`,
+          "commit",
+          "--quiet",
+          "--allow-empty",
+          "-m",
+          `Tidy the zarquon café notes${"s".repeat(index)}`,
+        );
+      }
+    });
+    const commits = pr.origin.git("rev-list", "--reverse", pr.head, "--not", "main").trim().split("\n");
+    expect(commits).toHaveLength(encodings.length);
+    // The two UTF-16 commits have an odd and an even length, so git fails to convert one and converts the other.
+    expect(commits.slice(2).map((commit) => Number(pr.origin.git("cat-file", "-s", commit)) % 2).sort()).toEqual([0, 1]);
+    const server = await fakeApi([{ body: prData(pr.head, { title: "Fine", body: null }) }]);
+    const result = await run(["--pr"], { cwd: pr.checkout.dir, env: prEnv(server, pr.head) });
+    expect(result).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        ...commits.flatMap((commit) => {
+          const field = `names: commit ${commit.slice(0, 7)}`;
+          return [`${field} holds a protected name.`, `${field} author holds a protected name.`, `${field} committer holds a protected name.`];
+        }),
+        "names: checked 1 files and 17 texts; 12 to fix. The check never shows what it found. Reword the text at each place.",
+      ],
+    });
+    expectNoWord([...result.out, ...result.err]);
+  });
+
   it("honours a marker in an allowlisted folder of the head commit, also one that the PR does not change", async () => {
     const pr = pullRequest(
       (origin) => {

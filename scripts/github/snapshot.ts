@@ -9,6 +9,7 @@
 // an API listing is, and the reads cost no API requests.
 
 import { spawnSync } from "node:child_process";
+import { TextDecoder } from "node:util";
 
 export class SnapshotError extends Error {
   override readonly name = "SnapshotError";
@@ -160,38 +161,108 @@ export function readObjects(cwd: string, names: readonly string[], type: "blob" 
   };
 }
 
+/**
+ * A commit's texts, each in every reading that someone who looks at the
+ * commit may see. The first reading is UTF-8.
+ */
 export interface CommitText {
-  readonly message: string;
+  readonly message: readonly string[];
   /** "Name <address>", without the time. */
-  readonly author: string;
-  readonly committer: string;
+  readonly author: readonly string[];
+  readonly committer: readonly string[];
 }
 
-function decode(bytes: Uint8Array, encoding: string | undefined): string {
+/**
+ * The decoders for the encoding that a commit's header names. git converts
+ * with iconv, which does not agree with TextDecoder on the byte order of
+ * every UTF-16 name, so a UTF-16 name gets both orders. A name that
+ * TextDecoder does not know is refused: git may know it, and show a text
+ * that the check cannot read.
+ */
+function declaredDecoders(label: string | undefined): TextDecoder[] {
+  if (label === undefined) {
+    return [];
+  }
   let decoder;
   try {
-    decoder = new TextDecoder(encoding ?? "utf-8");
+    decoder = new TextDecoder(label);
   } catch {
     throw new SnapshotError("A commit is written in a text encoding the check cannot read.");
   }
-  return decoder.decode(bytes);
+  return decoder.encoding.startsWith("utf-16") ? [new TextDecoder("utf-16le"), new TextDecoder("utf-16be")] : [decoder];
+}
+
+/**
+ * Every reading of some bytes of a commit: the bytes as they are, in UTF-8
+ * and in Latin-1, and in the encoding that the header names. git shows the
+ * bytes as they are when it cannot convert them, so those two readings are
+ * always there; the header's encoding alone would leave out what git shows.
+ * A reading that does not decode cleanly is kept too: one reading too many
+ * can only find more. `shifted` also reads UTF-16 from the second byte,
+ * because git converts the whole commit, headers too, so a message may start
+ * at either byte of a two-byte unit.
+ */
+function readingsOf(bytes: Uint8Array, decoders: readonly TextDecoder[], shifted = false): string[] {
+  const raw = Buffer.from(bytes);
+  const readings = [raw.toString("utf8"), raw.toString("latin1")];
+  for (const decoder of decoders) {
+    readings.push(decoder.decode(bytes));
+    if (shifted && decoder.encoding.startsWith("utf-16")) {
+      readings.push(decoder.decode(bytes.subarray(1)));
+    }
+  }
+  return readings;
+}
+
+const unique = (readings: readonly string[]): string[] => [...new Set(readings)];
+
+/** Where the headers end: at the first blank line, or at the end when there is none. */
+function headerEnd(bytes: Uint8Array): number {
+  for (let index = 0; index + 1 < bytes.length; index += 1) {
+    if (bytes[index] === 0x0a && bytes[index + 1] === 0x0a) {
+      return index;
+    }
+  }
+  return bytes.length;
+}
+
+/**
+ * The bytes of the one header with this key, without the time: "Name
+ * <address>". A commit without exactly one is refused. git fsck refuses such
+ * a commit too, and the check never passes a text that it did not find.
+ */
+function identityBytes(headers: Uint8Array, key: "author" | "committer"): Uint8Array {
+  // Latin-1 gives one character per byte, so a place in the text is the same place in the bytes.
+  const lines = Buffer.from(headers).toString("latin1").split("\n");
+  const found: Uint8Array[] = [];
+  let at = 0;
+  for (const line of lines) {
+    if (line.startsWith(`${key} `)) {
+      const start = at + key.length + 1;
+      found.push(headers.subarray(start, start + line.slice(key.length + 1).replace(/ \d+ [+-]\d{4}$/, "").length));
+    }
+    at += line.length + 1;
+  }
+  const [only] = found;
+  if (only === undefined || found.length !== 1) {
+    throw new SnapshotError(`A commit does not have exactly one ${key}.`);
+  }
+  return only;
 }
 
 /**
  * A commit's message, author and committer, read from the commit object. The
- * whole object is read in the encoding its header names, as git log does.
+ * headers are ASCII up to their values, so the object is split on its bytes,
+ * and each text is then read every way that git may show it (readingsOf).
  */
 export function parseCommit(bytes: Uint8Array): CommitText {
-  // The headers are ASCII up to their values, so Latin-1 finds the encoding header safely.
-  const encoding = /^encoding (.+)$/m.exec(Buffer.from(bytes).toString("latin1").split("\n\n", 1).join(""))?.[1];
-  const text = decode(bytes, encoding);
-  const split = text.indexOf("\n\n");
-  const headers = (split === -1 ? text : text.slice(0, split)).split("\n");
-  const identity = (key: string): string =>
-    (headers.find((line) => line.startsWith(`${key} `)) ?? "").slice(key.length + 1).replace(/ \d+ [+-]\d{4}$/, "");
+  const end = headerEnd(bytes);
+  const headers = bytes.subarray(0, end);
+  const encoding = /^encoding (.*)$/m.exec(Buffer.from(headers).toString("latin1"))?.[1];
+  const decoders = declaredDecoders(encoding);
   return {
-    message: split === -1 ? "" : text.slice(split + 2).trimEnd(),
-    author: identity("author"),
-    committer: identity("committer"),
+    message: unique(readingsOf(bytes.subarray(end + 2), decoders, true).map((reading) => reading.trimEnd())),
+    author: unique(readingsOf(identityBytes(headers, "author"), decoders)),
+    committer: unique(readingsOf(identityBytes(headers, "committer"), decoders)),
   };
 }

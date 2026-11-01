@@ -192,37 +192,84 @@ describe("parseRawChanges", () => {
 });
 
 describe("parseCommit", () => {
-  const commit = (headers: string, message: string): Buffer =>
-    Buffer.from(`tree ${"a".repeat(40)}\n${headers}\n\n${message}`, "latin1");
+  const people = "author Ann Example <ann@example.invalid> 1700000000 +0100\ncommitter Bo <bo@example.invalid> 1700000001 -0230";
+  const commit = (headers: string, message: string | Buffer): Buffer =>
+    Buffer.concat([
+      Buffer.from(`tree ${"a".repeat(40)}\n${headers}\n\n`, "latin1"),
+      typeof message === "string" ? Buffer.from(message, "latin1") : message,
+    ]);
 
   it("reads the message, and who wrote and committed it without the time", () => {
     expect(
-      parseCommit(
-        commit(
-          "author Ann Example <ann@example.invalid> 1700000000 +0100\ncommitter Bo <bo@example.invalid> 1700000001 -0230\ngpgsig -----BEGIN-----\n \n -----END-----",
-          "Add the ledger\n\nIt balances.\n",
-        ),
-      ),
+      parseCommit(commit(`${people}\ngpgsig -----BEGIN-----\n \n -----END-----`, "Add the ledger\n\nIt balances.\n")),
     ).toEqual({
-      message: "Add the ledger\n\nIt balances.",
-      author: "Ann Example <ann@example.invalid>",
-      committer: "Bo <bo@example.invalid>",
+      message: ["Add the ledger\n\nIt balances."],
+      author: ["Ann Example <ann@example.invalid>"],
+      committer: ["Bo <bo@example.invalid>"],
     });
   });
 
-  it("reads the commit in the encoding its header names", () => {
-    const parsed = parseCommit(commit("author Bj\xF8rn <b@example.invalid> 1 +0000\nencoding ISO-8859-1", "Gr\xF8n\n"));
-    expect(parsed).toEqual({ message: "Grøn", author: "Bjørn <b@example.invalid>", committer: "" });
+  it("reads the commit in the encoding its header names, and also its bytes as they are", () => {
+    const parsed = parseCommit(
+      commit("author Bj\xF8rn <b@example.invalid> 1 +0000\ncommitter Bo <bo@example.invalid> 1 +0000\nencoding ISO-8859-1", "Gr\xF8n\n"),
+    );
+    expect(parsed).toEqual({
+      message: ["Gr�n", "Grøn"],
+      author: ["Bj�rn <b@example.invalid>", "Bjørn <b@example.invalid>"],
+      committer: ["Bo <bo@example.invalid>"],
+    });
   });
 
-  it("refuses an encoding it cannot read, and reads a commit without a message", () => {
-    expect(() => parseCommit(commit("encoding x-no-such-encoding", "Hi"))).toThrow(
-      "A commit is written in a text encoding the check cannot read.",
+  // git writes the message and the names as they are and only adds the
+  // header. Where git cannot convert them, git log shows them as they are.
+  it.each([
+    ["a name that git does not know", "unicodefffe", "Add the ledger\n"],
+    ["another such name", "csunicode", "Add the ledger\n"],
+    ["UTF-16 of an odd length", "UTF-16LE", "Add the ledger\n"],
+    ["UTF-16 of an even length", "UTF-16LE", "Add the ledgers\n"],
+  ])("reads the bytes as they are when the header names %s", (_what, encoding, message) => {
+    const parsed = parseCommit(commit(`${people}\nencoding ${encoding}`, message));
+    expect(parsed.message).toContain(message.trimEnd());
+    expect(parsed.author).toContain("Ann Example <ann@example.invalid>");
+    expect(parsed.committer).toContain("Bo <bo@example.invalid>");
+  });
+
+  it("reads UTF-16 in both byte orders, and from either byte of the message", () => {
+    for (const [encoding, bytes] of [
+      ["UTF-16LE", Buffer.from("Add the ledger", "utf16le")],
+      // iconv reads a plain "UTF-16" as big-endian; TextDecoder reads it as little-endian.
+      ["UTF-16", Buffer.from("Add the ledger", "utf16le").swap16()],
+      // git converts the whole commit, so the message may start in the middle of a unit.
+      ["UTF-16LE", Buffer.concat([Buffer.from([0x41]), Buffer.from("Add the ledger", "utf16le")])],
+    ] as const) {
+      expect(parseCommit(commit(`${people}\nencoding ${encoding}`, bytes)).message).toContain("Add the ledger");
+    }
+  });
+
+  it("refuses an encoding it cannot read", () => {
+    for (const encoding of ["x-no-such-encoding", "utf-7", "iso-2022-kr", ""]) {
+      expect(() => parseCommit(commit(`${people}\nencoding ${encoding}`, "Hi"))).toThrow(
+        "A commit is written in a text encoding the check cannot read.",
+      );
+    }
+  });
+
+  it("refuses a commit without exactly one author and one committer, and reads one without a message", () => {
+    const author = "author A <a@example.invalid> 1 +0000";
+    const committer = "committer C <c@example.invalid> 1 +0000";
+    expect(() => parseCommit(commit(committer, "Hi"))).toThrow("A commit does not have exactly one author.");
+    expect(() => parseCommit(commit(`${author}\n${author}\n${committer}`, "Hi"))).toThrow(
+      "A commit does not have exactly one author.",
     );
-    expect(parseCommit(Buffer.from(`tree ${"a".repeat(40)}\nauthor A <a@example.invalid> 1 +0000`))).toEqual({
-      message: "",
-      author: "A <a@example.invalid>",
-      committer: "",
+    expect(() => parseCommit(commit(author, "Hi"))).toThrow("A commit does not have exactly one committer.");
+    // A name inside a signature is not a header.
+    expect(() => parseCommit(commit(`${author}\ngpgsig x\n ${committer}`, "Hi"))).toThrow(
+      "A commit does not have exactly one committer.",
+    );
+    expect(parseCommit(Buffer.from(`tree ${"a".repeat(40)}\n${author}\n${committer}`))).toEqual({
+      message: [""],
+      author: ["A <a@example.invalid>"],
+      committer: ["C <c@example.invalid>"],
     });
   });
 });

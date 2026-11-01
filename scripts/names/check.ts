@@ -16,8 +16,17 @@ export function check(source: Source, words: readonly string[]): Finding[] {
       ...scanFile({ ...file, honouredFolder: honouredFolderOf(file.path, verdict.honoured) }, words),
     );
   }
-  for (const { field, text } of source.fields) {
-    findings.push(...scanField(text, words, field));
+  for (const { field, text, alsoReadAs = [] } of source.fields) {
+    // Each place once, however many readings of the field find something there.
+    const places = new Set<string>();
+    for (const reading of [text, ...alsoReadAs]) {
+      for (const finding of scanField(reading, words, field)) {
+        if (!places.has(finding.place)) {
+          places.add(finding.place);
+          findings.push(finding);
+        }
+      }
+    }
   }
   return findings;
 }
