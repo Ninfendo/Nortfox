@@ -8,7 +8,7 @@ NortFox is free software. When someone runs a changed NortFox as a service, the 
 
 ## Decision
 
-- NortFox is under the GNU Affero General Public License v3.0 only. Copyright (C) 2026 Fredrik Karlsson Peraldi. Source files carry `SPDX-License-Identifier: AGPL-3.0-only`.
+- NortFox is under the GNU Affero General Public License v3.0 only. Copyright (C) 2026 The NortFox authors. Source files carry `SPDX-License-Identifier: AGPL-3.0-only`.
 - Two parts are under the MIT licence, each with its own `LICENSE` file: the published API client package (`packages/client`) and the API description (`openapi/openapi.json`). Their identifier is `MIT`.
 
 ## Consequences

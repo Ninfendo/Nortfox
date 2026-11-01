@@ -17,7 +17,7 @@ The plan is in [docs/plan.md](docs/plan.md). The rules for every change, by a pe
 
 ## Licence
 
-Copyright (C) 2026 Fredrik Karlsson Peraldi.
+Copyright (C) 2026 The NortFox authors.
 
 NortFox is free software under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE).
 
