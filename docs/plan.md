@@ -166,6 +166,7 @@ This is the repository setup. It lands before every other PR: until it does, not
 **2d. Web frame with the theme switcher**
 
 - **What:** `apps/web` with React 19, Vite and Tailwind v4; `packages/ui` with the first shadcn components on Base UI; `packages/i18n` with Swedish and English, and the Swedish amount form moved there from `packages/engine`; login, company picker and an empty app frame with the menu; the theme switcher over the appearance values.
+- **Design:** every screen follows the [design rules](design/README.md).
 - **Done when:**
   - Login, company choice and logout work in the browser through the generated client only. A guard refuses any other way of calling the server.
   - The theme changes at once, without a reload, and is saved per user through the API.
