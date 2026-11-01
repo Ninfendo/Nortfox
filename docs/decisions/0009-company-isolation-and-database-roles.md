@@ -1,0 +1,26 @@
+# 9. Company isolation and database roles
+
+Status: accepted, 2026-11-01
+
+## Context
+
+One NortFox install holds many companies, for example all the clients of an accounting firm. A bug in a query must never show one company's books to another. The server should have no more rights than it needs.
+
+## Decision
+
+- Every table with company data has a `company_id` column, row level security that is enabled and FORCED, and a policy that matches `company_id` to the company for the transaction.
+- For the app role, the company for the transaction is a setting. The server sets the company and the actor with `SET LOCAL` at the start of each transaction, so a pooled connection never carries them over.
+- Tables that do not belong to one company, such as users and memberships, have their own policies, by user.
+- The database roles:
+  - **owner** owns the schema and runs the migrations. The server never uses it. Only the owner role records a void range in a voucher series ([decision 2](0002-ledger-law-in-postgresql.md)).
+  - **app** is the server's role. It reads and writes rows, nothing more. It cannot change the schema, disable a trigger or bypass row level security.
+  - **reader** roles can only read. Each reader role is bound to one company in a table that only the owner role writes, and its policies compare `company_id` with that table for `current_user`. A reader's policies never trust a setting, because any role can change a setting.
+- Outside tools use the API, with a token bound to one company. A reader role is only for a tool that must read the database directly.
+- No role used at runtime is a superuser or has `BYPASSRLS`.
+
+## Consequences
+
+- A query without a company set returns nothing. It never returns everything.
+- A reader role that sets another company's id still sees only its own company.
+- Work that spans companies, such as the doctor's checks, runs company by company.
+- Tests run as the app role and as a reader role against real PostgreSQL. A guard fails if a table lacks FORCE RLS or its policy.
