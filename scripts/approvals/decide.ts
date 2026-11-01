@@ -74,7 +74,7 @@ export function decideOutsideApproval(
       pass: false,
       why:
         input.author === input.owner
-          ? "The owner opened this PR from a branch in another account's fork, and that account can push to it. So it needs the owner's approval of its head commit, which GitHub does not let the owner give to their own PR. Open it again from a branch in this repository."
+          ? "The owner opened this PR from a branch in another account's fork, and that account can push to it. So it needs the owner's approval of its head commit, which GitHub does not let the owner give to their own PR. To take the work over, make the changes again as new commits on your own machine, where the git hooks check them, run pnpm names, and push those commits to a branch in this repository. Never push that account's commits or branch here: on a PR from the owner's account, Names shows where it finds a name, also in text that the other account wrote."
           : "The owner has not approved this PR yet.",
     };
   }

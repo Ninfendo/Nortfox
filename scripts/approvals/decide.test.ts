@@ -93,7 +93,7 @@ describe("Outside approval", () => {
   const here = { fullName: "owner/r", owner: "owner" };
   const base = { owner: "owner", author: "someone", repository: "owner/r", head: here, headSha: head };
   const FORK =
-    "The owner opened this PR from a branch in another account's fork, and that account can push to it. So it needs the owner's approval of its head commit, which GitHub does not let the owner give to their own PR. Open it again from a branch in this repository.";
+    "The owner opened this PR from a branch in another account's fork, and that account can push to it. So it needs the owner's approval of its head commit, which GitHub does not let the owner give to their own PR. To take the work over, make the changes again as new commits on your own machine, where the git hooks check them, run pnpm names, and push those commits to a branch in this repository. Never push that account's commits or branch here: on a PR from the owner's account, Names shows where it finds a name, also in text that the other account wrote.";
 
   it("passes a PR that the owner opened from a branch in this repository, or in the owner's own fork", () => {
     for (const where of [base, { ...base, repository: "org/r", head: { fullName: "owner/r", owner: "owner" } }]) {
