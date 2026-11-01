@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: Feature request
 description: Something NortFox should do.
+labels: [enhancement]
 body:
   - type: markdown
     attributes:
