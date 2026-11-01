@@ -46,11 +46,11 @@ The owner keeps a private list of names that must never appear in the repository
 A PR can merge when four checks pass on its head commit:
 
 - **CI OK**: every CI job passed.
-- **Owner OK**: the names check found nothing, and a PR that changes an owner path (`.github/owner-paths.txt`) carries the owner-ok label, set by the owner on its head commit. A push after the label needs the label again.
+- **Owner OK**: the names check found nothing, and a PR that changes an owner path carries the owner-ok label, set by the owner on its head commit. A push after the label needs the label again. The owner paths (`.github/owner-paths.txt`) are the database migrations, the licence files and the exceptions to the names rule, and the list itself. Nothing else needs the label.
 - **Outside approval**: the owner wrote the PR or approved its head commit.
-- **Review OK**: the owner's code review passed it.
+- **Review OK**: the owner's review agent passed it. It is a commit status that the review agent posts.
 
-Maintainers merge pull requests by hand. GitHub holds the CI of a first-time contributor until a maintainer approves the run, so a first PR may wait a little before its checks start.
+The owner merges a pull request from another account by hand, after reading the whole diff. GitHub holds the CI of a first-time contributor until the owner approves the run, so a first PR may wait a little before its checks start.
 
 ## Licence of contributions
 

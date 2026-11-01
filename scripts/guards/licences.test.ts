@@ -66,9 +66,21 @@ describe("the licence guard", () => {
       "packages/client/LICENSE is missing.",
       "LICENSE is not the GNU Affero General Public License.",
       "packages/client/LICENSE is not the MIT licence.",
+      'packages/client/LICENSE must name the holder in one line: "Copyright (C) 2026 The NortFox authors".',
       'packages/client/package.json must say "license": "MIT".',
       'apps/web/package.json must say "license": "AGPL-3.0-only".',
       'x/package.json must say "license": "AGPL-3.0-only".',
+    ]);
+  });
+
+  it.each([
+    ["another holder", "MIT License\n\nCopyright (C) 2026 Example Holder\n"],
+    ["a second holder", "MIT License\n\nCopyright (C) 2026 The NortFox authors\r\nCopyright (C) 2026 Example Holder\n"],
+    ["no holder", "MIT License\n"],
+  ])("fails an MIT licence with %s", (_case, mit) => {
+    const files: Record<string, string> = { LICENSE: "GNU AFFERO GENERAL PUBLIC LICENSE", "packages/client/LICENSE": mit };
+    expect(manifestProblems((path) => files[path], [])).toEqual([
+      'packages/client/LICENSE must name the holder in one line: "Copyright (C) 2026 The NortFox authors".',
     ]);
   });
 });

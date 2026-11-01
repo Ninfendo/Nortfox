@@ -3,7 +3,8 @@
 // Keeps the licence identifiers and files in place
 // (docs/decisions/0004-licences.md): every source file names its licence in
 // its first lines, MIT inside packages/client and AGPL-3.0-only everywhere
-// else, and each licence file is where it belongs.
+// else, each licence file is where it belongs, and the MIT licence names the
+// NortFox authors as its holder.
 
 /** File types that carry an SPDX line. JSON and Markdown cannot or need not. */
 const SOURCE = /\.(?:ts|tsx|js|mjs|cjs|css|html|ya?ml|sh)$|^\.githooks\//;
@@ -12,6 +13,9 @@ const SOURCE = /\.(?:ts|tsx|js|mjs|cjs|css|html|ya?ml|sh)$|^\.githooks\//;
 const EXEMPT = new Set(["pnpm-lock.yaml", "pnpm-workspace.yaml"]);
 
 export const MIT_FOLDER = "packages/client/";
+
+/** The copyright line of the MIT licence. It names no person. */
+export const COPYRIGHT_LINE = "Copyright (C) 2026 The NortFox authors";
 
 export function expectedLicence(path: string): "MIT" | "AGPL-3.0-only" {
   return path.startsWith(MIT_FOLDER) ? "MIT" : "AGPL-3.0-only";
@@ -49,8 +53,13 @@ export function manifestProblems(read: (path: string) => string | undefined, pac
   if (!(read("LICENSE") ?? "").includes("GNU AFFERO GENERAL PUBLIC LICENSE")) {
     problems.push("LICENSE is not the GNU Affero General Public License.");
   }
-  if (!(read("packages/client/LICENSE") ?? "").includes("MIT License")) {
+  const mit = read("packages/client/LICENSE") ?? "";
+  if (!mit.includes("MIT License")) {
     problems.push("packages/client/LICENSE is not the MIT licence.");
+  }
+  const holders = mit.split(/\r?\n/).filter((line) => line.startsWith("Copyright "));
+  if (holders.length !== 1 || holders[0] !== COPYRIGHT_LINE) {
+    problems.push(`packages/client/LICENSE must name the holder in one line: "${COPYRIGHT_LINE}".`);
   }
   for (const manifest of packages) {
     const parsed: unknown = JSON.parse(read(manifest) ?? "{}");

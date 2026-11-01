@@ -1,42 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { decideCiOk, decideLabelHolds, decideOutsideApproval, decideOwnerOk } from "./decide.ts";
 import { globToRegExp, ownerPathsIn, parseOwnerPaths } from "./owner-paths.ts";
 
-const GLOBS = [
-  "db/migrations/**",
-  "packages/engine/src/ledger/**",
-  "packages/engine/src/money*",
-  "packages/client/openapi.json",
-  "**/LICENSE*",
-  "**/LICENCE*",
-  "**/COPYING*",
-  "LICENSE",
-  ".github/**",
-  "**/tsconfig*.json",
-  "**/.protected-name-ok",
-  "CLAUDE.md",
-];
+/** The repository's own list, as the workflow reads it from the default branch. */
+const GLOBS = parseOwnerPaths(readFileSync(new URL("../../.github/owner-paths.txt", import.meta.url), "utf8"));
 
 describe("owner paths", () => {
   it("reads one glob per line, without comments", () => {
     expect(parseOwnerPaths("# Owner paths\n\ndb/migrations/**\r\n  LICENSE  \n")).toEqual(["db/migrations/**", "LICENSE"]);
   });
 
+  it("are the database, the licences, the exceptions to the names rule and the list itself", () => {
+    expect(GLOBS).toEqual([
+      "db/migrations/**",
+      "**/LICENSE*",
+      "**/LICENCE*",
+      "**/COPYING*",
+      "**/.protected-name-ok",
+      ".github/protected-name-allowlist.txt",
+      ".github/owner-paths.txt",
+    ]);
+  });
+
   it.each([
+    // The database.
     ["db/migrations/0001_start.sql", true],
     ["db/migrations/sub/x.sql", true],
     ["db/migrations", true],
+    ["DB/Migrations/0001_start.sql", true],
     ["db/migrationsx/a.sql", false],
     ["db/seed.sql", false],
-    ["packages/engine/src/money.ts", true],
-    ["packages/engine/src/money.property.test.ts", true],
-    ["packages/engine/src/moneybox/x.ts", false],
-    ["packages/engine/src/vat.ts", false],
-    ["packages/engine/src/ledger/checks.ts", true],
-    ["packages/client/openapi.json", true],
-    ["packages/client/src/index.ts", false],
+    // The licences, in any case and at any depth.
     ["LICENSE", true],
     ["packages/client/LICENSE", true],
     ["packages/client/LICENSE.md", true],
@@ -45,21 +42,41 @@ describe("owner paths", () => {
     ["License.txt", true],
     ["COPYING", true],
     ["apps/web/copying.lesser", true],
-    ["tsconfig.json", true],
-    ["apps/web/tsconfig.json", true],
-    ["packages/client/tsconfig.build.json", true],
-    ["apps/web/src/config.ts", false],
-    [".github/workflows/ci.yml", true],
-    [".GitHub/workflows/ci.yml", true],
-    [".github/owner-paths.txt", true],
-    ["docs/.github/x", false],
+    // The exceptions to the names rule, and this list.
     ["adapters/a1/.protected-name-ok", true],
     [".protected-name-ok", true],
-    ["CLAUDE.md", true],
-    ["docs/CLAUDE.md", false],
+    [".github/protected-name-allowlist.txt", true],
+    [".GitHub/owner-paths.txt", true],
+    [".github/owner-paths.txt", true],
+    ["docs/.github/protected-name-allowlist.txt", false],
+    ["docs/.github/owner-paths.txt", false],
+    // Everything else is the review agent's, and an outside PR needs the
+    // owner's approving review anyway.
+    [".github/workflows/ci.yml", false],
+    [".github/workflows/approvals.yml", false],
+    [".github/CODEOWNERS", false],
+    ["scripts/approvals/owner-paths.ts", false],
+    ["scripts/names/check.ts", false],
+    [".githooks/pre-commit", false],
+    ["package.json", false],
+    ["pnpm-workspace.yaml", false],
+    ["tsconfig.json", false],
+    ["eslint.config.js", false],
+    ["vitest.config.ts", false],
+    ["CLAUDE.md", false],
+    ["AGENTS.md", false],
+    ["docs/decisions/0011-names-policy.md", false],
+    ["apps/server/src/modules/auth/login.ts", false],
+    ["packages/client/openapi.json", false],
+    ["packages/engine/src/money.ts", false],
+    ["packages/engine/src/ledger/checks.ts", false],
     ["README.md", false],
   ])("%s is an owner path: %s", (path, expected) => {
     expect(ownerPathsIn([path], GLOBS).length > 0).toBe(expected);
+  });
+
+  it("matches a pattern without a slash at the root only", () => {
+    expect(ownerPathsIn(["CLAUDE.md", "docs/CLAUDE.md", "claude.md"], ["CLAUDE.md"])).toEqual(["CLAUDE.md", "claude.md"]);
   });
 
   it("supports ? and ** inside a path, and escapes the rest", () => {
@@ -132,11 +149,11 @@ describe("Owner OK", () => {
   });
 
   it("fails a PR that changes an owner path, until the owner-ok label is set", () => {
-    const input = { namesResult: "success", paths: ["README.md", ".github/workflows/ci.yml"], globs: GLOBS };
+    const input = { namesResult: "success", paths: ["README.md", "db/migrations/0001_start.sql"], globs: GLOBS };
     expect(decideOwnerOk({ ...input, labels: ["other"] })).toEqual({
       pass: false,
       why: "The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label.",
-      ownerPaths: [".github/workflows/ci.yml"],
+      ownerPaths: ["db/migrations/0001_start.sql"],
     });
     expect(decideOwnerOk({ ...input, labels: ["owner-ok"] })).toMatchObject({ pass: true });
   });

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,7 +25,8 @@ function baseCheckout(): string {
   const dir = mkdtempSync(join(tmpdir(), "nortfox-approvals-"));
   folders.push(dir);
   mkdirSync(join(dir, ".github"));
-  writeFileSync(join(dir, ".github/owner-paths.txt"), "# Owner paths\n.github/**\nLICENSE\n");
+  // The repository's own list, as the workflow reads it from the default branch.
+  copyFileSync(new URL("../../.github/owner-paths.txt", import.meta.url), join(dir, ".github/owner-paths.txt"));
   return dir;
 }
 
@@ -140,10 +141,18 @@ describe("owner-ok", () => {
   });
   const env = { NAMES_RESULT: "success" };
 
-  it("passes a PR that changes no owner path", async () => {
+  it("passes a PR that changes no owner path, such as the workflows and the checks", async () => {
     const result = await run(
       ["owner-ok"],
-      { [`GET ${p}/pulls/7`]: pr("owner"), [`GET ${p}/pulls/7/files?per_page=100`]: files(["README.md"]) },
+      {
+        [`GET ${p}/pulls/7`]: pr("owner"),
+        [`GET ${p}/pulls/7/files?per_page=100`]: files([
+          "README.md",
+          ".github/workflows/approvals.yml",
+          "scripts/approvals/cli.ts",
+          "package.json",
+        ]),
+      },
       env,
     );
     expect(result).toMatchObject({ code: 0, out: ["Owner OK: The PR changes no owner path."] });
@@ -155,14 +164,14 @@ describe("owner-ok", () => {
       {
         [`GET ${p}/pulls/7`]: pr("owner"),
         [`GET ${p}/pulls/7/files?per_page=100`]: {
-          body: [{ filename: "docs/ci.yml", previous_filename: ".github/workflows/ci.yml" }],
+          body: [{ filename: "db/0001_start.sql", previous_filename: "db/migrations/0001_start.sql" }],
         },
       },
       env,
     );
     expect(result).toMatchObject({
       code: 1,
-      out: ["Owner path: .github/workflows/ci.yml"],
+      out: ["Owner path: db/migrations/0001_start.sql"],
       err: ["Owner OK: The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label."],
     });
   });

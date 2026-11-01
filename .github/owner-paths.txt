@@ -3,47 +3,26 @@
 # needs the label again (docs/plan.md, section 6). The approval workflow reads
 # this file from the default branch, so a PR cannot shorten it for itself.
 #
+# The owner approves only changes to the database, the licences and the
+# exceptions to the names rule. The review agent approves the rest. Every PR
+# from an account other than the owner's needs the owner's approving review
+# anyway ("Outside approval"), whatever it changes.
+#
 # One glob per line, from the repository root: ** spans folders, * and ? stay
 # inside one name, and a pattern without a slash matches at the root only.
 # Matching ignores case.
 
-# The ledger law and money.
+# The database: the migrations, where the ledger law lives.
 db/migrations/**
-packages/engine/src/ledger/**
-packages/engine/src/money*
 
-# Login.
-apps/server/src/modules/auth/**
-
-# The API description, under the MIT licence.
-packages/client/openapi.json
-
-# Licences.
+# The licences.
 **/LICENSE*
 **/LICENCE*
 **/COPYING*
 
-# The workflows, these lists and the repository's own checks.
-.github/**
-scripts/**
+# The exceptions to the names rule: a marker, and the folders where one counts.
 **/.protected-name-ok
+.github/protected-name-allowlist.txt
 
-# The files that CI's checks run through: the root scripts, the workspace
-# and install settings (the install-script allowlist, the minimum release
-# age, the trust policy), the task runner, the test projects and their
-# coverage floors, the lint rules, the compiler settings and the git hooks.
-package.json
-pnpm-workspace.yaml
-.npmrc
-.nvmrc
-.gitattributes
-turbo.json
-vitest.config.ts
-eslint.config.js
-**/tsconfig*.json
-.githooks/**
-
-# The rules for every change.
-CLAUDE.md
-AGENTS.md
-docs/decisions/**
+# This list, so that a PR cannot shorten it.
+.github/owner-paths.txt
