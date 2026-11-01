@@ -55,6 +55,9 @@ describe("lineHasName finds a planted word", () => {
     ["in script and fraktur HTML entities", "&Zscr;&ascr;r&qfr;&uscr;&ofr;n"],
     ["in an old HTML entity without its semicolon", "z&aacute rquon"],
     ["in HTML entities without their semicolons", "&#122&#97rquon"],
+    ["in a decimal HTML entity from 128 to 159, read as windows-1252", "&#142;arquon"],
+    ["in a hex HTML entity from 128 to 159, read as windows-1252", "&#x9E;arquon"],
+    ["around an HTML entity beyond Unicode, which HTML reads as U+FFFD", "zarq&#x110000;uon"],
     ["with a look-alike symbol for a letter", "zarqu∅n"],
     ["with a box-drawing line for l", "b│irvex"],
     ["with a | for l inside a word", "b|irvex"],
@@ -333,6 +336,14 @@ describe("scanFile", () => {
   it("names the line of a hit in the contents", () => {
     expect(scanFile(file("docs/a.md", "fine\nzarquon\n"), words)).toEqual([{ place: "docs/a.md:2", reason: "name" }]);
     expect(scanFile(file("docs/a.md", "zarquon"), words)).toEqual([{ place: "docs/a.md:1", reason: "name" }]);
+  });
+
+  it("finds a word in an HTML page whose letter is a number from 128 to 159, as a browser shows it", () => {
+    for (const reference of ["&#142;", "&#x8E;", "&#158;", "&#x9E;"]) {
+      expect(scanFile(file("apps/web/index.html", `<title>${reference}arquon</title>\n`), words)).toEqual([
+        { place: "apps/web/index.html:1", reason: "name" },
+      ]);
+    }
   });
 
   it("finds a word wrapped across two lines of a file", () => {
