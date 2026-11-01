@@ -1,0 +1,7 @@
+# The marker allowlist. A folder listed here may hold a .protected-name-ok
+# marker, and then its files may name the one system that its import adapter
+# reads from (docs/decisions/0011-names-policy.md). A marker in any other
+# folder fails the names check. One folder per line, from the repository root.
+# The names check reads this file from the base branch.
+#
+# Empty for now: no import adapter exists yet.

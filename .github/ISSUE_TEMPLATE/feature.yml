@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Feature request
+description: Something NortFox should do.
+body:
+  - type: markdown
+    attributes:
+      value: The plan is in docs/plan.md. Please check whether it covers your idea already.
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need
+      description: The problem, in the words of the person who has it. Who keeps which books, and what is hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How NortFox could do it
+      description: Through the API and MCP first, then on the screen.
+  - type: textarea
+    id: law
+    attributes:
+      label: Rules that apply
+      description: Bokföringslagen, BFNAR, the VAT rules or a standard such as SIE, if any.

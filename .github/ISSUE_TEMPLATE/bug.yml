@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Bug report
+description: Something in NortFox does not work as it should.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Please leave out personal data and real company data: write made-up names and amounts instead.
+        A security problem goes to a private report instead: https://github.com/Ninfendo/Nortfox/security/advisories/new
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: NortFox version
+      description: The version from GET /v1/health, or the commit.
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Logs, screenshots, the browser or the server set-up.

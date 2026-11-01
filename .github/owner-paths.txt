@@ -1,0 +1,32 @@
+# Owner paths. A PR that changes one passes "Owner OK" only once the owner has
+# set the owner-ok label, and a later push that touches one removes the label
+# again (docs/plan.md, section 6). The approval workflow reads this file from
+# the base branch, so a PR cannot shorten it for itself.
+#
+# One glob per line, from the repository root: ** spans folders, * and ? stay
+# inside one name, and a pattern without a slash matches at the root only.
+
+# The ledger law and money.
+db/migrations/**
+packages/engine/src/ledger/**
+packages/engine/src/money*
+
+# Login.
+apps/server/src/modules/auth/**
+
+# The API description, under the MIT licence.
+packages/client/openapi.json
+
+# Licences.
+**/LICENSE*
+LICENSE
+
+# The workflows, these lists and the repository's own checks.
+.github/**
+scripts/**
+**/.protected-name-ok
+
+# The rules for every change.
+CLAUDE.md
+AGENTS.md
+docs/decisions/**
