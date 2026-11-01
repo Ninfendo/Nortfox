@@ -41,7 +41,7 @@ const HAS_PERCENT = /%[0-9A-Fa-f]{2}/;
 // on the line or in another key, a run shaped like a digest is read like any
 // other text.
 const DIGEST = "sha(?:1-[A-Za-z0-9+/]{27}=|256-[A-Za-z0-9+/]{43}=|384-[A-Za-z0-9+/]{64}|512-[A-Za-z0-9+/]{86}==)";
-const LOCKFILE_DIGEST = new RegExp(
+export const LOCKFILE_DIGEST = new RegExp(
   `(?<=^ +resolution: \\{integrity: )${DIGEST}(?=[,}])|(?<=^ +integrity: )${DIGEST}$`,
 );
 const PRINTABLE = /[\p{L}\p{N}\p{P}\p{S}\p{Zs}\t]/u;

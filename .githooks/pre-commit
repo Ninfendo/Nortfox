@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Checks the staged files and the branch name for protected names. Without the
-# owner's list on this machine it prints a note and passes; CI checks every PR.
+# Checks the staged files and the branch name for protected names, and the
+# staged files for real-looking personal data (the fixture guard). Without the
+# owner's list on this machine the names check prints a note and passes; CI
+# checks every PR. Both checks run, so one try shows everything to fix.
 set -euo pipefail
 
-exec node scripts/names/cli.ts --staged
+status=0
+node scripts/names/cli.ts --staged || status=1
+node scripts/fixtures/cli.ts --staged || status=1
+exit "$status"

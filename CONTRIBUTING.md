@@ -11,7 +11,7 @@ You need Node 24 (see `.nvmrc`) and pnpm 12.16.1 (the version in `package.json`)
 
 ```sh
 pnpm install   # also points git at the hooks in .githooks
-pnpm check     # what CI runs: the names check, lint, type check, tests with coverage, build
+pnpm check     # what CI runs: the names check, the fixture guard, lint, type check, tests with coverage, build
 ```
 
 Other commands:
@@ -24,6 +24,7 @@ Other commands:
 | `pnpm openapi` | After a change to the API: writes `packages/client/openapi.json` and the generated client. CI fails when they are out of date. |
 | `pnpm changeset` | Records what users will notice in your change. |
 | `pnpm names` | Runs the names check over every file. |
+| `pnpm fixtures` | Runs the fixture guard over every file. |
 
 ## The names check
 
@@ -35,12 +36,24 @@ The owner keeps a private list of names that must never appear in the repository
 - A PR from any other account is checked in a run that the owner starts, after the owner has approved its head commit. A failure then says only how many places there are, never where, and the owner tells you what to change. Until the owner starts that run, and again after each push or edit of yours, Names fails and waits for the owner.
 - Never try to work out the list, and never work around the check.
 
+## The fixture guard
+
+Test data is made up ([plan, section 6](docs/plan.md#6-how-a-slice-is-built)). The fixture guard (`scripts/fixtures`) refuses a value in a file, or in a file's path, that looks like real personal data:
+
+- a personal identity number (personnummer) or a coordination number (samordningsnummer), in 10 or 12 digits, with or without the `-` or `+`, when its date and its check digit are valid;
+- an organisation number, as `NNNNNN-NNNN` or with `16` in front, when its group digit, its third digit and its check digit are valid;
+- an e-mail address, unless it is at `example.com`, `example.net` or `example.org`, under `.example`, `.test`, `.invalid` or `.localhost`, or a GitHub noreply address.
+
+A number with a wrong date or check digit passes, so hashes, versions and timestamps do not trip the guard. A made-up reference with a Luhn check digit, such as an OCR number, can still look like an identity number: give it a length other than 10 or 12 digits, or first digits that are not a date. A value on [the list of test values](scripts/fixtures/test-values.txt) passes too: Skatteverket's published test numbers and one no-reply address, each with its source. Use those in tests and fixtures. Add a number only from a published test series, and give its source.
+
+The guard runs in `pnpm check`, in CI, and in the pre-commit hook over the staged files. It names the file and line and the kind of value, never the value. It refuses a binary file, because it cannot read one yet. In `pnpm-lock.yaml` it skips pnpm's integrity digests, which are random data.
+
 ## Pull requests
 
 - One slice or one fix per PR, with its tests and, when users will notice it, a changeset.
 - Every new rule has tests, and every new guard has a test that shows it fails on a bad input.
 - No PR lowers a coverage floor, switches off a lint rule or skips a check.
-- Test data is made up: fictional companies and people. Never personal data or real company data.
+- Test data is made up: fictional companies and people, and the values on the fixture guard's list. Never personal data or real company data.
 - Commit messages, the PR title and the PR body are written with the same care as code. A merge is a squash, so the title and body become the commit on `main`.
 
 A PR can merge when five checks pass on its head commit:

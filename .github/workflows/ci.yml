@@ -43,6 +43,8 @@ jobs:
           cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
+      - name: No real-looking personal data
+        run: pnpm fixtures
       - name: Lint
         run: pnpm lint
       - name: Type check
