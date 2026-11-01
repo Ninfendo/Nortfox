@@ -21,11 +21,18 @@ export interface Value {
 /**
  * A run of 10 or 12 digits, with "-" or "+" before the last four or without.
  * It stands alone: no letter or digit right before or after it, and it is not
- * part of a decimal number (1.8112189876) or of a longer id joined by dashes
- * (the groups of a UUID). An identity number written in 10 digits drops the
- * century, and "+" there says the person is 100 or older.
+ * part of a decimal number (1.8112189876). An identity number written in 10
+ * digits drops the century, and "+" there says the person is 100 or older.
  */
-const NUMBER = /(?<![0-9A-Za-z])(?<!\d\.)(\d{6}|\d{8})([-+]?)(\d{4})(?![0-9A-Za-z]|\.\d|-[0-9A-Za-z])/g;
+const NUMBER = /(?<![0-9A-Za-z])(?<!\d\.)(\d{6}|\d{8})([-+]?)(\d{4})(?![0-9A-Za-z]|\.\d)/g;
+
+/**
+ * What follows the first two groups of a UUID (8 hex digits, a dash and 4
+ * more) in a line: a dash, 4 hex digits and a dash. 8 digits, a dash and 4
+ * digits with this after them start a UUID, so they are not a number. Any
+ * other dash after a number, as in <number>-anna.json, leaves it a number.
+ */
+const UUID_TAIL = /^-[0-9A-Fa-f]{4}-/;
 
 /** The centuries of a 12-digit identity number: people born from 1800 to 2099. */
 const CENTURIES = new Set(["18", "19", "20"]);
@@ -102,10 +109,12 @@ export function isOrganisationNumber(ten: string): boolean {
 
 /**
  * The value that one run of digits makes, if any. An organisation number
- * counts in three forms: NNNNNN-NNNN, and with 16 in front, as in its
- * 12-digit form, with the dash or without. Ten digits without the dash are
- * not read as one: a Unix time in seconds has ten digits, and passes the
- * group and Luhn rules about one time in ten.
+ * counts as NNNNNN-NNNN, as its ten digits without the dash, and with 16 in
+ * front, as in its 12-digit form, with the dash or without. Ten digits
+ * without the dash and with the group digit 1 are not read as one: a Unix
+ * time in seconds from 2001 to 2033 has that form, and passes the group and
+ * Luhn rules about one time in ten. A Unix time that starts with 2 or more
+ * lies after 2033.
  */
 function numberValue(datePart: string, separator: string, lastFour: string): Value | undefined {
   if (datePart.length === 8 && datePart.startsWith("16")) {
@@ -117,9 +126,8 @@ function numberValue(datePart: string, separator: string, lastFour: string): Val
     return { kind, key: datePart + lastFour };
   }
   const ten = datePart + lastFour;
-  return datePart.length === 6 && separator === "-" && isOrganisationNumber(ten)
-    ? { kind: "organisation-number", key: ten }
-    : undefined;
+  const form = separator === "-" || (separator === "" && !ten.startsWith("1"));
+  return datePart.length === 6 && form && isOrganisationNumber(ten) ? { kind: "organisation-number", key: ten } : undefined;
 }
 
 /**
@@ -142,9 +150,9 @@ const GITHUB_NOREPLY = "users.noreply.github.com";
 
 /**
  * File extensions that are not top-level domains. A file name such as
- * logo@2x.png has the shape of an address, so a domain that ends in one of
- * these is a file, not an address. Extensions that are also top-level
- * domains, such as .md and .zip, are left out on purpose.
+ * logo@2x.png has the shape of an address, so the guard takes these off the
+ * end of a domain before it reads the domain. Extensions that are also
+ * top-level domains, such as .md and .zip, are left out on purpose.
  */
 const FILE_EXTENSIONS = new Set(
   (
@@ -153,8 +161,23 @@ const FILE_EXTENSIONS = new Set(
   ).split(" "),
 );
 
+/** A domain: labels joined by dots that end in a top-level domain of letters. */
+const DOMAIN = /^(?:[\p{L}\p{N}-]+\.)+\p{L}{2,63}$/u;
+
 /** The characters that end the word an address stands in, looking back from it. */
 const WORD_START = /[^\s"'`<>()[\]{},]*$/u;
+
+/**
+ * What may stand between a URL's scheme and an address that is the user part
+ * of the URL: nothing (https://user@host.se), or a user name and a colon
+ * before a password (https://user:token@host.se). A dot, a ";" or a "|"
+ * there says the text is not one URL, as in a CSV row
+ * (https://zarquon.se;<address>).
+ */
+const USER_BEFORE_PASSWORD = /^(?:[\p{L}\p{N}_~%+-]*:)?$/u;
+
+/** A path after an address and a colon, as in a git remote (git@host.se:owner/repo). */
+const REMOTE_PATH = /^:[\w.~%+-]*\//u;
 
 /** True when an address lies in a domain that is always allowed. */
 export function isAlwaysAllowedDomain(domain: string): boolean {
@@ -163,41 +186,111 @@ export function isAlwaysAllowedDomain(domain: string): boolean {
 }
 
 /**
- * True when what looks like an address is part of something else: the user
- * part of a URL (https://user@host.se), a host and path (git@host.se:owner/repo),
- * a path (/npm/pkg@next.dev/file), or a file name (logo@2x.png).
+ * The domain that a match stands for once its file extensions are taken off
+ * its end, or undefined when no domain is left. logo@2x.png is a file name:
+ * without .png, 2x is no domain. An address used as a file name, such as
+ * <address>.json, keeps its domain without .json, so it is an address.
  */
-function isPartOfSomethingElse(line: string, start: number, end: number, domain: string): boolean {
-  const after = line.slice(end, end + 2);
-  if (after.startsWith("/") || /^:\S/u.test(after)) {
+function addressDomain(domain: string): string | undefined {
+  let rest = domain;
+  let dot = rest.lastIndexOf(".");
+  while (dot !== -1 && FILE_EXTENSIONS.has(rest.slice(dot + 1).toLowerCase())) {
+    rest = rest.slice(0, dot);
+    dot = rest.lastIndexOf(".");
+  }
+  return DOMAIN.test(rest) ? rest : undefined;
+}
+
+/**
+ * True when what looks like an address in a line is part of something else:
+ * the user part of a URL (https://user@host.se), a host and path in a git
+ * remote (git@host.se:owner/repo), or a part of a URL's path
+ * (https://cdn.host.se/npm/pkg@next.dev/file).
+ */
+function isPartOfSomethingElse(line: string, start: number, end: number): boolean {
+  const after = line.slice(end);
+  if (REMOTE_PATH.test(after)) {
     return true;
   }
   const word = WORD_START.exec(line.slice(0, start))?.[0] ?? "";
   const scheme = word.lastIndexOf("://");
-  if (scheme !== -1 && !/[/?#]/.test(word.slice(scheme + 3))) {
-    return true;
+  if (scheme === -1) {
+    return false;
   }
-  return FILE_EXTENSIONS.has(domain.slice(domain.lastIndexOf(".") + 1).toLowerCase());
+  const url = word.slice(scheme + 3);
+  return USER_BEFORE_PASSWORD.test(url) || (after.startsWith("/") && url.includes("/") && !/[?#]/.test(url));
 }
 
-/** Every value in one line of text that looks real, in the order found. Listed test values are included. */
-export function valuesIn(line: string): Value[] {
+/**
+ * Every value in a text, in the order found. In a line, a match that is part
+ * of something else is not a value: the user part of a URL, a git remote, a
+ * part of a URL's path, or the start of a UUID. A part of a path is read
+ * strictly, without those exceptions: a file or folder name is none of them.
+ */
+function find(text: string, strict: boolean): Value[] {
   const found: Value[] = [];
-  if (/\d{4}/.test(line)) {
-    for (const match of line.matchAll(NUMBER)) {
-      const value = numberValue(match[1] ?? "", match[2] ?? "", match[3] ?? "");
+  if (/\d{4}/.test(text)) {
+    for (const match of text.matchAll(NUMBER)) {
+      const [whole, datePart = "", separator = "", lastFour = ""] = match;
+      const uuid = datePart.length === 8 && separator === "-" && UUID_TAIL.test(text.slice(match.index + whole.length));
+      const value = strict || !uuid ? numberValue(datePart, separator, lastFour) : undefined;
       if (value !== undefined) {
         found.push(value);
       }
     }
   }
-  if (line.includes("@")) {
-    for (const match of line.matchAll(EMAIL)) {
-      const [whole, local = "", domain = ""] = match;
-      if (!isAlwaysAllowedDomain(domain) && !isPartOfSomethingElse(line, match.index, match.index + whole.length, domain)) {
+  if (text.includes("@")) {
+    for (const match of text.matchAll(EMAIL)) {
+      const [whole, local = "", matched = ""] = match;
+      const domain = addressDomain(matched);
+      if (
+        domain !== undefined &&
+        !isAlwaysAllowedDomain(domain) &&
+        (strict || !isPartOfSomethingElse(text, match.index, match.index + whole.length))
+      ) {
         found.push({ kind: "email", key: `${local}@${domain}`.toLowerCase() });
       }
     }
   }
   return found;
+}
+
+/** Every value in one line of text that looks real, in the order found. Listed test values are included. */
+export function valuesIn(line: string): Value[] {
+  return find(line, false);
+}
+
+/** A file extension at the end of a file or folder name. */
+const EXTENSION = /\.[0-9A-Za-z]+$/;
+
+/**
+ * Every value in a file's path that looks real. A path is read more strictly
+ * than a line: each part between "/" on its own, and again without its file
+ * extension, and none of the exceptions of a line apply. So an address or a
+ * number used as a file or folder name is found, also with an extension or
+ * with a dash and a word after it. Each value is given once.
+ */
+export function valuesInPath(path: string): Value[] {
+  const found = new Map<string, Value>();
+  for (const part of path.split("/")) {
+    const extension = EXTENSION.exec(part)?.[0].toLowerCase() ?? "";
+    const bare = extension === "" ? [] : find(part.slice(0, -extension.length), true);
+    // The same address with the extension read as part of its domain is not a second value.
+    const doubled = new Set(bare.map((value) => `${value.kind} ${value.key}${extension}`));
+    const whole = find(part, true).filter((value) => !doubled.has(`${value.kind} ${value.key}`));
+    for (const value of [...bare, ...whole]) {
+      found.set(`${value.kind} ${value.key}`, value);
+    }
+  }
+  return [...found.values()];
+}
+
+/**
+ * True when a text holds anything shaped like a value, whether it counts or
+ * not: a run of 10 or more digits, with or without a "-" or "+" before the
+ * last four, or an address with a domain, also one that is allowed. The report names a file by its alias when its path holds such
+ * a shape, so that no gap in the rules can print a value that is in a path.
+ */
+export function hasValueShape(text: string): boolean {
+  return /\d{6}[-+]?\d{4}/.test(text) || [...text.matchAll(EMAIL)].some((match) => addressDomain(match[2] ?? "") !== undefined);
 }

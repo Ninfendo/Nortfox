@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { SourceFile } from "../names/sources.ts";
 import { address } from "../testing/personal-data.ts";
-import { report, scanFile, scanText, unlistedKinds, type Finding } from "./check.ts";
+import { report, scanFile, scanText, unlistedKinds, unlistedPathKinds, type Finding, type Reason } from "./check.ts";
 import { parseTestValues } from "./test-values.ts";
 
 const NONE = parseTestValues("").values;
@@ -17,6 +17,14 @@ const LISTED = parseTestValues(
 const placeOf = (line: number): string => `f:${String(line)}`;
 
 const base64 = (text: string): string => Buffer.from(text, "utf8").toString("base64url");
+
+/** The alias that `file` gives every file. */
+const ALIAS = "tracked file 7 (git ls-files)";
+
+/** No line of a report holds a part of a planted value. */
+function expectNoValue(findings: readonly Finding[]): void {
+  expect(report(findings, 1).join("\n")).not.toMatch(/zarquon|ann\.berg|2385|2384/);
+}
 
 /** A file as a source gives it. */
 function file(path: string, contents: string | Uint8Array | undefined, extra: Partial<SourceFile> = {}): SourceFile {
@@ -45,6 +53,14 @@ describe("unlistedKinds", () => {
     ["a number in base64", base64("pnr 19900101-2385"), "personal-identity-number"],
   ])("finds a value %s", (_how, line, kind) => {
     expect(unlistedKinds(line, NONE)).toEqual([kind]);
+  });
+});
+
+describe("unlistedPathKinds", () => {
+  it("reads a path as it decodes, and strictly", () => {
+    expect(unlistedPathKinds(`fixtures/${encodeURIComponent(address("ann", "zarquon.se"))}.json`, NONE)).toEqual(["email"]);
+    expect(unlistedPathKinds("kunder/900101-2385-faktura.csv", NONE)).toEqual(["personal-identity-number"]);
+    expect(unlistedPathKinds("kunder/900101-2385-faktura.csv", LISTED)).toEqual([]);
   });
 });
 
@@ -117,14 +133,50 @@ describe("scanFile", () => {
     ]);
   });
 
-  it("finds an address in a path only where it stands as one, not as a file or folder name", () => {
-    // An address that ends a name runs on into the extension or the next folder, as logo@2x.png does.
-    const asName = address("ann", "zarquon.se");
-    expect(scanFile(file(`fixtures/${asName}.json`, "{}\n"), NONE)).toEqual([]);
-    expect(scanFile(file(`fixtures/${asName}/a.json`, "{}\n"), NONE)).toEqual([]);
-    expect(scanFile(file(`fixtures/${asName} a.json`, "{}\n"), NONE)).toEqual([
-      { place: "tracked file 7 (git ls-files) (its path)", reason: "email" },
+  it.each<[string, string, Reason]>([
+    ["an address before .json", `fixtures/${address("ann.berg", "zarquon.se")}.json`, "email"],
+    ["an address as a folder name", `fixtures/${address("ann.berg", "zarquon.se")}/statement.csv`, "email"],
+    ["an address before a space", `fixtures/${address("ann.berg", "zarquon.se")} a.json`, "email"],
+    ["an identity number joined by dashes", "kunder/900101-2385-faktura.csv", "personal-identity-number"],
+    ["an identity number with the century, joined by dashes", "kunder/19900101-2385-2024.csv", "personal-identity-number"],
+  ])("refuses %s in a path, and the report never shows it", (_case, path, reason) => {
+    const findings = scanFile(file(path, "20000101-2384\n"), NONE);
+    expect(findings).toEqual<Finding[]>([
+      { place: `${ALIAS} (its path)`, reason },
+      { place: `${ALIAS}:1`, reason: "personal-identity-number" },
     ]);
+    expectNoValue(findings);
+  });
+
+  it.each<[string, string, Reason]>([
+    ["a scan named by an identity number", "skannat/900101-2385-kontrakt.pdf", "personal-identity-number"],
+    ["a photo named by an address", `bilder/${address("ann.berg", "zarquon.se")}.jpg`, "email"],
+  ])("refuses %s, a binary file, by its alias", (_case, path, reason) => {
+    const findings = scanFile(file(path, new Uint8Array([0x25, 0x50, 0x44, 0x46])), NONE);
+    expect(findings).toEqual<Finding[]>([
+      { place: `${ALIAS} (its path)`, reason },
+      { place: ALIAS, reason: "binary" },
+    ]);
+    expectNoValue(findings);
+  });
+
+  it("names a file by its alias when its path holds only the shape of a value", () => {
+    // A listed number, an address at example.com and a timestamp are no finding, but the path is kept out of the log all the same.
+    for (const path of ["fixtures/19900101-2385-anna.json", `fixtures/${address("ann", "example.com")}.json`, "logs/1767225600.json"]) {
+      expect(scanFile(file(path, "20000101-2384\n"), LISTED)).toEqual([{ place: `${ALIAS}:1`, reason: "personal-identity-number" }]);
+    }
+    expect(scanFile(file("docs/logo@2x.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47])), NONE)).toEqual([
+      { place: "docs/logo@2x.png", reason: "binary" },
+    ]);
+  });
+
+  it("lets through a listed address used as a file name, with any extension", () => {
+    for (const extension of [".json", ".eml"]) {
+      expect(scanFile(file(`mail/${address("noreply", "zarquon.se")}${extension}`, "{}\n"), LISTED)).toEqual([]);
+      expect(scanFile(file(`mail/${address("ann", "zarquon.se")}${extension}`, "{}\n"), LISTED)).toEqual([
+        { place: `${ALIAS} (its path)`, reason: "email" },
+      ]);
+    }
   });
 
   it("refuses a binary file, a Git LFS pointer and a file it cannot get", () => {

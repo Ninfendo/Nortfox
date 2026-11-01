@@ -41,12 +41,14 @@ The owner keeps a private list of names that must never appear in the repository
 Test data is made up ([plan, section 6](docs/plan.md#6-how-a-slice-is-built)). The fixture guard (`scripts/fixtures`) refuses a value in a file, or in a file's path, that looks like real personal data:
 
 - a personal identity number (personnummer) or a coordination number (samordningsnummer), in 10 or 12 digits, with or without the `-` or `+`, when its date and its check digit are valid;
-- an organisation number, as `NNNNNN-NNNN` or with `16` in front, when its group digit, its third digit and its check digit are valid;
-- an e-mail address, unless it is at `example.com`, `example.net` or `example.org`, under `.example`, `.test`, `.invalid` or `.localhost`, or a GitHub noreply address.
+- an organisation number, as `NNNNNN-NNNN`, as 10 digits without the dash, or with `16` in front, when its group digit, its third digit and its check digit are valid. 10 digits without the dash and with the group digit 1 pass, because a Unix time from 2001 to 2033 has that form;
+- an e-mail address, unless it is at `example.com`, `example.net` or `example.org`, under `.example`, `.test`, `.invalid` or `.localhost`, or a GitHub noreply address. An address used as a file or folder name counts too, also with an extension after it. A file name such as `logo@2x.png` is not an address.
 
-A number with a wrong date or check digit passes, so hashes, versions and timestamps do not trip the guard. A made-up reference with a Luhn check digit, such as an OCR number, can still look like an identity number: give it a length other than 10 or 12 digits, or first digits that are not a date. A value on [the list of test values](scripts/fixtures/test-values.txt) passes too: Skatteverket's published test numbers and one no-reply address, each with its source. Use those in tests and fixtures. Add a number only from a published test series, and give its source.
+A path is read more strictly than a line. In a line, the user part of a URL, a git remote, a part of a URL's path and the start of a UUID are not values. In a path, each part between `/` is read on its own, without those exceptions.
 
-The guard runs in `pnpm check`, in CI, and in the pre-commit hook over the staged files. It names the file and line and the kind of value, never the value. It refuses a binary file, because it cannot read one yet. In `pnpm-lock.yaml` it skips pnpm's integrity digests, which are random data.
+A number with a wrong date or check digit passes, so hashes, versions and timestamps do not trip the guard. A made-up reference with a Luhn check digit, such as an OCR number, can still look like an identity or organisation number: give it a length other than 10 or 12 digits, or first digits that are not a date. A value on [the list of test values](scripts/fixtures/test-values.txt) passes too: Skatteverket's published test numbers and one no-reply address, each with its source. Use those in tests and fixtures. Add a number only from a published test series, and give its source.
+
+The guard runs in `pnpm check`, in CI, and in the pre-commit hook over the staged files. It names the file and line and the kind of value, never the value. When a file's path holds anything shaped like a value, it names the file by its place in the list of files instead of by its path. It refuses a binary file, because it cannot read one yet. In `pnpm-lock.yaml` it skips pnpm's integrity digests, which are random data.
 
 ## Pull requests
 

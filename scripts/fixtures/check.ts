@@ -7,13 +7,26 @@
 import type { SourceFile } from "../names/sources.ts";
 import { isBinary, isLfsPointer, LOCKFILE, LOCKFILE_DIGEST, pathReadings, readings, splitLines } from "../names/scan.ts";
 import { isListed, TEST_VALUES_FILE, type TestValues } from "./test-values.ts";
-import { valuesIn, type Kind } from "./values.ts";
+import { hasValueShape, valuesIn, valuesInPath, type Kind, type Value } from "./values.ts";
 
 export type Reason = Kind | "binary" | "lfs" | "unreadable";
 
 export interface Finding {
   readonly place: string;
   readonly reason: Reason;
+}
+
+/** The kinds of unlisted value that `find` gives in any reading of a text, in the order found. */
+function unlisted(text: string, list: TestValues, find: (reading: string) => Value[]): Kind[] {
+  const kinds = new Set<Kind>();
+  for (const reading of readings(text)) {
+    for (const value of find(reading)) {
+      if (!isListed(value, list)) {
+        kinds.add(value.kind);
+      }
+    }
+  }
+  return [...kinds];
 }
 
 /**
@@ -23,15 +36,16 @@ export interface Finding {
  * URL can carry an address in those forms.
  */
 export function unlistedKinds(line: string, list: TestValues): Kind[] {
-  const kinds = new Set<Kind>();
-  for (const reading of readings(line)) {
-    for (const value of valuesIn(reading)) {
-      if (!isListed(value, list)) {
-        kinds.add(value.kind);
-      }
-    }
-  }
-  return [...kinds];
+  return unlisted(line, list, valuesIn);
+}
+
+/**
+ * The kinds of unlisted value in a file's path, read in the same forms as a
+ * line, but more strictly (valuesInPath): each part on its own, and without
+ * the exceptions of a line.
+ */
+export function unlistedPathKinds(path: string, list: TestValues): Kind[] {
+  return unlisted(path, list, valuesInPath);
 }
 
 /**
@@ -53,8 +67,8 @@ export function scanText(text: string, list: TestValues, placeOf: (line: number)
 
 /**
  * Checks a file's path and its contents. When any reading of the path holds a
- * value, the report names the file by its alias, so the log never shows the
- * path. A binary file is refused, as the names check refuses it: the guard
+ * value, or only the shape of one, the report names the file by its alias, so
+ * the log never shows that path. A binary file is refused, as the names check refuses it: the guard
  * cannot read compressed or encoded data, and would pass a value it cannot
  * see. It reads no binary type yet, so it refuses every one, known as the
  * names check knows it: by its first bytes, its extension or a control byte.
@@ -62,8 +76,10 @@ export function scanText(text: string, list: TestValues, placeOf: (line: number)
  * contents the guard cannot get, such as a submodule.
  */
 export function scanFile(file: SourceFile, list: TestValues): Finding[] {
-  const inPath = new Set(pathReadings(file).flatMap((reading) => unlistedKinds(reading, list)));
-  const label = inPath.size > 0 ? file.alias : file.path;
+  const paths = pathReadings(file);
+  const inPath = new Set(paths.flatMap((reading) => unlistedPathKinds(reading, list)));
+  const shaped = paths.some((path) => readings(path).some(hasValueShape));
+  const label = inPath.size > 0 || shaped ? file.alias : file.path;
   const findings: Finding[] = [...inPath].map((reason) => ({ place: `${label} (its path)`, reason }));
   if (file.unreadable === true) {
     return [...findings, { place: label, reason: "unreadable" }];

@@ -36,6 +36,7 @@ const PLANTED: readonly (readonly [string, string])[] = [
   ["260161+2381", "coordination number (samordningsnummer)"],
   ["2601612381", "coordination number (samordningsnummer)"],
   ["556000-0167", "organisation number"],
+  ["5560000167", "organisation number"],
   ["16556000-0167", "organisation number"],
   ["165560000167", "organisation number"],
   [address("ann.berg", "zarquon.se"), "e-mail address"],
@@ -55,7 +56,7 @@ const NEAR_MISSES = [
   "21900101-2385",
   "556000-0168",
   "456000-0167",
-  "5560000167",
+  "1620000123",
   "1767225600",
   "3d3c42e5aac5ba805825da76410c181273ba90b1",
   "@types/node",
@@ -77,6 +78,7 @@ const ALLOWED = [
   "20260161-2381",
   "260161-2381",
   "556000-0167",
+  "5560000167",
   "16556000-0167",
   "165560000167",
   "599999-0129",
@@ -155,6 +157,26 @@ describe("--all", () => {
       ),
       "fixtures: tracked file 3 (git ls-files) (its path) holds a real-looking personal identity number (personnummer).",
       `fixtures: checked 3 files; ${String(PLANTED.length + 1)} to fix. ${SUMMARY_END}`,
+    ]);
+    expectNoValue(result.err);
+  });
+
+  it("finds a value used as a file or folder name, and never shows the path", () => {
+    const r = repo();
+    r.write("docs/clean.md", "Nothing here.\n");
+    r.write(`fixtures/${address("ann.berg", "zarquon.se")}.json`, "{}\n");
+    r.write(`inbox/${address("ann.berg", "zarquon.se")}/statement.csv`, "{}\n");
+    r.write("kunder/900101-2385-faktura.csv", "20000101-2384\n");
+    r.commitAll("Start");
+
+    const result = run(["--all"], r.dir);
+    expect(result.code).toBe(1);
+    expect(result.err).toEqual([
+      "fixtures: tracked file 2 (git ls-files) (its path) holds an e-mail address outside the reserved example domains.",
+      "fixtures: tracked file 3 (git ls-files) (its path) holds an e-mail address outside the reserved example domains.",
+      "fixtures: tracked file 4 (git ls-files) (its path) holds a real-looking personal identity number (personnummer).",
+      "fixtures: tracked file 4 (git ls-files):1 holds a real-looking personal identity number (personnummer).",
+      `fixtures: checked 4 files; 4 to fix. ${SUMMARY_END}`,
     ]);
     expectNoValue(result.err);
   });

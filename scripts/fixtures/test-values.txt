@@ -10,7 +10,8 @@
 #   email                     the address, in lower case
 # The guard also lets a listed number through in its other forms: an identity
 # number in 10 digits (YYMMDD-NNNN, YYMMDD+NNNN or YYMMDDNNNN) or in 12 digits
-# without the dash, and an organisation number with 16 in front.
+# without the dash, and an organisation number in 10 digits without the dash
+# or with 16 in front.
 #
 # The guard refuses an entry that it would let through anyway, so these need
 # none: a number whose date or check digit is not valid, and an address at
