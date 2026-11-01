@@ -197,6 +197,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 **3d. vouchers: book and correct**
 
 - **What:** draft, book, list and read vouchers. A draft can change; a booked voucher never. A correction is a new voucher that reverses or adjusts the old one and points to it. Booking through the API takes an idempotency key. The behandlingshistorik of a voucher is readable through the API.
+- **Design:** the screens follow [the vouchers screen spec](design/screens/vouchers.md).
 - **Done when:** booking, reading and correcting work by REST, by MCP and on the screen; tests as the app role show the database refuses every change to a booked voucher; every correction shows who made it, when, and which voucher it corrects; booking the same request twice gives one voucher.
 
 **3e. files (platform): attachments**

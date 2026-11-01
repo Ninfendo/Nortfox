@@ -1,7 +1,5 @@
 # NortFox app shell
 
-Reference: `NortFox App Shell.dc.html`.
-
 ```
 ┌──────────────┬──────────────────────────────────────────────────────────┐
 │ Company      │ [≡] Bokföring > Verifikationer   [Räkenskapsår 2026 v] [Sök  Ctrl K] │
@@ -35,7 +33,7 @@ Order for the first release:
 2. **Bokföring**: Verifikationer, Kontoplan, Periodiseringar, Dagskassa, Avstämning, Budget
 3. **Bank**: Bankhändelser, Bokföringsregler, Betalningar
 4. **Leverantörer** (count of invoices to approve): Leverantörsfakturor, Leverantörsregister
-5. **Moms och rapporter**: Momsrapport, Periodisk sammanställning, Rapporter, Bearbetningshistorik
+5. **Moms och rapporter**: Momsrapport, Periodisk sammanställning, Rapporter, Behandlingshistorik
 6. **Register**: Kostnadsställen, Projekt, Valutor
 7. separator
 8. **Import och export** (SIE, files)

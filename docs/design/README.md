@@ -7,8 +7,9 @@ These files are the design rules every NortFox screen follows. Agents and people
 | [rules.md](rules.md) | Rules for every screen: tables, forms, locked state, empty/loading/error, status, buttons, dialogs vs side panels, keyboard and focus, numbers and dates, copy |
 | [app-shell.md](app-shell.md) | The app shell: module navigation, company switcher, financial year switcher, search, user menu |
 | [theming.md](theming.md) | Tokens, the appearance settings model, the per-user switcher and the company style builder |
+| [screens/vouchers.md](screens/vouchers.md) | Screen spec for the vouchers: list, new voucher, drafts, detail, correction, receipts and daily takings |
 
-Rendered reference with live examples: `NortFox Design Rules.dc.html`. The shell, switcher and style builder are in `NortFox App Shell.dc.html`. Both follow the theme you pick, so you can check a rule in any style, theme and mode.
+The text in these files is the whole reference. The mockups it was drawn from are not in this repository.
 
 ## The five rules that override everything else
 

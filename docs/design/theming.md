@@ -1,7 +1,5 @@
 # NortFox theming
 
-Implementation reference: `nortfox-theme.js` (settings to CSS custom properties), `ThemeControls.dc.html` (the controls), `NortFox App Shell.dc.html` (switcher panel, Mitt utseende page, Företagets stil builder).
-
 ## Tokens
 
 The standard shadcn token names, unchanged, so any theme from ui.shadcn.com works:
@@ -96,7 +94,7 @@ All changes apply live, without a reload, by rewriting the custom properties on 
 | Sera | Square and airy | none | 36 px | Radius locked to none |
 | Rhea | Compact | 0.625rem | 32 px | `large` disabled |
 
-**Provisional.** Character, control height, round controls, spacing and shadows in this table are working values in the reference mockup. They are replaced by whatever the vendored `style-<name>.css` files define. The radius rules and locks above are final.
+**Provisional.** Character, control height, round controls, spacing and shadows in this table are working values. They are replaced by whatever the vendored `style-<name>.css` files define. The radius rules and locks above are final.
 
 A locked setting is shown read-only with its reason, never hidden:
 - Lyra, Sera: the corner control is replaced by `Raka hörn` and `Stilen Lyra har alltid raka hörn.`

@@ -1,6 +1,6 @@
 # Screen spec: vouchers (Verifikationer)
 
-Applies [../rules.md](../rules.md) and [../app-shell.md](../app-shell.md). Reference: `NortFox Verifikationer.dc.html` (clickable).
+Applies [../rules.md](../rules.md) and [../app-shell.md](../app-shell.md).
 
 Screens: voucher list, new voucher, draft, voucher detail, correction voucher, receipt and daily takings entry. Out of scope for this round: amount search, extended search, accruals (periodisering), the business inbox screen.
 
@@ -68,7 +68,7 @@ Full page with a fixed footer. Primary `Bokför` in the footer, rightmost.
    - **Konteringsmall** (valfritt): select of posting templates as `CODE, name`. Choosing one replaces Beskrivning with the template's text and enables Belopp.
    - **Belopp**: amount, disabled until a template is chosen. Enter, Tab or leaving the field appends the template's rows below the rows already entered and clears the field; the hint says what was added.
 3. Rows table (always at least two empty rows after the last used row):
-   - `#`, **Konto** (input, 112 px), **Benämning** (read-only), **Transaktionsinfo** (input, max 100), **Debet**, **Kredit** (right-aligned amounts), **Saldo efter** (the account's balance including this row and the rows above it on the same account, read-only), row actions: account analysis (opens the ledger for the year in a new tab), delete row. The header of the action column clears all rows.
+   - `#`, **Konto** (input, 88 px), **Benämning** (read-only), **Transaktionsinfo** (input, max 100), **Debet**, **Kredit** (right-aligned amounts), **Saldo efter** (the account's balance including this row and the rows above it on the same account, read-only), row actions: account analysis (opens the ledger for the year in a new tab), delete row. The header of the action column clears all rows.
    - Footer: `Summa` with debit and credit totals; a second line with `Differens`, the amount shown under the side that must grow, or `Balanserar` in ok ink.
 4. A line of keyboard hints.
 5. Fixed footer: status text (left, `role="status"`), `Avbryt`, `Spara utkast` (secondary), `Bokför` with `Ctrl Enter`.
@@ -116,7 +116,7 @@ After booking: the detail view of the new voucher opens, with the toast `A 143 �
 
 ### Attachments and comments (side panel)
 
-Non-modal panel on the right (380 px), the entry compresses beside it. Tabs `Underlag n` / `Kommentarer n`.
+Non-modal panel on the right (420 px), the entry compresses beside it. Tabs `Underlag n` / `Kommentarer n`.
 - Underlag: drop zone with `Välj fil`; `Kopplat` list (removable while unbooked); `Från inkorgen` list with `Koppla`. Attachments can be added before booking; they are booked with the voucher.
 - Kommentarer: list, text area, `Lägg till kommentar`. Comments are not part of the voucher and can be added after booking.
 
@@ -163,14 +163,14 @@ A correction can be saved as a draft like any voucher.
 
 ## 6. Receipts and daily takings (Registrera kvitto, Dagskassa)
 
-These are **voucher entry with a registration template**, not separate screen types. They keep their own menu entries because they are separate tasks, but share the voucher engine: number preview, drafts, leave guard, attachments panel, footer, Ctrl Enter, and the booked result is an ordinary voucher (series R and K here) that opens in the detail view.
+These are **voucher entry with a registration template**, not separate screen types. They keep their own menu entries because they are separate tasks, but share the voucher engine: number preview, drafts, leave guard, attachments panel, settings popover (gear), footer, Ctrl Enter, and the booked result is an ordinary voucher (series R and K here) that opens in the detail view.
 
 Layout: two columns that wrap on narrow screens.
 - **Left, the form:** Mall, Bokföringsdatum, Beskrivning (prefilled from the template). Then one card per template group with a line per template row: label, the account it posts to (small, muted), amount (144 px), and a text button that opens a Transaktionsinfo field inline under the line. Subtotal per group. Daily takings adds a collapsible **Kassaavstämning** (valfritt): Ingående kontantkassa, Kontant i dag, Utgående kontantkassa.
 - **Right, `Så bokförs det`:** the voucher rows the template produces, live (VAT split computed from the template's rates), with totals and `Balanserar` or `Differens`.
 - Footer: `Rensa` (left, ghost), status, `Avbryt`, `Spara utkast`, `Bokför`.
 
-Keyboard: Mall, Bokföringsdatum, Beskrivning, then every amount in order; Enter acts like Tab; Enter on the last amount goes to Bokför. Text buttons are not in the Tab order.
+Keyboard: Mall, Bokföringsdatum, Beskrivning, then every amount in order; Enter acts like Tab; after the last amount, Tab or Enter goes to Bokför. Text buttons are not in the Tab order by default. The user option `Transaktionsinfo i tabbordningen` (settings popover, the same option as on the new voucher form) puts each text button right after its amount, so the last line's text button comes before Bokför. Enter or Space on a text button opens its Transaktionsinfo field with focus in it. Tab or Enter in that field goes to the next amount, or to Bokför after the last line.
 
 Validation: at least one amount, readable amounts, valid date, payments equal costs (receipt) or sales (daily takings): `Betalt 1 250,00, kostnader 1 200,00. Differens 50,00.`
 
