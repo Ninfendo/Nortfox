@@ -118,7 +118,7 @@ This is the repository setup. It lands before every other PR: until it does, not
   - The names check fails on the fake words that its tests inject, in each form it folds, and in a file name, a commit message and a PR title. A `.protected-name-ok` marker outside the marker allowlist fails it too. A missing secret fails it. On a PR from the owner's account it prints only where a match is. A PR from any other account it reads only in a run that the owner starts, after the owner has approved its head commit, and then it prints only how many matches it found.
   - The fixture guard refuses a real-looking personal identity number, e-mail address or organisation number that is not on its short list of test values.
   - `AGENTS.md` carries the merge rule from [section 6](#where-the-checks-come-from): a PR whose author is not the owner's account is merged only by the owner, by hand, after reading its whole diff. Agents never merge such a PR, and the owner's own local setup stops them.
-  - After the owner steps below, a test PR shows that a push after the owner-ok label removes the label, and that Owner OK then fails until the owner sets the label again.
+  - After the owner steps below, a test PR that changes an owner path shows that a push after the owner-ok label removes the label, and that Owner OK then fails until the owner sets the label again.
 - **Owner steps** (agents cannot do these). There is no GitHub App and no bot account: the approval workflow uses its own `GITHUB_TOKEN`.
   - Put the list of protected names in a repository secret. The owner may keep it instead in an environment that only `main` can use.
   - Require every action to be pinned to a full commit SHA.
@@ -374,7 +374,7 @@ db/migrations/**
 
 These are the changes that only the owner approves: the database, where the ledger law lives; the licences; and the exceptions to the names rule, which are the markers and the marker allowlist. Everything else is read by the owner's review agent, and every PR from someone other than the owner needs the owner's approving review anyway (Outside approval).
 
-The owner-ok label counts only for the head commit it was set on. A push after the label removes it, and Owner OK fails until the owner sets the label again.
+The owner-ok label counts only for the head commit it was set on. A push after the label removes it. A PR that changes an owner path then fails Owner OK until the owner sets the label again.
 
 Agents work as the owner's GitHub account, so GitHub cannot tell a label that an agent sets from one the owner sets. A local hook stops agents from setting owner-ok, and that hook is part of this gate.
 
