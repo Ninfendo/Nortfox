@@ -6,8 +6,10 @@
 # (UTS #39), version 18.0.0:
 # https://www.unicode.org/Public/18.0.0/security/confusables.txt
 # SHA-256 6ed3ee967c9dfdf6677d563c9985182fbc50a2efb7d6059cd57b2e2ce18f5b92
-# It keeps the letters and digits outside ASCII that the data maps to Latin
-# letters and that fold() does not read already.
+# It keeps the characters outside ASCII that the data maps to Latin letters
+# and that fold() does not read as those letters already: letters, digits,
+# and symbols such as "│" for l. It leaves out what NFKC turns into Latin
+# letters and what a hand-made table of fold() reads.
 #
 # The Unicode data is used under the Unicode License v3:
 #
@@ -51,6 +53,10 @@
 # dealings in these Data Files or Software without prior written
 # authorization of the copyright holder.
 
+00A1 i
+00A2 c
+00A5 y
+00D7 x
 014B n
 0182 b
 0183 b
@@ -129,6 +135,7 @@
 03DC f
 03ED o
 03F8 p
+03F9 c
 03FA m
 0411 b
 042B bi
@@ -184,6 +191,7 @@
 0582 i
 0584 f
 0585 o
+05C0 i
 05D5 i
 05D8 v
 05DF i
@@ -212,6 +220,8 @@
 07D5 b
 07E0 t
 0840 o
+0964 i
+0965 ii
 0966 o
 0969 e
 09E6 o
@@ -221,17 +231,23 @@
 0B20 o
 0B66 o
 0BE6 o
+0C02 o
 0C66 o
+0C82 o
 0CE6 o
+0D02 o
 0D1F s
 0D20 o
 0D66 o
+0D82 o
 0E50 o
 0ED0 o
 1004 c
 1010 o
 101D o
 1040 o
+104A i
+104B ii
 105A c
 10B9 h
 10BD s
@@ -301,6 +317,8 @@
 15EA d
 15F0 m
 15F7 b
+166D x
+166E x
 16B7 x
 16C1 i
 16C5 i
@@ -315,6 +333,8 @@
 1A45 o
 1A80 o
 1A90 o
+1BEA o
+1BEC x
 1C82 o
 1C83 c
 1C84 t
@@ -341,6 +361,48 @@
 1E9D f
 1EFA ii
 1EFF y
+2016 ii
+20A1 c
+20A5 rn
+20A9 w
+20AB d
+20AD k
+20AE t
+20B6 it
+212E e
+21BF i
+2205 o
+221E oo
+2223 i
+2225 ii
+2228 v
+222A u
+2296 o
+229D o
+22A4 t
+22C1 v
+22C3 u
+22FF e
+2300 o
+2361 t
+2365 o
+236C o
+2373 i
+2374 p
+2376 a
+2378 i
+237A a
+23E8 io
+23FD i
+2502 i
+2503 i
+2573 x
+27D9 t
+292B x
+292C x
+29E2 w
+2A2F x
+2A30 x
 2C67 h
 2C69 k
 2C6B z
@@ -465,7 +527,10 @@ A7C5 s
 A7FA w
 A7FE i
 A830 i
+A8CE i
+A8CF ii
 A8F6 e
+AA5D i
 AB32 e
 AB35 f
 AB3D o
@@ -506,6 +571,7 @@ FBAD o
 FCD9 o
 FD3C i
 FD3D i
+FE31 i
 FE81 i
 FE82 i
 FE87 i
@@ -518,8 +584,19 @@ FEE9 o
 FEEA o
 FEEB o
 FEEC o
+FF5C i
 FFB7 o
+FFE0 c
+FFE5 y
+FFE6 w
+FFE8 i
+1017E f
 1018B d
+1018E n
+10196 x
+10197 v
+10198 iis
+10199 ii
 10282 b
 10286 e
 10287 f
@@ -588,10 +665,26 @@ FFB7 o
 10CFA i
 10CFC x
 10D07 o
+11047 i
+11048 ii
+110C0 i
+110C1 ii
 11116 o
 11124 o
+11141 i
+11142 ii
+111C5 i
+111C6 ii
+11302 o
+113D4 i
+113D5 ii
+1144B i
+1144C ii
 114C5 w
 114D0 o
+115C5 i
+11641 i
+11642 ii
 11700 rn
 11706 v
 1170A w
@@ -631,6 +724,8 @@ FFB7 o
 118F2 c
 11ABC z
 11ABE n
+11C41 i
+11C42 ii
 11DDA i
 11DE0 o
 11DE1 i
@@ -655,9 +750,59 @@ FFB7 o
 16F40 a
 16F42 u
 16F43 y
+1CEFC v
+1D100 i
+1D134 c
+1D1FE t
+1D206 e
+1D207 b
+1D20C w
+1D20D v
+1D212 t
+1D213 f
+1D216 r
+1D21A o
+1D22A i
+1D262 ii
 1D373 t
 1D377 i
 1D7CA f
+1DF24 to
+1DF2D d
+1DF2E dz
+1DF31 y
+1DF32 h
+1DF34 q
+1DF37 r
+1DF39 u
+1DF3C o
+1DF3F w
+1DF40 a
+1DF41 a
+1DF45 g
+1DF46 h
+1DF47 h
+1DF48 k
+1DF49 k
+1DF4A m
+1DF4B rn
+1DF4C rn
+1DF4D n
+1DF4E n
+1DF4F n
+1DF51 v
+1DF52 v
+1DF55 y
+1DF5A a
+1DF5D ie
+1DF5E oi
+1DF5F ou
+1DF64 th
+1DF65 wh
+1DF6A a
+1DF6E i
+1DF7D w
+1DF81 e
 1E140 o
 1E141 i
 1E145 v
@@ -669,3 +814,14 @@ FFB7 o
 1EE64 oi
 1EE80 i
 1EE84 o
+1F16D cc
+1F16E c
+1F700 qe
+1F707 ar
+1F708 v
+1F714 o
+1F74C c
+1F75C sss
+1F768 t
+1F76B mb
+1F76C vb

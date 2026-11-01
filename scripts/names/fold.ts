@@ -6,8 +6,16 @@
 // are folded the same way, so both sides meet in plain a to z.
 //
 // The look-alikes come from two places: the hand-made tables below, and
-// confusables.txt, the letters that Unicode's confusables data (UTS #39) maps
-// to Latin letters. A hand-made entry wins over the Unicode data.
+// confusables.txt, the characters that Unicode's confusables data (UTS #39)
+// maps to Latin letters: letters, digits and symbols, such as "│" for l. A
+// hand-made entry wins over the Unicode data.
+//
+// A symbol can stand for a letter or stand between letters. So foldings()
+// reads a text both ways: with each look-alike symbol as its letters, and with
+// it dropped like any other separator. A plain "|" is read as l only between
+// two letters or digits, as in a word written with "|" for l. In Markdown
+// tables, union types and shell pipes it stands between spaces, and there it
+// is only a separator.
 //
 // Each table entry has a line of its own and maps a letter to the letter it
 // looks like, so that a run of entries folds to doubled letters ("aabb") and
@@ -196,10 +204,20 @@ function enclosedLetter(char: string): string | undefined {
   return block === undefined ? undefined : String.fromCharCode(0x61 + code - block);
 }
 
-/** A table of look-alikes: a character and the folded letters it stands for. */
+/** True when a hand-made table reads the character: those entries win over the Unicode data. */
+export function isHandMade(char: string): boolean {
+  return (
+    CAPITAL_LOOK_ALIKES.has(char) || LOOK_ALIKES.has(char) || STAND_INS.has(char) || enclosedLetter(char) !== undefined
+  );
+}
+
+/** A table of look-alikes: a character outside ASCII and the folded letters it stands for. */
 export type LookAlikes = ReadonlyMap<string, string>;
 
-/** Reads confusables.txt: "<hex code point> <letters>" per line; # starts a comment. */
+/**
+ * Reads confusables.txt: "<hex code point> <letters>" per line; # starts a
+ * comment. ASCII is read by the fold's own rules, so the table never maps it.
+ */
 export function parseLookAlikes(text: string): Map<string, string> {
   const table = new Map<string, string>();
   for (const [index, line] of text.split(/\r?\n/).entries()) {
@@ -211,7 +229,11 @@ export function parseLookAlikes(text: string): Map<string, string> {
     if (match?.[1] === undefined || match[2] === undefined) {
       throw new Error(`Line ${String(index + 1)} of the look-alike table is not "<hex code point> <letters>".`);
     }
-    table.set(String.fromCodePoint(Number.parseInt(match[1], 16)), match[2]);
+    const code = Number.parseInt(match[1], 16);
+    if (code < 0x80) {
+      throw new Error(`Line ${String(index + 1)} of the look-alike table maps an ASCII character.`);
+    }
+    table.set(String.fromCodePoint(code), match[2]);
   }
   return table;
 }
@@ -221,10 +243,29 @@ export const CONFUSABLES: LookAlikes = parseLookAlikes(
   readFileSync(new URL("confusables.txt", import.meta.url), "utf8"),
 );
 
-function letterFor(char: string, confusables: LookAlikes): string {
+/** How a fold reads a look-alike symbol: as the letters it looks like, or as a separator. */
+export type SymbolReading = "letters" | "separators";
+
+const LETTER_OR_DIGIT = /^[\p{L}\p{N}]$/u;
+const ASCII_ONLY = /^\p{ASCII}*$/u;
+/** A "|" with a letter or digit on each side, as in "ki|vant" for "kilvant". */
+const BAR_IN_A_WORD = /(?<=[\p{L}\p{N}][\p{M}\p{Cf}]*)\|(?=\p{Cf}*[\p{L}\p{N}])/gu;
+/** A text that may hold a look-alike symbol: one outside ASCII, or a "|". */
+const MAY_HOLD_SYMBOL = /[^\p{ASCII}]|\|/u;
+
+type Lookup = (char: string) => string | undefined;
+
+function lookupIn(confusables: LookAlikes, symbols: SymbolReading): Lookup {
+  return (char) => {
+    const letters = confusables.get(char);
+    return letters !== undefined && (symbols === "letters" || LETTER_OR_DIGIT.test(char)) ? letters : undefined;
+  };
+}
+
+function letterFor(char: string, look: Lookup): string {
   // A small letter that is not in a table may be the small form of a capital
   // that is, as Cherokee small letters are.
-  const mapped = LOOK_ALIKES.get(char) ?? confusables.get(char) ?? confusables.get(char.toUpperCase()) ?? char;
+  const mapped = LOOK_ALIKES.get(char) ?? look(char) ?? look(char.toUpperCase()) ?? char;
   return STAND_INS.get(mapped) ?? mapped;
 }
 
@@ -233,29 +274,54 @@ function letterFor(char: string, confusables: LookAlikes): string {
  * lower case (look-alike capitals first become the Latin capital they look
  * like), look-alikes and stand-ins become the letter they stand for,
  * and everything that is not a to z (spaces, dots, dashes, other scripts) is
- * dropped. What is left is the line's letters, glued together.
+ * dropped. What is left is the line's letters, glued together. Look-alike
+ * symbols are read as letters here; foldings() also reads them as separators.
  */
 export function fold(text: string): string {
   return foldWith(text, CONFUSABLES);
 }
 
-/** fold() with another table of Unicode look-alikes; the hand-made tables always apply. */
-export function foldWith(text: string, confusables: LookAlikes): string {
-  const plain = text
-    .normalize("NFKC")
-    .normalize("NFD")
-    .replace(MARKS, "")
-    .replace(
-      /./gsu,
-      (char) =>
-        CAPITAL_LOOK_ALIKES.get(char) ?? LOOK_ALIKES.get(char) ?? enclosedLetter(char) ?? confusables.get(char) ?? char,
-    )
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(MARKS, "");
+/** The two readings of a text: look-alike symbols as letters, and as separators. */
+export interface Foldings {
+  readonly letters: string;
+  readonly separators: string;
+}
+
+/** Folds a text both ways. The two are the same when it holds no look-alike symbol. */
+export function foldings(text: string): Foldings {
+  const letters = fold(text);
+  return {
+    letters,
+    separators: MAY_HOLD_SYMBOL.test(text) ? foldWith(text, CONFUSABLES, "separators") : letters,
+  };
+}
+
+/**
+ * fold() with another table of Unicode look-alikes; the hand-made tables
+ * always apply. The table is read before NFKC too, because NFKC turns some
+ * look-alikes into a letter of another script: the Greek lunate sigma that
+ * looks like C becomes a Σ, and so an o.
+ */
+export function foldWith(text: string, confusables: LookAlikes, symbols: SymbolReading = "letters"): string {
+  const look = lookupIn(confusables, symbols);
+  const read = symbols === "letters" && text.includes("|") ? text.replace(BAR_IN_A_WORD, "l") : text;
+  const plain = ASCII_ONLY.test(read)
+    ? read.toLowerCase()
+    : read
+        .replace(/./gsu, (char) => (CAPITAL_LOOK_ALIKES.has(char) || LOOK_ALIKES.has(char) ? char : (look(char) ?? char)))
+        .normalize("NFKC")
+        .normalize("NFD")
+        .replace(MARKS, "")
+        .replace(
+          /./gsu,
+          (char) => CAPITAL_LOOK_ALIKES.get(char) ?? LOOK_ALIKES.get(char) ?? enclosedLetter(char) ?? look(char) ?? char,
+        )
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(MARKS, "");
   let out = "";
   for (const char of plain) {
-    for (const letter of letterFor(char, confusables)) {
+    for (const letter of letterFor(char, look)) {
       if (letter >= "a" && letter <= "z") {
         out += letter;
       }

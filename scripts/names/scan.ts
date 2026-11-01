@@ -3,7 +3,9 @@
 // Finds protected names in text and in files. A finding says where, never
 // what: the logs are public.
 
-import { fold } from "./fold.ts";
+import { isUtf8 } from "node:buffer";
+import { decodeEntities } from "./entities.ts";
+import { foldings, type Foldings } from "./fold.ts";
 
 export type Reason = "name" | "marker" | "binary" | "lfs" | "unreadable";
 
@@ -15,7 +17,7 @@ export interface Finding {
 /** Binary file types the check may pass without reading. None yet. */
 export const READABLE_BINARY_EXTENSIONS: ReadonlySet<string> = new Set<string>();
 
-/** The one file whose integrity digests are not read as text. */
+/** The one file whose integrity digests are read only by their base64. */
 export const LOCKFILE = "pnpm-lock.yaml";
 
 const MAX_DEPTH = 2;
@@ -27,38 +29,29 @@ const LONG_BASE64_RUN = 24;
 const PRINTABLE_RUN = /[ -~\t]{6,}/g;
 const PERCENT_RUN = /(?:%[0-9A-Fa-f]{2})+/g;
 const HAS_PERCENT = /%[0-9A-Fa-f]{2}/;
-const ENTITY = /&(#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z]+);/g;
-const NAMED_ENTITIES = new Map([
-  ["amp", "&"],
-  ["lt", "<"],
-  ["gt", ">"],
-  ["quot", '"'],
-  ["apos", "'"],
-  ["nbsp", " "],
-]);
-// pnpm-lock.yaml holds an integrity digest for every package, such as
-// "integrity: sha512-" and 86 base64 letters. Folded, so many random letters
-// spell a short word by chance sooner or later. So in that one file, and only
-// in the value of an integrity key that has the exact length of its
-// algorithm, the digest's letters are not read as text. Its base64 is still
-// decoded, so text hidden in a digest is still found. Everywhere else, a run
-// shaped like a digest is read like any other text.
-const LOCKFILE_DIGEST =
-  /(?<=\bintegrity: )sha(?:1-[A-Za-z0-9+/]{27}=|256-[A-Za-z0-9+/]{43}=|384-[A-Za-z0-9+/]{64}|512-[A-Za-z0-9+/]{86}==)(?=[},\s]|$)/g;
+// pnpm-lock.yaml holds an integrity digest for every package, which pnpm
+// writes as "    resolution: {integrity: sha512-" and 86 base64 letters. A
+// digest is data, so it is read the way base64 is read: decoded, and what it
+// decodes to is searched. Its letters are not also read as words, because so
+// many random letters spell a short word by chance sooner or later. A digest
+// is read this way only in that file, only at the exact length of its
+// algorithm, and only as the value of pnpm's own integrity key at the start of
+// a line: "resolution: {integrity: <digest>" followed by "," or "}", or
+// "integrity: <digest>" alone. Everywhere else, also on a comment line, later
+// on the line or in another key, a run shaped like a digest is read like any
+// other text.
+const DIGEST = "sha(?:1-[A-Za-z0-9+/]{27}=|256-[A-Za-z0-9+/]{43}=|384-[A-Za-z0-9+/]{64}|512-[A-Za-z0-9+/]{86}==)";
+const LOCKFILE_DIGEST = new RegExp(
+  `(?<=^ +resolution: \\{integrity: )${DIGEST}(?=[,}])|(?<=^ +integrity: )${DIGEST}$`,
+);
 const PRINTABLE = /[\p{L}\p{N}\p{P}\p{S}\p{Zs}\t]/u;
-const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
 /** Text that decodes from base64 and reads as text, not as random bytes. */
-function readableText(bytes: Uint8Array): string | undefined {
-  if (bytes.length < 3) {
+function readableText(bytes: Buffer): string | undefined {
+  if (bytes.length < 3 || !isUtf8(bytes)) {
     return undefined;
   }
-  let text: string;
-  try {
-    text = strictUtf8.decode(bytes);
-  } catch {
-    return undefined;
-  }
+  const text = bytes.toString("utf8");
   let printable = 0;
   let total = 0;
   for (const char of text) {
@@ -108,22 +101,11 @@ function percentDecoding(line: string): string | undefined {
 }
 
 function entityDecoding(line: string): string | undefined {
-  const decoded = line.replace(ENTITY, (whole, body: string) => {
-    let char: string | undefined;
-    if (body.startsWith("#x") || body.startsWith("#X")) {
-      char = codePoint(Number.parseInt(body.slice(2), 16));
-    } else if (body.startsWith("#")) {
-      char = codePoint(Number.parseInt(body.slice(1), 10));
-    } else {
-      char = NAMED_ENTITIES.get(body.toLowerCase());
-    }
-    return char ?? whole;
-  });
+  if (!line.includes("&")) {
+    return undefined;
+  }
+  const decoded = decodeEntities(line);
   return decoded === line ? undefined : decoded;
-}
-
-function codePoint(value: number): string | undefined {
-  return value <= 0x10ffff ? String.fromCodePoint(value) : undefined;
 }
 
 /** What a line decodes to, as base64, percent-encoding or HTML entities. */
@@ -142,6 +124,12 @@ function decodedReadings(line: string, depth: number): string[] {
   return out;
 }
 
+/** The line with its percent-encoding and HTML entities decoded where they stand. */
+function decodedInPlace(line: string): string {
+  const percent = percentDecoding(line) ?? line;
+  return entityDecoding(percent) ?? percent;
+}
+
 /** The line itself and what it decodes to, as base64, percent-encoding or HTML entities. */
 export function readings(line: string): string[] {
   return [line, ...decodedReadings(line, 0)];
@@ -151,33 +139,50 @@ function hasWord(folded: string, words: readonly string[]): boolean {
   return words.some((word) => folded.includes(word));
 }
 
+function foldsToWord(folded: Foldings, words: readonly string[]): boolean {
+  return hasWord(folded.letters, words) || (folded.separators !== folded.letters && hasWord(folded.separators, words));
+}
+
+/** True when the text holds a word once folded, with look-alike symbols read as letters or as separators. */
+function hasName(text: string, words: readonly string[]): boolean {
+  return foldsToWord(foldings(text), words);
+}
+
 /** True when some reading of the line holds a word, once folded. */
 export function lineHasName(line: string, words: readonly string[]): boolean {
-  return readings(line).some((reading) => hasWord(fold(reading), words));
+  return readings(line).some((reading) => hasName(reading, words));
 }
 
 export function splitLines(text: string): string[] {
   return text.split(/\r\n|\r|\n/);
 }
 
-/** One line of pnpm-lock.yaml: the line without its digests, and what the digests decode to. */
-function lockfileLine(line: string): { readonly plain: string; readonly decoded: () => string[] } {
-  const digests = [...line.matchAll(LOCKFILE_DIGEST)].map(([digest]) => digest.slice(digest.indexOf("-") + 1));
-  const plain = line.replace(LOCKFILE_DIGEST, " ");
-  return {
-    plain,
-    decoded: () => {
-      const out = decodedReadings(plain, 0);
-      for (const digest of digests) {
-        const base64 = base64Decodings(digest);
-        for (const text of base64.texts) {
-          out.push(text, ...decodedReadings(text, 1));
-        }
-        out.push(...base64.runs);
-      }
-      return out;
-    },
-  };
+interface Line {
+  /** The line as text. */
+  readonly plain: string;
+  /** Digests taken out of the line, read only by their base64. */
+  readonly digests: readonly string[];
+}
+
+/** One line of pnpm-lock.yaml: the line without its digest, and the digest. */
+function lockfileLine(line: string): Line {
+  const digest = LOCKFILE_DIGEST.exec(line)?.[0];
+  return digest === undefined
+    ? { plain: line, digests: [] }
+    : { plain: line.replace(LOCKFILE_DIGEST, " "), digests: [digest.slice(digest.indexOf("-") + 1)] };
+}
+
+/** What a line and its digests decode to. */
+function decodedLine({ plain, digests }: Line): string[] {
+  const out = decodedReadings(plain, 0);
+  for (const digest of digests) {
+    const base64 = base64Decodings(digest);
+    for (const text of base64.texts) {
+      out.push(text, ...decodedReadings(text, 1));
+    }
+    out.push(...base64.runs);
+  }
+  return out;
 }
 
 /**
@@ -219,8 +224,120 @@ function linesAcross(folded: readonly string[], words: readonly string[]): numbe
   return found;
 }
 
+// The indentation and the quote or comment markers in front of a line: "  ",
+// "> ", "# ", "// ", " * ", "-- " or "; ". ">" also counts without a space
+// after it. The others need a space or the end of the line, because "//" and
+// "--" also start base64, and "#" and ";" are parts of an entity.
+const LINE_PREFIX = /^[ \t]*(?:(?:>+|(?:#+|\/\/+|--|;+|\*)(?=[ \t]|$))[ \t]*)*/;
+
+/** One piece of a wrapped encoding: a word of a line, or the whole line. */
+interface Piece {
+  readonly line: number;
+  readonly text: string;
+}
+
+/**
+ * The runs of text that go on from one line into the next: the last word of
+ * a line, every following line that is one word, and the first word of the
+ * line after them. A base64 blob wrapped at 76 columns is one run, with the
+ * indentation or the quote or comment markers of its lines left out.
+ */
+function wrappedRuns(lines: readonly string[]): Piece[][] {
+  const runs: Piece[][] = [];
+  let run: Piece[] = [];
+  const end = (): void => {
+    if (run.length > 1) {
+      runs.push(run);
+    }
+    run = [];
+  };
+  for (const [line, text] of lines.entries()) {
+    const words = text.replace(LINE_PREFIX, "").trim().split(/\s+/);
+    const first = words[0] ?? "";
+    const last = words[words.length - 1] ?? "";
+    if (first === "") {
+      end();
+      continue;
+    }
+    if (run.length > 0) {
+      run.push({ line, text: first });
+    }
+    if (words.length > 1) {
+      end();
+    }
+    if (words.length > 1 || run.length === 0) {
+      run.push({ line, text: last });
+    }
+  }
+  end();
+  return runs;
+}
+
+/** The widest window of pieces in which the check looks for where a wrapped name starts. */
+const MAX_WINDOW = 32;
+
+type DecodesToName = (pieces: readonly Piece[]) => boolean;
+
+/**
+ * The lines on which a name starts in a stretch of pieces that decodes to
+ * one: the first line of each window of pieces that decodes to a name while
+ * no smaller window inside it does. When no window up to MAX_WINDOW pieces
+ * does, the name starts somewhere in the stretch, and its first line is given.
+ */
+function whereNamesStart(stretch: readonly Piece[], decodesToName: DecodesToName): number[] {
+  // A window "holds" a name when it, or a window inside it, decodes to one.
+  let holds = stretch.map((piece) => decodesToName([piece]));
+  // A single piece that decodes to a name is found on its own line already.
+  const single = holds.includes(true);
+  const found: number[] = [];
+  for (let width = 2; width <= Math.min(stretch.length, MAX_WINDOW); width += 1) {
+    const wider: boolean[] = [];
+    for (let first = 0; first + width <= stretch.length; first += 1) {
+      const inside = holds[first] === true || holds[first + 1] === true;
+      const hit = !inside && decodesToName(stretch.slice(first, first + width));
+      if (hit) {
+        found.push(stretch[first]?.line ?? 0);
+      }
+      wider.push(inside || hit);
+    }
+    holds = wider;
+  }
+  return found.length === 0 && !single ? [stretch[0]?.line ?? 0] : found;
+}
+
+/**
+ * The lines on which an encoding that is wrapped across lines starts to
+ * spell a word: base64, percent-encoding or HTML entities, put back together
+ * before they are decoded. A long run is searched in stretches of twice
+ * MAX_WINDOW pieces that overlap by MAX_WINDOW, so that a name in a long blob
+ * is placed without decoding every window of the blob.
+ */
+function wrappedEncodings(lines: readonly string[], words: readonly string[]): number[] {
+  const decodesToName: DecodesToName = (pieces) =>
+    decodedReadings(pieces.map((piece) => piece.text).join(""), 0).some((reading) => hasName(reading, words));
+  const found: number[] = [];
+  for (const run of wrappedRuns(lines)) {
+    let hit = false;
+    for (let first = 0; ; first += MAX_WINDOW) {
+      const stretch = run.slice(first, first + 2 * MAX_WINDOW);
+      if (decodesToName(stretch)) {
+        hit = true;
+        found.push(...whereNamesStart(stretch, decodesToName));
+      }
+      if (first + 2 * MAX_WINDOW >= run.length) {
+        break;
+      }
+    }
+    // A name wider than a stretch.
+    if (!hit && run.length > 2 * MAX_WINDOW && decodesToName(run)) {
+      found.push(run[0]?.line ?? 0);
+    }
+  }
+  return found;
+}
+
 export interface ScanOptions {
-  /** The text is pnpm-lock.yaml: its integrity digests are not read as text. */
+  /** The text is pnpm-lock.yaml: its integrity digests are read only by their base64. */
   readonly lockfile?: boolean;
 }
 
@@ -234,19 +351,34 @@ export function scanText(
   placeOf: (line: number) => string,
   options: ScanOptions = {},
 ): Finding[] {
-  const lines = splitLines(text);
+  const lines = splitLines(text).map((line): Line =>
+    options.lockfile === true ? lockfileLine(line) : { plain: line, digests: [] },
+  );
   const hits = new Set<number>();
-  const folded: string[] = [];
+  // The folded letters of every line, read four ways, for the words that run
+  // on across line breaks: the line as it is and with its percent-encoding
+  // and entities decoded where they stand, each with look-alike symbols read
+  // as letters and as separators.
+  const across: string[][] = [[], [], [], []];
   for (const [index, line] of lines.entries()) {
-    const { plain, decoded } =
-      options.lockfile === true ? lockfileLine(line) : { plain: line, decoded: () => decodedReadings(line, 0) };
-    const plainFolded = fold(plain);
-    folded.push(plainFolded);
-    if (hasWord(plainFolded, words) || decoded().some((reading) => hasWord(fold(reading), words))) {
+    const own = foldings(line.plain);
+    const inPlace = decodedInPlace(line.plain);
+    const decoded = inPlace === line.plain ? own : foldings(inPlace);
+    [own.letters, own.separators, decoded.letters, decoded.separators].forEach((letters, way) => {
+      across[way]?.push(letters);
+    });
+    if (foldsToWord(own, words) || decodedLine(line).some((reading) => hasName(reading, words))) {
       hits.add(index);
     }
   }
-  for (const index of linesAcross(folded, words)) {
+  for (const [way, folded] of across.entries()) {
+    if (way === 0 || folded.some((letters, index) => letters !== across[0]?.[index])) {
+      for (const index of linesAcross(folded, words)) {
+        hits.add(index);
+      }
+    }
+  }
+  for (const index of wrappedEncodings(lines.map((line) => line.plain), words)) {
     hits.add(index);
   }
   return [...hits]

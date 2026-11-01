@@ -51,6 +51,14 @@ describe("lineHasName finds a planted word", () => {
     ["in decimal HTML entities", "&#122;&#97;&#114;&#113;&#117;&#111;&#110;"],
     ["in hex HTML entities", "&#x7a;&#X61;rquon"],
     ["among named HTML entities", "zar&amp;quon"],
+    ["in double-struck HTML entities", "&zopf;&aopf;&ropf;&qopf;&uopf;&oopf;&nopf;"],
+    ["in script and fraktur HTML entities", "&Zscr;&ascr;r&qfr;&uscr;&ofr;n"],
+    ["in an old HTML entity without its semicolon", "z&aacute rquon"],
+    ["in HTML entities without their semicolons", "&#122&#97rquon"],
+    ["with a look-alike symbol for a letter", "zarqu∅n"],
+    ["with a box-drawing line for l", "b│irvex"],
+    ["with a | for l inside a word", "b|irvex"],
+    ["with a look-alike symbol between its letters", "zar×quon"],
     ["in base64 of percent-encoding", base64("%7A%61%72%71%75%6F%6E")],
     ["next to a digest", "zarquon sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
     ["inside a run shaped like a digest", "see sha1-ZarquonImportAdapterForSIE"],
@@ -73,6 +81,17 @@ describe("lineHasName passes", () => {
     ["an entity beyond Unicode", "&#x110000;"],
   ])("%s", (_case, line) => {
     expect(lineHasName(line, ["zarquonzarquon"])).toBe(false);
+  });
+
+  // fold("blirvex") is "biirvex": a | read as l on each side of a cell would
+  // spell it.
+  it.each([
+    ["a Markdown table", "| b | irvex |"],
+    ["a union type", "type T = b | irvex;"],
+    ["a shell pipe", "echo b |irvex"],
+    ["an ! between letters", "b!irvex"],
+  ])("a | or ! that is not a letter: %s", (_case, line) => {
+    expect(lineHasName(line, words)).toBe(false);
   });
 });
 
@@ -115,11 +134,87 @@ describe("scanText and scanField", () => {
     expect(lines("zar\n\nquon")).toEqual([{ place: "f:1", reason: "name" }]);
   });
 
+  it("find a word wrapped across lines with a look-alike symbol between its letters", () => {
+    expect(lines("zar×\nquon")).toEqual([{ place: "f:1", reason: "name" }]);
+    expect(lines("zarqu∅\nn")).toEqual([{ place: "f:1", reason: "name" }]);
+  });
+
+  it("find a word with HTML entities wrapped across lines", () => {
+    expect(lines("Read the z&#97;r\nquon notes.")).toEqual([{ place: "f:1", reason: "name" }]);
+    expect(lines("&#122; &#97;\n&#114; &#113; &#117; &#111; &#110;")).toEqual([{ place: "f:1", reason: "name" }]);
+    expect(lines("zar&#x\n71;uon")).toEqual([{ place: "f:1", reason: "name" }]);
+  });
+
   it("find a word in a run shaped like a digest, outside the lockfile", () => {
     expect(scanField("Add the sha1-ZarquonImportAdapterForSIE", words, "PR title")).toEqual([
       { place: "PR title", reason: "name" },
     ]);
     expect(lines(`# Importing from sha256-QuintevoAndZarquonExportsLikeThis`)).toEqual([{ place: "f:0", reason: "name" }]);
+  });
+});
+
+describe("an encoding wrapped across lines", () => {
+  it.each([
+    ["base64", "emFy\ncXVvbg=="],
+    ["base64 between other text", "token emFy\ncXVvbg== here"],
+    ["base64 over three lines", "em\nFycX\nVvbg"],
+    ["indented base64", "    emFy\n    cXVvbg=="],
+    ["quoted base64", "> emFy\n> cXVvbg=="],
+    ["base64 in // comments", "// emFy\n// cXVvbg=="],
+    ["base64 in # comments", "# emFy\n# cXVvbg=="],
+    ["base64 in a nested quote", ">> emFy\n>>cXVvbg=="],
+    ["an entity split before its #", "zar&\n#113;uon"],
+    ["an entity split before its ;", "zar&#113\n;uon"],
+    ["percent-encoding", "%7A%61%72\n%71%75%6F%6E"],
+    ["percent-encoding split inside an escape", "%7A%61%7\n2%71%75%6F%6E"],
+    ["decimal HTML entities", "&#122;&#97;&#114;\n&#113;&#117;&#111;&#110;"],
+    ["named HTML entities", "&zopf;&aopf;&ropf;\n&qopf;&uopf;&oopf;&nopf;"],
+  ])("is put back together before it is decoded: %s", (_form, text) => {
+    expect(lines(text)).toEqual([{ place: "f:1", reason: "name" }]);
+  });
+
+  it("is put back together inside a block comment", () => {
+    expect(lines("/*\n * emFy\n * cXVvbg==\n */")).toEqual([{ place: "f:2", reason: "name" }]);
+  });
+
+  it("is reported at the line where the word starts, in a blob wrapped at 76 columns", () => {
+    const blob = base64(`${"x".repeat(225)}zarquon${"y".repeat(60)}`).match(/.{1,76}/g) ?? [];
+    expect(blob).toHaveLength(6);
+    expect(lines(blob.join("\n"))).toEqual([{ place: "f:4", reason: "name" }]);
+    expect(lines(blob.map((line) => `  > ${line}`).join("\n"))).toEqual([{ place: "f:4", reason: "name" }]);
+  });
+
+  it("is placed in a long blob without decoding every window of it", () => {
+    const blob = base64(`${"x".repeat(240)}zarquon${"y".repeat(50)}`).match(/.{1,4}/g) ?? [];
+    expect(blob).toHaveLength(99);
+    expect(lines(blob.join("\n"))).toEqual([{ place: "f:81", reason: "name" }]);
+  });
+
+  it("is reported at the first line of the run when the name is wider than the search", () => {
+    // One base64 letter per line: the name takes 56 lines, more than a
+    // window, and then 96, more than a stretch.
+    const entities = "&#122;&#97;&#114;&#113;&#117;&#111;&#110;";
+    const padded = "&#0000122;&#0000097;&#0000114;&#0000113;&#0000117;&#0000111;&#0000110;";
+    for (const [text, length] of [
+      [entities, 56],
+      [padded, 96],
+    ] as const) {
+      const letters = base64(text).match(/./g) ?? [];
+      expect(letters).toHaveLength(length);
+      expect(lines(["fine", "", ...letters].join("\n"))).toEqual([{ place: "f:3", reason: "name" }]);
+    }
+  });
+
+  it("is reported once for each word: a word on one line there, a wrapped one where it starts", () => {
+    expect(lines(`${base64("zarquon")}\nYmxp\ncnZleA==`)).toEqual([
+      { place: "f:1", reason: "name" },
+      { place: "f:2", reason: "name" },
+    ]);
+  });
+
+  it("is not joined across an empty line", () => {
+    expect(lines("emFy\n\ncXVvbg==")).toEqual([]);
+    expect(lines("// emFy\n//\n// cXVvbg==")).toEqual([]);
   });
 });
 
@@ -132,9 +227,31 @@ describe("pnpm-lock.yaml", () => {
   });
 
   it("still decodes the digest's base64", () => {
-    const hidden = `sha512-${base64("made by zarquon AB, sixty-four bytes of text so it fits the shape")}`;
-    expect(hidden).toHaveLength(7 + 88);
+    const hidden = `sha512-${base64("made by zarquon AB, sixty-four bytes of text, to fit the shape..")}`;
+    // The exact shape of a sha512 digest, so the line holds no other text.
+    expect(hidden).toMatch(/^sha512-[A-Za-z0-9+/]{86}==$/);
     expect(lockfile(`    resolution: {integrity: ${hidden}}`)).toEqual([{ place: "lock:0", reason: "name" }]);
+    expect(lockfile(`      integrity: ${hidden}`)).toEqual([{ place: "lock:0", reason: "name" }]);
+  });
+
+  it("reads a digest so only in pnpm's own forms of the integrity key", () => {
+    const digest = digestOf("xxZARQUONxx");
+    expect(lockfile(`    resolution: {integrity: ${digest}, tarball: https://x.invalid/a.tgz}`)).toEqual([]);
+    expect(lockfile(`      integrity: ${digest}`)).toEqual([]);
+  });
+
+  it.each([
+    ["on a comment line", "    # integrity: "],
+    ["on a comment line in the flow form", "    # resolution: {integrity: "],
+    ["in another key", "    note: integrity: "],
+    ["after another key in the braces", "    resolution: {tarball: x, integrity: "],
+    ["without indentation", "resolution: {integrity: "],
+  ])("reads the letters of a digest as text %s", (_case, before) => {
+    expect(lockfile(`${before}${digestOf("xxZARQUONxx")}}`)).toEqual([{ place: "lock:0", reason: "name" }]);
+  });
+
+  it("reads the letters of a digest as text when more follows it on the line", () => {
+    expect(lockfile(`    integrity: ${digestOf("xxZARQUONxx")} # note`)).toEqual([{ place: "lock:0", reason: "name" }]);
   });
 
   it("reads every other digest-shaped run, and the rest of the line, as text", () => {
@@ -144,7 +261,7 @@ describe("pnpm-lock.yaml", () => {
   });
 
   it("is the only file read this way", () => {
-    const line = `resolution: {integrity: ${digestOf("xxZARQUONxx")}}\n`;
+    const line = `    resolution: {integrity: ${digestOf("xxZARQUONxx")}}\n`;
     const file = (path: string): FileToCheck => ({ path, alias: "a", bytes: Buffer.from(line), honouredFolder: undefined });
     expect(scanFile(file("pnpm-lock.yaml"), words)).toEqual([]);
     for (const path of ["docs/notes.md", "scripts/x.ts", "apps/web/pnpm-lock.yaml"]) {

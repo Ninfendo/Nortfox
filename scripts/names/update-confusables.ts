@@ -6,15 +6,15 @@
 //   node scripts/names/update-confusables.ts
 //
 // It downloads the pinned version, checks its SHA-256 and keeps the entries
-// that fold() cannot read yet: a letter or digit outside ASCII that looks like
-// Latin letters. A new Unicode version is a reviewed change to the three
-// constants below.
+// that fold() does not read as their letters yet: a letter, digit or symbol
+// outside ASCII that looks like Latin letters. A new Unicode version is a
+// reviewed change to the three constants below.
 
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { nodeTransport, type Transport } from "../github/api.ts";
-import { foldWith } from "./fold.ts";
+import { foldWith, isHandMade } from "./fold.ts";
 
 export const UNICODE_VERSION = "18.0.0";
 export const SOURCE_URL = `https://www.unicode.org/Public/${UNICODE_VERSION}/security/confusables.txt`;
@@ -22,22 +22,26 @@ export const SOURCE_SHA256 = "6ed3ee967c9dfdf6677d563c9985182fbc50a2efb7d6059cd5
 export const TABLE_FILE = new URL("confusables.txt", import.meta.url);
 
 const NO_TABLE: ReadonlyMap<string, string> = new Map();
-const LETTER_OR_DIGIT = /^[\p{L}\p{N}]$/u;
 const LATIN_TARGET = /^[A-Za-z013457]+$/;
+const LATIN = /[A-Za-z013457]/;
 
 /**
- * The entry for one character, or undefined when fold() reads it already, or
- * when it does not look like Latin letters.
+ * The entry for one character, or undefined when it does not look like Latin
+ * letters, or when fold() reads it as those letters already. ASCII is left to
+ * the fold's own rules, a character in a hand-made table to that table, and a
+ * character that NFKC turns into Latin letters to NFKC: a full-width m is an
+ * m, though the data reads it as "rn".
  */
 export function entryFor(char: string, target: string): string | undefined {
-  if ((char.codePointAt(0) ?? 0) < 0x80 || !LETTER_OR_DIGIT.test(char)) {
+  if ((char.codePointAt(0) ?? 0) < 0x80 || isHandMade(char) || LATIN.test(char.normalize("NFKC"))) {
     return undefined;
   }
   const plainTarget = target.normalize("NFKD").replace(/\p{M}/gu, "");
-  if (!LATIN_TARGET.test(plainTarget) || foldWith(char, NO_TABLE) !== "") {
+  if (!LATIN_TARGET.test(plainTarget)) {
     return undefined;
   }
-  return foldWith(plainTarget, NO_TABLE);
+  const letters = foldWith(plainTarget, NO_TABLE);
+  return foldWith(char, NO_TABLE) === letters ? undefined : letters;
 }
 
 function hex(char: string): string {
@@ -77,8 +81,10 @@ const HEADER = `# The look-alike table of the names check (scripts/names/fold.ts
 # (UTS #39), version ${UNICODE_VERSION}:
 # ${SOURCE_URL}
 # SHA-256 ${SOURCE_SHA256}
-# It keeps the letters and digits outside ASCII that the data maps to Latin
-# letters and that fold() does not read already.
+# It keeps the characters outside ASCII that the data maps to Latin letters
+# and that fold() does not read as those letters already: letters, digits,
+# and symbols such as "│" for l. It leaves out what NFKC turns into Latin
+# letters and what a hand-made table of fold() reads.
 #
 # The Unicode data is used under the Unicode License v3:
 #

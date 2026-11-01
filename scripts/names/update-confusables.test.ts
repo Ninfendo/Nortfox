@@ -16,7 +16,13 @@ const UPSTREAM = [
   "A4F2 ;\t006C ;\tMA\t# kept: l folds to i",
   "0251 ;\t0061 ;\tMA\t# kept",
   "006D ;\t0072 006E ;\tMA\t# dropped: ASCII is read as it is",
-  "2223 ;\t006C ;\tMA\t# dropped: a symbol, which the fold reads as a separator",
+  "2223 ;\t006C ;\tMA\t# kept: a symbol, read as l (and so i) or as a separator",
+  "007C ;\t006C ;\tMA\t# dropped: ASCII is read by the fold's own rules",
+  "00A2 ;\t0063 0338 ;\tMA\t# kept: a symbol; the mark goes",
+  "03F9 ;\t0043 ;\tMA\t# kept: NFKC makes it a Greek capital sigma, which folds to o",
+  "017F ;\t0066 ;\tMA\t# dropped: NFKC makes it an s",
+  "0438 ;\t0078 ;\tMA\t# dropped: a hand-made table reads it, and wins",
+  "0C02 ;\t006F ;\tMA\t# kept: a vowel sign, which the fold drops as a mark",
   "0430 ;\t0061 ;\tMA\t# dropped: a hand-made table reads it already",
   "FF4D ;\t0072 006E ;\tMA\t# dropped: NFKC reads it already",
   "0B66 ;\t006F ;\tMA\t# kept: a digit that looks like a letter, as 0 does",
@@ -27,13 +33,17 @@ const UPSTREAM = [
 ].join("\n");
 
 describe("the look-alike table", () => {
-  it("keeps only letters outside ASCII that look like Latin letters and that fold() cannot read yet", () => {
+  it("keeps the characters outside ASCII that look like Latin letters and that fold() does not read as them", () => {
     expect([...upstreamEntries(UPSTREAM)]).toEqual([
       ["օ", "o"],
       ["Ꭰ", "d"],
       ["Ʒ", "e"],
       ["ꓲ", "i"],
       ["ɑ", "a"],
+      ["∣", "i"],
+      ["¢", "c"],
+      ["Ϲ", "c"],
+      [String.fromCodePoint(0xc02), "o"],
       ["୦", "o"],
     ]);
     expect(entryFor("a", "a")).toBeUndefined();
@@ -44,11 +54,15 @@ describe("the look-alike table", () => {
     expect(table).toContain(`# ${SOURCE_URL}\n# SHA-256 ${SOURCE_SHA256}\n`);
     expect(table).toContain("# UNICODE LICENSE V3");
     expect(table.split("\n").filter((line) => /^[0-9A-F]+ /.test(line))).toEqual([
+      "00A2 c",
       "01B7 e",
       "0251 a",
+      "03F9 c",
       "0585 o",
       "0B66 o",
+      "0C02 o",
       "13A0 d",
+      "2223 i",
       "A4F2 i",
     ]);
   });
@@ -59,6 +73,14 @@ describe("the look-alike table", () => {
     expect(kept.size).toBe(CONFUSABLES.size);
     expect(renderTable(kept)).toBe(committed);
     expect(CONFUSABLES.size).toBeGreaterThan(500);
+  });
+
+  it("on disk holds look-alike symbols and the lunate sigma, and no ASCII", () => {
+    expect(CONFUSABLES.get("│")).toBe("i");
+    expect(CONFUSABLES.get("∅")).toBe("o");
+    expect(CONFUSABLES.get("×")).toBe("x");
+    expect(CONFUSABLES.get("Ϲ")).toBe("c");
+    expect([...CONFUSABLES.keys()].filter((char) => (char.codePointAt(0) ?? 0) < 0x80)).toEqual([]);
   });
 
   it("is built only from the pinned file", async () => {
