@@ -30,7 +30,9 @@ Other commands:
 The owner keeps a private list of names that must never appear in the repository ([decision 11](docs/decisions/0011-names-policy.md)). The list is not in the repository in any form. The check runs in the git hooks and in CI.
 
 - Without the list on your machine, the hooks print a one-line note and pass. CI checks every pull request.
-- When the check fails, it shows only the place: the file and line, or a field such as the PR title. Reword the text at that place.
+- It checks the files and their paths, the PR title and body, the branch name, and each commit's message and the name and e-mail address of its author and committer.
+- When the check fails on a PR from the owner's account, it shows only the place: the file and line, or a field such as the PR title. Reword the text at that place.
+- A PR from any other account is checked once the owner has approved its head commit, and a failure says only how many places there are, never where. The owner tells you what to change.
 - Never try to work out the list, and never work around the check.
 
 ## Pull requests
@@ -44,7 +46,7 @@ The owner keeps a private list of names that must never appear in the repository
 A PR can merge when four checks pass on its head commit:
 
 - **CI OK**: every CI job passed.
-- **Owner OK**: the names check found nothing, and a PR that changes an owner path (`.github/owner-paths.txt`) carries the owner's approval.
+- **Owner OK**: the names check found nothing, and a PR that changes an owner path (`.github/owner-paths.txt`) carries the owner-ok label, set by the owner on its head commit. A push after the label needs the label again.
 - **Outside approval**: the owner wrote the PR or approved its head commit.
 - **Review OK**: the owner's code review passed it.
 

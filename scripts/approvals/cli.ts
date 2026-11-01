@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The approval workflow's checks. It runs from the base branch and reads the
-// PR only through the API, as data.
+// The approval workflow's checks. It runs from the default branch and reads
+// the PR only through the API, as data.
 //
 //   node scripts/approvals/cli.ts outside-approval
 //   node scripts/approvals/cli.ts owner-ok
 //   node scripts/approvals/cli.ts names-mirror
 //
 // Settings come from the environment: GITHUB_TOKEN, GITHUB_REPOSITORY,
-// PR_NUMBER and OWNER_LOGIN; owner-ok also reads EVENT_ACTION, BEFORE_SHA,
-// AFTER_SHA and NAMES_RESULT.
+// PR_NUMBER and OWNER_LOGIN; owner-ok also reads NAMES_RESULT. Each command
+// fails a PR that is not aimed at the default branch.
+//
+// Each command decides from the PR as it is when it runs, never from the
+// event that started it. So a run that is missed, fails or is dropped leaves
+// nothing behind that a later run would trust.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { field, pullRequestContext, stringField, type GitHub } from "../github/api.ts";
-import { decideOutsideApproval, decideOwnerOk, labelMustGo, OWNER_OK_LABEL, type Review } from "./decide.ts";
+import { field, stringField } from "../github/api.ts";
+import { loadPullRequest, outsideApprovalOf, requireEnv, type PullRequest } from "../github/pull-request.ts";
+import { decideLabelHolds, decideOwnerOk, OWNER_OK_LABEL, type BranchMove, type LabelEvent, type Verdict } from "./decide.ts";
 import { OWNER_PATHS_FILE, parseOwnerPaths } from "./owner-paths.ts";
 
 export interface Io {
@@ -25,44 +30,9 @@ export interface Io {
   readonly sleep: (ms: number) => Promise<void>;
 }
 
-interface Pr {
-  readonly prefix: string;
-  readonly number: string;
-  readonly github: GitHub;
-  readonly data: unknown;
-  readonly headSha: string;
-}
-
-async function loadPr(env: Io["env"]): Promise<Pr> {
-  const { github, repository, number } = pullRequestContext(env);
-  const prefix = `/repos/${repository}`;
-  const data = await github.get(`${prefix}/pulls/${String(number)}`);
-  return { prefix, number: String(number), github, data, headSha: stringField(field(data, "head"), "sha") };
-}
-
-function requireEnv(env: Io["env"], name: string): string {
-  const value = env[name];
-  if (value === undefined || value === "") {
-    throw new Error(`${name} must be set.`);
-  }
-  return value;
-}
-
 async function outsideApproval(io: Io): Promise<boolean> {
   const owner = requireEnv(io.env, "OWNER_LOGIN");
-  const pr = await loadPr(io.env);
-  const listed = await pr.github.list(`${pr.prefix}/pulls/${pr.number}/reviews?per_page=100`);
-  const reviews: Review[] = listed.map((review) => ({
-    login: stringField(field(review, "user"), "login"),
-    state: stringField(review, "state"),
-    commitId: stringField(review, "commit_id"),
-  }));
-  const verdict = decideOutsideApproval({
-    owner,
-    author: stringField(field(pr.data, "user"), "login"),
-    headSha: pr.headSha,
-    reviews,
-  });
+  const verdict = await outsideApprovalOf(await loadPullRequest(io.env), owner);
   (verdict.pass ? io.out : io.err)(`Outside approval: ${verdict.why}`);
   return verdict.pass;
 }
@@ -84,34 +54,67 @@ function labelsOf(data: unknown): string[] {
   return Array.isArray(labels) ? labels.map((label) => stringField(label, "name")) : [];
 }
 
-/** The most files the compare API lists. A push with more cannot be read in full. */
-const COMPARE_FILE_LIMIT = 300;
+/** The last time the owner-ok label was set, from the PR's issue events (oldest first). */
+function lastLabelEvent(events: readonly unknown[]): LabelEvent | undefined {
+  const set = events
+    .filter((event) => field(event, "event") === "labeled" && field(field(event, "label"), "name") === OWNER_OK_LABEL)
+    .at(-1);
+  return set === undefined ? undefined : { actor: stringField(field(set, "actor"), "login"), at: stringField(set, "created_at") };
+}
 
-async function pushTouchesOwnerPaths(io: Io, pr: Pr, globs: readonly string[]): Promise<boolean> {
-  const before = requireEnv(io.env, "BEFORE_SHA");
-  const after = requireEnv(io.env, "AFTER_SHA");
-  const compare = await pr.github.find(`${pr.prefix}/compare/${before}...${after}`);
-  const files = field(compare, "files");
-  const listed = Array.isArray(files) ? (files as unknown[]) : [];
-  const status = field(compare, "status");
-  return labelMustGo({
-    compareStatus: typeof status === "string" ? status : undefined,
-    pushedPaths: changedPaths(listed),
-    complete: listed.length < COMPARE_FILE_LIMIT,
-    globs,
-  });
+/** The newest push to `ref` in a page of repository activity. */
+function lastBranchMove(activity: unknown, ref: string): BranchMove | undefined {
+  let last: BranchMove | undefined;
+  for (const entry of Array.isArray(activity) ? (activity as unknown[]) : []) {
+    if (field(entry, "ref") !== ref) {
+      continue;
+    }
+    const move = { after: stringField(entry, "after"), at: stringField(entry, "timestamp") };
+    if (last === undefined || Date.parse(move.at) > Date.parse(last.at)) {
+      last = move;
+    }
+  }
+  return last;
+}
+
+/**
+ * Whether the owner-ok label counts for the PR's head commit. It reads who set
+ * the label and when, and when the PR's branch last moved and to which
+ * commit. Anything it cannot read means the label does not count.
+ */
+async function labelHolds(pr: PullRequest, owner: string): Promise<Verdict> {
+  let label: LabelEvent | undefined;
+  let lastMove: BranchMove | undefined;
+  try {
+    label = lastLabelEvent(await pr.github.list(`${pr.prefix}/issues/${pr.number}/events?per_page=100`));
+    const head = field(pr.data, "head");
+    const ref = `refs/heads/${stringField(head, "ref")}`;
+    const repository = stringField(field(head, "repo"), "full_name");
+    lastMove = lastBranchMove(
+      await pr.github.get(`/repos/${repository}/activity?ref=${encodeURIComponent(ref)}&direction=desc&per_page=10`),
+      ref,
+    );
+  } catch (error) {
+    return {
+      pass: false,
+      why: `Owner OK could not read when the label was set and when the PR's branch last moved (${error instanceof Error ? error.message : "unknown error"}).`,
+    };
+  }
+  return decideLabelHolds({ owner, headSha: pr.headSha, label, lastMove });
 }
 
 async function ownerOk(io: Io): Promise<boolean> {
+  const owner = requireEnv(io.env, "OWNER_LOGIN");
   const globs = parseOwnerPaths(readFileSync(join(io.cwd, OWNER_PATHS_FILE), "utf8"));
-  const pr = await loadPr(io.env);
+  const pr = await loadPullRequest(io.env);
   let labels = labelsOf(pr.data);
 
-  if (io.env["EVENT_ACTION"] === "synchronize" && labels.includes(OWNER_OK_LABEL)) {
-    if (await pushTouchesOwnerPaths(io, pr, globs)) {
-      await pr.github.remove(`${pr.prefix}/issues/${pr.number}/labels/${OWNER_OK_LABEL}`);
+  if (labels.includes(OWNER_OK_LABEL)) {
+    const holds = await labelHolds(pr, owner);
+    if (!holds.pass) {
       labels = labels.filter((label) => label !== OWNER_OK_LABEL);
-      io.out("Owner OK: the new commits touch owner paths, so the owner-ok label is removed.");
+      io.out(`Owner OK: ${holds.why} The owner-ok label is removed.`);
+      await pr.github.remove(`${pr.prefix}/issues/${pr.number}/labels/${OWNER_OK_LABEL}`);
     }
   }
 
@@ -134,12 +137,13 @@ const MIRROR_WAIT_MS = 15_000;
 const MIRROR_ROUNDS = 40;
 
 /**
- * A review changes no text, so on a review the names check repeats the
- * verdict of the last full check on the head commit (the pull_request_target
- * run, which has the secret), waiting for it if it still runs.
+ * On a review in a run without the list (a PR from a fork), the names check
+ * repeats the verdict of the last full check on the head commit (a
+ * pull_request_target run, which has the list), waiting for it if it still
+ * runs.
  */
 async function namesMirror(io: Io): Promise<boolean> {
-  const pr = await loadPr(io.env);
+  const pr = await loadPullRequest(io.env);
   for (let round = 0; round < MIRROR_ROUNDS; round += 1) {
     const answer = await pr.github.get(
       `${pr.prefix}/commits/${pr.headSha}/check-runs?check_name=Names&filter=all&per_page=100`,

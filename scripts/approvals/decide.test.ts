@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { describe, expect, it } from "vitest";
-import { decideCiOk, decideOutsideApproval, decideOwnerOk, labelMustGo } from "./decide.ts";
+import { decideCiOk, decideLabelHolds, decideOutsideApproval, decideOwnerOk } from "./decide.ts";
 import { globToRegExp, ownerPathsIn, parseOwnerPaths } from "./owner-paths.ts";
 
 const GLOBS = [
@@ -10,8 +10,11 @@ const GLOBS = [
   "packages/engine/src/money*",
   "packages/client/openapi.json",
   "**/LICENSE*",
+  "**/LICENCE*",
+  "**/COPYING*",
   "LICENSE",
   ".github/**",
+  "**/tsconfig*.json",
   "**/.protected-name-ok",
   "CLAUDE.md",
 ];
@@ -37,7 +40,17 @@ describe("owner paths", () => {
     ["LICENSE", true],
     ["packages/client/LICENSE", true],
     ["packages/client/LICENSE.md", true],
+    ["packages/client/LICENCE", true],
+    ["packages/client/license.md", true],
+    ["License.txt", true],
+    ["COPYING", true],
+    ["apps/web/copying.lesser", true],
+    ["tsconfig.json", true],
+    ["apps/web/tsconfig.json", true],
+    ["packages/client/tsconfig.build.json", true],
+    ["apps/web/src/config.ts", false],
     [".github/workflows/ci.yml", true],
+    [".GitHub/workflows/ci.yml", true],
     [".github/owner-paths.txt", true],
     ["docs/.github/x", false],
     ["adapters/a1/.protected-name-ok", true],
@@ -137,20 +150,52 @@ describe("Owner OK", () => {
   });
 });
 
-describe("removing the owner-ok label after a push", () => {
-  const input = { compareStatus: "ahead", pushedPaths: ["README.md"], complete: true, globs: GLOBS };
+describe("whether the owner-ok label counts", () => {
+  const input = {
+    owner: "owner",
+    headSha: "h2",
+    label: { actor: "owner", at: "2026-11-01T10:00:05Z" },
+    lastMove: { after: "h2", at: "2026-11-01T10:00:00Z" },
+  };
 
-  it("keeps it when the new commits touch no owner path", () => {
-    expect(labelMustGo(input)).toBe(false);
+  it("counts when the owner set it after the last push, which left the branch at the head commit", () => {
+    expect(decideLabelHolds(input)).toEqual({ pass: true, why: "The owner set the owner-ok label on the PR's head commit." });
   });
 
   it.each([
-    ["the new commits touch an owner path", { pushedPaths: ["LICENSE"] }],
-    ["the push rewrote history", { compareStatus: "diverged" }],
-    ["the compare cannot be read", { compareStatus: undefined }],
-    ["the push has more files than the API lists", { complete: false }],
-  ])("removes it when %s", (_case, change) => {
-    expect(labelMustGo({ ...input, ...change })).toBe(true);
+    ["GitHub has no record of the label", { label: undefined }, "GitHub has no record of who set the owner-ok label, or when."],
+    [
+      "another account set it",
+      { label: { actor: "someone", at: "2026-11-01T10:00:05Z" } },
+      "The owner-ok label was set by an account that is not the owner's.",
+    ],
+    [
+      "the branch history cannot be read",
+      { lastMove: undefined },
+      "The history of the PR's branch does not end at the PR's head commit, so the label cannot be tied to it.",
+    ],
+    [
+      "the last push is not the head commit",
+      { lastMove: { after: "h3", at: "2026-11-01T10:00:00Z" } },
+      "The history of the PR's branch does not end at the PR's head commit, so the label cannot be tied to it.",
+    ],
+    [
+      "the owner set it before the last push",
+      { lastMove: { after: "h2", at: "2026-11-01T10:00:06Z" } },
+      "The owner-ok label was set before the last push to the PR's branch. It counts only for the head commit it was set on.",
+    ],
+    [
+      "the owner set it in the same second as the last push",
+      { lastMove: { after: "h2", at: "2026-11-01T10:00:05Z" } },
+      "The owner-ok label was set before the last push to the PR's branch. It counts only for the head commit it was set on.",
+    ],
+    [
+      "a time cannot be read",
+      { label: { actor: "owner", at: "soon" } },
+      "The owner-ok label was set before the last push to the PR's branch. It counts only for the head commit it was set on.",
+    ],
+  ])("does not count when %s", (_case, change, why) => {
+    expect(decideLabelHolds({ ...input, ...change })).toEqual({ pass: false, why });
   });
 });
 

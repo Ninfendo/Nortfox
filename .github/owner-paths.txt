@@ -1,10 +1,11 @@
-# Owner paths. A PR that changes one passes "Owner OK" only once the owner has
-# set the owner-ok label, and a later push that touches one removes the label
-# again (docs/plan.md, section 6). The approval workflow reads this file from
-# the base branch, so a PR cannot shorten it for itself.
+# Owner paths. A PR that changes one passes "Owner OK" only while it carries
+# the owner-ok label that the owner set on its head commit, so a later push
+# needs the label again (docs/plan.md, section 6). The approval workflow reads
+# this file from the default branch, so a PR cannot shorten it for itself.
 #
 # One glob per line, from the repository root: ** spans folders, * and ? stay
 # inside one name, and a pattern without a slash matches at the root only.
+# Matching ignores case.
 
 # The ledger law and money.
 db/migrations/**
@@ -19,12 +20,28 @@ packages/client/openapi.json
 
 # Licences.
 **/LICENSE*
-LICENSE
+**/LICENCE*
+**/COPYING*
 
 # The workflows, these lists and the repository's own checks.
 .github/**
 scripts/**
 **/.protected-name-ok
+
+# The files that CI's checks run through: the root scripts, the workspace
+# and install settings (the install-script allowlist, the minimum release
+# age, the trust policy), the task runner, the test projects and their
+# coverage floors, the lint rules, the compiler settings and the git hooks.
+package.json
+pnpm-workspace.yaml
+.npmrc
+.nvmrc
+.gitattributes
+turbo.json
+vitest.config.ts
+eslint.config.js
+**/tsconfig*.json
+.githooks/**
 
 # The rules for every change.
 CLAUDE.md

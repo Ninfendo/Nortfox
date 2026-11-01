@@ -82,21 +82,53 @@ export function decideOwnerOk(input: {
   };
 }
 
+/** When and by whom the owner-ok label was last set. */
+export interface LabelEvent {
+  readonly actor: string;
+  /** An ISO 8601 time, as the API gives it. */
+  readonly at: string;
+}
+
+/** The last push to the PR's branch: the commit it left the branch at, and when. */
+export interface BranchMove {
+  readonly after: string;
+  readonly at: string;
+}
+
 /**
- * After a push: the owner-ok label goes when the new commits touch an owner
- * path, or when the push cannot be read as plain new commits on top of the old
- * head (a force push, or more files than the API lists).
+ * Whether the owner-ok label counts: only for the head commit it was set on
+ * (docs/plan.md, section 6). GitHub keeps no commit with a label, so this
+ * compares times. The owner must have set the label after the last push to
+ * the PR's branch, and that push must have left the branch at the PR's head
+ * commit. Anything that cannot be read or does not add up fails, so a missed
+ * or failed run never leaves a label that passes later.
  */
-export function labelMustGo(input: {
-  readonly compareStatus: string | undefined;
-  readonly pushedPaths: readonly string[];
-  readonly complete: boolean;
-  readonly globs: readonly string[];
-}): boolean {
-  if (input.compareStatus !== "ahead" || !input.complete) {
-    return true;
+export function decideLabelHolds(input: {
+  readonly owner: string;
+  readonly headSha: string;
+  readonly label: LabelEvent | undefined;
+  readonly lastMove: BranchMove | undefined;
+}): Verdict {
+  const { label, lastMove } = input;
+  if (label === undefined) {
+    return { pass: false, why: "GitHub has no record of who set the owner-ok label, or when." };
   }
-  return ownerPathsIn(input.pushedPaths, input.globs).length > 0;
+  if (label.actor !== input.owner) {
+    return { pass: false, why: "The owner-ok label was set by an account that is not the owner's." };
+  }
+  if (lastMove?.after !== input.headSha) {
+    return {
+      pass: false,
+      why: "The history of the PR's branch does not end at the PR's head commit, so the label cannot be tied to it.",
+    };
+  }
+  if (!(Date.parse(label.at) > Date.parse(lastMove.at))) {
+    return {
+      pass: false,
+      why: "The owner-ok label was set before the last push to the PR's branch. It counts only for the head commit it was set on.",
+    };
+  }
+  return { pass: true, why: "The owner set the owner-ok label on the PR's head commit." };
 }
 
 /** CI OK: every job it needs succeeded. Failed, cancelled and skipped all fail. */

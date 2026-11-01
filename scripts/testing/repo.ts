@@ -3,7 +3,7 @@
 // Throwaway git repositories for the tests of the repository's own checks.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -33,7 +33,13 @@ export function createTestRepo(): TestRepo {
     return result.stdout;
   };
   git("init", "--quiet", "--initial-branch=main");
-  git("config", "core.autocrlf", "false");
+  // The names check reads the identity of the next commit with git var, so
+  // the repository carries its own, whatever this machine's git config says.
+  // Written straight into the config file: one git process fewer per setting.
+  appendFileSync(
+    join(dir, ".git", "config"),
+    "[core]\n\tautocrlf = false\n[user]\n\tname = Test\n\temail = test@example.invalid\n",
+  );
   return {
     dir,
     write(path, contents) {

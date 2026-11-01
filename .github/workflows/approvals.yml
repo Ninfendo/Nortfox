@@ -5,30 +5,43 @@
 #
 # On pull_request_target, GitHub runs this file as it is on the base branch,
 # never the PR's copy, with a token for this repository. So no job here ever
-# checks out, installs or runs the PR's code. Each job checks out the base
+# checks out, installs or runs the PR's code. Each job checks out the default
 # branch to get the checks, and reads the PR's files, paths, commits, title and
-# body through the API, as data.
+# body through the API, as data. Only a PR into the default branch starts it,
+# and each check fails a PR aimed anywhere else: a check runs on a head commit,
+# so a pass for a PR into another branch would count for every PR with that
+# head commit.
+#
+# "edited" is on the list because the title, the body and the base can change
+# after the last run, and the squash merge copies the title and body into the
+# default branch.
 #
 # A review re-runs the checks, so that an approval counts at once. GitHub runs
 # pull_request_review with the PR's own copy of this file, as it does
 # pull_request: from a fork it gets a read-only token and no secrets. Until the
 # owner pins these checks to the approval App (docs/plan.md, step 1), a PR could
 # change that copy; .github/** is an owner path, so the review reads every such
-# change. On a review, Names repeats the verdict of the last full check instead
-# of checking again, because a review changes no text.
+# change.
 
 name: Approvals
 
 on:
-  pull_request_target: # zizmor: ignore[dangerous-triggers] Only the base branch is checked out; the PR is read through the API as data.
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  pull_request_target: # zizmor: ignore[dangerous-triggers] Only the default branch is checked out; the PR is read through the API as data.
+    types: [opened, synchronize, reopened, edited, ready_for_review, labeled, unlabeled]
+    branches: [main]
   pull_request_review:
     types: [submitted, dismissed]
 
 permissions: {}
 
-# No concurrency group: every event must run to its end. A push that is
-# cancelled by a later event would never remove the owner-ok label.
+# One run per PR and kind of event at a time, so the newest event's verdict is
+# written last. Every check decides from the PR as it is when it runs, so a
+# run that waits or is dropped loses nothing. Reviews have a group of their
+# own, because a review run may wait for the full Names check of a
+# pull_request_target run, which must never queue behind it.
+concurrency:
+  group: approvals-${{ github.event_name }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 env:
   OWNER_LOGIN: Ninfendo
@@ -39,15 +52,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      contents: read # check out the base branch; read the PR's files at its head
-      pull-requests: read # list the PR's files and commits
+      contents: read # check out the default branch; read the PR's files at its head
+      pull-requests: read # list the PR's files, commits and reviews
       checks: read # on a review: find the last full Names check
       actions: read # on a review: tell which run made it
     steps:
-      - name: Check out the base branch, never the PR
+      - name: Check out the default branch, never the PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -60,10 +73,22 @@ jobs:
           PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-      - name: Repeat the last full check, because a review changes no text
+      # A PR from outside the owner's account is checked only once the owner
+      # has approved its head commit. So on a review, a run that has the list
+      # checks the PR in full. A run without it, which is a review of a PR from
+      # a fork, repeats the last full check; after approving such a PR, the
+      # owner re-runs the pull_request_target run's failed jobs.
+      - name: Check again, or repeat the last full check
         if: github.event_name == 'pull_request_review'
-        run: node scripts/approvals/cli.ts names-mirror
+        run: |
+          set -euo pipefail
+          if [ -n "${PROTECTED_NAMES}" ]; then
+            node scripts/names/cli.ts --pr
+          else
+            node scripts/approvals/cli.ts names-mirror
+          fi
         env:
+          PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
@@ -72,13 +97,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: read # check out the base branch
+      contents: read # check out the default branch
       pull-requests: read # read the PR and its reviews
     steps:
-      - name: Check out the base branch, never the PR
+      - name: Check out the default branch, never the PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -97,24 +122,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: read # check out the base branch; compare the pushed commits
-      pull-requests: write # only to remove the owner-ok label after a push that touches an owner path
+      contents: read # check out the default branch; read the PR branch's push history
+      issues: read # read when the owner-ok label was set
+      pull-requests: write # only to remove an owner-ok label that does not count for the head commit
     steps:
-      - name: Check out the base branch, never the PR
+      - name: Check out the default branch, never the PR
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
-      - name: Names passed, and owner paths carry the owner-ok label
+      - name: Names passed, and owner paths carry the owner-ok label set on the head commit
         run: node scripts/approvals/cli.ts owner-ok
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_ACTION: ${{ github.event.action }}
-          BEFORE_SHA: ${{ github.event.before }}
-          AFTER_SHA: ${{ github.event.after }}
           NAMES_RESULT: ${{ needs.names.result }}

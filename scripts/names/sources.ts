@@ -15,10 +15,12 @@ export interface SourceFile {
   readonly alias: string;
   /** Undefined for a file whose contents are not checked (a submodule). */
   readonly bytes: Uint8Array | undefined;
+  /** True when the file has contents the check cannot get, which fails the check. */
+  readonly unreadable?: boolean;
 }
 
 export interface TextField {
-  /** "PR title", "branch name", "commit 1a2b3c4". */
+  /** "PR title", "branch name", "commit 1a2b3c4", "commit 1a2b3c4 author". */
   readonly field: string;
   readonly text: string;
 }
@@ -57,16 +59,30 @@ function readWorkingFile(cwd: string, path: string): Uint8Array | undefined {
   return readFileSync(full);
 }
 
+/**
+ * The fields of one commit: its message, and the name and e-mail address of
+ * its author and of its committer. They are public on every commit, and a
+ * squash merge copies the authors into the commit on main.
+ */
+function commitFields(sha: string, message: string, author: string, committer: string): TextField[] {
+  const commit = `commit ${sha.slice(0, 7)}`;
+  return [
+    { field: commit, text: message },
+    { field: `${commit} author`, text: author },
+    { field: `${commit} committer`, text: committer },
+  ];
+}
+
 function lastCommit(cwd: string): TextField[] {
-  const text = gitTextOrUndefined(cwd, ["log", "-1", "--format=%H%n%B"]);
+  const text = gitTextOrUndefined(cwd, ["log", "-1", "--format=%H%n%an <%ae>%n%cn <%ce>%n%B"]);
   if (text === undefined) {
     return [];
   }
-  const newline = text.indexOf("\n");
-  return [{ field: `commit ${text.slice(0, 7)}`, text: text.slice(newline + 1).trimEnd() }];
+  const [sha = "", author = "", committer = "", ...message] = text.split("\n");
+  return commitFields(sha, message.join("\n").trimEnd(), author, committer);
 }
 
-/** --all: every tracked file and its contents, and the last commit message. */
+/** --all: every tracked file and its contents, and the last commit. */
 export function allSource(cwd: string, base: string): Source {
   const paths = nulList(gitText(cwd, ["ls-files", "-z"]));
   return {
@@ -81,17 +97,39 @@ export function allSource(cwd: string, base: string): Source {
   };
 }
 
-/** --staged: the staged files, as staged, and the branch name. */
+const IDENTITIES = [
+  ["author (git var GIT_AUTHOR_IDENT)", "GIT_AUTHOR_IDENT"],
+  ["committer (git var GIT_COMMITTER_IDENT)", "GIT_COMMITTER_IDENT"],
+] as const;
+
+/**
+ * The name and e-mail address git will write into the next commit, without
+ * the time: "Name <address>". Undefined when git has none.
+ */
+function nextIdentity(cwd: string, variable: string): string | undefined {
+  return gitTextOrUndefined(cwd, ["var", variable])
+    ?.trim()
+    .replace(/ \d+ [+-]\d{4}$/, "");
+}
+
+/** --staged: the staged files, as staged, the branch name, and who the next commit names. */
 export function stagedSource(cwd: string, base: string): Source {
   const paths = nulList(gitText(cwd, ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRT"]));
   const branch = gitTextOrUndefined(cwd, ["symbolic-ref", "--short", "-q", "HEAD"])?.trim();
+  const fields: TextField[] = branch === undefined || branch === "" ? [] : [{ field: "branch name", text: branch }];
+  for (const [label, variable] of IDENTITIES) {
+    const text = nextIdentity(cwd, variable);
+    if (text !== undefined) {
+      fields.push({ field: label, text });
+    }
+  }
   return {
     files: paths.map((path, index) => ({
       path,
       alias: `staged file ${String(index + 1)} (git diff --cached --name-only)`,
       bytes: gitBytes(cwd, ["cat-file", "blob", `:${path}`]),
     })),
-    fields: branch === undefined || branch === "" ? [] : [{ field: "branch name", text: branch }],
+    fields,
     markers: nulList(gitText(cwd, ["ls-files", "-z"])).filter(isMarker),
     allowlist: baseAllowlist(cwd, base),
   };
@@ -106,19 +144,27 @@ export function textSource(text: string, label: string): Source {
 export const MAX_PR_FILES = 3000;
 export const MAX_PR_COMMITS = 250;
 
+/** "Name <address>" of a commit's author or committer, as the API gives it. */
+function identityOf(person: unknown): string {
+  const name = field(person, "name");
+  const email = field(person, "email");
+  return `${typeof name === "string" ? name : ""} <${typeof email === "string" ? email : ""}>`;
+}
+
 /**
  * --pr: the PR's changed files at its head commit, their paths, its title,
- * body and branch name, and every commit message, all read through the API as
- * data. The PR's code is never checked out or run.
+ * body and branch name, and every commit's message, author and committer, all
+ * read through the API as data. The PR's code is never checked out or run.
+ * `pr` is the PR as the API gives it.
  */
 export async function pullRequestSource(
   github: GitHub,
   repository: string,
-  number: number,
+  pr: unknown,
   allowlist: readonly string[],
 ): Promise<Source> {
   const prefix = `/repos/${repository}`;
-  const pr = await github.get(`${prefix}/pulls/${String(number)}`);
+  const number = String(numberField(pr, "number"));
   const head = field(pr, "head");
   const headSha = stringField(head, "sha");
   if (numberField(pr, "changed_files") > MAX_PR_FILES) {
@@ -129,22 +175,23 @@ export async function pullRequestSource(
   }
 
   const files: SourceFile[] = [];
-  const changed = await github.list(`${prefix}/pulls/${String(number)}/files?per_page=100`);
+  const changed = await github.list(`${prefix}/pulls/${number}/files?per_page=100`);
   for (const [index, entry] of changed.entries()) {
     if (stringField(entry, "status") === "removed") {
       continue;
     }
     const sha = field(entry, "sha");
-    let bytes: Uint8Array | undefined;
-    if (typeof sha === "string" && sha !== "") {
-      const blob = await github.get(`${prefix}/git/blobs/${sha}`);
-      bytes = Buffer.from(stringField(blob, "content"), "base64");
-    }
-    files.push({
+    const file = {
       path: stringField(entry, "filename"),
       alias: `changed file ${String(index + 1)} (in the PR's Files tab)`,
-      bytes,
-    });
+    };
+    if (typeof sha === "string" && sha !== "") {
+      const blob = await github.get(`${prefix}/git/blobs/${sha}`);
+      files.push({ ...file, bytes: Buffer.from(stringField(blob, "content"), "base64") });
+    } else {
+      // A file the API gives no blob for is never passed unread.
+      files.push({ ...file, bytes: undefined, unreadable: true });
+    }
   }
 
   const markers = files.map((file) => file.path).filter(isMarker);
@@ -163,12 +210,17 @@ export async function pullRequestSource(
     { field: "PR body", text: typeof field(pr, "body") === "string" ? stringField(pr, "body") : "" },
     { field: "branch name", text: stringField(head, "ref") },
   ];
-  const commits = await github.list(`${prefix}/pulls/${String(number)}/commits?per_page=100`);
+  const commits = await github.list(`${prefix}/pulls/${number}/commits?per_page=100`);
   for (const commit of commits) {
-    fields.push({
-      field: `commit ${stringField(commit, "sha").slice(0, 7)}`,
-      text: stringField(field(commit, "commit"), "message"),
-    });
+    const data = field(commit, "commit");
+    fields.push(
+      ...commitFields(
+        stringField(commit, "sha"),
+        stringField(data, "message"),
+        identityOf(field(data, "author")),
+        identityOf(field(data, "committer")),
+      ),
+    );
   }
   return { files, fields, markers, allowlist };
 }

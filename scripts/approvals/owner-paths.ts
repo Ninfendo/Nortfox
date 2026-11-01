@@ -3,7 +3,9 @@
 // The owner path list (.github/owner-paths.txt): one glob per line, matched
 // from the repository root. "**" matches any number of folders, "*" and "?"
 // stay inside one folder or file name. A pattern without a slash matches at
-// the root only.
+// the root only. Matching ignores case, so LICENSE, License.md and license
+// all match: a laptop that ignores case treats them as one file, and the
+// owner should see every one of them.
 
 export const OWNER_PATHS_FILE = ".github/owner-paths.txt";
 
@@ -37,7 +39,7 @@ export function globToRegExp(glob: string): RegExp {
       index += 1;
     }
   }
-  return new RegExp(`${source}$`);
+  return new RegExp(`${source}$`, "i");
 }
 
 /** The paths that match at least one owner path. */

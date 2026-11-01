@@ -88,7 +88,21 @@ describe("--all", () => {
       "names: docs/spaced.md:1 holds a protected name.",
       "names: tracked file 8 (git ls-files) (its path) holds a protected name.",
       expect.stringMatching(/^names: commit [0-9a-f]{7} holds a protected name\.$/),
-      "names: checked 8 files and 1 texts; 8 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: checked 8 files and 3 texts; 8 to fix. The check never shows what it found. Reword the text at each place.",
+    ]);
+    expectNoWord([...result.out, ...result.err]);
+  });
+
+  it("checks who wrote and who committed the last commit", async () => {
+    const r = repo();
+    r.write("README.md", "An accounting system.\n");
+    r.git("add", "--all");
+    r.git("-c", "user.name=Ann Blirvex", "commit", "--quiet", "-m", "Start");
+    const result = await run(["--all"], { cwd: r.dir });
+    expect(result.code).toBe(1);
+    expect(result.err.slice(0, 2)).toEqual([
+      expect.stringMatching(/^names: commit [0-9a-f]{7} author holds a protected name\.$/),
+      expect.stringMatching(/^names: commit [0-9a-f]{7} committer holds a protected name\.$/),
     ]);
     expectNoWord([...result.out, ...result.err]);
   });
@@ -98,7 +112,7 @@ describe("--all", () => {
     r.write("README.md", "An accounting system.\n");
     r.commitAll("Start");
     const result = await run(["--all"], { cwd: r.dir });
-    expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 1 texts. Nothing found."], err: [] });
+    expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 3 texts. Nothing found."], err: [] });
   });
 
   it("refuses a binary file", async () => {
@@ -191,9 +205,24 @@ describe("--staged", () => {
     expect(result.err).toEqual([
       "names: a.md:2 holds a protected name.",
       "names: branch name holds a protected name.",
-      "names: checked 1 files and 1 texts; 2 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: checked 1 files and 3 texts; 2 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
     expect(result.code).toBe(1);
+  });
+
+  it("checks the name and e-mail address the next commit will carry", async () => {
+    const r = repo();
+    r.write("a.md", "fine\n");
+    r.commitAll("Start");
+    r.git("config", "user.email", "ann@zarquon.example");
+    r.write("a.md", "still fine\n");
+    r.git("add", "a.md");
+    const result = await run(["--staged"], { cwd: r.dir });
+    expect(result.err).toEqual([
+      "names: author (git var GIT_AUTHOR_IDENT) holds a protected name.",
+      "names: committer (git var GIT_COMMITTER_IDENT) holds a protected name.",
+      "names: checked 1 files and 3 texts; 2 to fix. The check never shows what it found. Reword the text at each place.",
+    ]);
   });
 
   it("works on a detached head, without a branch name", async () => {
@@ -202,7 +231,7 @@ describe("--staged", () => {
     r.commitAll("Start");
     r.git("checkout", "--quiet", "--detach");
     const result = await run(["--staged"], { cwd: r.dir });
-    expect(result).toEqual({ code: 0, out: ["names: checked 0 files and 0 texts. Nothing found."], err: [] });
+    expect(result).toEqual({ code: 0, out: ["names: checked 0 files and 2 texts. Nothing found."], err: [] });
   });
 });
 
@@ -292,14 +321,18 @@ describe("arguments", () => {
 describe("--pr", () => {
   const p = "/repos/o/r";
   const head = "h".repeat(40);
+  const person = (name: string) => ({ name, email: `${name.toLowerCase()}@example.invalid` });
 
   async function fakeApi(pr: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<FakeGitHub> {
     const server = await startFakeGitHub({
       [`GET ${p}/pulls/7`]: {
         body: {
+          number: 7,
           title: "Add the zarquon import",
           body: "Line one\n\nb1irvex",
+          user: { login: "owner" },
           head: { sha: head, ref: "feature/x" },
+          base: { ref: "main", repo: { default_branch: "main" } },
           changed_files: 4,
           commits: 2,
           ...pr,
@@ -322,10 +355,14 @@ describe("--pr", () => {
       [`GET ${p}/git/blobs/blob4`]: { body: { content: Buffer.from("reads zarquon").toString("base64") } },
       [`GET ${p}/pulls/7/commits?per_page=100`]: {
         body: [
-          { sha: "a".repeat(40), commit: { message: "Start" } },
-          { sha: "b".repeat(40), commit: { message: "Add\n\nAbout zarquon" } },
+          { sha: "a".repeat(40), commit: { message: "Start", author: person("Ann"), committer: person("Ann") } },
+          {
+            sha: "b".repeat(40),
+            commit: { message: "Add\n\nAbout zarquon", author: person("Blirvex"), committer: { name: "Ann" } },
+          },
         ],
       },
+      [`GET ${p}/pulls/7/reviews?per_page=100`]: { body: [] },
       ...extra,
     });
     servers.push(server);
@@ -340,6 +377,7 @@ describe("--pr", () => {
       GITHUB_REPOSITORY: "o/r",
       GITHUB_API_URL: server.url,
       PR_NUMBER: "7",
+      OWNER_LOGIN: "owner",
     };
   }
 
@@ -350,20 +388,41 @@ describe("--pr", () => {
     return r;
   }
 
-  it("checks the files, paths, title, body, branch and commits through the API", async () => {
+  it("checks the files, paths, title, body, branch, and each commit's message, author and committer", async () => {
     const server = await fakeApi({});
     const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
     expect(result.code).toBe(1);
     expect(result.err).toEqual([
       "names: adapters/a1/.protected-name-ok is a .protected-name-ok marker outside the marker allowlist.",
       "names: docs/a.md:2 holds a protected name.",
+      "names: vendor/sub has contents the names check cannot get, such as a submodule.",
       "names: adapters/a2/notes.md:1 holds a protected name.",
       "names: PR title holds a protected name.",
       "names: PR body line 3 holds a protected name.",
       "names: commit bbbbbbb line 3 holds a protected name.",
-      "names: checked 4 files and 5 texts; 6 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: commit bbbbbbb author holds a protected name.",
+      "names: checked 4 files and 9 texts; 8 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
     expect(server.requests).not.toContain(`GET ${p}/git/blobs/blob2`);
+    expect(server.requests).not.toContain(`GET ${p}/pulls/7/reviews?per_page=100`);
+  });
+
+  it("finds a name wrapped across two lines of the body", async () => {
+    const server = await fakeApi(
+      { title: "Fine", body: "We read the files of Zar\nquon, one by one." },
+      { [`GET ${p}/pulls/7/commits?per_page=100`]: { body: [] }, [`GET ${p}/git/blobs/blob1`]: { body: { content: "" } } },
+    );
+    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
+    expect(result.err).toContain("names: PR body line 1 holds a protected name.");
+  });
+
+  it("finds a name in a title shaped like an integrity digest", async () => {
+    const server = await fakeApi(
+      { title: "Add the sha1-ZarquonImportAdapterForSIE", body: null },
+      { [`GET ${p}/pulls/7/commits?per_page=100`]: { body: [] }, [`GET ${p}/git/blobs/blob1`]: { body: { content: "" } } },
+    );
+    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
+    expect(result.err).toContain("names: PR title holds a protected name.");
   });
 
   it("honours a marker that the head commit has in an allowlisted folder", async () => {
@@ -378,25 +437,83 @@ describe("--pr", () => {
     const result = await run(["--pr"], { cwd: baseCheckout("adapters/a2\nadapters/a3\n").dir, env: prEnv(server) });
     expect(result.err).toEqual([
       "names: adapters/a1/.protected-name-ok is a .protected-name-ok marker outside the marker allowlist.",
-      "names: checked 4 files and 3 texts; 1 to fix. The check never shows what it found. Reword the text at each place.",
+      "names: vendor/sub has contents the names check cannot get, such as a submodule.",
+      "names: checked 4 files and 3 texts; 2 to fix. The check never shows what it found. Reword the text at each place.",
     ]);
     expect(server.requests).toContain(`GET ${p}/contents/adapters/a3/.protected-name-ok?ref=${head}`);
+  });
+
+  describe("from outside the owner's account", () => {
+    const outside = { user: { login: "someone" } };
+    const approval = (commit: string) => ({
+      [`GET ${p}/pulls/7/reviews?per_page=100`]: {
+        body: [{ user: { login: "owner" }, state: "APPROVED", commit_id: commit }],
+      },
+    });
+
+    it("waits for the owner's approval of the head commit, and reads nothing before it", async () => {
+      for (const extra of [{}, approval("e".repeat(40))]) {
+        const server = await fakeApi(outside, extra);
+        const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
+        expect(result).toEqual({
+          code: 1,
+          out: [],
+          err: [
+            "names: The PR comes from outside the owner's account, so the check reads it only once the owner has approved its head commit. After approving, run this check again.",
+          ],
+        });
+        expect(server.requests.some((request) => request.includes("/files") || request.includes("/blobs/"))).toBe(false);
+      }
+    });
+
+    it("once approved, says how many places it found, but never where", async () => {
+      const server = await fakeApi(outside, approval(head));
+      const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
+      expect(result).toEqual({
+        code: 1,
+        out: [],
+        err: [
+          "names: checked 4 files and 9 texts; 8 to fix. For a PR from outside the owner's account the check does not say where. The owner finds the places with the list.",
+        ],
+      });
+    });
+
+    it("once approved, passes a clean PR", async () => {
+      const server = await fakeApi(
+        { ...outside, title: "Fine", body: null },
+        {
+          ...approval(head),
+          [`GET ${p}/pulls/7/files?per_page=100`]: { body: [{ filename: "docs/a.md", status: "added", sha: "blob1" }] },
+          [`GET ${p}/git/blobs/blob1`]: { body: { content: "" } },
+          [`GET ${p}/pulls/7/commits?per_page=100`]: { body: [] },
+        },
+      );
+      const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
+      expect(result).toEqual({ code: 0, out: ["names: checked 1 files and 3 texts. Nothing found."], err: [] });
+    });
   });
 
   it.each([
     [{ changed_files: 3001 }, "The PR changes more than 3000 files; the API cannot list them all. Split it."],
     [{ commits: 251 }, "The PR has more than 250 commits; the API cannot list them all. Squash or split it."],
-  ])("refuses a PR the API cannot list in full: %j", async (pr, message) => {
+    [
+      { base: { ref: "feature/base", repo: { default_branch: "main" } } },
+      "The PR is not aimed at the default branch. The approval checks pass only a PR into the default branch.",
+    ],
+  ])("refuses a PR it cannot judge: %j", async (pr, message) => {
     const server = await fakeApi(pr);
     const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: prEnv(server) });
     expect(result).toEqual({ code: 1, out: [], err: [`names: could not read what to check: ${message}`] });
   });
 
   it("needs the pull request settings", async () => {
-    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env: { PROTECTED_NAMES: FAKE_LIST } });
+    const env = { PROTECTED_NAMES: FAKE_LIST, OWNER_LOGIN: "owner" };
+    const result = await run(["--pr"], { cwd: baseCheckout("").dir, env });
     expect(result.err).toEqual([
       "names: could not read what to check: GITHUB_TOKEN, GITHUB_REPOSITORY and PR_NUMBER must be set.",
     ]);
+    const noOwner = await run(["--pr"], { cwd: baseCheckout("").dir, env: { PROTECTED_NAMES: FAKE_LIST } });
+    expect(noOwner.err).toEqual(["names: could not read what to check: OWNER_LOGIN must be set."]);
   });
 });
 

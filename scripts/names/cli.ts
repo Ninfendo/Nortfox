@@ -2,16 +2,21 @@
 
 // The names check (docs/plan.md, section 6). Modes:
 //
-//   --all      every tracked file, its path and contents, and the last commit message
-//   --staged   the staged files and the branch name (the pre-commit hook)
+//   --all      every tracked file, its path and contents, and the last commit
+//   --staged   the staged files, the branch name and the next commit's author (the pre-commit hook)
 //   --text     standard input, for example a commit message (the commit-msg hook)
 //   --pr       a pull request, read through the GitHub API (the approval workflow)
 //
 // Options: --base <ref> (where the marker allowlist is read; default
 // origin/main) and --label <name> (what --text calls its input).
+//
+// --pr also needs OWNER_LOGIN. A PR from another account is checked only once
+// the owner has approved its head commit, and its report gives no places:
+// otherwise anyone could open a PR full of guesses and read from the log which
+// of them are on the list.
 
 import { readFileSync } from "node:fs";
-import { pullRequestContext } from "../github/api.ts";
+import { loadPullRequest, outsideApprovalOf, requireEnv } from "../github/pull-request.ts";
 import { check, report } from "./check.ts";
 import { allSource, baseAllowlist, pullRequestSource, stagedSource, textSource, type Source } from "./sources.ts";
 import { loadWords, WordListError, type Environment } from "./words.ts";
@@ -72,18 +77,31 @@ function readTextFile(path: string): string | undefined {
   }
 }
 
-async function gather(options: Options, io: Io): Promise<Source> {
+type Gathered =
+  | { readonly kind: "source"; readonly source: Source; readonly showPlaces: boolean }
+  | { readonly kind: "waiting"; readonly why: string };
+
+async function gather(options: Options, io: Io): Promise<Gathered> {
   switch (options.mode) {
     case "--all":
-      return allSource(io.cwd, options.base);
+      return { kind: "source", source: allSource(io.cwd, options.base), showPlaces: true };
     case "--staged":
-      return stagedSource(io.cwd, options.base);
+      return { kind: "source", source: stagedSource(io.cwd, options.base), showPlaces: true };
     case "--text":
-      return textSource(io.stdin(), options.label);
+      return { kind: "source", source: textSource(io.stdin(), options.label), showPlaces: true };
     case "--pr": {
-      const { github, repository, number } = pullRequestContext(io.env);
-      // The approval workflow checks out the base branch only, so HEAD is the base.
-      return pullRequestSource(github, repository, number, baseAllowlist(io.cwd, "HEAD"));
+      const owner = requireEnv(io.env, "OWNER_LOGIN");
+      const pr = await loadPullRequest(io.env);
+      const fromOwner = pr.author === owner;
+      if (!fromOwner && !(await outsideApprovalOf(pr, owner)).pass) {
+        return {
+          kind: "waiting",
+          why: "The PR comes from outside the owner's account, so the check reads it only once the owner has approved its head commit. After approving, run this check again.",
+        };
+      }
+      // The approval workflow checks out the default branch only, so HEAD is the base.
+      const source = await pullRequestSource(pr.github, pr.repository, pr.data, baseAllowlist(io.cwd, "HEAD"));
+      return { kind: "source", source, showPlaces: fromOwner };
     }
   }
 }
@@ -116,16 +134,21 @@ export async function main(args: readonly string[], io: Io): Promise<number> {
     return 0;
   }
 
-  let source: Source;
+  let gathered: Gathered;
   try {
-    source = await gather(options, io);
+    gathered = await gather(options, io);
   } catch (error) {
     // The message names a step, never a word from the list.
     io.err(`names: could not read what to check: ${error instanceof Error ? error.message : "unknown error"}`);
     return 1;
   }
+  if (gathered.kind === "waiting") {
+    io.err(`names: ${gathered.why}`);
+    return 1;
+  }
+  const { source, showPlaces } = gathered;
   const findings = check(source, list.words);
-  for (const line of report(findings, { files: source.files.length, fields: source.fields.length })) {
+  for (const line of report(findings, { files: source.files.length, fields: source.fields.length }, showPlaces)) {
     (findings.length === 0 ? io.out : io.err)(line);
   }
   return findings.length === 0 ? 0 : 1;

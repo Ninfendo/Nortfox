@@ -5,8 +5,15 @@
 // for letters, or with anything between its letters. The words on the list
 // are folded the same way, so both sides meet in plain a to z.
 //
-// Each table entry has a line of its own, so that no line of this file can
-// spell a word once it is folded.
+// The look-alikes come from two places: the hand-made tables below, and
+// confusables.txt, the letters that Unicode's confusables data (UTS #39) maps
+// to Latin letters. A hand-made entry wins over the Unicode data.
+//
+// Each table entry has a line of its own and maps a letter to the letter it
+// looks like, so that a run of entries folds to doubled letters ("aabb") and
+// spells no word.
+
+import { readFileSync } from "node:fs";
 
 /**
  * Capitals that look like a Latin capital. They are read before lower-casing,
@@ -114,6 +121,33 @@ const LOOK_ALIKES = new Map<string, string>([
   ["ω", "w"],
   ["ϲ", "c"],
   ["ϳ", "j"],
+  // Latin small capitals, which "small caps" text generators use. Unicode's
+  // confusables data has only some of them.
+  ["ᴀ", "a"],
+  ["ʙ", "b"],
+  ["ᴄ", "c"],
+  ["ᴅ", "d"],
+  ["ᴇ", "e"],
+  ["ꜰ", "f"],
+  ["ɢ", "g"],
+  ["ʜ", "h"],
+  ["ɪ", "i"],
+  ["ᴊ", "j"],
+  ["ᴋ", "k"],
+  ["ʟ", "l"],
+  ["ᴍ", "m"],
+  ["ɴ", "n"],
+  ["ᴏ", "o"],
+  ["ᴘ", "p"],
+  ["ꞯ", "q"],
+  ["ʀ", "r"],
+  ["ꜱ", "s"],
+  ["ᴛ", "t"],
+  ["ᴜ", "u"],
+  ["ᴠ", "v"],
+  ["ᴡ", "w"],
+  ["ʏ", "y"],
+  ["ᴢ", "z"],
   // Latin letters that do not decompose
   ["ı", "i"],
   ["ȷ", "j"],
@@ -146,8 +180,51 @@ const STAND_INS = new Map<string, string>([
 
 const MARKS = /[\p{M}\p{Cf}]/gu;
 
-function letterFor(char: string): string {
-  const mapped = LOOK_ALIKES.get(char) ?? char;
+/**
+ * Letters in boxes and circles that NFKC leaves alone, and the regional
+ * indicators that flags are made of: each block runs from A to Z.
+ */
+const ENCLOSED_LETTER_BLOCKS: readonly number[] = [
+  0x1f150, // negative circled
+  0x1f170, // negative squared
+  0x1f1e6, // regional indicators
+];
+
+function enclosedLetter(char: string): string | undefined {
+  const code = char.codePointAt(0) ?? 0;
+  const block = ENCLOSED_LETTER_BLOCKS.find((first) => code >= first && code < first + 26);
+  return block === undefined ? undefined : String.fromCharCode(0x61 + code - block);
+}
+
+/** A table of look-alikes: a character and the folded letters it stands for. */
+export type LookAlikes = ReadonlyMap<string, string>;
+
+/** Reads confusables.txt: "<hex code point> <letters>" per line; # starts a comment. */
+export function parseLookAlikes(text: string): Map<string, string> {
+  const table = new Map<string, string>();
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const entry = line.replace(/#.*/, "").trim();
+    if (entry === "") {
+      continue;
+    }
+    const match = /^([0-9A-F]{4,6}) ([a-z]+)$/.exec(entry);
+    if (match?.[1] === undefined || match[2] === undefined) {
+      throw new Error(`Line ${String(index + 1)} of the look-alike table is not "<hex code point> <letters>".`);
+    }
+    table.set(String.fromCodePoint(Number.parseInt(match[1], 16)), match[2]);
+  }
+  return table;
+}
+
+/** The look-alikes from Unicode's confusables data. */
+export const CONFUSABLES: LookAlikes = parseLookAlikes(
+  readFileSync(new URL("confusables.txt", import.meta.url), "utf8"),
+);
+
+function letterFor(char: string, confusables: LookAlikes): string {
+  // A small letter that is not in a table may be the small form of a capital
+  // that is, as Cherokee small letters are.
+  const mapped = LOOK_ALIKES.get(char) ?? confusables.get(char) ?? confusables.get(char.toUpperCase()) ?? char;
   return STAND_INS.get(mapped) ?? mapped;
 }
 
@@ -159,17 +236,26 @@ function letterFor(char: string): string {
  * dropped. What is left is the line's letters, glued together.
  */
 export function fold(text: string): string {
+  return foldWith(text, CONFUSABLES);
+}
+
+/** fold() with another table of Unicode look-alikes; the hand-made tables always apply. */
+export function foldWith(text: string, confusables: LookAlikes): string {
   const plain = text
     .normalize("NFKC")
     .normalize("NFD")
     .replace(MARKS, "")
-    .replace(/./gsu, (char) => CAPITAL_LOOK_ALIKES.get(char) ?? char)
+    .replace(
+      /./gsu,
+      (char) =>
+        CAPITAL_LOOK_ALIKES.get(char) ?? LOOK_ALIKES.get(char) ?? enclosedLetter(char) ?? confusables.get(char) ?? char,
+    )
     .toLowerCase()
     .normalize("NFD")
     .replace(MARKS, "");
   let out = "";
   for (const char of plain) {
-    for (const letter of letterFor(char)) {
+    for (const letter of letterFor(char, confusables)) {
       if (letter >= "a" && letter <= "z") {
         out += letter;
       }
