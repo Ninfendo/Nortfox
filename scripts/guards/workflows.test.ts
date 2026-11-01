@@ -19,6 +19,27 @@ function changed(from: string, to: string): string {
   return approvals.replace(from, to);
 }
 
+const PR_PART =
+  "The workflow may name the PR only by github.event.pull_request.number, " +
+  'and its head commit only in the line "HEAD_SHA: ${{ github.event.pull_request.head.sha }}". ' +
+  "So it names no other part of the PR, no head_ref or base_ref, and no github.event.after or github.event.before.";
+const PLAIN_LINE =
+  "Outside run:, each line must be one plain key, with a value that ends on that line. " +
+  "The guard cannot read a quoted key, a space before a colon, a list item without a key, or a text over more lines, as after | or >.";
+const BRACKETS =
+  "The workflow holds { }, [ ] or a .* filter outside run:. The guard cannot see the keys in a { } or [ ] form, " +
+  "or what an index such as a['b'] or a filter reads. Only {} and a one-line list of plain words may hold brackets.";
+const LINE_BREAK =
+  "The workflow holds a character that YAML reads as a line break, where the guard sees none: " +
+  "a carriage return without a line feed, U+0085, U+2028 or U+2029.";
+const NAMES_RESULT = "          NAMES_RESULT: ${{ needs.names.result }}\n";
+const CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+const NAMES_CHECKOUT =
+  `        uses: ${CHECKOUT} # v7.0.1\n        with:\n          ref: \${{ github.event.repository.default_branch }}\n          fetch-depth`;
+const OUTSIDE_STEP =
+  "      - name: The owner wrote the PR, or approved its head commit\n        run: node scripts/approvals/cli.ts outside-approval\n";
+const OUTSIDE_ENV_END = "          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n\n  owner-ok:";
+
 describe("the approval workflow", () => {
   it("has nothing for the guard to find", () => {
     expect(approvalsProblems(approvals)).toEqual([]);
@@ -73,10 +94,119 @@ describe("the approval workflow guard", () => {
       "ref: ${{ github.event.repository.default_branch }}\n          fetch-depth",
       "ref: ${{ github.event.pull_request.head.ref }}\n          fetch-depth",
     );
-    expect(approvalsProblems(text)).toEqual([
-      "Every checkout must check out the default branch, and nothing else.",
-      'The PR\'s head and base may appear only in the line "HEAD_SHA: ${{ github.event.pull_request.head.sha }}".',
+    expect(approvalsProblems(text)).toEqual(["Every checkout must check out the default branch, and nothing else.", PR_PART]);
+  });
+
+  it("fails a checkout of another repository, such as the author's fork, and any other input an action does not need", () => {
+    for (const repository of [
+      "${{ github.event.sender.login }}/${{ github.event.repository.name }}",
+      "${{ github.actor }}/${{ github.event.repository.name }}",
+      "${{ github.event['pull_request']['head']['repo']['full_name'] }}",
+    ]) {
+      const text = changed(NAMES_CHECKOUT, NAMES_CHECKOUT.replace("        with:\n", `        with:\n          repository: ${repository}\n`));
+      expect(approvalsProblems(text)).toContain(
+        "The step that uses actions/checkout may give it only ref, fetch-depth and persist-credentials. It also gives repository.",
+      );
+    }
+    const two = changed("          persist-credentials: false\n", "          persist-credentials: false\n          path: other\n          token: x\n");
+    expect(approvalsProblems(two)).toEqual([
+      "The step that uses actions/checkout may give it only ref, fetch-depth and persist-credentials. It also gives path and token.",
     ]);
+    const cache = changed("          package-manager-cache: false\n", "          package-manager-cache: false\n          cache: pnpm\n");
+    expect(approvalsProblems(cache)).toEqual([
+      "The step that uses actions/setup-node may give it only node-version-file and package-manager-cache. It also gives cache.",
+    ]);
+  });
+
+  it("fails an input to checkout however the step is written: with first, or the action's name in other cases", () => {
+    const step =
+      "      - with:\n          repository: someone/nortfox\n" +
+      `          ref: \${{ github.event.repository.default_branch }}\n        uses: ${CHECKOUT}\n`;
+    for (const text of [
+      changed("      - uses: actions/setup-node", `${step}      - uses: actions/setup-node`),
+      changed(
+        NAMES_CHECKOUT,
+        NAMES_CHECKOUT.replace("actions/checkout", "Actions/Checkout").replace("        with:\n", "        with:\n          repository: x/y\n"),
+      ),
+    ]) {
+      expect(approvalsProblems(text)).toEqual([
+        "The step that uses actions/checkout may give it only ref, fetch-depth and persist-credentials. It also gives repository.",
+      ]);
+    }
+  });
+
+  it("fails any other action, an action not pinned to a commit, and a reusable workflow", () => {
+    const only = "The workflow may use only actions/checkout and actions/setup-node, each pinned to a full commit SHA.";
+    const sha = CHECKOUT.slice(-40);
+    for (const uses of ["actions/checkout@v7.0.1", `someone/checkout-pr@${sha}`, `"${CHECKOUT}"`, `actions/checkout/sub@${sha}`]) {
+      expect(approvalsProblems(changed(`        uses: ${CHECKOUT} # v7.0.1\n`, `        uses: ${uses}\n`))).toEqual([`${only} It uses "${uses}".`]);
+    }
+    const reusable = changed("  owner-ok:\n", "  reuse:\n    uses: ./.github/workflows/other.yml\n  owner-ok:\n");
+    expect(approvalsProblems(reusable)).toContain(`${only} It uses "./.github/workflows/other.yml".`);
+  });
+
+  it("fails each line the guard cannot read as one plain key with its value", () => {
+    for (const text of [
+      changed("    branches: [main]\n", '    branches: [main]\n  "pull_request_review":\n    types: [submitted]\n'),
+      changed("    branches: [main]\n", "    branches: [main]\n  'pull_request_review':\n    types: [submitted]\n"),
+      changed("    branches: [main]\n", "    branches: [main]\n  pull_request_review :\n    types: [submitted]\n"),
+      // A quoted key, which the rule on checkouts does not see, reads the head commit from env.
+      changed(NAMES_CHECKOUT, NAMES_CHECKOUT.replace("ref: ${{ github.event.repository.default_branch }}", '"ref": ${{ env.HEAD_SHA }}')),
+      // A quoted text over two lines: its second line looks like a comment, which the guard does not read.
+      changed(NAMES_RESULT, `${NAMES_RESULT}          LIST: "x\n          # \${{ secrets.PROTECTED_NAMES }}"\n`),
+      changed(NAMES_RESULT, `${NAMES_RESULT}          LIST: |\n            # \${{ secrets.PROTECTED_NAMES }}\n`),
+      changed(NAMES_RESULT, `${NAMES_RESULT}          LIST: >-\n            x\n`),
+      changed(NAMES_RESULT, `${NAMES_RESULT}          LIST: 'x\n`),
+      changed(NAMES_RESULT, `${NAMES_RESULT}          LIST:x\n`),
+    ]) {
+      expect(approvalsProblems(text)).toEqual([PLAIN_LINE]);
+    }
+    expect(approvalsProblems(changed("    branches: [main]\n", "    branches:\n      - main\n"))).toContain(PLAIN_LINE);
+  });
+
+  it("reads a quoted value that ends on its line", () => {
+    for (const value of ['"x"', "'it''s'", '"x" # a note', "''"]) {
+      expect(approvalsProblems(changed(NAMES_RESULT, `${NAMES_RESULT}          LIST: ${value}\n`))).toEqual([]);
+    }
+  });
+
+  it("fails a { } or [ ] form, an index and a .* filter", () => {
+    const after = changed(
+      "      - name: Check the PR's files, paths, title, body, branch and commits\n",
+      `      - uses: ${CHECKOUT}\n        with: { ref: "\${{ github.event.after }}", clean: false, persist-credentials: false }\n` +
+        "      - name: Check the PR's files, paths, title, body, branch and commits\n",
+    );
+    expect(approvalsProblems(after)).toEqual([PR_PART, BRACKETS]);
+    for (const value of [
+      "{ repository: someone/nortfox }",
+      "[a, b: c]",
+      "[a, {b: c}]",
+      "${{ github['event'].number }}",
+      "${{ join(github.event.commits.*.id) }}",
+    ]) {
+      expect(approvalsProblems(changed(NAMES_RESULT, `${NAMES_RESULT}          OTHER: ${value}\n`))).toEqual([BRACKETS]);
+    }
+  });
+
+  it("fails a character that YAML reads as a line break, also in a comment", () => {
+    for (const lineBreak of ["\r", "\u0085", "\u2028", "\u2029"]) {
+      const text = changed("    branches: [main]\n", `    branches: [main]\n  # a note${lineBreak}  pull_request_review:\n`);
+      expect(approvalsProblems(text)).toEqual([LINE_BREAK]);
+    }
+  });
+
+  it("reads the keys of a step that starts with run:, and leaves the text of a run: block alone", () => {
+    const runFirst = changed(
+      OUTSIDE_STEP,
+      "      - run: node scripts/approvals/cli.ts outside-approval\n        name: The owner wrote the PR, or approved its head commit\n",
+    );
+    expect(approvalsProblems(runFirst)).toEqual([]);
+    expect(approvalsProblems(runFirst.replace(OUTSIDE_ENV_END, `          "LIST": x\n${OUTSIDE_ENV_END}`))).toEqual([PLAIN_LINE]);
+    const script = OUTSIDE_STEP.replace(
+      "run: node scripts/approvals/cli.ts outside-approval\n",
+      "run: |\n          echo \"{ref: x}\" 'a: [b]'\n          node scripts/approvals/cli.ts outside-approval\n",
+    );
+    expect(approvalsProblems(changed(OUTSIDE_STEP, script))).toEqual([]);
   });
 
   it("fails a check without the event's head commit", () => {
@@ -118,7 +248,6 @@ describe("the approval workflow guard", () => {
     ]);
   });
 
-  const NAMES_RESULT = "          NAMES_RESULT: ${{ needs.names.result }}\n";
   const SECRETS_ONLY_IN_ONE_LINE = 'The workflow may name its secrets only in the line "PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}".';
   const ONLY_THE_CHECK_STEP =
     'In the Names job, only the env of the step that runs "run: node scripts/names/cli.ts --pr" may read the protected names list.';
@@ -175,19 +304,30 @@ describe("the approval workflow guard", () => {
     ]);
   });
 
-  it("fails the PR's head and base in any form an expression names them", () => {
+  it("fails any part of the PR but its number, and the event's own head commits, in any case", () => {
     for (const value of [
       "github.head_ref",
       "github.base_ref",
-      "github['head_ref']",
       "github.event.pull_request.head.repo.full_name",
       "github.event.pull_request.base.sha",
-      "github.event.pull_request['head']['ref']",
       "github.event.PULL_REQUEST.Head.Sha",
+      "github.event.pull_request.merge_commit_sha",
+      "github.event.pull_request.title",
+      "github.event.pull_request",
+      "github.event.pull_request.numbers",
+      "github.event.after",
+      "github.event.Before",
     ]) {
-      expect(approvalsProblems(changed(NAMES_RESULT, `${NAMES_RESULT}          BRANCH: \${{ ${value} }}\n`))).toEqual([
-        'The PR\'s head and base may appear only in the line "HEAD_SHA: ${{ github.event.pull_request.head.sha }}".',
-      ]);
+      expect(approvalsProblems(changed(NAMES_RESULT, `${NAMES_RESULT}          BRANCH: \${{ ${value} }}\n`))).toEqual([PR_PART]);
+    }
+    // Read by index, the PR also fails the rule on brackets.
+    for (const value of [
+      "github['head_ref']",
+      "github.event.pull_request['head']['ref']",
+      "github.event['pull_request']['head']['ref']",
+      'github.event["pull_request"]["head"]',
+    ]) {
+      expect(approvalsProblems(changed(NAMES_RESULT, `${NAMES_RESULT}          BRANCH: \${{ ${value} }}\n`))).toEqual([PR_PART, BRACKETS]);
     }
   });
 

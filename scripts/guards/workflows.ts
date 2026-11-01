@@ -2,15 +2,23 @@
 
 // Keeps the approval workflow as its checks need it (docs/plan.md, section 6).
 // It runs on pull_request_target only, so GitHub always runs the default
-// branch's copy, in the default branch's context, and never the PR's. It
-// checks out the default branch only. One run per PR runs at a time. Each
-// check gets the head commit that the event names, and Names gets who started
-// the run, both through env and never inside a run: line. The workflow names
-// its secrets in one line only: the list, in the env of the Names step that
-// runs the check. Names checks out the whole history so that it can find
-// where the PR branched off. The guard reads the text, so the workflow also
-// does without what would build a line it looks for out of sight: toJSON, a
-// YAML anchor or alias, and a backslash escape.
+// branch's copy, in the default branch's context, and never the PR's. It uses
+// no action but checkout and setup-node, and gives each only the inputs listed
+// below, so a checkout never names another repository. It checks out the
+// default branch only. One run per PR runs at a time. Each check gets the head
+// commit that the event names, and Names gets who started the run, both
+// through env and never inside a run: line. The workflow names the PR only by
+// its number, and its secrets in one line only: the list, in the env of the
+// Names step that runs the check. Names checks out the whole history so that
+// it can find where the PR branched off.
+//
+// The guard reads the text, line by line. So outside run: the workflow keeps
+// to the YAML that the guard can read: each line is one plain key, with a
+// value that ends on that line. It does without each form that would hide a
+// line or a key from the guard, or build one out of its sight: a quoted key, a
+// space before a colon, a text over more lines, a { } or [ ] form, a value
+// read by index or by a .* filter, toJSON, a YAML anchor or alias, a backslash
+// escape, and a character that YAML reads as a line break.
 
 /** The types of pull_request_target event that start the workflow. */
 export const APPROVAL_EVENT_TYPES = ["opened", "synchronize", "reopened", "edited", "ready_for_review", "labeled", "unlabeled"];
@@ -20,15 +28,50 @@ export const CONCURRENCY = [
   "  cancel-in-progress: false",
 ];
 
+/** The actions the workflow may use, each with the inputs it may give that action. */
+const ACTION_INPUTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["actions/checkout", ["ref", "fetch-depth", "persist-credentials"]],
+  ["actions/setup-node", ["node-version-file", "package-manager-cache"]],
+]);
+
 const DEFAULT_BRANCH = "${{ github.event.repository.default_branch }}";
 const HEAD_SHA_LINE = "HEAD_SHA: ${{ github.event.pull_request.head.sha }}";
 const ACTOR_LINE = "TRIGGERING_ACTOR: ${{ github.triggering_actor }}";
 const SECRET_LINE = "PROTECTED_NAMES: ${{ secrets.PROTECTED_NAMES }}";
 const NAMES_RUN = "run: node scripts/names/cli.ts --pr";
-/** The PR's head or base, in each way an expression can name them. GitHub reads names in any case. */
-const HEAD_OR_BASE = /pull_request\s*(?:\.\s*|\[\s*'\s*)(?:head|base)\b|\b(?:head|base)_ref\b/i;
+/**
+ * More of the PR than its number: its head or base, any other part of it, and
+ * github.event.after and github.event.before, which on synchronize are head
+ * commits of the PR. GitHub reads names in any case. A name read by index or
+ * by a .* filter is refused on its own, since the guard cannot tell what it reads.
+ */
+const PR_PART = /pull_request(?!\w)(?!\s*\.\s*number\b)|\b(?:head|base)_ref\b|\bevent\s*\.\s*(?:after|before)\b/i;
+/** What YAML may read as a line break, where the guard reads none. */
+const LINE_BREAK = /[\r\u0085\u2028\u2029]/;
+/** The start of a line of one plain key, up to its colon. */
+const KEY_LINE = /^ *(?:- )?[A-Za-z0-9_-]+:/;
+/** The { } and [ ] forms that the guard reads: {}, and a one-line list of plain words. */
+const PLAIN_FLOW = /^(?:\{\}|\[[A-Za-z0-9_-]+(?:, [A-Za-z0-9_-]+)*\])$/;
+/** An action pinned to a commit, and its name. */
+const PINNED_ACTION = /^([\w.-]+\/[\w.-]+)@[0-9a-f]{40}$/i;
 
 const isContent = (line: string): boolean => line.trim() !== "" && !line.trimStart().startsWith("#");
+const withoutComment = (line: string): string => line.replace(/\s+#.*$/, "");
+
+/** "a", "a and b", "a, b and c". */
+function listed(words: readonly string[]): string {
+  return words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.slice(-1).join("")}`;
+}
+
+/** A line of one plain key: the key, and the rest of the line after its colon. */
+function keyOf(line: string): { key: string; rest: string } | undefined {
+  if (!KEY_LINE.test(line)) {
+    return undefined;
+  }
+  const body = line.trimStart().replace(/^- /, "");
+  const colon = body.indexOf(":");
+  return { key: body.slice(0, colon), rest: body.slice(colon + 1) };
+}
 
 /** The lines of a top-level key's block, up to the next top-level key. */
 export function block(text: string, key: string): string[] | undefined {
@@ -70,23 +113,123 @@ export function listOf(lines: readonly string[], key: string): string[] {
 
 const indentOf = (line: string): number => line.length - line.trimStart().length;
 
-/** Where the lines of every run: step are, a block scalar with its body included. */
-function runLines(lines: readonly string[]): Set<number> {
-  const found = new Set<number>();
-  let indent: number | undefined;
+/**
+ * Where the run: lines are, and the lines of their values: those indented
+ * further than the run key, as a block text's body is, and blank lines among
+ * them. The next key of a step that starts with "- run:" sits at the run key's
+ * own column, so it is no part of the value.
+ */
+function runLines(lines: readonly string[]): { keys: Set<number>; bodies: Set<number> } {
+  const keys = new Set<number>();
+  const bodies = new Set<number>();
+  let column: number | undefined;
   for (const [index, line] of lines.entries()) {
-    const width = indentOf(line);
-    if (indent !== undefined && (width > indent || line.trim() === "")) {
-      found.add(index);
+    if (column !== undefined && (indentOf(line) > column || line.trim() === "")) {
+      bodies.add(index);
       continue;
     }
-    indent = undefined;
-    if (/^\s*(?:- )?run:/.test(line)) {
-      found.add(index);
-      indent = width;
+    column = undefined;
+    if (/^ *(?:- )?run:(?: |$)/.test(line)) {
+      keys.add(index);
+      column = line.indexOf("run:");
     }
   }
+  return { keys, bodies };
+}
+
+/**
+ * Whether the guard can read a line, its comment taken off: one plain key,
+ * then nothing, or a value that ends on that line. A quoted key, a space
+ * before the colon, a list item without a key, a quote that the line does not
+ * close, and a text after | or >, which goes on over the lines below, all fail.
+ */
+function isPlainLine(line: string): boolean {
+  const rest = keyOf(line)?.rest;
+  if (rest === undefined || (rest !== "" && !rest.startsWith(" "))) {
+    return false;
+  }
+  const value = rest.trim();
+  if (value.startsWith('"')) {
+    return /^"[^"]*"$/.test(value);
+  }
+  if (value.startsWith("'")) {
+    return /^'(?:[^']|'')*'$/.test(value);
+  }
+  return !/^[|>]/.test(value);
+}
+
+/** Whether a line, its comment taken off, holds a { } or [ ] form, an index or a .* filter. */
+function hidesInBrackets(line: string): boolean {
+  const value = (keyOf(line)?.rest ?? line).trim();
+  return !PLAIN_FLOW.test(value) && /[[\]{}]|\.\s*\*/.test(value.replaceAll("${{", "").replaceAll("}}", ""));
+}
+
+/** A key line as the guard reads it: where its key sits, and whether it starts a list item. */
+interface Entry {
+  readonly indent: number;
+  readonly column: number;
+  readonly item: boolean;
+  readonly key: string;
+  readonly value: string;
+}
+
+/** The key lines outside the values of run: steps, their comments taken off, in order. */
+function entriesOf(lines: readonly string[], bodies: ReadonlySet<number>): Entry[] {
+  const found: Entry[] = [];
+  for (const [index, line] of lines.entries()) {
+    const text = withoutComment(line);
+    const keyed = keyOf(text);
+    if (bodies.has(index) || !isContent(line) || keyed === undefined) {
+      continue;
+    }
+    const indent = indentOf(text);
+    const item = text.trimStart().startsWith("- ");
+    found.push({ indent, column: indent + (item ? 2 : 0), item, key: keyed.key, value: keyed.rest.trim() });
+  }
   return found;
+}
+
+/** The entries after the one at `index` that sit further in than `column`, with where each is. */
+function under(entries: readonly Entry[], index: number, column: number): { found: Entry; at: number }[] {
+  const end = entries.findIndex((entry, at) => at > index && entry.indent <= column);
+  return entries.slice(index + 1, end === -1 ? undefined : end).map((found, offset) => ({ found, at: index + 1 + offset }));
+}
+
+/**
+ * What is wrong with the actions: each uses: names one of ACTION_INPUTS,
+ * pinned to a commit, and a step gives its action only that action's inputs.
+ */
+function actionProblems(entries: readonly Entry[]): string[] {
+  const problems: string[] = [];
+  /** The action that a uses: value names, with the inputs it may get, when it is one of ACTION_INPUTS, pinned. */
+  const actionOf = (value: string): { name: string; inputs: readonly string[] } | undefined => {
+    const name = PINNED_ACTION.exec(value)?.[1]?.toLowerCase();
+    const inputs = name === undefined ? undefined : ACTION_INPUTS.get(name);
+    return name === undefined || inputs === undefined ? undefined : { name, inputs };
+  };
+  for (const [index, entry] of entries.entries()) {
+    if (entry.key === "uses" && actionOf(entry.value) === undefined) {
+      problems.push(
+        `The workflow may use only ${listed([...ACTION_INPUTS.keys()])}, each pinned to a full commit SHA. It uses "${entry.value}".`,
+      );
+    }
+    if (!entry.item) {
+      continue;
+    }
+    // A list item, such as a step. Its own keys sit at its column: the one on its "- " line, and those below it.
+    const own = [{ found: entry, at: index }, ...under(entries, index, entry.indent)].filter(({ found }) => found.column === entry.column);
+    const actions = own.filter(({ found }) => found.key === "uses").map(({ found }) => actionOf(found.value));
+    for (const { found, at } of own.filter(({ found }) => found.key === "with")) {
+      const inputs = under(entries, at, found.column).map((input) => input.found.key);
+      for (const action of actions.filter((known) => known !== undefined)) {
+        const extra = inputs.filter((input) => !action.inputs.includes(input));
+        if (extra.length > 0) {
+          problems.push(`The step that uses ${action.name} may give it only ${listed(action.inputs)}. It also gives ${listed(extra)}.`);
+        }
+      }
+    }
+  }
+  return problems;
 }
 
 /**
@@ -184,32 +327,58 @@ export function approvalsProblems(text: string): string[] {
     );
   }
 
-  const refs = [...text.matchAll(/^\s+ref: (.*)$/gm)].map(([, ref]) => ref);
+  const refs = [...text.matchAll(/^\s*(?:- )?ref:[ \t]*(.*?)[ \t]*$/gm)].map(([, ref]) => ref);
   if (refs.length === 0 || refs.some((ref) => ref !== DEFAULT_BRANCH)) {
     problems.push("Every checkout must check out the default branch, and nothing else.");
   }
 
-  // Comments may name anything; only what the workflow does counts.
   const all = text.split(/\r?\n/);
+  const runs = runLines(all);
+  problems.push(...actionProblems(entriesOf(all, runs.bodies)));
+
+  // Comments may name anything; only what the workflow does counts.
   const lines = all.filter(isContent);
   const outsideEnv = (pattern: RegExp, allowed: string): boolean =>
     lines.some((line) => pattern.test(line) && line.trim() !== allowed);
-  if (outsideEnv(HEAD_OR_BASE, HEAD_SHA_LINE)) {
-    problems.push(`The PR's head and base may appear only in the line "${HEAD_SHA_LINE}".`);
+  if (outsideEnv(PR_PART, HEAD_SHA_LINE)) {
+    problems.push(
+      `The workflow may name the PR only by github.event.pull_request.number, and its head commit only in the line "${HEAD_SHA_LINE}". ` +
+        "So it names no other part of the PR, no head_ref or base_ref, and no github.event.after or github.event.before.",
+    );
   }
   if (outsideEnv(/triggering_actor/i, ACTOR_LINE)) {
     problems.push(`Who started the run may appear only in the line "${ACTOR_LINE}".`);
   }
   // A run: block is read whole: GitHub fills in an expression even inside a shell comment.
-  const runs = runLines(all);
-  if ([...runs].some((index) => all[index]?.includes("${{") === true)) {
+  if ([...runs.keys, ...runs.bodies].some((index) => all[index]?.includes("${{") === true)) {
     problems.push("A run: step holds an expression. Pass the value in through env instead.");
   }
   if (lines.some((line) => /\btoJSON\s*\(/i.test(line))) {
     problems.push("The workflow passes no whole object with toJSON. Pass each value it needs on its own.");
   }
-  // Outside run: blocks, YAML itself could build a line that the guard looks for.
-  const yaml = all.filter((line, index) => isContent(line) && !runs.has(index)).map((line) => line.replace(/\s+#.*$/, ""));
+  // A comment line counts too: YAML would start a new line after the break.
+  if (all.some((line) => LINE_BREAK.test(line))) {
+    problems.push(
+      "The workflow holds a character that YAML reads as a line break, where the guard sees none: " +
+        "a carriage return without a line feed, U+0085, U+2028 or U+2029.",
+    );
+  }
+  // Outside run: blocks, YAML itself could hide a line or build one that the guard looks for.
+  const yaml = all
+    .filter((line, index) => isContent(line) && !runs.keys.has(index) && !runs.bodies.has(index))
+    .map(withoutComment);
+  if (!yaml.every(isPlainLine)) {
+    problems.push(
+      "Outside run:, each line must be one plain key, with a value that ends on that line. " +
+        "The guard cannot read a quoted key, a space before a colon, a list item without a key, or a text over more lines, as after | or >.",
+    );
+  }
+  if (yaml.some(hidesInBrackets)) {
+    problems.push(
+      "The workflow holds { }, [ ] or a .* filter outside run:. The guard cannot see the keys in a { } or [ ] form, " +
+        "or what an index such as a['b'] or a filter reads. Only {} and a one-line list of plain words may hold brackets.",
+    );
+  }
   if (yaml.some((line) => /(?:^|[\s[{,])[&*][\w-]/.test(line) || /^\s*(?:- )?<<\s*:/.test(line))) {
     problems.push("The workflow uses a YAML anchor or alias. They copy lines without the guard seeing them.");
   }
