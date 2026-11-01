@@ -32,7 +32,7 @@ function dynamicImportsOf(pattern, message) {
     `ImportExpression[source.value=${name}]`,
     `CallExpression[callee.name="require"][arguments.0.value=${name}]`,
     `TSExternalModuleReference[expression.value=${name}]`,
-    `TSImportType[argument.literal.value=${name}]`,
+    `TSImportType[source.value=${name}]`,
   ].map((selector) => ({ selector, message }));
 }
 
