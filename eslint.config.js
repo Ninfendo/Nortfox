@@ -17,6 +17,23 @@ import tseslint from "typescript-eslint";
 const globalObjects = ["globalThis", "window", "self", "global"];
 
 /**
+ * A selector for a global name used as a value: `const m = Math`, `f(globalThis)`
+ * or `Math[key]`. A name passed on like that hides from no-restricted-properties
+ * what is read from it later. So the name may stand only before a dot, as in
+ * `Math.max`. The same word as a key, after a dot or in `declare global` is not
+ * the global, so it is let through.
+ */
+function usedAsAValue(names) {
+  const notTheGlobal = [
+    "MemberExpression[computed=false] > .object",
+    "MemberExpression[computed=false] > .property",
+    ":matches(Property, MethodDefinition, PropertyDefinition, TSPropertySignature, TSMethodSignature)[computed=false][shorthand!=true] > .key",
+    "TSModuleDeclaration > .id",
+  ];
+  return `Identifier[name=/^(${names.join("|")})$/]:not(${notTheGlobal.join(", ")})`;
+}
+
+/**
  * A module name pattern is written once, as the source of a regular
  * expression. An esquery selector cannot hold a slash, so there each slash
  * becomes \x2F.
@@ -78,6 +95,7 @@ function onlyImports(allowed, why) {
 
 const callServerMessage = "Call the server through @nortfox/client. Only packages/client may use fetch.";
 const networkGlobals = ["fetch", "XMLHttpRequest", "EventSource", "WebSocket"];
+const networkNames = `/^(${networkGlobals.join("|")})$/`;
 
 /** Only the client calls the server. */
 const callsNoServer = {
@@ -95,6 +113,18 @@ const callsNoServer = {
       selector:
         'MemberExpression:matches([property.name="sendBeacon"], [property.value="sendBeacon"]):not([object.name="navigator"])',
       message: callServerMessage,
+    },
+    {
+      // fetch read from anything but a plain name: globalThis.window.fetch,
+      // document.defaultView.fetch. A plain name is either a global object,
+      // which the lines above cover, or a value such as Hono's app.fetch.
+      selector: `MemberExpression:matches([property.name=${networkNames}], [property.value=${networkNames}])[object.type!="Identifier"]`,
+      message: callServerMessage,
+    },
+    {
+      // The global object under another name: const g = globalThis; g.fetch().
+      selector: usedAsAValue(globalObjects),
+      message: `${callServerMessage} Use globalThis, window, self and global only before a dot, as in window.location.`,
     },
   ],
 };
@@ -117,6 +147,9 @@ const engineIsPure = {
       "console",
       // Intl reads the host's locale and time zone, and format() with no date reads the clock.
       "Intl",
+      // Code in a string, which lint cannot read: eval("Date.now()").
+      "eval",
+      "Function",
     ].map((name) => ({ name, message: pureMessage })),
     ...globalObjects.map((name) => ({ name, message: "The engine is pure: it reaches no global through the global object." })),
   ],
@@ -124,8 +157,15 @@ const engineIsPure = {
     { object: "Math", property: "random", message: "The engine is pure: pass randomness in." },
     { object: "Temporal", property: "Now", message: pureMessage },
   ],
-  // "node:fs", "fs" and "fs/promises", but not an npm package such as "fsevents".
-  syntax: everyImportOf(`^(node:|(${nodeModuleNames.join("|")})(/|$))`, "The engine is pure: it imports no Node module."),
+  syntax: [
+    // "node:fs", "fs" and "fs/promises", but not an npm package such as "fsevents".
+    ...everyImportOf(`^(node:|(${nodeModuleNames.join("|")})(/|$))`, "The engine is pure: it imports no Node module."),
+    {
+      // Math and Temporal under another name: const m = Math; m.random().
+      selector: usedAsAValue(["Math", "Temporal"]),
+      message: "The engine is pure: use Math and Temporal only before a dot, as in Math.max, so lint sees what is read.",
+    },
+  ],
 };
 
 /** The four rules, each with every restriction from `parts`. */
@@ -167,6 +207,9 @@ export default defineConfig(
       "@typescript-eslint/no-import-type-side-effects": "error",
       eqeqeq: "error",
       "no-console": ["error", { allow: ["log", "error"] }],
+      // Code in a string hides from every rule here, the guards too: eval('fetch("/v1")').
+      "no-eval": "error",
+      "no-new-func": "error",
     },
   },
   {

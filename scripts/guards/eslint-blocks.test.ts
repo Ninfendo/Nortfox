@@ -3,9 +3,10 @@
 // The architecture rules hold in every part of the repository at once. In a
 // flat config, a later block that sets a rule replaces what an earlier block
 // set, so these probes lint the same code in each part with the real config:
-// the network ban still holds where the engine's purity rules also apply, the
-// purity rules see re-exports and the global object, and the import rules see
-// paths inside a package, import() and require().
+// the network ban still holds where the engine's purity rules also apply, both
+// see a global under another name, no part runs code from a string, the purity
+// rules see re-exports and the global object, and the import rules see paths
+// inside a package, import() and require().
 
 import { ESLint } from "eslint";
 import { fileURLToPath } from "node:url";
@@ -49,6 +50,14 @@ const networkCalls = [
   'globalThis.navigator.sendBeacon("/v1");',
   'window.navigator["sendBeacon"]("/v1");',
   "export const { sendBeacon } = navigator;",
+  "export const { fetch: get } = globalThis;",
+  // The global object under another name, or fetch read from a longer chain.
+  'const host = globalThis;\nvoid host.fetch("/v1/health");',
+  'const w = window;\nvoid w.fetch("/v1/health");',
+  'export const get: unknown = Reflect.get(self, "fetch");',
+  'void globalThis.window.fetch("/v1/health");',
+  'void document.defaultView?.fetch("/v1/health");',
+  'export const x = new window.self.WebSocket("wss://x.example");',
 ];
 
 const outsideTheClient = [
@@ -83,6 +92,35 @@ describe("only the client calls the server, in every part of the repository", ()
   it("lets a method that is only called fetch through", async () => {
     expect(await hits("apps/server/src/probe.ts", "const app = { fetch: () => 1 };\nexport const x = app.fetch();")).toEqual([]);
   });
+
+  it.each([
+    "export const x = window.location.href;",
+    "const o = { window: 1, self: 2, global: 3 };\nexport const x = o.self + o.global;",
+    "export class Probe {\n  window = 1;\n  self(): number {\n    return this.window;\n  }\n}",
+    "export interface Probe {\n  globalThis: number;\n  window(): void;\n}",
+    "declare global {\n  interface Window {\n    probe: number;\n  }\n}\nexport {};",
+  ])("lets the global object before a dot, and the same word as a key, through: %j", async (code) => {
+    expect(await hits("apps/web/src/probe.ts", code)).toEqual([]);
+  });
+});
+
+describe("no code in a string, in any part of the repository", () => {
+  const inAString = [
+    ['void eval(\'fetch("/v1/health")\');', "no-eval"],
+    ['void (0, eval)(\'fetch("/v1/health")\');', "no-eval"],
+    ['const run = eval;\nvoid run(\'fetch("/v1/health")\');', "no-eval"],
+    ['void globalThis.eval(\'fetch("/v1/health")\');', "no-eval"],
+    ['export const run = new Function(\'return fetch("/v1/health")\');', "no-new-func"],
+    ['export const run = Function(\'return fetch("/v1/health")\');', "no-new-func"],
+  ] as const;
+
+  it.each([...outsideTheClient, "packages/client/src/probe.ts"].flatMap((path) => inAString.map(([code, rule]) => [path, code, rule] as const)))(
+    "refuses %s: %s",
+    async (path, code, rule) => {
+      const found = await hits(path, code);
+      expect(found.map((hit) => hit.rule), JSON.stringify(found)).toContain(rule);
+    },
+  );
 });
 
 describe("the engine is pure, also through re-exports and the global object", () => {
@@ -105,6 +143,16 @@ describe("the engine is pure, also through re-exports and the global object", ()
     "export const e = self.process.env;",
     "export const e = global.process.env;",
     "const host = globalThis;\nexport const now = host.Date.now();",
+    // Math and Temporal under another name, and code in a string.
+    "const m = Math;\nexport const r = m.random();",
+    'export const r = Reflect.get(Math, "random");',
+    'export const r = Math["random"]();',
+    "const T = Temporal;\nexport const t = T.Now.instant();",
+    'export const t = eval("Date.now()");',
+    'export const t = (0, eval)("Date.now()");',
+    'const run = eval;\nexport const t = run("Date.now()");',
+    'export const t = Function("return Date.now()")();',
+    "const F = Function;\nexport const f = F;",
     'export const t = new Intl.DateTimeFormat("sv").format();',
     "export const t = Temporal.Now.instant();",
     "export const i = setImmediate(() => undefined);",
@@ -118,6 +166,8 @@ describe("the engine is pure, also through re-exports and the global object", ()
     'export * from "./money.ts";',
     'export * from "fsevents";',
     "export const x = Math.max(1, 2);",
+    "const o = { Math: 1, Temporal: 2 };\nexport const x = o.Math + o.Temporal;",
+    "export class Probe {\n  Math = 1;\n  Temporal(): number {\n    return this.Math;\n  }\n}",
   ])("lets %j through", async (code) => {
     expect(await hits("packages/engine/src/probe.ts", code)).toEqual([]);
   });
