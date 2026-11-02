@@ -26,7 +26,7 @@ Many companies and their accountants use programs that talk to the established S
   1. A PR adds only the folder's line to the marker allowlist, with the file's header brought up to date. It has no marker and no text that names the established system.
   2. After that PR merges, the slice's PR adds the folder, its `.protected-name-ok` marker and its content, the docs page included.
 
-  Both PRs change an owner path, so each needs the owner's owner-ok label. In one PR, the new marker would fail the names check, because its line is not on `main` yet.
+  In one PR, the new marker would fail the names check, because its line is not on `main` yet.
 - The public tests of the compatible API use hand-written fixtures with made-up data. The parity tests, which compare NortFox with the established system itself, are kept outside this repository. Public CI never calls the established system.
 
 ## Consequences

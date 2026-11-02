@@ -1,18 +1,5 @@
-# The owner paths (.github/owner-paths.txt): the licences, the exceptions to
-# the names rule and the list itself. GitHub asks the owner to review every PR
-# that touches one. CODEOWNERS matches case, so each licence name is listed in
-# its three usual spellings. The database migrations come back here when they
-# go back on that list, before NortFox keeps real books (docs/plan.md, step 4d).
-
-LICENSE* @Ninfendo
-LICENCE* @Ninfendo
-COPYING* @Ninfendo
-license* @Ninfendo
-licence* @Ninfendo
-copying* @Ninfendo
-License* @Ninfendo
-Licence* @Ninfendo
-Copying* @Ninfendo
-.protected-name-ok @Ninfendo
-/.github/protected-name-allowlist.txt @Ninfendo
-/.github/owner-paths.txt @Ninfendo
+# CODEOWNERS mirrors the owner paths (.github/owner-paths.txt). That list is
+# empty, so this file gives no path to anyone. A path that goes back on the
+# list comes back here too, given to the owner alone. CODEOWNERS matches case,
+# so a licence name goes in its three usual spellings: LICENSE, license and
+# License.

@@ -1,6 +1,6 @@
 # 11. Names policy
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: a second exception, the compatible API adapter, and a marker exempts only the established system's name.
+Status: accepted, 2026-11-01. Amended 2026-11-02: a second exception, the compatible API adapter, and a marker exempts only the established system's name. Amended again 2026-11-02: the markers and the allowlist need no owner-ok label.
 
 ## Context
 
@@ -21,11 +21,11 @@ The repository is public. Its text describes NortFox. The owner keeps a short li
 
 ## Consequences
 
-- The names check honours a marker only in a folder on the marker allowlist, which it reads from `main`. A marker anywhere else fails the check. Adding, moving or removing a marker, or changing the allowlist, needs Owner OK.
+- The names check honours a marker only in a folder on the marker allowlist, which it reads from `main`. A marker anywhere else fails the check. A marker, or a line on the allowlist, is added, moved or removed only in the PRs that slices 2e and 4f describe. Such a PR needs no owner-ok label: the owner's review agent reads it like any other PR.
 - The list itself marks which of its names a marker exempts, so the repository still holds no name. Inside a folder with a marker, the check still refuses every other name on the list, in file contents and in the names of files and folders. The check learns this in a PR of its own, before the first folder's line is added to the allowlist. After that PR merges, the owner marks the established system's name in the list.
-- So an adapter's folder comes in two PRs, in this order. First, a PR adds only the folder's line to the allowlist, with the file's header brought up to date, and with no marker and no text that names the established system. After it merges, the PR that adds the folder, its marker and its content follows. Each needs the owner-ok label. In one PR, the check would refuse the new marker, because the folder's line is not on `main` yet.
+- So an adapter's folder comes in two PRs, in this order. First, a PR adds only the folder's line to the allowlist, with the file's header brought up to date, and with no marker and no text that names the established system. After it merges, the PR that adds the folder, its marker and its content follows. In one PR, the check would refuse the new marker, because the folder's line is not on `main` yet.
 - Outside its folder, an adapter has only a neutral id, and its folder is named by that id. The import operations are generic: they take an adapter id. The server reads the import adapter's display name and texts from its folder at runtime and serves them through the API. So no protected name reaches `openapi.json`, the client, `packages/i18n`, `docs/system` or a changeset.
 - Both PRs that add an adapter use neutral words in their titles, bodies, branch names, commits and changesets, because a squash merge copies the title and body into `main`.
 - An adapter's sample data is hand-written from the other system's public API documentation, with made-up companies, people and numbers. It is never recorded from a real account.
-- The check never prints a match. On a PR from the owner's account, it prints only where a match is. A PR from any other account it reads with the list only in a run that the owner starts, after the owner has approved its head commit, and then it prints only how many matches it found, never where. Otherwise anyone could open a PR with one guess per line and read from the public log which guesses are on the list.
+- The check never prints a match. On a PR from the owner's account, it prints only where a match is. A PR from any other account it reads with the list only in a run that the owner's account starts, after the owner's account has approved its head commit, and then it prints only how many matches it found, never where. Otherwise anyone could open a PR with one guess per line and read from the public log which guesses are on the list.
 - The names check reads each text by what it is. An integrity digest that pnpm writes in `pnpm-lock.yaml` is data: the check decodes it and searches what it decodes to, and does not read its base64 letters as words. This is how a digest is read, not an exception to the names rule. A digest written by hand is a hand edit of the lockfile, and the review reads it.

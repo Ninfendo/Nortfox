@@ -17,19 +17,20 @@
 # after the last run, and the squash merge copies the title and body into the
 # default branch.
 #
-# A review starts no run. After approving a PR from outside the owner's
-# account, the owner re-runs the failed jobs of its latest run; after asking
-# for changes or dismissing a review, all of that run's jobs. Only then do the
+# A review starts no run. After approving a PR from an outside contributor,
+# the owner re-runs the failed jobs of its latest run; after asking for
+# changes or dismissing a review, all of that run's jobs. Only then do the
 # checks see the review. Names reads such a PR with the list only in a run that
-# the owner started (github.triggering_actor), never in a run that the
-# author's own push or edit started.
+# the owner's account started (github.triggering_actor), never in a run that
+# the author's own push or edit started.
 #
 # Dependabot's PRs come from another account too, but a re-run does not work
 # there. A re-run keeps the rights of the account that started the first run
 # (github.actor), and GitHub gives a run that Dependabot started no secrets.
-# So Names has no list and fails, and says why. On such a PR the owner starts
-# a new run from the owner's account instead: adds a label, any but owner-ok,
-# and removes it again.
+# So Names has no list and fails, and says why. On such a PR an agent starts
+# a new run from the owner's account instead, after the owner's review agent
+# has approved its head commit: it adds a label, any but owner-ok, and removes
+# it again.
 #
 # Each check judges the head commit that the event names (HEAD_SHA), and fails
 # when the PR's head is another commit, so a verdict lands only on the commit
@@ -39,8 +40,10 @@
 # with the name of a required check. The owner may pin "CI OK", "Outside
 # approval", "Owner OK" and "Names" to GitHub Actions, but that does not stop
 # such a job, because it runs on GitHub Actions too. The gate against a faked
-# check is the merge rule: a PR whose author is not the owner is merged only by
+# check is the merge rule: a PR from an outside contributor is merged only by
 # the owner, by hand, after reading the whole diff, and agents never merge one.
+# A PR that Dependabot opened from a branch in this repository is merged by an
+# agent, only after the owner's review agent has read its whole diff.
 
 name: Approvals
 
