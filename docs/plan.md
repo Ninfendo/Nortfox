@@ -46,20 +46,19 @@ apps/
 packages/
   engine/          pure accounting logic: checks, VAT, SIE, accruals, bank rules. No I/O.
   contract/        the operation list and the data shapes
-  client/          the generated API client (MIT)
+  client/          the generated API client and the committed openapi.json (MIT)
   ui/              components on Base UI and shadcn, the theme switcher, the style builder
   i18n/            Swedish and English texts; date, number and money formats
-openapi/           the committed openapi.json (MIT)
 db/
   migrations/      plain SQL, applied in order, never edited after merge
 reference-data/    BAS chart, VAT codes and boxes, SRU codes, holidays. One version per year.
-tools/             the repository's own checks: the names check, the fixture guard and the other guards
+scripts/           the repository's own checks: the names check, the fixture guard and the other guards
 deploy/            Docker Compose, a PostgreSQL image with pgBackRest, Caddy
 docs/              this plan, the decision records, the system documentation
 AGENTS.md          the rules for every change, by a person or an AI agent
 ```
 
-`openapi/` is its own folder so that the MIT licence file sits next to the one file it covers.
+`openapi.json` sits in `packages/client`, so that one MIT licence file covers the client and the API description.
 
 Who may import whom (checked in CI):
 
@@ -70,7 +69,7 @@ Who may import whom (checked in CI):
 - `ui` may import `i18n` and `engine`. It never calls the server; `web` passes the data in.
 - `web` may import `client`, `ui`, `i18n` and `engine`. Never `server` or `contract`.
 - `client` is generated from `openapi.json` and imports nothing from the repository.
-- `tools` may import `engine` and `contract`. Nothing imports `tools`.
+- `scripts` may import `engine` and `contract`. Nothing imports `scripts`.
 
 ## 4. Server modules
 
@@ -153,12 +152,12 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 - **What:** the first SQL migrations: the database roles (owner, app, and reader roles that are each bound to one company); companies; fiscal years and their periods; the period lock, with its locked-through dates per user, for the internal system user, for integrations and for all users, and the automatic lock's setting; accounts; voucher series, their void ranges and each year's closing series; vouchers and their rows; the record of deleted vouchers; the behandlingshistorik. The triggers for the ledger law, with the voucher rules of [decision 2](decisions/0002-ledger-law-in-postgresql.md). FORCE RLS on every company table. The compose file with PostgreSQL and pgBackRest. The tests set the actor's kind directly: a user, the internal system user or an integration. Decision 2 sets which requests count as which kind. The server applies it from 2c on, where logins and tokens come.
 - **Done when:**
-  - Tests against real PostgreSQL, run as the app role, show that the database refuses: changing or deleting a voucher in a period that is locked for the actor, or dating a voucher there, except in that year's closing series; deleting a voucher that is not the last of its series; changing a row's account or amount, or removing a row; changing or deleting anything in the record of deleted vouchers; booking a voucher whose rows that are not struck differ in debit and credit; a voucher date outside every existing fiscal year; reading or writing another company's rows.
+  - Tests against real PostgreSQL, run as the app role, show that the database refuses: changing or deleting a voucher in a period that is locked for the actor, or dating a voucher there, except in that year's closing series; deleting a voucher that is not the last of its series; changing a row's account or amount, or removing a row; changing or deleting anything in the record of deleted vouchers; booking a voucher whose rows that are not struck differ in debit and credit; a voucher date outside every existing fiscal year; a voucher date outside the fiscal year that the voucher is booked in, at booking or by a change, also in the closing series; reading or writing another company's rows.
   - Each lock date applies only to the actors it is set for. With a date set only for one user, for the internal system user, for integrations or for all users, a voucher dated on or before it is refused for those actors and accepted for the others. The automatic lock applies to everyone.
   - A voucher in the closing series of its fiscal year is accepted inside a locked period, under the manual and the automatic lock.
   - After any change to a voucher, the behandlingshistorik holds each earlier value, with the actor and the time. This is NortFox's own working default ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). A struck row stays, marked struck, with the actor and the time.
   - Deleting the last voucher of a series moves it to the record of deleted vouchers, with the actor and the time. The next voucher booked in that series gets its number. When that voucher is deleted too, the record holds both deletions of the number, each as its own entry with its count.
-  - A property test with parallel bookings, deletions and rollbacks finds no gap in any series, and no number held by two vouchers that are not deleted. A series can only skip numbers through a recorded void range.
+  - A property test with parallel bookings, changes of date, deletions and rollbacks finds no gap in any series, no number held by two vouchers that are not deleted, and no voucher dated outside its own fiscal year. A series can only skip numbers through a recorded void range.
   - As the app role, recording a void range is refused, and so is any change to one. Only the owner role can record one, and the trigger writes its behandlingshistorik row like any other.
   - Every insert, update and delete leaves a behandlingshistorik row with the actor and the time. The app role cannot change or delete those rows.
   - The app role cannot change the schema, disable a trigger or bypass RLS.
@@ -206,9 +205,11 @@ This is the repository setup. It lands before every other PR: until it does, not
 - **What:** the shared parts of the compatible API ([decision 12](decisions/0012-compatible-api.md)):
   - its adapter folder, named by a neutral id, with its marker and its one docs page. The folder's line on the marker allowlist lands before it, in a PR of its own (see the three PRs below);
   - the routing for the established API's paths, its paging, and its error format and codes;
-  - the query parameters that the established API shares across its endpoints: the choice of fiscal year (`financialyear` and `financialyeardate`), `lastmodified`, the filters and the sorting, and the refusal of an unknown or wrongly cased parameter name;
-  - the money reader, which takes each amount from the number's own text in the request ([decision 5](decisions/0005-money.md));
+  - the query parameters that the established API shares across its endpoints: the choice of fiscal year (`financialyear` and `financialyeardate`), `lastmodified`, the filters and the sorting;
+  - an unknown or wrongly cased parameter name, which each endpoint refuses or ignores as its established endpoint does. Most refuse it, with the established API's error. Some ignore it, such as the read of the locked period (3b);
+  - the money reader, which takes each amount and each exchange rate from the number's own text in the request ([decision 5](decisions/0005-money.md));
   - the established API's login flow, as [decision 8](decisions/0008-authentication.md) describes it: the authorization code flow, with its `state`, its redirect URI rule and PKCE; refresh tokens; service accounts with their activation and client credentials; the revoke endpoint; the established API's scopes and its token lifetimes. Caddy passes the compatible API's paths and its login paths to the server;
+  - the registration of clients, as [decision 8](decisions/0008-authentication.md) describes it: a company's admin registers a client in that company, changes it, gives it a new secret and deletes it. Each of these is an operation in the registry, with its MCP tool. Any company on the install can then activate the client;
   - the compatible endpoints for the operations of 2b to 2d that the established API also has, such as reading the company.
   - 2e is the first slice that ships a compatible endpoint. From 2e on, each slice adds its own ([section 6](#6-how-a-slice-is-built)). The PR title, body, branch name, commits and changeset use neutral words.
 - **Three PRs, in this order,** because the names check reads the marker allowlist from `main`:
@@ -218,12 +219,14 @@ This is the repository setup. It lands before every other PR: until it does, not
 - **Done when:**
   - Reading the company through the compatible API calls the same operation as `/v1` and answers in the established API's shape. A test pins the shape.
   - The paging and the error format, with its codes, follow the established API. Tests with hand-written fixtures pin both.
-  - The query parameters follow the established API: the choice of fiscal year, `lastmodified` in the established API's date forms and time zone, the sorting, and the refusal of an unknown or wrongly cased parameter name, with its error. Tests with hand-written fixtures pin each.
-  - Money in a request is read from the raw text of each number and never becomes a float. A test with amounts that a float cannot hold exactly shows it.
+  - The query parameters follow the established API: the choice of fiscal year, `lastmodified` in the established API's date forms and time zone, and the sorting. Tests with hand-written fixtures pin each.
+  - Each compatible endpoint refuses an unknown or wrongly cased parameter name, with the established API's error, or ignores it, as its established endpoint does. Its test pins which.
+  - Money and exchange rates in a request are read from the raw text of each number and never become a float. A test with amounts and rates that a float cannot hold exactly shows it.
   - A program logs in with the established API's login flow: the authorization code flow, whose code works once and for 10 minutes; refresh tokens that each work once; a service account, activated once by a company administrator and then served by client credentials with the company's tenant id; and the revoke endpoint. The scopes and the token lifetimes are the established API's, and a call outside a token's scopes gets the established API's error.
   - The authorization code flow keeps the established rules, and a test pins each: `state` is required and comes back unchanged; a redirect URI that differs from the client's registered one is refused, the registered one is used when none is sent, and the token step refuses one that differs from the request for the code; PKCE takes only `S256`; a client that requires PKCE is refused without a challenge; when a challenge was sent, the token step refuses a missing or wrong `code_verifier`; a request for a scope that is not registered for the client is refused; and an activation with `account_type=service` for a client that does not allow service accounts is refused. Each refusal gives the established API's error.
   - The access token has the established token's shape, a JWT with the company's tenant id as a claim ([decision 8](decisions/0008-authentication.md)). A test reads the tenant id from it, as an integration does. Every token of the flow is stored only as a hash, looked up on every request, bound to one company, and refused outside the compatible API.
   - The revoke endpoint revokes a refresh token, as the established one does. Revoking a consent, or the client, stops every token it gave on the next request, access tokens included ([decision 8](decisions/0008-authentication.md)).
+  - Through the API and MCP, a company's admin registers a client, changes it, gives it a new secret and deletes it, and another role is refused. The secret is shown once and stored only as a hash. After a new secret, the old one is refused. Deleting the client stops every token it gave on the next request.
   - The login and a compatible call work through the compose stack, with Caddy in front.
   - A request from a compatible client runs as an integration, and so does one from a service account ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). A test checks both.
   - The folder is on the marker allowlist and holds its marker. The names check passes on everything outside it, including `openapi.json`, the client, `packages/i18n` and the changesets. Inside it, the check still refuses every protected name but the established system's.
@@ -260,6 +263,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
   - When a year is created after another with its balances copied, each balance account's opening balance equals its closing balance of the year before, and each result account opens at zero. After a late booking in the old year, the new year's opening balances stay as they were. After a new transfer, they match again. A transfer overwrites an opening balance set by hand. The transfer works through the API, MCP and the screen.
   - A property test shows that right after a transfer, each balance account's opening balance always equals its closing balance of the year before.
   - An opening balance on a result account is refused, as in the established system.
+  - The compatible read of the locked period ignores query parameters that it does not take, as the established one does: `financialyear`, also with a year that does not exist, gives the same answer as no parameter. A test pins it ([decision 12](decisions/0012-compatible-api.md)).
 
 **3c. voucher-series**
 
@@ -272,22 +276,24 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
   - A voucher is booked at once and gets its number. Nothing is saved before that: an unfinished form stays in the browser.
   - Until its period is locked for the actor, a voucher can be changed: its description, its date and its row texts can change, and rows can be added. A row's account or amount is never changed; the row is struck and a new row takes its place. The struck row stays on the voucher, struck through, with who and when. The established system's help pages also let Ändra change the voucher's cost centre and project. 3f settles that, since the dimensions come there.
   - Until its period is locked for the actor, it can also be deleted, when it is the last voucher of its series. Its number is given out again, and the deleted voucher goes to the record of deleted vouchers, with who and when.
-  - Until its period is locked for the actor, it can also be corrected with a reversing voucher. Ändringsverifikation opens a new, unbooked form, filled as the established system fills it: the description names the old voucher, and the old voucher's rows that are not struck come with debit and credit swapped. Nothing is booked until Bokför, as with Kopiera. The booked voucher has its own number, in an open period, and is linked to the old one both ways. A voucher has at most one reversing voucher at a time, and a voucher that another module made, such as a supplier invoice, gets none. Deleting the reversing voucher, which is allowed while it is last in its series, removes the link both ways, and the old voucher can then get a new one.
+  - Until its period is locked for the actor, it can also be corrected with a reversing voucher. Ändringsverifikation opens a new, unbooked form, filled as the established system fills it: the description names the old voucher, and the old voucher's rows that are not struck come with debit and credit swapped. Nothing is booked until Bokför, as with Kopiera. The booked voucher has its own number, in an open period, and is linked to the old one both ways. A voucher has at most one reversing voucher at a time. Ändringsverifikation refuses a voucher that another module made, such as a supplier invoice, as the established screen does, by REST and MCP too. The module that made a voucher can still reverse it itself, as the VAT module does when a report is booked again (3i). Deleting the reversing voucher, which is allowed while it is last in its series, removes the link both ways, and the old voucher can then get a new one.
   - Open: whether the established system offers Ändringsverifikation after the lock too. 3d's issue settles it, with the help centre or a lock test that the owner allows. Either way, a voucher in a locked period can be corrected by a new voucher dated in an open period.
-  - Kopiera opens a new, unbooked form with the voucher's rows that are not struck. Nothing is saved until Bokför. Kopiera is disabled on a voucher that another module made.
+  - Kopiera opens a new, unbooked form with the voucher's description and its rows that are not struck, as in the established system. Nothing is saved until Bokför. Kopiera is disabled on a voucher that another module made.
+  - Kopiera and Ändringsverifikation are each an operation with its MCP tool, and the screen calls the same operations. Each returns the input for a new voucher, filled as above, and books nothing. Booking that input is an ordinary booking. For Ändringsverifikation, the booking names the old voucher, so the two are linked. The established API has neither, so neither has a compatible endpoint.
+  - A change keeps the voucher's date inside the fiscal year it is booked in, also in the closing series ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). Open: whether the established screen lets Ändra move the date into another year. 3d's issue checks it. Until then, such a change is refused.
   - A voucher in a period that is locked for the actor is only corrected by that actor, by a new voucher in an open period, never changed or deleted, except in the year's closing series.
   - Booking through `/v1` takes an idempotency key. A voucher's behandlingshistorik and the record of deleted vouchers are readable through the API and MCP.
 - **Design:** the screens follow [the vouchers screen spec](design/screens/vouchers.md) for the look. The spec was written before these voucher rules: it has drafts saved on the server, also for a copy, and no change or deletion after booking. Its correction form differs too: there the rows start empty and a reason is required. Here the form starts filled, as above, and adds no field of its own. Where the spec differs from this slice, this slice wins until the spec is updated.
 - **Done when:**
-  - Booking, reading, changing, correcting and deleting work by REST, by MCP and on the screen.
+  - Booking, reading, changing, correcting, copying and deleting work by REST, by MCP and on the screen.
   - The answer to a booking carries the voucher's number.
-  - Tests as the app role show the database refuses a change or a deletion in a period that is locked for the actor, except in the year's closing series, the deletion of a voucher that is not last in its series, and a change to a row's account or amount.
+  - Tests as the app role show the database refuses a change or a deletion in a period that is locked for the actor, except in the year's closing series, the deletion of a voucher that is not last in its series, a change to a row's account or amount, and a change that moves a voucher's date into another fiscal year, also in the closing series.
   - After a change, the voucher shows its struck rows with who and when, and the behandlingshistorik, read through the API, holds each earlier value.
   - A voucher shows who created it and when, and, once changed, who changed it last and when, as the established screen does.
-  - Ändringsverifikation opens an unbooked form with the old voucher's rows that are not struck, debit and credit swapped, and a description that names the old voucher. Nothing is booked until Bokför. Once it is booked, each voucher points to the other. A second reversing voucher while the first exists, and one for a voucher that another module made, are refused.
+  - Ändringsverifikation opens an unbooked form with the old voucher's rows that are not struck, debit and credit swapped, and a description that names the old voucher. Nothing is booked until Bokför. Once it is booked, each voucher points to the other. A second reversing voucher while the first exists is refused. Ändringsverifikation on a voucher that another module made is refused, by REST, by MCP and on the screen.
   - After the reversing voucher is deleted, the old voucher points to none, and a new reversing voucher for it is accepted.
   - After a deletion, the next voucher in the series gets the freed number, and the deleted voucher can be read, with who and when, in the record of deleted vouchers. When that number is deleted again, the record holds both, each with its count.
-  - Kopiera on a booked voucher opens a new, unbooked form with its rows that are not struck, and nothing is saved until Bokför. On a voucher that another module made, Kopiera is disabled.
+  - Kopiera on a booked voucher, by REST, by MCP or on the screen, gives the input for a new voucher, with the old voucher's description and its rows that are not struck. Nothing is booked or saved until Bokför. On a voucher that another module made, Kopiera is disabled on the screen and refused by REST and MCP.
   - Every booking, change, strike, correction and deletion is in the behandlingshistorik, with who and when.
   - Inside a lock set only for integrations, a booking with an API token, from an MCP client or through the compatible API is refused, and the same booking from a session is accepted.
   - Booking the same request twice gives one voucher.
@@ -307,7 +313,13 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 **3f. dimensions: cost centres and projects**
 
 - **What:** dimensions and their objects, as in SIE. A voucher row can carry one object per dimension.
-- **Done when:** a row can carry a cost centre and a project; a property test shows that a report per project always equals the sum of its rows that are not struck.
+  - The voucher itself can also carry a cost centre and a project, beside those on its rows, as in the established system.
+  - Ändra can change the voucher's cost centre and project, and those of a row, while the voucher's date is not locked for the actor, as the established system's help pages say ([decision 2](decisions/0002-ledger-law-in-postgresql.md), 3d).
+  - Open: whether Ändra makes such a change in place, or by striking the row and adding a new one. 3f's issue settles it, from the help pages or from a test in the established system.
+- **Done when:**
+  - A row can carry a cost centre and a project, and so can the voucher itself, through the API, MCP and the screen.
+  - Ändra changes the cost centre and the project of a voucher and of a row, the way 3f's issue settles, while the voucher's date is not locked for the actor. The behandlingshistorik holds each earlier value, with who and when. Once the date is locked for the actor, the change is refused.
+  - A property test shows that a report per project always equals the sum of its rows that are not struck.
 
 **3g. reports**
 
@@ -322,7 +334,11 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 **3i. vat: VAT report and EU sales list**
 
 - **What:** VAT codes and report boxes per year from `reference-data`; the VAT report for a month, quarter or year; the file for the tax agency; the VAT settlement voucher; the EU sales list (periodisk sammanställning). As far as is known, the established system does not lock a period when its VAT report is booked. 3i's issue confirms this, and until then 3i adds no lock.
-- **Done when:** the box values for the reference books match numbers worked out by hand; a filed report can be produced again later with the same numbers.
+  - A booked report is corrected as in the established system. Either its VAT voucher is deleted, while it is the last of its series, and a new report is booked. Or the period's bookings are fixed and the report is booked again. The VAT module then books a reversing voucher of its earlier VAT voucher, linked both ways, and a new VAT voucher. Booking the report again with no change in the period books nothing.
+- **Done when:**
+  - The box values for the reference books match numbers worked out by hand.
+  - A filed report can be produced again later with the same numbers.
+  - Booking a report again after a change in its period books a reversing voucher of the earlier VAT voucher, linked both ways, and a new VAT voucher with the new numbers. Booking it again with no change books nothing.
 
 **3j. jobs (platform): background jobs and the outbox**
 

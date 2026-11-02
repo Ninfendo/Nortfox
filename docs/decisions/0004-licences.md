@@ -1,6 +1,6 @@
 # 4. Licences
 
-Status: accepted, 2026-11-01
+Status: accepted, 2026-11-01. Amended 2026-11-02: the API description sits in `packages/client`.
 
 ## Context
 
@@ -9,7 +9,7 @@ NortFox is free software. When someone runs a changed NortFox as a service, the 
 ## Decision
 
 - NortFox is under the GNU Affero General Public License v3.0 only. Copyright (C) 2026 The NortFox authors. Source files carry `SPDX-License-Identifier: AGPL-3.0-only`.
-- Two parts are under the MIT licence, each with its own `LICENSE` file: the published API client package (`packages/client`) and the API description (`openapi/openapi.json`). Their identifier is `MIT`.
+- Two parts are under the MIT licence: the published API client package (`packages/client`) and the API description (`packages/client/openapi.json`). The one `LICENSE` file in `packages/client` covers both. Their identifier is `MIT`.
 
 ## Consequences
 
