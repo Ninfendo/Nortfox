@@ -5,6 +5,7 @@
 // The superuser is for setup only.
 
 import { randomBytes } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "pg";
 import { expect, inject } from "vitest";
 import { codeOf, readRefusal, type RefusalReason } from "../src/db/refusals.ts";
@@ -123,16 +124,24 @@ export interface Settings {
 
 const SETTING_NAMES = { company: "nortfox.company_id", actor: "nortfox.actor_id", kind: "nortfox.actor_kind" } as const;
 
+/**
+ * Starts a transaction with the settings, as the server does:
+ * set_config(name, value, true). The caller commits or rolls it back.
+ */
+export async function begin(client: Client, settings: Settings): Promise<void> {
+  await client.query("BEGIN");
+  for (const key of ["company", "actor", "kind"] as const) {
+    const value = settings[key];
+    if (value !== undefined) {
+      await client.query("SELECT pg_catalog.set_config($1, $2, true)", [SETTING_NAMES[key], value]);
+    }
+  }
+}
+
 /** Runs `work` in one transaction with the settings, as the server does: set_config(name, value, true). */
 export async function inTransaction<T>(client: Client, settings: Settings, work: () => Promise<T>): Promise<T> {
-  await client.query("BEGIN");
   try {
-    for (const key of ["company", "actor", "kind"] as const) {
-      const value = settings[key];
-      if (value !== undefined) {
-        await client.query("SELECT pg_catalog.set_config($1, $2, true)", [SETTING_NAMES[key], value]);
-      }
-    }
+    await begin(client, settings);
     const result = await work();
     await client.query("COMMIT");
     return result;
@@ -178,3 +187,37 @@ export async function expectError(promise: Promise<unknown>, code: string, messa
 
 /** The SQLSTATE of "insufficient privilege", and of a row that a row level security policy refuses. */
 export const INSUFFICIENT_PRIVILEGE = "42501";
+
+/** PostgreSQL's SQLSTATEs for a unique key, an exclusion constraint and a check that refused a row. */
+export const UNIQUE_VIOLATION = "23505";
+export const EXCLUSION_VIOLATION = "23P01";
+export const CHECK_VIOLATION = "23514";
+
+/** The process id of the connection's backend, so that another connection can watch it. */
+export async function backendPid(client: Client): Promise<number> {
+  const found = await client.query<{ pid: number }>("SELECT pg_catalog.pg_backend_pid() AS pid");
+  const [row] = found.rows;
+  if (row === undefined) {
+    throw new Error("The backend gave no process id.");
+  }
+  return row.pid;
+}
+
+/**
+ * Waits until the backend `pid` waits for a lock that another transaction
+ * holds. `observer` must log in as the same role, which pg_stat_activity
+ * shows that backend's wait to.
+ */
+export async function untilWaitingForLock(observer: Client, pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const found = await observer.query<{ waiting: boolean }>(
+      "SELECT wait_event_type IS NOT DISTINCT FROM 'Lock' AS waiting FROM pg_catalog.pg_stat_activity WHERE pid = $1",
+      [pid],
+    );
+    if (found.rows[0]?.waiting === true) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`The backend ${String(pid)} never waited for a lock.`);
+}

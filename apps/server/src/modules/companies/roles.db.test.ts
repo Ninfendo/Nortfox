@@ -15,7 +15,11 @@ import { guardedRelations } from "../../db/table-guard.ts";
 /** The app's privileges on each table: SELECT, and only the writes each table needs. */
 const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "audit.history": ["SELECT"],
+  "ledger.automatic_locks": ["SELECT", "UPDATE"],
   "ledger.companies": ["INSERT", "SELECT", "UPDATE"],
+  "ledger.fiscal_years": ["INSERT", "SELECT", "UPDATE"],
+  "ledger.period_locks": ["INSERT", "SELECT", "UPDATE"],
+  "ledger.periods": ["INSERT", "SELECT", "UPDATE"],
   "ledger.reader_roles": [],
   "meta.schema_migrations": [],
 };
@@ -23,9 +27,29 @@ const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
 /** A reader's privileges: SELECT on each company table. */
 const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "audit.history": ["SELECT"],
+  "ledger.automatic_locks": ["SELECT"],
   "ledger.companies": ["SELECT"],
+  "ledger.fiscal_years": ["SELECT"],
+  "ledger.period_locks": ["SELECT"],
+  "ledger.periods": ["SELECT"],
   "ledger.reader_roles": ["SELECT"],
   "meta.schema_migrations": [],
+};
+
+/**
+ * The functions each role may call. The rest run only inside the database's
+ * own triggers and policies, as the owner.
+ */
+const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
+  nortfox_app: [
+    "ledger.applicable_locks",
+    "ledger.automatic_lock_end_date",
+    "ledger.current_company_id",
+    "ledger.lock_covering",
+    "ledger.locked_through",
+    "ledger.today_in_sweden",
+  ],
+  nortfox_test_reader_a: ["ledger.current_company_id", "ledger.reader_company_id"],
 };
 
 const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
@@ -76,6 +100,7 @@ describe("the database roles", () => {
     ["become a reader", "SET ROLE nortfox_reader"],
     ["give itself a role", "GRANT nortfox_owner TO nortfox_app"],
     ["call a function that only triggers call", "SELECT ledger.refuse('unbalanced', '{}')"],
+    ["check a date against the lock as the triggers do", `SELECT ledger.assert_open('${randomUUID()}', '2090-01-01', true)`],
     ["read the actor through the trigger's helper", "SELECT * FROM ledger.current_actor()"],
     ["give out the next tenant id", "SELECT nextval('ledger.database_number_seq')"],
   ])("refuses the app to %s", async (_case, sql) => {
@@ -158,6 +183,19 @@ describe("the database roles", () => {
       { member: "nortfox_test_reader_a", granted: "nortfox_reader", inherit: true, set: false, admin: false },
       { member: "nortfox_test_reader_b", granted: "nortfox_reader", inherit: true, set: false, admin: false },
     ]);
+  });
+
+  it("lets the app and a reader call only the functions they need", async () => {
+    for (const [role, wanted] of Object.entries(CALLABLE_FUNCTIONS)) {
+      const found = await owner.query<{ name: string }>(
+        `SELECT DISTINCT n.nspname || '.' || p.proname AS name
+         FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+         WHERE n.nspname IN ('ledger', 'audit', 'meta') AND pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE')
+         ORDER BY 1`,
+        [role],
+      );
+      expect(found.rows.map((row) => row.name), role).toEqual(wanted);
+    }
   });
 
   it("opens no function of ours to PUBLIC, pins each one's search path, and runs each trigger with the owner's rights", async () => {

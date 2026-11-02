@@ -111,7 +111,7 @@ describe("company isolation", () => {
         }
         await expectNothingOrRefused(write(role, scenario.companyB, `UPDATE ${table} SET company_id = company_id WHERE company_id = $1`, [other]));
         await expectNothingOrRefused(write(role, scenario.companyB, `DELETE FROM ${table} WHERE company_id = $1`, [other]));
-        const insert = ROW_INSERTS[table]?.(other);
+        const insert = ROW_INSERTS[table]?.(other, scenario);
         expect(insert, `a row for ${table} in test/every-table.ts`).toBeDefined();
         const inserted = write(role, scenario.companyB, insert?.sql ?? "", insert?.params ?? []);
         // Only the database's own triggers write the history, so its trigger refuses the owner first.
@@ -136,7 +136,7 @@ describe("company isolation", () => {
           expect(seen.filter((row) => row.company_id !== own), `${role} on ${table} with ${String(company)} set`).toEqual([]);
         }
         for (const company of [other, own]) {
-          const insert = ROW_INSERTS[table]?.(company);
+          const insert = ROW_INSERTS[table]?.(company, scenario);
           await expectError(write(role, company, insert?.sql ?? "", insert?.params ?? []), INSUFFICIENT_PRIVILEGE, /permission denied/);
           await expectError(write(role, company, `UPDATE ${table} SET company_id = company_id`, []), INSUFFICIENT_PRIVILEGE, /permission denied/);
           await expectError(write(role, company, `DELETE FROM ${table}`, []), INSUFFICIENT_PRIVILEGE, /permission denied/);
