@@ -9,8 +9,8 @@ Screens: the voucher list, the voucher form in its five modes (new, copy, revers
 ## How vouchers behave
 
 - **No Save.** The voucher form has two actions, `Avbryt` and `Bokför`. An unbooked voucher has no number and is not stored on the server.
-- **An unfinished form is kept in this browser only.** Leaving the form does not ask. Opening `Skapa verifikation` from the list brings the form back, with a short information toast that fades after a few seconds: `Du har en påbörjad registrering, klicka här för att rensa den ifyllda informationen.` Only `här` is a link; clicking `här` empties the form. `Avbryt` empties it and goes to the list without asking. One unbooked form is kept per browser. On the form, neither of these asks: `Skapa verifikation` in the header empties the form and forgets the kept entry, with no notice; `Alt N` shows an empty form with focus in Beskrivning but keeps the entry, which comes back with the notice the next time `Skapa verifikation` is opened from the list.
-- **The number is a preview until booking.** The title shows the next number with an asterisk: `Verifikation A143*`. `Bokför` gives the number, shows the toast `Verifikation A143 har skapats.` (the number is a link to the voucher, and a print icon follows the sentence), and opens an empty form for the next number in the same series.
+- **An unfinished form is kept in this browser only.** Leaving the form does not ask. Opening `Skapa verifikation` from the list brings the form back, with a short information toast that fades after a few seconds: `Du har en påbörjad registrering, klicka här för att rensa den ifyllda informationen.` Only `här` is a link; clicking `här` empties the form. `Avbryt` empties it and goes to the list without asking. One unbooked form is kept per browser. On the new form, neither of these asks: `Skapa verifikation` in the header empties the form and forgets the kept entry, with no notice; `Alt N` shows an empty form with focus in Beskrivning but keeps the entry, which comes back with the notice the next time `Skapa verifikation` is opened from the list.
+- **The number is a preview until booking.** The title shows the next number with an asterisk: `Verifikation A143*`. `Bokför` gives the number, shows the toast `Verifikation A143 har skapats.` (the number is a link, and a print icon follows the sentence; where the link leads was not recorded), and opens an empty form for the next number in the same series.
 - **A booked voucher can still be changed** with `Ändra`, reversed with `Ändringsverifikation`, and deleted with `Radera` when it is the last in its series.
 - **The period lock makes vouchers final.** In a locked period nothing can be booked, changed or deleted. The series the company names as its closing series (`Bokslutsserie (Ej låsbar serie)`) is not locked. In the examples it is I.
 
@@ -59,7 +59,7 @@ Refusals come back as 422 with the API's message (the table in section 2) and a 
 - **Sort:** Verifikationsnummer ascending by default, per series and then by number, so B9 comes before B10. Verifikationsnummer, Bokföringsdatum and Beskrivning sort; clicking again reverses. Belopp does not sort.
 - **Remembered in this browser:** sort column and direction, page size, page, row height.
 - **No hits:** the column headers and a total of 0, with no text.
-- **Kopiera:** an icon button on the row of every manual voucher, tooltip `Kopiera verifikation A16`. A voucher made by another module has no Kopiera icon on its row, and `Alt C` does nothing there. It is not a Tab stop: it is reached with `Alt C` or the mouse.
+- **Kopiera:** an icon button on the row of every manual voucher, tooltip `Kopiera verifikation` and the voucher's number, for example `Kopiera verifikation A16`. A voucher made by another module has no Kopiera icon on its row. On such a voucher, opened, `Kopiera` is disabled and `Alt C` does nothing; `Alt C` on its row in the list was not tested. It is not a Tab stop: it is reached with `Alt C` or the mouse.
 - **Keyboard:** Tab goes quick search, Verifikationsserie, then each row. Up and Down move between rows, Enter opens the voucher, `Alt C` copies it, `Alt N` opens a new form. `/`, `N` and `?` do nothing. No shortcuts are shown on the screen.
 
 ## 2. The voucher form
@@ -70,7 +70,7 @@ One full page for every mode. Fixed footer, primary `Bokför` rightmost.
 
 - Left: the title and number, badges, a speech bubble with the comment as its tooltip when the voucher has a comment, and for a booked voucher a line of history: `Skapad: 2026-10-14 Av: Karin Ek`, `Ändrad: 2026-10-16 Av: Karin Ek`, the source reference, and the links `Rättelsepost avser: A138` and `Rättelsepost finns: A140` (each opens the other voucher).
 - Source reference, seen on screen: vouchers for customer invoices, customer payments, supplier invoices and supplier payments show `Fakturanr: 11`, the number a link to that invoice (for a payment, the invoice that was paid). From the reference's code, not seen on screen: a voucher with a linked bank transaction gets a second line, `Transaktion:` with the link `öppna`; vouchers from any other source (VAT report, accruals, depreciation, payroll, stock) get no source line.
-- Right: `Visa lista` (goes to the voucher list), `Underlag n`, `Kommentar` (an outline icon without a comment, a filled one with a comment, and the comment as its tooltip), `Skriv ut` (disabled on the new, copy and reversing forms until the voucher is booked), `Kopiera` (not on unbooked forms), first, previous, next and last voucher (by series and number), and `Skapa verifikation` (in every mode; it empties the form and forgets the kept entry).
+- Right: `Visa lista` (goes to the voucher list), `Underlag n`, `Kommentar` (an outline icon without a comment, a filled one with a comment, and the comment as its tooltip), `Skriv ut` (disabled on the new, copy and reversing forms until the voucher is booked), `Kopiera` (not on unbooked forms), first, previous, next and last voucher (by series and number), and `Skapa verifikation` (in every mode; on the new form it empties the form and forgets the kept entry, with no notice; in the other modes this was not tested, see Open points).
 - In the reference a disabled `Skriv ut` or `Kopiera` shows no reason, takes no focus and is skipped by Tab. This spec gives them NortFox's own reasons as tooltips: `Skriv ut går när verifikationen är bokförd.` and, for `Kopiera`, the text in section 3.
 - The four arrows show on a voucher opened from the list, both booked and in Ändra. They do not show when the voucher's address is opened directly, and never on the new, copy or reversing form.
 - No shortcuts are shown on the screen.
@@ -106,7 +106,7 @@ In the booked mode every field is plain text and Kontosaldo is empty.
 
 ### Account picker and keyboard flow
 
-- Typing in Konto lists the accounts whose number starts with the text. **Tab accepts the first match** and moves on. Only number prefixes match: `bank` matches nothing. The list has a `+` button in its header. It leaves the voucher form and opens the chart of accounts' own page for a new account, `Konto - Skapa nytt`, with Kontonummer filled in from what was typed; its `Avbryt` returns, without asking, to a new and empty voucher form. That flow is out of scope here.
+- Typing in Konto lists the accounts whose number starts with the text. **Tab accepts the first match** and moves on. Only number prefixes match: `bank` matches nothing. The list has a `+` button in its header. It leaves the voucher form and opens the chart of accounts' own page for a new account, `Konto - Skapa nytt`, with Kontonummer filled in from what was typed; its `Avbryt` returns, without asking, to a new voucher form. In the test the typed digit was gone and the form was empty, but nothing else had been typed, so whether other entries survive is open. That flow is out of scope here.
 - An unknown account empties the field, marks it with the error border and shows a short bubble at the field: `Inga sökresultat hittades.` Focus still moves on to Debet.
 - Focus starts in Beskrivning when the form opens.
 - Tab moves through the whole path: Beskrivning, Verifikationsserie, Bokföringsdatum, Konteringsmall, Belopp (with a template), Konto, Debet, Kredit, next row's Konto. A filled Debet skips Kredit. After Tab or Enter on Konto nothing is filled: Debet and Kredit stay empty, focus is in Debet and the Differens line does not change, whichever side is short. Transaktionsinfo joins the order with the option `Låt transaktionsinfo ingå vid tabb-/enter-inmatning`.
@@ -135,7 +135,7 @@ In the booked mode every field is plain text and Kontosaldo is empty.
 
 An unknown account shows its own bubble and is emptied (see above). A row with an account and no amount is allowed. A date outside every financial year was not tried on the screen (see Open points). NortFox gives a date in a locked period a red border; that is NortFox's own behaviour, since no lock was tried in the reference.
 
-When the API refuses a booking (a client that skips the screen's checks), it answers with these texts. They differ from the screen's:
+When the API refuses a booking (a client that skips the screen's checks), it answers with these texts. Two differ from the screen's (`Ange minst två verifikationsrader.` and `Beskrivning måste finnas för att verifikationen ska kunna sparas.`); `Verifikationen balanserar inte.` is the same:
 
 | Problem | Text |
 |---|---|
@@ -244,7 +244,7 @@ Voucher entry with a registration template. They have their own menu entries und
 - On both, focus stays on `Bokför` after Tab from the last field. Enter acts like Tab along these paths; on Registrera kvitto Enter on `Bokför` presses it (on Registrera dagskassa Enter was not pressed on the buttons). With no template, Enter goes Mall, Bokföringsdatum, Verifikationsbeskrivning and then stays. The pins, Ingående kontantkassa and Kommentar are not in the Tab path.
 - **Bokför with every amount empty** is not refused. A dialog asks: title `Bokför`, body `Är du säker på att du vill bokföra ett tomt kvitto?` (Registrera dagskassa: `Är du säker på att du vill bokföra en tom dagskassa?`), buttons `Avbryt` and `OK`, `OK` has the focus.
 - **A difference on Registrera dagskassa** is not refused either: `De angivna beloppen skapar en kassadifferens på 100,00 SEK, vill du bokföra ändå?`, buttons `Avbryt` and `OK`, `OK` has the focus.
-- **Leaving the screen:** once a template is chosen, leaving opens the dialog `Bokför ändringar` with the body `Du har osparade ändringar i vyn, vill du bokföra?` and the buttons `Nej` (left) and `Ja` (right, primary). `Ja` has the focus, so Enter books. `Nej` leaves without booking. On Registrera dagskassa the dialog shows even after `Rensa` with all amounts empty; for Registrera kvitto this is open (see Open points).
+- **Leaving the screen:** on Registrera dagskassa, once a template is chosen, leaving opens the dialog `Bokför ändringar` with the body `Du har osparade ändringar i vyn, vill du bokföra?` and the buttons `Nej` (left) and `Ja` (right, primary). `Ja` has the focus, so Enter books. `Nej` leaves without booking. It shows with an amount typed, and also after `Rensa` with all amounts empty. On Registrera kvitto one run saw no dialog when leaving with a template chosen and nothing typed; whether and when it asks is open (see Open points).
 
 ## Open points
 
@@ -256,8 +256,11 @@ Not yet settled by tests:
 - Whether the reference checks the period lock when a file is unlinked from a booked voucher. Settled in plan slice 3e's issue.
 - NortFox's own texts in this spec: the reasons on a disabled `Kopiera` (section 3) and `Skriv ut` (section 2), where the reference shows none; and the `Låst period` badge (section 2) and the `Låst period.` note under the header (section 3), since no lock was tried.
 - What the voucher form shows for a date outside every financial year.
-- What Registrera kvitto and Registrera dagskassa show after a successful `Bokför` or `Bokför och skriv ut` (nothing was booked), and which account a confirmed kassadifferens is booked to.
-- Leaving Registrera kvitto with a template chosen and nothing typed: one run saw no dialog (seen once, not re-checked).
+- What Registrera kvitto and Registrera dagskassa show after a successful `Bokför` or `Bokför och skriv ut` (nothing was booked).
+- Whether leaving Registrera kvitto asks: one run saw no dialog with a template chosen and nothing typed (seen once, not re-checked); leaving with an amount typed was not tried.
+- What `Skapa verifikation` in the header does on the copy, reversing and booked forms and in Ändra. Only the new form was tested.
+- `Alt C` on the row of a voucher made by another module in the list.
+- The `+` flow in the account picker: whether entries other than the typed account survive its `Avbryt`.
 - Whether the Konteringsvy options apply per user or per company. The section sits among the company's Bokföring settings with no text naming a user or the company, the reference reads the options with no user in the request, and the user's own settings (Användaruppgifter) do not have them. So per company is very likely; proving it needs a second user.
 
 For the owner to decide:
