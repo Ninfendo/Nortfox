@@ -57,13 +57,17 @@ describe("the table guard", () => {
       "ledger.accounts",
       "ledger.automatic_locks",
       "ledger.companies",
+      "ledger.deleted_voucher_rows",
+      "ledger.deleted_vouchers",
       "ledger.fiscal_years",
       "ledger.period_locks",
       "ledger.periods",
       "ledger.reader_roles",
       "ledger.void_ranges",
       "ledger.voucher_counters",
+      "ledger.voucher_rows",
       "ledger.voucher_series",
+      "ledger.vouchers",
       "meta.schema_migrations",
     ]);
     expect(Object.fromEntries([...GUARD_EXCEPTIONS].map(([table, exception]) => [table, exception.kind]))).toEqual({

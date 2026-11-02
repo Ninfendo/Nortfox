@@ -21,7 +21,17 @@ import {
   untilWaitingForLock,
   type TestDatabase,
 } from "../../../test/database.ts";
-import { FISCAL_YEAR_COLUMNS, addCompany, addFiscalYear, someUser, type FiscalYear } from "../../../test/ledger.ts";
+import {
+  FISCAL_YEAR_COLUMNS,
+  addBooks,
+  addCompany,
+  addFiscalYear,
+  balanced,
+  bookVoucher,
+  someUser,
+  writeVoucher,
+  type FiscalYear,
+} from "../../../test/ledger.ts";
 
 describe("fiscal years", () => {
   let db: TestDatabase;
@@ -232,5 +242,63 @@ describe("fiscal years", () => {
     );
     expect(changed).toEqual({ ...year, to_date: "2091-06-30", accounting_method: "CASH", account_chart_type: "Bas 2091" });
     await expectError(asApp(company, "DELETE FROM ledger.fiscal_years WHERE id = $1", [year.id]), "42501", /permission denied/);
+  });
+
+  describe("with vouchers (rule 9: a voucher's date stays inside its own year)", () => {
+    it("refuses new dates that would leave any of the year's vouchers outside it, with the count", async () => {
+      const books = await addBooks(app, who);
+      for (const date of ["2090-01-01", "2090-06-15", "2090-12-31"]) {
+        await bookVoucher(app, books.company, { year: books.year.id, series: "A", date, rows: balanced() }, who);
+      }
+      for (const [set, count] of [
+        ["to_date = '2090-12-30'", 1],
+        ["from_date = '2090-01-02'", 1],
+        ["from_date = '2090-06-16'", 2],
+        ["from_date = '2091-01-01', to_date = '2091-12-31'", 3],
+      ] as const) {
+        await expectRefusal(asApp(books.company, `UPDATE ledger.fiscal_years SET ${set} WHERE id = $1`, [books.year.id]), "fiscal_year_strands_rows", {
+          table: "ledger.vouchers",
+          count,
+        });
+      }
+      // New dates that keep every voucher inside are accepted.
+      await asApp(books.company, "UPDATE ledger.fiscal_years SET from_date = '2089-07-01', to_date = '2091-06-30' WHERE id = $1", [books.year.id]);
+    });
+
+    it("holds when a voucher is booked and the year's dates change at the same time: the year waits for the booking, and its change is refused", async () => {
+      const books = await addBooks(app, who);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...who });
+      await writeVoucher(app, books.company, { year: books.year.id, series: "A", date: "2090-12-15", rows: balanced() });
+      await begin(other, { company: books.company, ...who });
+      const shrunk = expectRefusal(
+        other.query("UPDATE ledger.fiscal_years SET to_date = '2090-11-30' WHERE id = $1", [books.year.id]),
+        "fiscal_year_strands_rows",
+        { table: "ledger.vouchers", count: 1 },
+      );
+      await untilWaitingForLock(app, otherPid);
+      await app.query("COMMIT");
+      await shrunk;
+      await other.query("ROLLBACK");
+    });
+
+    it("holds when the year's dates change and a voucher is booked at the same time: the booking waits for the year, and is refused outside it", async () => {
+      const books = await addBooks(app, who);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...who });
+      await app.query("UPDATE ledger.fiscal_years SET to_date = '2090-11-30' WHERE id = $1", [books.year.id]);
+      await begin(other, { company: books.company, ...who });
+      const booked = expectRefusal(
+        writeVoucher(other, books.company, { year: books.year.id, series: "A", date: "2090-12-15", rows: balanced() }),
+        "no_fiscal_year",
+        { date: "2090-12-15" },
+      );
+      await untilWaitingForLock(app, otherPid);
+      await app.query("COMMIT");
+      await booked;
+      await other.query("ROLLBACK");
+    });
   });
 });

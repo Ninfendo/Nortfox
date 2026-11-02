@@ -49,6 +49,13 @@ export interface ScenarioSeries {
   readonly code: string;
 }
 
+/** A company's vouchers in the scenario: one that is changed and stays, the last of its series, and an entry in the record of deleted vouchers. */
+export interface ScenarioVouchers {
+  readonly kept: string;
+  readonly last: string;
+  readonly deleted: string;
+}
+
 export interface Scenario {
   readonly companyA: string;
   readonly companyB: string;
@@ -56,6 +63,8 @@ export interface Scenario {
   readonly years: Readonly<Record<string, string>>;
   /** Each company's series A in its year 2030, which holds a void range, by company. */
   readonly series: Readonly<Record<string, ScenarioSeries>>;
+  /** Each company's vouchers in its series A, by company. */
+  readonly vouchers: Readonly<Record<string, ScenarioVouchers>>;
   readonly changes: readonly Change[];
 }
 
@@ -72,6 +81,10 @@ export const KEYS: Readonly<Record<string, string>> = {
   "ledger.voucher_series": "id",
   "ledger.voucher_counters": "id",
   "ledger.void_ranges": "id",
+  "ledger.vouchers": "id",
+  "ledger.voucher_rows": "id",
+  "ledger.deleted_vouchers": "id",
+  "ledger.deleted_voucher_rows": "id",
 };
 
 /** Every company table, from the catalog: each table with a company_id column. */
@@ -100,6 +113,14 @@ function seriesOf(scenario: Scenario, company: string): ScenarioSeries {
     throw new Error("The scenario made no voucher series for that company.");
   }
   return series;
+}
+
+function vouchersOf(scenario: Scenario, company: string): ScenarioVouchers {
+  const vouchers = scenario.vouchers[company];
+  if (vouchers === undefined) {
+    throw new Error("The scenario booked no voucher for that company.");
+  }
+  return vouchers;
 }
 
 /**
@@ -158,6 +179,33 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
           VALUES ($1, $2, $3, 9, 9, 'Återläsning av säkerhetskopia')`,
     params: [company, seriesOf(scenario, company).year, seriesOf(scenario, company).code],
   }),
+  // The voucher triggers check no rule for a row of another company than the
+  // transaction's: row level security refuses it right after them.
+  "ledger.vouchers": (company, scenario) => ({
+    sql: `INSERT INTO ledger.vouchers (company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
+          VALUES ($1, $2, 'A', 'Kontorsmaterial', '2030-05-15', 'MANUAL')`,
+    params: [company, yearOf(scenario, company)],
+  }),
+  "ledger.voucher_rows": (company, scenario) => ({
+    sql: "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount) VALUES ($1, $2, 1930, 0)",
+    params: [company, vouchersOf(scenario, company).kept],
+  }),
+  // Only a deletion writes the record, so the trigger refuses the owner's
+  // own insert before row level security does.
+  "ledger.deleted_vouchers": (company, scenario) => ({
+    sql: `INSERT INTO ledger.deleted_vouchers (id, company_id, fiscal_year_id, series_code, number, deletion_count, description, comments,
+            transaction_date, reference_type, reference_number, created_at, created_by, created_by_kind, created_xact, modified_at,
+            deleted_at, deleted_by, deleted_by_kind, deleted_xact)
+          VALUES (pg_catalog.gen_random_uuid(), $1, $2, 'A', 99, 1, 'Kontorsmaterial', '', '2030-05-15', 'MANUAL', '', pg_catalog.now(), $1, 'user',
+            pg_catalog.pg_current_xact_id(), pg_catalog.now(), pg_catalog.now(), $1, 'user', pg_catalog.pg_current_xact_id())`,
+    params: [company, yearOf(scenario, company)],
+  }),
+  "ledger.deleted_voucher_rows": (company, scenario) => ({
+    sql: `INSERT INTO ledger.deleted_voucher_rows (id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, amount,
+            transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description)
+          VALUES (pg_catalog.gen_random_uuid(), $1, $2, $3, 9, 1930, 0, '', 0, false, pg_catalog.now(), $1, 'user', 'Företagskonto')`,
+    params: [company, vouchersOf(scenario, company).deleted, yearOf(scenario, company)],
+  }),
 };
 
 /**
@@ -168,6 +216,8 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
 export const TRIGGER_ONLY_INSERTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   "audit.history": { table: "audit.history", field: null },
   "ledger.voucher_counters": { table: "ledger.voucher_counters", field: null },
+  "ledger.deleted_vouchers": { table: "ledger.deleted_vouchers", field: null },
+  "ledger.deleted_voucher_rows": { table: "ledger.deleted_voucher_rows", field: null },
 };
 
 /** A write the app may make, with the company it is made in. */
@@ -250,9 +300,10 @@ export const APP_WRITES: Readonly<Record<string, Readonly<Partial<Record<"INSERT
       sql: "UPDATE ledger.accounts SET description = 'Bankkonto' WHERE fiscal_year_id = $1 AND number = 1930",
       params: [yearOf(scenario, scenario.companyA)],
     }),
+    // 6110 holds no rows, so only the missing actor stops its removal.
     DELETE: (scenario) => ({
       company: scenario.companyA,
-      sql: "DELETE FROM ledger.accounts WHERE fiscal_year_id = $1 AND number = 1930",
+      sql: "DELETE FROM ledger.accounts WHERE fiscal_year_id = $1 AND number = 6110",
       params: [yearOf(scenario, scenario.companyA)],
     }),
   },
@@ -267,11 +318,42 @@ export const APP_WRITES: Readonly<Record<string, Readonly<Partial<Record<"INSERT
       sql: "UPDATE ledger.voucher_series SET manual = false WHERE fiscal_year_id = $1 AND code = 'I'",
       params: [yearOf(scenario, scenario.companyA)],
     }),
-    // Series I holds no void range, so only the missing actor stops its removal.
+    // Series I holds no void range and no voucher, so only the missing actor stops its removal.
     DELETE: (scenario) => ({
       company: scenario.companyA,
       sql: "DELETE FROM ledger.voucher_series WHERE fiscal_year_id = $1 AND code = 'I'",
       params: [yearOf(scenario, scenario.companyA)],
+    }),
+  },
+  // Each voucher write passes every rule up to the period lock, which needs the actor.
+  "ledger.vouchers": {
+    INSERT: (scenario) => ({
+      company: scenario.companyA,
+      sql: `INSERT INTO ledger.vouchers (company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
+            VALUES ($1, $2, 'A', 'Kontorsmaterial', '2030-06-15', 'MANUAL')`,
+      params: [scenario.companyA, yearOf(scenario, scenario.companyA)],
+    }),
+    UPDATE: (scenario) => ({
+      company: scenario.companyA,
+      sql: "UPDATE ledger.vouchers SET description = 'Kontorsmaterial och porto' WHERE id = $1",
+      params: [vouchersOf(scenario, scenario.companyA).kept],
+    }),
+    DELETE: (scenario) => ({
+      company: scenario.companyA,
+      sql: "DELETE FROM ledger.vouchers WHERE id = $1",
+      params: [vouchersOf(scenario, scenario.companyA).last],
+    }),
+  },
+  "ledger.voucher_rows": {
+    INSERT: (scenario) => ({
+      company: scenario.companyA,
+      sql: "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount) VALUES ($1, $2, 1930, 0)",
+      params: [scenario.companyA, vouchersOf(scenario, scenario.companyA).kept],
+    }),
+    UPDATE: (scenario) => ({
+      company: scenario.companyA,
+      sql: "UPDATE ledger.voucher_rows SET transaction_information = 'Kvitto 7' WHERE voucher_id = $1 AND position = 1",
+      params: [vouchersOf(scenario, scenario.companyA).kept],
     }),
   },
 };
@@ -302,6 +384,14 @@ async function findMade(client: Client, made: Made, expected: 0 | 1, when: strin
   return found.rows[0];
 }
 
+/** One statement of a change: the row it writes, by its table, its operation and its id. */
+interface Step {
+  readonly table: string;
+  readonly operation: Change["operation"];
+  readonly rowId: string;
+  readonly write: Write;
+}
+
 /**
  * Makes one change in its own transaction and notes it, with the rows that
  * its triggers insert, update or delete along with it. The statement names its table "t" and
@@ -316,16 +406,39 @@ async function change(
   write: Write,
   made: readonly Made[] = [],
 ): Promise<Change[]> {
+  return changeOfSteps(client, who, [{ table, operation, rowId, write }], made);
+}
+
+/**
+ * Makes one change of several statements in its own transaction, as a booking
+ * writes its voucher and then its rows, and notes each statement's row and the
+ * rows that the triggers write along with them. Each statement writes one row
+ * that no other statement of the change writes.
+ */
+async function changeOfSteps(client: Client, who: Actor, steps: readonly Step[], made: readonly Made[] = []): Promise<Change[]> {
   return inTransaction(client, who, async () => {
-    const before =
-      operation === "INSERT"
-        ? undefined
-        : await client.query<{ row: Row }>(`SELECT pg_catalog.to_jsonb(t) AS row FROM ${table} AS t WHERE t.${KEYS[table] ?? ""} = $1`, [rowId]);
     const madeBefore: ({ id: string; row: Row } | undefined)[] = [];
     for (const other of made) {
       madeBefore.push((other.operation ?? "INSERT") === "INSERT" ? undefined : await findMade(client, other, 1, "before"));
     }
-    const written = await client.query<{ row: Row }>(write.sql, [...write.params]);
+    const notedSteps: { table: string; operation: Change["operation"]; id: string; oldValues: Row | null; newValues: Row | null }[] = [];
+    for (const { table, operation, rowId, write } of steps) {
+      const before =
+        operation === "INSERT"
+          ? undefined
+          : await client.query<{ row: Row }>(`SELECT pg_catalog.to_jsonb(t) AS row FROM ${table} AS t WHERE t.${KEYS[table] ?? ""} = $1`, [rowId]);
+      const written = await client.query<{ row: Row }>(write.sql, [...write.params]);
+      if (written.rows.length !== 1) {
+        throw new Error(`The scenario's ${operation} on ${table} changed ${String(written.rows.length)} rows, not one.`);
+      }
+      notedSteps.push({
+        table,
+        operation,
+        id: rowId,
+        oldValues: before?.rows[0]?.row ?? null,
+        newValues: operation === "DELETE" ? null : (written.rows[0]?.row ?? null),
+      });
+    }
     const others: { table: string; operation: Change["operation"]; id: string; oldValues: Row | null; newValues: Row | null }[] = [];
     for (const [index, other] of made.entries()) {
       const madeOperation = other.operation ?? "INSERT";
@@ -343,8 +456,8 @@ async function change(
       "SELECT pg_catalog.pg_current_xact_id()::text AS transaction, pg_catalog.transaction_timestamp()::text AS started, pg_catalog.clock_timestamp()::text AS changed",
     );
     const [stamp] = stamps.rows;
-    if (written.rows.length !== 1 || stamp === undefined) {
-      throw new Error(`The scenario's ${operation} on ${table} changed ${String(written.rows.length)} rows, not one.`);
+    if (stamp === undefined) {
+      throw new Error("The database gave no transaction stamps.");
     }
     const common = {
       company: who.company,
@@ -354,25 +467,14 @@ async function change(
       startedAt: stamp.started,
       changedBy: stamp.changed,
     };
-    const row = written.rows[0]?.row ?? null;
-    return [
-      {
-        ...common,
-        table,
-        operation,
-        rowId,
-        oldValues: before?.rows[0]?.row ?? null,
-        newValues: operation === "DELETE" ? null : row,
-      },
-      ...others.map((other) => ({
-        ...common,
-        table: other.table,
-        operation: other.operation,
-        rowId: other.id,
-        oldValues: other.oldValues,
-        newValues: other.newValues,
-      })),
-    ];
+    return [...notedSteps, ...others].map((other) => ({
+      ...common,
+      table: other.table,
+      operation: other.operation,
+      rowId: other.id,
+      oldValues: other.oldValues,
+      newValues: other.newValues,
+    }));
   });
 }
 
@@ -558,6 +660,18 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
   const officeA = randomUUID();
   const unusedA = randomUUID();
   const bankB = randomUUID();
+  const salesA = randomUUID();
+  const salesB = randomUUID();
+  changes.push(
+    ...(await change(app, { company: companyA, actor: user, kind: "user" }, "ledger.accounts", "INSERT", salesA, {
+      sql: insertAccount,
+      params: [salesA, companyA, yearA, 3001, "Försäljning inom Sverige", true],
+    })),
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration" }, "ledger.accounts", "INSERT", salesB, {
+      sql: insertAccount,
+      params: [salesB, companyB, yearB, 3001, "Försäljning inom Sverige", true],
+    })),
+  );
   changes.push(
     ...(await change(app, { company: companyA, actor: user, kind: "user" }, "ledger.accounts", "INSERT", bankA, {
       sql: insertAccount,
@@ -679,11 +793,165 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     )),
   );
 
+  // Vouchers, by the app, in each company's series A, after its void range.
+  // A books A4, changes it in every way Ändra allows, reverses it with A5,
+  // then books A6 and deletes it. B books A2, deletes it, and books A2 again.
+  const vouchers = new Vouchers(app, changes);
+  const keptA = await vouchers.book({ company: companyA, actor: user, kind: "user" }, yearA, seriesA, [
+    [1930, 12_500],
+    [3001, -12_500],
+  ]);
+  await vouchers.alter({ company: companyA, actor: integration, kind: "integration" }, keptA, "ledger.vouchers", keptA.id, "description = 'Kontantförsäljning'");
+  const zeroRow = await vouchers.addRow({ company: companyA, actor: system, kind: "system" }, keptA, [1930, 0]);
+  await vouchers.alter({ company: companyA, actor: user, kind: "user" }, keptA, "ledger.voucher_rows", zeroRow, "removed = true");
+  await vouchers.alter(
+    { company: companyA, actor: integration, kind: "integration" },
+    keptA,
+    "ledger.voucher_rows",
+    keptA.rows[0] ?? "",
+    "transaction_information = 'Kvitto 1'",
+  );
+  const lastA = await vouchers.book(
+    { company: companyA, actor: system, kind: "system" },
+    yearA,
+    seriesA,
+    [
+      [1930, -12_500],
+      [3001, 12_500],
+    ],
+    keptA.id,
+  );
+  const deletedA = await vouchers.book({ company: companyA, actor: user, kind: "user" }, yearA, seriesA, [
+    [1930, 990],
+    [3001, -990],
+  ]);
+  await vouchers.remove({ company: companyA, actor: integration, kind: "integration" }, seriesA, deletedA);
+  const deletedB = await vouchers.book({ company: companyB, actor: integration, kind: "integration" }, yearB, seriesB, [
+    [1930, 5000],
+    [3001, -5000],
+  ]);
+  await vouchers.remove({ company: companyB, actor: system, kind: "system" }, seriesB, deletedB);
+  const keptB = await vouchers.book({ company: companyB, actor: user, kind: "user" }, yearB, seriesB, [
+    [1930, 7000],
+    [3001, -7000],
+  ]);
+
   return {
     companyA,
     companyB,
     years: { [companyA]: yearA, [companyB]: yearB },
     series: { [companyA]: { id: seriesA, year: yearA, code: "A" }, [companyB]: { id: seriesB, year: yearB, code: "A" } },
+    vouchers: {
+      [companyA]: { kept: keptA.id, last: lastA.id, deleted: deletedA.id },
+      [companyB]: { kept: keptB.id, last: keptB.id, deleted: deletedB.id },
+    },
     changes,
   };
+}
+
+/** A voucher the scenario booked: its id and its rows' ids, in order. */
+interface Booked {
+  readonly id: string;
+  readonly rows: readonly string[];
+}
+
+/** The scenario's voucher changes, each noted with every row that its triggers write along with it. */
+class Vouchers {
+  private readonly app: Client;
+  private readonly changes: Change[];
+
+  constructor(app: Client, changes: Change[]) {
+    this.app = app;
+    this.changes = changes;
+  }
+
+  private static counterOf(series: string): Made {
+    return {
+      table: "ledger.voucher_counters",
+      operation: "UPDATE",
+      find: { sql: "SELECT t.id, pg_catalog.to_jsonb(t) AS row FROM ledger.voucher_counters AS t WHERE t.series_id = $1", params: [series] },
+    };
+  }
+
+  private static byId(table: string, id: string, operation: Change["operation"]): Made {
+    return { table, operation, find: { sql: `SELECT t.id, pg_catalog.to_jsonb(t) AS row FROM ${table} AS t WHERE t.id = $1`, params: [id] } };
+  }
+
+  private static row(company: string, voucher: string, id: string, [account, amount]: readonly [number, number]): Step {
+    return {
+      table: "ledger.voucher_rows",
+      operation: "INSERT",
+      rowId: id,
+      write: {
+        sql: `INSERT INTO ledger.voucher_rows AS t (id, company_id, voucher_id, account_number, amount) VALUES ($1, $2, $3, $4, $5)
+              RETURNING pg_catalog.to_jsonb(t) AS row`,
+        params: [id, company, voucher, account, amount],
+      },
+    };
+  }
+
+  /** Books a voucher dated 2030-05-15 in a series, with its rows and the counter's move, and gives it. */
+  async book(who: Actor, year: string, series: string, rows: readonly (readonly [number, number])[], reverses: string | null = null): Promise<Booked> {
+    const id = randomUUID();
+    const rowIds = rows.map(() => randomUUID());
+    const head: Step = {
+      table: "ledger.vouchers",
+      operation: "INSERT",
+      rowId: id,
+      write: {
+        sql: `INSERT INTO ledger.vouchers AS t (id, company_id, fiscal_year_id, series_code, description, transaction_date, reference_type, reverses_voucher_id)
+              VALUES ($1, $2, $3, 'A', 'Kontorsmaterial', '2030-05-15', 'MANUAL', $4) RETURNING pg_catalog.to_jsonb(t) AS row`,
+        params: [id, who.company, year, reverses],
+      },
+    };
+    const steps = [head, ...rows.map((row, index) => Vouchers.row(who.company, id, rowIds[index] ?? "", row))];
+    this.changes.push(...(await changeOfSteps(this.app, who, steps, [Vouchers.counterOf(series)])));
+    return { id, rows: rowIds };
+  }
+
+  /** Adds a row to a booked voucher, which touches the voucher's altered stamp, and gives the row's id. */
+  async addRow(who: Actor, voucher: Booked, row: readonly [number, number]): Promise<string> {
+    const id = randomUUID();
+    this.changes.push(
+      ...(await changeOfSteps(this.app, who, [Vouchers.row(who.company, voucher.id, id, row)], [Vouchers.byId("ledger.vouchers", voucher.id, "UPDATE")])),
+    );
+    return id;
+  }
+
+  /** Changes a booked voucher or one of its rows by Ändra. A row's change touches the voucher's altered stamp. */
+  async alter(who: Actor, voucher: Booked, table: "ledger.vouchers" | "ledger.voucher_rows", id: string, set: string): Promise<void> {
+    const made = table === "ledger.voucher_rows" ? [Vouchers.byId("ledger.vouchers", voucher.id, "UPDATE")] : [];
+    this.changes.push(
+      ...(await change(
+        this.app,
+        who,
+        table,
+        "UPDATE",
+        id,
+        { sql: `UPDATE ${table} AS t SET ${set} WHERE t.id = $1 RETURNING pg_catalog.to_jsonb(t) AS row`, params: [id] },
+        made,
+      )),
+    );
+  }
+
+  /** Deletes the last voucher of a series: it moves to the record, its rows go by the cascade, and the counter goes back. */
+  async remove(who: Actor, series: string, voucher: Booked): Promise<void> {
+    const made: Made[] = [
+      Vouchers.byId("ledger.deleted_vouchers", voucher.id, "INSERT"),
+      ...voucher.rows.map((row) => Vouchers.byId("ledger.deleted_voucher_rows", row, "INSERT")),
+      ...voucher.rows.map((row) => Vouchers.byId("ledger.voucher_rows", row, "DELETE")),
+      Vouchers.counterOf(series),
+    ];
+    this.changes.push(
+      ...(await change(
+        this.app,
+        who,
+        "ledger.vouchers",
+        "DELETE",
+        voucher.id,
+        { sql: "DELETE FROM ledger.vouchers AS t WHERE t.id = $1 RETURNING pg_catalog.to_jsonb(t) AS row", params: [voucher.id] },
+        made,
+      )),
+    );
+  }
 }

@@ -3,18 +3,22 @@
 // The counter of each series and year (rules 14 and 15 of the slice): the
 // next number, made at 1 with its series, in a table of its own. Only the
 // database's own triggers write it, and only with proof in the same
-// transaction: here, a void range that starts at the counter moves it past the
-// range. The booking that moves it up by one and the deletion that moves it
-// back by one come with the vouchers. Anything else is refused.
+// transaction: a void range that starts at the counter moves it past the
+// range, a booking of the voucher with the next number moves it up by one,
+// and the deletion of the voucher just below it moves it back by one.
+// Anything else is refused.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { INSUFFICIENT_PRIVILEGE, begin, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import {
   COUNTER_COLUMNS,
+  addAccount,
   addCompany,
   addFiscalYear,
   addSeries,
+  balanced,
+  bookVoucher,
   counterOf,
   recordVoidRange,
   someSystemUser,
@@ -210,6 +214,74 @@ describe("the voucher counters", () => {
       { field: "id", operation: "update" },
     );
     expect((await counterOf(app, company, series.id))?.next_number).toBe(4);
+  });
+
+  /** A booking in series `code` of `year`, as the owner writes it from inside fromATrigger's transaction. Its rows do not matter: the transaction is rolled back. */
+  function booking(company: string, year: string, code: string): string {
+    return `INSERT INTO ledger.vouchers (company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
+            VALUES ('${company}', '${year}', '${code}', 'Kontorsmaterial', '2090-03-15', 'MANUAL')`;
+  }
+
+  function deletion(company: string, year: string, code: string, number: number): string {
+    return `DELETE FROM ledger.vouchers WHERE company_id = '${company}' AND fiscal_year_id = '${year}' AND series_code = '${code}' AND number = ${String(number)}`;
+  }
+
+  it("moves up by one with each booking and back by one with the deletion of the last voucher, and only so", async () => {
+    const { company, year, series } = await companyWithSeries();
+    const counterAfter = `SELECT next_number FROM ledger.voucher_counters WHERE series_id = '${series.id}'`;
+    // A booking moves it up by one, and the next booking once more.
+    expect(await fromATrigger(company, "SELECT 1", { before: [booking(company, year, "A"), booking(company, year, "A")], after: counterAfter })).toEqual([
+      { next_number: 3 },
+    ]);
+    // A deletion of the last moves it back, also of a voucher booked in the same transaction.
+    expect(
+      await fromATrigger(company, "SELECT 1", {
+        before: [booking(company, year, "A"), booking(company, year, "A"), deletion(company, year, "A", 2)],
+        after: counterAfter,
+      }),
+    ).toEqual([{ next_number: 2 }]);
+    const other = await addSeries(app, company, year, { code: "B" });
+    const facts = (from: number, to: number): Record<string, unknown> => ({ series: "A", from, to });
+    // A booking in another series is no proof for this one.
+    await expectRefusal(fromATrigger(company, moveTo(series, "next_number + 1"), { before: [booking(company, year, "B")] }), "counter_move", facts(1, 2));
+    // A booking proves one step only: a second step needs a second booking.
+    await expectRefusal(fromATrigger(company, moveTo(series, "next_number + 1"), { before: [booking(company, year, "A")] }), "counter_move", facts(2, 3));
+    await expectRefusal(fromATrigger(company, moveTo(series, 3), { before: [booking(company, year, "A")] }), "counter_move", facts(2, 3));
+    // A deletion proves one step back only, and only in its own series.
+    await expectRefusal(
+      fromATrigger(company, moveTo(series, "next_number - 1"), { before: [booking(company, year, "A"), deletion(company, year, "A", 1)] }),
+      "counter_move",
+      facts(1, 0),
+    );
+    await expectRefusal(
+      fromATrigger(company, moveTo(series, "next_number - 1"), {
+        before: [booking(company, year, "A"), booking(company, year, "B"), deletion(company, year, "B", 1)],
+      }),
+      "counter_move",
+      facts(2, 1),
+    );
+    // A deletion proves the step back only while its voucher is being deleted:
+    // once the number is booked again, the old deletion proves nothing.
+    await expectRefusal(
+      fromATrigger(company, moveTo(series, "next_number - 1"), {
+        before: [booking(company, year, "A"), booking(company, year, "A"), deletion(company, year, "A", 2), booking(company, year, "A")],
+      }),
+      "counter_move",
+      facts(3, 2),
+    );
+    expect((await counterOf(app, company, series.id))?.next_number).toBe(1);
+    expect((await counterOf(app, company, other.id))?.next_number).toBe(1);
+  });
+
+  it("takes no booking or deletion of an earlier transaction as proof", async () => {
+    const { company, year, series } = await companyWithSeries();
+    await addAccount(app, company, year, { number: 1930 });
+    await addAccount(app, company, year, { number: 6110 });
+    await bookVoucher(app, company, { year, series: "A", date: "2090-03-15", rows: balanced() }, who);
+    expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
+    await expectRefusal(fromATrigger(company, moveTo(series, "next_number - 1")), "counter_move", { series: "A", from: 2, to: 1 });
+    await expectRefusal(fromATrigger(company, moveTo(series, "next_number + 1")), "counter_move", { series: "A", from: 2, to: 3 });
+    expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
   });
 
   it("removes a counter only with its series: never from inside a trigger while the series is there", async () => {

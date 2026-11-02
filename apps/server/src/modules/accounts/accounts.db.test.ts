@@ -4,13 +4,25 @@
 // with a number that never changes, a name and an active flag. Every accepted
 // change moves its modified time, and a refused one moves nothing. An unused
 // account can be removed, and the behandlingshistorik keeps its last state.
-// The refusal of an account that holds rows comes with the vouchers.
+// One that holds rows cannot, with the number of vouchers that hold them.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { UNIQUE_VIOLATION, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
-import { ACCOUNT_COLUMNS, addAccount, addCompany, addFiscalYear, isAfter, someUser, type Account } from "../../../test/ledger.ts";
+import {
+  ACCOUNT_COLUMNS,
+  addAccount,
+  addBooks,
+  addCompany,
+  addFiscalYear,
+  balanced,
+  bookVoucher,
+  isAfter,
+  someUser,
+  writeRow,
+  type Account,
+} from "../../../test/ledger.ts";
 
 /** PostgreSQL's SQLSTATEs for a foreign key and a NOT NULL column that refused a row. */
 const FOREIGN_KEY_VIOLATION = "23503";
@@ -191,5 +203,41 @@ describe("accounts", () => {
       transaction,
     });
     expect(last).toMatchObject({ number: 3990, description: "Övriga ersättningar och intäkter", active: false });
+  });
+
+  it("refuses to remove an account that holds rows, with its number and the count of vouchers, struck rows included", async () => {
+    const books = await addBooks(app, who);
+    const { company } = books;
+    const year = books.year.id;
+    const voucher = { year, series: "A", date: "2090-03-15" };
+    // Two vouchers hold rows on 6110, one of them two rows; a third holds 6110 only on a row that is struck.
+    await bookVoucher(app, company, { ...voucher, rows: balanced(2000n, 6110, 1930) }, who);
+    await bookVoucher(app, company, { ...voucher, rows: [{ account: 6110, amount: 100n }, { account: 6110, amount: 100n }, { account: 1930, amount: -200n }] }, who);
+    const struck = await bookVoucher(app, company, { ...voucher, rows: balanced(300n, 6110, 1930) }, who);
+    await inTransaction(app, { company, ...who }, async () => {
+      await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND account_number = 6110", [struck.id]);
+      await writeRow(app, company, struck.id, { account: 3001, amount: 300n });
+    });
+    const remove = (number: number) => asApp(company, "DELETE FROM ledger.accounts WHERE fiscal_year_id = $1 AND number = $2", [year, number]);
+    await expectRefusal(remove(6110), "account_has_rows", { number: 6110, count: 3 });
+    await expectRefusal(remove(1930), "account_has_rows", { number: 1930, count: 3 });
+    await expectRefusal(remove(3001), "account_has_rows", { number: 3001, count: 1 });
+    // A voucher that is deleted holds no rows any more: its account can go.
+    await addAccount(app, company, year, { number: 2440, description: "Leverantörsskulder" });
+    const deleted = await bookVoucher(app, company, { ...voucher, rows: balanced(500n, 6110, 2440) }, who);
+    await expectRefusal(remove(2440), "account_has_rows", { number: 2440, count: 1 });
+    await asApp(company, "DELETE FROM ledger.vouchers WHERE id = $1", [deleted.id]);
+    await remove(2440);
+    const left = await asApp(company, `SELECT ${ACCOUNT_COLUMNS} FROM ledger.accounts ORDER BY number`);
+    expect(left.map((account) => account.number)).toEqual([1930, 3001, 6110]);
+  });
+
+  it("counts only the rows of the account's own fiscal year", async () => {
+    const books = await addBooks(app, who);
+    const next = await addFiscalYear(app, books.company, { from: "2091-01-01", to: "2091-12-31" }, who);
+    const nextAccount = await addAccount(app, books.company, next.id, { number: 6110 });
+    await bookVoucher(app, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced(2000n, 6110, 1930) }, who);
+    await asApp(books.company, "DELETE FROM ledger.accounts WHERE id = $1", [nextAccount.id]);
+    expect(await accountOf(books.company, nextAccount.id)).toBeUndefined();
   });
 });

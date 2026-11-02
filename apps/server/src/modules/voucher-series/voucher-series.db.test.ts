@@ -5,8 +5,8 @@
 // unique in its year and never changes, a name of at most 200 characters that
 // may be empty, the manual flag, and at most one closing series per year.
 // Every accepted change moves its modified time, and a refused one moves
-// nothing. An unused series can be removed. That a series with vouchers stays
-// is tested with the vouchers.
+// nothing. An unused series can be removed. A series that holds any voucher,
+// live or deleted, stays.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
@@ -23,7 +23,22 @@ import {
   untilWaitingForLock,
   type TestDatabase,
 } from "../../../test/database.ts";
-import { SERIES_COLUMNS, addCompany, addFiscalYear, addSeries, counterOf, isAfter, someUser, type VoucherSeries } from "../../../test/ledger.ts";
+import {
+  SERIES_COLUMNS,
+  addBooks,
+  addCompany,
+  addFiscalYear,
+  addSeries,
+  balanced,
+  bookVoucher,
+  counterOf,
+  isAfter,
+  someUser,
+  type VoucherSeries,
+} from "../../../test/ledger.ts";
+
+/** PostgreSQL's SQLSTATE for a row that an ON DELETE RESTRICT foreign key keeps. */
+const RESTRICT_VIOLATION = "23001";
 
 describe("voucher series", () => {
   let db: TestDatabase;
@@ -318,5 +333,19 @@ describe("voucher series", () => {
     // The code is free again in its year, and the new series' counter starts at 1.
     const again = await addSeries(app, company, year, { code: "A" });
     expect((await counterOf(app, company, again.id))?.next_number).toBe(1);
+  });
+
+  it("keeps a series that holds a voucher, and one that holds only deleted vouchers, and lets the unused ones go", async () => {
+    const books = await addBooks(app, who);
+    const voucher = { year: books.year.id, date: "2090-03-15", rows: balanced() };
+    await bookVoucher(app, books.company, { ...voucher, series: "A" }, who);
+    const deleted = await bookVoucher(app, books.company, { ...voucher, series: "I" }, who);
+    await asApp(books.company, "DELETE FROM ledger.vouchers WHERE id = $1", [deleted.id]);
+    const remove = (code: string) => asApp(books.company, "DELETE FROM ledger.voucher_series WHERE fiscal_year_id = $1 AND code = $2", [books.year.id, code]);
+    await expectError(remove("A"), RESTRICT_VIOLATION, /constraint "vouchers_series"/);
+    await expectError(remove("I"), RESTRICT_VIOLATION, /constraint "deleted_vouchers_series"/);
+    await remove("K");
+    const left = await asApp(books.company, `SELECT ${SERIES_COLUMNS} FROM ledger.voucher_series ORDER BY code`);
+    expect(left.map((series) => series.code)).toEqual(["A", "I"]);
   });
 });

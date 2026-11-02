@@ -320,3 +320,237 @@ export async function isAfter(client: Client, later: string, earlier: string): P
   const found = await client.query<{ after: boolean }>("SELECT $1::timestamptz > $2::timestamptz AS after", [later, earlier]);
   return found.rows[0]?.after === true;
 }
+
+/** The seven reference types a voucher can have. */
+export const REFERENCE_TYPES = ["INVOICE", "SUPPLIERINVOICE", "INVOICEPAYMENT", "SUPPLIERPAYMENT", "MANUAL", "CASHINVOICE", "ACCRUAL"] as const;
+
+/** A voucher as the database holds it, with its date, its times and its transaction as text. */
+export interface Voucher {
+  readonly id: string;
+  readonly company_id: string;
+  readonly fiscal_year_id: string;
+  readonly series_code: string;
+  readonly number: number;
+  readonly description: string;
+  readonly comments: string;
+  readonly transaction_date: string;
+  readonly reference_type: string;
+  readonly reference_number: string;
+  readonly reverses_voucher_id: string | null;
+  readonly created_at: string;
+  readonly created_by: string;
+  readonly created_by_kind: string;
+  readonly created_xact: string;
+  readonly modified_at: string;
+  readonly altered_at: string | null;
+  readonly altered_by: string | null;
+  readonly altered_by_kind: string | null;
+}
+
+/** The columns of a voucher, in the table's order, with its date, times and transaction as text. */
+export const VOUCHER_COLUMNS = `id, company_id, fiscal_year_id, series_code, number, description, comments, transaction_date::text AS transaction_date,
+  reference_type, reference_number, reverses_voucher_id, created_at::text AS created_at, created_by, created_by_kind,
+  created_xact::text AS created_xact, modified_at::text AS modified_at, altered_at::text AS altered_at, altered_by, altered_by_kind`;
+
+/** A voucher row as the database holds it, with its times as text. The amount is whole öre, as a bigint. */
+export interface VoucherRow {
+  readonly id: string;
+  readonly company_id: string;
+  readonly voucher_id: string;
+  readonly fiscal_year_id: string;
+  readonly position: number;
+  readonly account_number: number;
+  readonly amount: bigint;
+  readonly transaction_information: string;
+  readonly quantity: string;
+  readonly removed: boolean;
+  readonly removed_at: string | null;
+  readonly removed_by: string | null;
+  readonly removed_by_kind: string | null;
+  readonly created_at: string;
+  readonly created_by: string;
+  readonly created_by_kind: string;
+}
+
+/** The columns of a voucher row, in the table's order, with its times as text. */
+export const ROW_COLUMNS = `id, company_id, voucher_id, fiscal_year_id, position, account_number, amount, transaction_information, quantity,
+  removed, removed_at::text AS removed_at, removed_by, removed_by_kind, created_at::text AS created_at, created_by, created_by_kind`;
+
+/** A row to book: its account, its signed amount in öre (debit positive), and its text and quantity when given. */
+export interface NewRow {
+  readonly account: number;
+  readonly amount: bigint;
+  readonly text?: string;
+  readonly quantity?: string;
+}
+
+export interface NewVoucher {
+  readonly year: string;
+  readonly series: string;
+  readonly date: string;
+  readonly description?: string;
+  readonly comments?: string;
+  readonly referenceType?: string;
+  readonly referenceNumber?: string;
+  readonly reverses?: string;
+  readonly rows: readonly NewRow[];
+}
+
+/** The statement that books a voucher's head. Its rows follow, one statement each. */
+export const INSERT_VOUCHER = `INSERT INTO ledger.vouchers
+  (company_id, fiscal_year_id, series_code, description, comments, transaction_date, reference_type, reference_number, reverses_voucher_id)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ${VOUCHER_COLUMNS}`;
+
+/** The statement that adds a row to a voucher, with its quantity. */
+export const INSERT_ROW = `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount, transaction_information, quantity)
+  VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${ROW_COLUMNS}`;
+
+/** The statement that adds a row to a voucher, with no quantity given. */
+export const INSERT_ROW_WITHOUT_QUANTITY = `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount, transaction_information)
+  VALUES ($1, $2, $3, $4, $5) RETURNING ${ROW_COLUMNS}`;
+
+/** Adds one row to a voucher as `client`, in the open transaction, and gives it. */
+export async function writeRow(client: Client, company: string, voucher: string, row: NewRow): Promise<VoucherRow> {
+  const found =
+    row.quantity === undefined
+      ? await client.query<VoucherRow>(INSERT_ROW_WITHOUT_QUANTITY, [company, voucher, row.account, row.amount, row.text ?? ""])
+      : await client.query<VoucherRow>(INSERT_ROW, [company, voucher, row.account, row.amount, row.text ?? "", row.quantity]);
+  const [written] = found.rows;
+  if (written === undefined) {
+    throw new Error("The row was not added.");
+  }
+  return written;
+}
+
+/** Books a voucher and its rows as `client`, in the open transaction, and gives the voucher as it was booked. */
+export async function writeVoucher(client: Client, company: string, voucher: NewVoucher): Promise<Voucher> {
+  const found = await client.query<Voucher>(INSERT_VOUCHER, [
+    company,
+    voucher.year,
+    voucher.series,
+    voucher.description ?? "Kontorsmaterial",
+    voucher.comments ?? "",
+    voucher.date,
+    voucher.referenceType ?? "MANUAL",
+    voucher.referenceNumber ?? "",
+    voucher.reverses ?? null,
+  ]);
+  const [booked] = found.rows;
+  if (booked === undefined) {
+    throw new Error("The voucher was not booked.");
+  }
+  for (const row of voucher.rows) {
+    await writeRow(client, company, booked.id, row);
+  }
+  return booked;
+}
+
+/** Books a voucher and its rows as `client`, in a transaction of its own, and gives the voucher. */
+export async function bookVoucher(client: Client, company: string, voucher: NewVoucher, who: Actor = someUser()): Promise<Voucher> {
+  return inTransaction(client, { company, ...who }, () => writeVoucher(client, company, voucher));
+}
+
+/** Two rows that balance: `amount` öre debit on one account, the same credit on the other. */
+export function balanced(amount = 2000n, debit = 6110, credit = 1930): NewRow[] {
+  return [
+    { account: debit, amount },
+    { account: credit, amount: -amount },
+  ];
+}
+
+/** A voucher by its id, read as `client` in `company`, or undefined when it is not there. */
+export async function voucherOf(client: Client, company: string, id: string): Promise<Voucher | undefined> {
+  return inTransaction(client, { company }, async () => {
+    const found = await client.query<Voucher>(`SELECT ${VOUCHER_COLUMNS} FROM ledger.vouchers WHERE id = $1`, [id]);
+    return found.rows[0];
+  });
+}
+
+/** A voucher's rows in their order, read as `client` in `company`. */
+export async function rowsOf(client: Client, company: string, voucher: string): Promise<VoucherRow[]> {
+  return inTransaction(client, { company }, async () => {
+    const found = await client.query<VoucherRow>(`SELECT ${ROW_COLUMNS} FROM ledger.voucher_rows WHERE voucher_id = $1 ORDER BY position`, [voucher]);
+    return found.rows;
+  });
+}
+
+/** The next number of the series with `code` in `year`, read as `client` in `company`. */
+export async function nextNumberOf(client: Client, company: string, year: string, code: string): Promise<number | undefined> {
+  return inTransaction(client, { company }, async () => {
+    const found = await client.query<{ next_number: number }>(
+      `SELECT c.next_number FROM ledger.voucher_counters AS c JOIN ledger.voucher_series AS s ON s.id = c.series_id
+       WHERE s.fiscal_year_id = $1 AND s.code = $2`,
+      [year, code],
+    );
+    return found.rows[0]?.next_number;
+  });
+}
+
+/** An entry of the record of deleted vouchers, with its dates, times and transactions as text. */
+export interface DeletedVoucher extends Voucher {
+  readonly deletion_count: number;
+  readonly deleted_at: string;
+  readonly deleted_by: string;
+  readonly deleted_by_kind: string;
+  readonly deleted_xact: string;
+}
+
+/** The columns of an entry in the record of deleted vouchers. */
+export const DELETED_VOUCHER_COLUMNS = `${VOUCHER_COLUMNS}, deletion_count, deleted_at::text AS deleted_at, deleted_by, deleted_by_kind,
+  deleted_xact::text AS deleted_xact`;
+
+/** A row of an entry in the record of deleted vouchers: the row as it was, with its account's name at the deletion. */
+export interface DeletedVoucherRow extends Omit<VoucherRow, "voucher_id"> {
+  readonly deleted_voucher_id: string;
+  readonly account_description: string;
+}
+
+/** The columns of a row in the record of deleted vouchers. */
+export const DELETED_ROW_COLUMNS = `${ROW_COLUMNS.replace("voucher_id,", "deleted_voucher_id,")}, account_description`;
+
+/** The record of deleted vouchers of `company`, in the order they were deleted, read as `client`. */
+export async function deletedVouchersOf(client: Client, company: string): Promise<DeletedVoucher[]> {
+  return inTransaction(client, { company }, async () => {
+    const found = await client.query<DeletedVoucher>(`SELECT ${DELETED_VOUCHER_COLUMNS} FROM ledger.deleted_vouchers ORDER BY deleted_at, number`);
+    return found.rows;
+  });
+}
+
+/** The rows of an entry in the record of deleted vouchers, in their order, read as `client`. */
+export async function deletedRowsOf(client: Client, company: string, entry: string): Promise<DeletedVoucherRow[]> {
+  return inTransaction(client, { company }, async () => {
+    const found = await client.query<DeletedVoucherRow>(
+      `SELECT ${DELETED_ROW_COLUMNS} FROM ledger.deleted_voucher_rows WHERE deleted_voucher_id = $1 ORDER BY position`,
+      [entry],
+    );
+    return found.rows;
+  });
+}
+
+/** A company to book in, and its fiscal year. */
+export interface Books {
+  readonly company: string;
+  readonly year: FiscalYear;
+}
+
+/**
+ * Adds a fiscal year to book in: the accounts 1930, 3001 and 6110, and the
+ * series A (manual), K (not manual) and I (manual, the closing series).
+ */
+export async function addBooksYear(client: Client, company: string, from: string, to: string, who: Actor = someUser()): Promise<FiscalYear> {
+  const year = await addFiscalYear(client, company, { from, to }, who);
+  await addAccount(client, company, year.id, { number: 1930, description: "Företagskonto" }, who);
+  await addAccount(client, company, year.id, { number: 3001, description: "Försäljning inom Sverige" }, who);
+  await addAccount(client, company, year.id, { number: 6110, description: "Kontorsmateriel" }, who);
+  await addSeries(client, company, year.id, { code: "A", description: "Manuella verifikationer", manual: true }, who);
+  await addSeries(client, company, year.id, { code: "K", description: "Kundfakturor", manual: false }, who);
+  await addSeries(client, company, year.id, { code: "I", description: "Bokslut", manual: true, isClosing: true }, who);
+  return year;
+}
+
+/** A new company with one fiscal year to book in, by default 2090, as addBooksYear makes it. */
+export async function addBooks(client: Client, who: Actor = someUser(), from = "2090-01-01", to = "2090-12-31"): Promise<Books> {
+  const company = await addCompany(client, who);
+  const year = await addBooksYear(client, company, from, to, who);
+  return { company, year };
+}
