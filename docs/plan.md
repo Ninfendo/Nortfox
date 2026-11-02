@@ -166,6 +166,7 @@ This is the repository setup. It lands before every other PR: until it does, not
 **2d. Web frame with the theme switcher**
 
 - **What:** `apps/web` with React 19, Vite and Tailwind v4; `packages/ui` with the first shadcn components on Base UI; `packages/i18n` with Swedish and English, and the Swedish amount form moved there from `packages/engine`; login, company picker and an empty app frame with the menu; the theme switcher over the appearance values.
+- **Design:** every screen follows the [design rules](design/README.md).
 - **Done when:**
   - Login, company choice and logout work in the browser through the generated client only. A guard refuses any other way of calling the server.
   - The theme changes at once, without a reload, and is saved per user through the API.
@@ -196,6 +197,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 **3d. vouchers: book and correct**
 
 - **What:** draft, book, list and read vouchers. A draft can change; a booked voucher never. A correction is a new voucher that reverses or adjusts the old one and points to it. Booking through the API takes an idempotency key. The behandlingshistorik of a voucher is readable through the API.
+- **Design:** the screens follow [the vouchers screen spec](design/screens/vouchers.md).
 - **Done when:** booking, reading and correcting work by REST, by MCP and on the screen; tests as the app role show the database refuses every change to a booked voucher; every correction shows who made it, when, and which voucher it corrects; booking the same request twice gives one voucher.
 
 **3e. files (platform): attachments**
