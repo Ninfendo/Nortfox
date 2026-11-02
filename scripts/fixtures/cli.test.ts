@@ -3,7 +3,9 @@
 // The fixture guard over a throwaway repository. The planted numbers come
 // from Skatteverket's published test series: the committed list lets them
 // through, and the tests that must find them give the guard an empty list.
-// Planted addresses are joined while the tests run.
+// In 10 digits with "+", the same digits name a person a century earlier, who
+// is not on the list, so those forms are built while the tests run, as the
+// planted addresses are.
 
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -11,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { address } from "../testing/personal-data.ts";
+import { address, numberWith } from "../testing/personal-data.ts";
 import { createTestRepo, type TestRepo } from "../testing/repo.ts";
 import { main, processIo } from "./cli.ts";
 
@@ -28,17 +30,19 @@ const PLANTED: readonly (readonly [string, string])[] = [
   ["199001012385", "personal identity number (personnummer)"],
   ["19900101+2385", "personal identity number (personnummer)"],
   ["900101-2385", "personal identity number (personnummer)"],
-  ["900101+2385", "personal identity number (personnummer)"],
+  [numberWith("900101", "+", "238"), "personal identity number (personnummer)"],
   ["9001012385", "personal identity number (personnummer)"],
   ["20260161-2381", "coordination number (samordningsnummer)"],
   ["202601612381", "coordination number (samordningsnummer)"],
   ["260161-2381", "coordination number (samordningsnummer)"],
-  ["260161+2381", "coordination number (samordningsnummer)"],
+  [numberWith("260161", "+", "238"), "coordination number (samordningsnummer)"],
   ["2601612381", "coordination number (samordningsnummer)"],
   ["556000-0167", "organisation number"],
   ["5560000167", "organisation number"],
   ["16556000-0167", "organisation number"],
   ["165560000167", "organisation number"],
+  ["SE556000016701", "organisation number"],
+  ["SE900101238501", "personal identity number (personnummer)"],
   [address("ann.berg", "zarquon.se"), "e-mail address"],
   [`mailto:${address("Ann", "Zarquon.SE")}`, "e-mail address"],
   [`"${address("bo", "mail.zarquon.se")}"`, "e-mail address"],
@@ -55,6 +59,7 @@ const NEAR_MISSES = [
   "19900192-2385",
   "21900101-2385",
   "556000-0168",
+  "SE556000016801",
   "456000-0167",
   "1620000123",
   "1767225600",
@@ -71,8 +76,8 @@ const ALLOWED = [
   "19900101-2385",
   "199001012385",
   "900101-2385",
-  "900101+2385",
   "9001012385",
+  "SE900101238501",
   "20000101-2384",
   "20100101-2382",
   "20260161-2381",
@@ -81,6 +86,7 @@ const ALLOWED = [
   "5560000167",
   "16556000-0167",
   "165560000167",
+  "SE556000016701",
   "599999-0129",
   "noreply@anthropic.com",
   address("ann", "example.com"),

@@ -1,5 +1,6 @@
 # The fixture guard's list of test values (docs/plan.md, section 6). Tests and
-# fixtures may use these values, and nothing else that looks real. Keep the
+# fixtures may use the numbers on this list, and nothing else that looks real.
+# For an address, they use one at the reserved example domains below. Keep the
 # list short. Add a number only from a published test series, and say where
 # each entry comes from.
 #
@@ -9,9 +10,11 @@
 #   organisation-number       NNNNNN-NNNN
 #   email                     the address, in lower case
 # The guard also lets a listed number through in its other forms: an identity
-# number in 10 digits (YYMMDD-NNNN, YYMMDD+NNNN or YYMMDDNNNN) or in 12 digits
-# without the dash, and an organisation number in 10 digits without the dash
-# or with 16 in front.
+# number in 10 digits (YYMMDD-NNNN or YYMMDDNNNN) or in 12 digits without the
+# dash, an organisation number in 10 digits without the dash or with 16 in
+# front, and either one in a VAT number (SE, the 10 digits and 01). It never
+# lets through a listed number in 10 digits with "+". There, "+" says the
+# person is 100 or older, so the same digits name a person a century earlier.
 #
 # The guard refuses an entry that it would let through anyway, so these need
 # none: a number whose date or check digit is not valid, and an address at
@@ -39,4 +42,6 @@ organisation-number 599999-0129
 
 # The address in the Co-Authored-By line that AGENTS.md asks an AI agent to
 # end each commit message with. It is a tool's no-reply address, not a person's.
+# It is on the list only so that the example in AGENTS.md passes. Never use it
+# in a test or a fixture.
 email noreply@anthropic.com

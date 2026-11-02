@@ -42,11 +42,14 @@ Test data is made up ([plan, section 6](docs/plan.md#6-how-a-slice-is-built)). T
 
 - a personal identity number (personnummer) or a coordination number (samordningsnummer), in 10 or 12 digits, with or without the `-` or `+`, when its date and its check digit are valid;
 - an organisation number, as `NNNNNN-NNNN`, as 10 digits without the dash, or with `16` in front, when its group digit, its third digit and its check digit are valid. 10 digits without the dash and with the group digit 1 pass, because a Unix time from 2001 to 2033 has that form;
-- an e-mail address, unless it is at `example.com`, `example.net` or `example.org`, under `.example`, `.test`, `.invalid` or `.localhost`, or a GitHub noreply address. An address used as a file or folder name counts too, also with an extension after it. A file name such as `logo@2x.png` is not an address.
+- a VAT number, `SE` and 10 digits and `01`, when the 10 digits make an organisation number, or an identity number as in a sole trader's VAT number. Here the group digit 1 counts too;
+- an e-mail address, unless it is at `example.com`, `example.net` or `example.org`, under `.example`, `.test`, `.invalid` or `.localhost`, or a GitHub noreply address. An address used as a file or folder name counts too, also with an extension, a dash or a digit after it. A file name such as `logo@2x.png` is not an address.
 
-A path is read more strictly than a line. In a line, the user part of a URL, a git remote, a part of a URL's path and the start of a UUID are not values. In a path, each part between `/` is read on its own, without those exceptions.
+A path is read more strictly than a line. In a line, the user part of a URL, a git remote and the start of a UUID are not values. An address in a URL's path is a value. In a path, each part between `/` is read on its own, without those exceptions.
 
-A number with a wrong date or check digit passes, so hashes, versions and timestamps do not trip the guard. A made-up reference with a Luhn check digit, such as an OCR number, can still look like an identity or organisation number: give it a length other than 10 or 12 digits, or first digits that are not a date. A value on [the list of test values](scripts/fixtures/test-values.txt) passes too: Skatteverket's published test numbers and one no-reply address, each with its source. Use those in tests and fixtures. Add a number only from a published test series, and give its source.
+A number with a wrong date or check digit passes, so hashes, versions and timestamps do not trip the guard. A made-up reference with a Luhn check digit, such as an OCR number, can still look like an identity or organisation number. Give it a length other than 10 or 12 digits. Or, in 10 digits, start it with 0 or 4 and make its third and fourth digits 13 or more.
+
+[The list of test values](scripts/fixtures/test-values.txt) holds Skatteverket's published test numbers, each with its source. They pass, and tests and fixtures may use them. A listed identity number in 10 digits with `+` does not pass: `+` says the person is 100 or older, so it is a different number. For an address, use one at the reserved example domains above. The list also holds one no-reply address, only so that the Co-Authored-By example in AGENTS.md passes. Never use it in a test or a fixture. Add a number only from a published test series, and give its source.
 
 The guard runs in `pnpm check`, in CI, and in the pre-commit hook over the staged files. It names the file and line and the kind of value, never the value. When a file's path holds anything shaped like a value, it names the file by its place in the list of files instead of by its path. It refuses a binary file, because it cannot read one yet. In `pnpm-lock.yaml` it skips pnpm's integrity digests, which are random data.
 
@@ -55,7 +58,7 @@ The guard runs in `pnpm check`, in CI, and in the pre-commit hook over the stage
 - One slice or one fix per PR, with its tests and, when users will notice it, a changeset.
 - Every new rule has tests, and every new guard has a test that shows it fails on a bad input.
 - No PR lowers a coverage floor, switches off a lint rule or skips a check.
-- Test data is made up: fictional companies and people, and the values on the fixture guard's list. Never personal data or real company data.
+- Test data is made up: fictional companies and people, the test numbers on the fixture guard's list, and addresses at the reserved example domains. Never personal data or real company data.
 - Commit messages, the PR title and the PR body are written with the same care as code. A merge is a squash, so the title and body become the commit on `main`.
 
 A PR can merge when five checks pass on its head commit:

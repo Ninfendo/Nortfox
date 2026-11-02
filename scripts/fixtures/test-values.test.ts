@@ -44,13 +44,15 @@ describe("the committed list", () => {
     "199001012385",
     "19900101+2385",
     "900101-2385",
-    "900101+2385",
     "9001012385",
+    "SE900101238501",
     "20260161-2381",
     "2601612381",
     "556000-0167",
     "16556000-0167",
     "165560000167",
+    "SE556000016701",
+    "se599999012901",
     "noreply@anthropic.com",
     "NoReply@Anthropic.COM",
   ])("lets %s through", (text) => {
@@ -60,6 +62,11 @@ describe("the committed list", () => {
   it.each([
     ["another identity number", numberWith("19900101", "-", "239")],
     ["a listed number's 10 digits after another century, written in 12", numberWith("18900101", "-", "238")],
+    // In 10 digits, "+" says the person is 100 or older: these are the listed numbers' digits a century earlier.
+    ["a listed number in 10 digits with a plus", numberWith("900101", "+", "238")],
+    ["another listed number in 10 digits with a plus", numberWith("000101", "+", "238")],
+    ["a third listed number in 10 digits with a plus", numberWith("100101", "+", "238")],
+    ["a listed coordination number in 10 digits with a plus", numberWith("260161", "+", "238")],
     ["another organisation number", numberWith("556000", "-", "017")],
     ["another address", address("noreply", "zarquon.se")],
   ])("does not let %s through", (_case, text) => {

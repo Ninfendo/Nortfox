@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The fixture guard's list of test values: the made-up identity and
-// organisation numbers and addresses that tests may use (docs/plan.md,
-// section 6). The list is short on purpose, and each entry says where it
-// comes from. The guard holds the list to its own rules, so an entry that
-// would not be found anyway, or a value in a wrong form, fails the guard.
+// The fixture guard's list of test values: the published test identity and
+// organisation numbers that tests may use (docs/plan.md, section 6), and the
+// one address that the Co-Authored-By example in AGENTS.md needs. The list is
+// short on purpose, and each entry says where it comes from. The guard holds
+// the list to its own rules, so an entry that would not be found anyway, or a
+// value in a wrong form, fails the guard.
 
 import { identityKind, isAlwaysAllowedDomain, isOrganisationNumber, valuesIn, type Kind, type Value } from "./values.ts";
 
@@ -117,7 +118,11 @@ export function parseTestValues(text: string, file = TEST_VALUES_FILE): ParsedTe
   return { values: { identities, identityTails, organisations, emails }, problems };
 }
 
-/** True when a value found in a file is one of the listed test values. */
+/**
+ * True when a value found in a file is one of the listed test values. A
+ * 10-digit identity number with "+" keeps the "+" in its key, so it never
+ * matches a listed number: it names the person a century earlier.
+ */
 export function isListed(value: Value, list: TestValues): boolean {
   switch (value.kind) {
     case "personal-identity-number":

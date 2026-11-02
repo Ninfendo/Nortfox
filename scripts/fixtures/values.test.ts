@@ -9,7 +9,7 @@
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { address, checkDigit } from "../testing/personal-data.ts";
+import { address, checkDigit, numberWith } from "../testing/personal-data.ts";
 import { hasValueShape, identityKind, isOrganisationNumber, luhnValid, valuesIn, valuesInPath, type Kind } from "./values.ts";
 
 /** The kinds found in a line. */
@@ -29,19 +29,25 @@ const digits = (length: number): fc.Arbitrary<string> =>
   fc.array(fc.integer({ min: 0, max: 9 }), { minLength: length, maxLength: length }).map((list) => list.join(""));
 
 describe("identity numbers", () => {
+  // A listed number in 10 digits with "+" names a person a century earlier, who is not on the
+  // list, so those forms are built while the test runs.
+  const plus = numberWith("900101", "+", "238");
+  const coordinationPlus = numberWith("260161", "+", "238");
+
   it.each([
-    ["12 digits with a dash", "19900101-2385", "personal-identity-number"],
-    ["12 digits without one", "199001012385", "personal-identity-number"],
-    ["12 digits with a plus", "19900101+2385", "personal-identity-number"],
-    ["10 digits with a dash", "900101-2385", "personal-identity-number"],
-    ["10 digits with a plus", "900101+2385", "personal-identity-number"],
-    ["10 digits without one", "9001012385", "personal-identity-number"],
-    ["a coordination number in 12 digits with a dash", "20260161-2381", "coordination-number"],
-    ["a coordination number in 12 digits without one", "202601612381", "coordination-number"],
-    ["a coordination number in 10 digits with a dash", "260161-2381", "coordination-number"],
-    ["a coordination number in 10 digits without one", "2601612381", "coordination-number"],
-  ])("finds %s", (_form, value, kind) => {
-    expect(valuesIn(value)).toEqual([{ kind, key: value.replace(/[-+]/, "") }]);
+    ["12 digits with a dash", "19900101-2385", "personal-identity-number", "199001012385"],
+    ["12 digits without one", "199001012385", "personal-identity-number", "199001012385"],
+    ["12 digits with a plus", "19900101+2385", "personal-identity-number", "199001012385"],
+    ["10 digits with a dash", "900101-2385", "personal-identity-number", "9001012385"],
+    ["10 digits with a plus, which keeps the plus in its key", plus, "personal-identity-number", plus],
+    ["10 digits without one", "9001012385", "personal-identity-number", "9001012385"],
+    ["a coordination number in 12 digits with a dash", "20260161-2381", "coordination-number", "202601612381"],
+    ["a coordination number in 12 digits without one", "202601612381", "coordination-number", "202601612381"],
+    ["a coordination number in 10 digits with a dash", "260161-2381", "coordination-number", "2601612381"],
+    ["a coordination number in 10 digits with a plus", coordinationPlus, "coordination-number", coordinationPlus],
+    ["a coordination number in 10 digits without one", "2601612381", "coordination-number", "2601612381"],
+  ])("finds %s", (_form, value, kind, key) => {
+    expect(valuesIn(value)).toEqual([{ kind, key }]);
   });
 
   it.each([
@@ -57,15 +63,31 @@ describe("identity numbers", () => {
     expect(kinds(line)).toEqual(["personal-identity-number"]);
   });
 
-  it.each(["19900101-2385", "199001012385", "19900101+2385", "900101-2385", "900101+2385", "9001012385"])(
-    "finds %s with a dash and a word or a number after it, as in a file name",
-    (number) => {
-      for (const after of ["-anna", "-kvitto.json", "-2024", "-1"]) {
-        expect(kinds(`${number}${after}`)).toEqual(["personal-identity-number"]);
-        expect(kinds(`kund-${number}${after}`)).toEqual(["personal-identity-number"]);
-      }
-    },
-  );
+  it.each([
+    ["12 digits with a dash", "19900101-2385"],
+    ["12 digits without one", "199001012385"],
+    ["12 digits with a plus", "19900101+2385"],
+    ["10 digits with a dash", "900101-2385"],
+    ["10 digits with a plus", plus],
+    ["10 digits without one", "9001012385"],
+  ])("finds one in %s with a dash and a word or a number after it, as in a file name", (_form, number) => {
+    for (const after of ["-anna", "-kvitto.json", "-2024", "-1", "-2024-11.pdf", "-0001-A"]) {
+      expect(kinds(`${number}${after}`)).toEqual(["personal-identity-number"]);
+      expect(kinds(`kund-${number}${after}`)).toEqual(["personal-identity-number"]);
+    }
+  });
+
+  it.each([
+    ["a file name of the form number-year-month, in JSON", '"file": "19900101-2385-2024-11.pdf"'],
+    ["a reference with a serial number after the number", "ref 19900101-2385-0001-A"],
+    ["10 digits with the rest of a UUID after them", "900101-2385-4abc-8def-0123456789ab"],
+    ["12 digits with a plus and the rest of a UUID after them", "19900101+2385-4abc-8def-0123456789ab"],
+    ["12 digits without a dash and with the rest of a UUID after them", "199001012385-4abc-8def-0123456789ab"],
+    ["the shape of a UUID whose last group is one digit too long", "19900101-2385-4abc-8def-0123456789abc"],
+    ["the shape of a UUID whose last group is one digit too short", "19900101-2385-4abc-8def-0123456789a"],
+  ])("finds one in %s", (_case, line) => {
+    expect(kinds(line)).toEqual(["personal-identity-number"]);
+  });
 
   it("finds every number in a line, in order", () => {
     expect(kinds("19900101-2385, 20000101-2384 and 260161-2381")).toEqual([
@@ -220,6 +242,73 @@ describe("organisation numbers", () => {
       { numRuns: 400 },
     );
   });
+
+  it("finds nothing in a made-up reference that follows the advice in CONTRIBUTING.md", () => {
+    // In 10 digits: a first digit of 0 or 4, and a third and fourth digit of 13 or more.
+    const tenDigits = fc.tuple(fc.constantFrom("0", "4"), digits(1), fc.integer({ min: 13, max: 99 }), digits(5));
+    fc.assert(
+      fc.property(tenDigits, ([first, second, month, rest]) => {
+        const nine = `${first}${second}${String(month)}${rest}`;
+        const reference = `${nine}${checkDigit(nine)}`;
+        expect(valuesIn(reference)).toEqual([]);
+        expect(valuesIn(`OCR ${reference}`)).toEqual([]);
+      }),
+      { numRuns: 400 },
+    );
+    // Any other length than 10 or 12 digits.
+    const otherLength = fc.constantFrom(7, 8, 9, 11, 13, 14, 15, 16).chain((length) => digits(length));
+    fc.assert(
+      fc.property(otherLength, (reference) => {
+        expect(valuesIn(`OCR ${reference}`)).toEqual([]);
+      }),
+      { numRuns: 400 },
+    );
+  });
+});
+
+describe("VAT numbers", () => {
+  /** An organisation number's ten digits with this start and a right check digit. */
+  const ten = (nine: string): string => `${nine}${checkDigit(nine)}`;
+
+  it.each([
+    ["alone", "SE556000016701", "organisation-number", "5560000167"],
+    ["in lower case", "se599999012901", "organisation-number", "5999990129"],
+    ["in a Peppol e-invoice", "<cbc:CompanyID>SE556000016701</cbc:CompanyID>", "organisation-number", "5560000167"],
+    ["in JSON", '"vat": "SE556000016701"', "organisation-number", "5560000167"],
+    ["of a sole trader, which holds an identity number", "SE900101238501", "personal-identity-number", "9001012385"],
+    ["of a sole trader with a coordination number", "SE260161238101", "coordination-number", "2601612381"],
+  ])("finds the number in a VAT number %s", (_case, line, kind, key) => {
+    expect(valuesIn(line)).toEqual([{ kind, key }]);
+  });
+
+  it("finds an organisation number with the group digit 1 in a VAT number, which is never a Unix time", () => {
+    const number = ten("162000012");
+    expect(kinds(number)).toEqual([]);
+    expect(kinds(`SE${number}01`)).toEqual(["organisation-number"]);
+  });
+
+  it.each([
+    ["a wrong check digit", "SE556000016801"],
+    ["a date that is not on the calendar", "SE901301238501"],
+    ["the group digit 4", `SE${ten("462000012")}01`],
+    ["an end other than 01", "SE556000016702"],
+    ["a letter before it", "XSE556000016701"],
+    ["a letter after it", "SE556000016701x"],
+    ["11 digits", "SE5560000167001"],
+  ])("lets through a VAT number with %s", (_case, line) => {
+    expect(valuesIn(line)).toEqual([]);
+  });
+
+  it("finds a VAT number exactly when its ten digits, written NNNNNN-NNNN, are found", () => {
+    fc.assert(
+      fc.property(digits(10), (number) => {
+        const written = `${number.slice(0, 6)}-${number.slice(6)}`;
+        expect(kinds(`SE${number}01`)).toEqual(kinds(written));
+        expect(valuesInPath(`fakturor/SE${number}01.xml`).map((value) => value.kind)).toEqual(kinds(written));
+      }),
+      { numRuns: 1000 },
+    );
+  });
 });
 
 describe("e-mail addresses", () => {
@@ -243,14 +332,31 @@ describe("e-mail addresses", () => {
     ["used as a file name in JSON", `{"file": "${address("ann.berg", "zarquon.se")}.json"}`],
     ["used as a file name with two extensions", `${address("ann.berg", "zarquon.se")}.json.map`],
     ["used as a folder name", `fixtures/${address("ann.berg", "zarquon.se")}/receipt.json`],
+    ["used as a file name with a dash and a word after it", `${address("ann.berg", "zarquon.se")}-photo.png`],
+    ["used as a file name with a digit after it", `${address("ann.berg", "zarquon.se")}2.png`],
+    ["before a dash and a word, as in a Swedish compound", `Skicka till ${address("ekonomi", "zarquon.se")}-adressen.`],
     ["in a path that is not a URL", `/npm/${address("pkg", "zarquon.se")}/file`],
+    ["in a URL's path, as in a REST call", `GET https://api.zarquon.se/v1.0/users/${address("ann.berg", "zarquon.se")}/messages`],
+    ["in a URL's path, in JSON", `{"url": "https://api.zarquon.se/v1/users/${address("ann.berg", "zarquon.se")}/messages?x=1"}`],
+    ["in a ';' separated row, before a path", `Zarquon AB;https://zarquon.se;${address("ann.berg", "zarquon.se")}/kontakt`],
+    ["in a URL's query, before a '/'", `https://zarquon.se/send?to=${address("ann", "zarquon.se")}/`],
+    ["after a ',' in a URL's path", `https://zarquon.se/a,${address("ann", "zarquon.se")}/b`],
+    [
+      "as the user name of a URL, percent-encoded",
+      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.se"))}@git.zarquon.se/team/repo.git`,
+    ],
+    ["as the user name of a URL, before the host's '@'", `https://${address("ann.berg", "zarquon.se")}@git.example.com/team/repo.git`],
+    ["as the user name of a URL, before a password", `https://${address("ann", "zarquon.se")}:token@git.example.com/`],
   ])("finds one %s", (_where, line) => {
     expect(kinds(line)).toEqual(["email"]);
   });
 
-  it("keys an address in lower case, and without the extension when it is used as a file name", () => {
-    expect(valuesIn(address("Ann", "Zarquon.SE"))).toEqual([{ kind: "email", key: address("ann", "zarquon.se") }]);
-    expect(valuesIn(`${address("Ann", "Zarquon.SE")}.JSON`)).toEqual([{ kind: "email", key: address("ann", "zarquon.se") }]);
+  it("keys an address in lower case, and without what follows it when it is used as a file name", () => {
+    const key = address("ann", "zarquon.se");
+    expect(valuesIn(address("Ann", "Zarquon.SE"))).toEqual([{ kind: "email", key }]);
+    expect(valuesIn(`${address("Ann", "Zarquon.SE")}.JSON`)).toEqual([{ kind: "email", key }]);
+    expect(valuesIn(`${address("ann", "zarquon.se")}-photo.png`)).toEqual([{ kind: "email", key }]);
+    expect(valuesIn(`${address("ann", "zarquon.se")}2.png`)).toEqual([{ kind: "email", key }]);
   });
 
   it.each([
@@ -293,11 +399,16 @@ describe("e-mail addresses", () => {
     ["an ssh URL", "ssh://git@github.com/owner/repo.git"],
     ["the user part of a URL", "https://user:token@registry.zarquon.se/"],
     ["the user part of a URL, without a path", "https://ann@zarquon.se"],
-    ["a path after a domain", "https://cdn.jsdelivr.net/npm/pkg@next.dev/dist/x.js"],
+    ["the user part of a URL, with an allowed address after its path", `https://ann@zarquon.se/ ${address("bo", "example.com")}`],
     ["a scope in a URL", "https://www.npmjs.com/package/@types/node"],
     ["a file name for a high-density picture", "logo@2x.png"],
     ["another such file name", "icons/arrow@3x.webp"],
     ["such a file name with two extensions", "logo@2x.png.map"],
+    ["a pre-release version that ends in a word and a digit", "pkg@1.0.0-alpha.beta1"],
+    ["a pre-release version with a dot and a digit after a word", "pkg@1.0.0-alpha.beta.1"],
+    ["a pre-release version with a dot and a letter after a word", "pkg@1.0.0-alpha.beta.x"],
+    ["a name whose last part is longer than a top-level domain can be", address("ann", `zarquon.${"a".repeat(64)}`)],
+    ["such a name used as a file name", `${address("ann", `zarquon.${"a".repeat(64)}`)}.json`],
   ])("lets through %s", (_case, line) => {
     expect(valuesIn(line)).toEqual([]);
   });
@@ -318,8 +429,22 @@ describe("paths", () => {
     ["an identity number with the century, joined by dashes", "kunder/19900101-2385-2024.csv", "personal-identity-number"],
     ["an identity number that starts a UUID", "fixtures/19900101-2385-4abc-8def-0123456789ab.json", "personal-identity-number"],
     ["an organisation number as a file name", "bolag/5560000167.json", "organisation-number"],
-  ])("finds %s", (_case, path, kind) => {
+    ["an organisation number in a VAT number", "fakturor/SE556000016701.xml", "organisation-number"],
+    ["an address with a dash and a word after it", `avatars/${address("ann.berg", "zarquon.se")}-photo.png`, "email"],
+    ["an address with a dash and a year after it, as a folder name", `inbox/${address("ann.berg", "zarquon.se")}-2024/mail.png`, "email"],
+    ["an address with a digit after it", `avatars/${address("ann.berg", "zarquon.se")}2.png`, "email"],
+    ["an address with a digit after it, as a folder name", `people/${address("ann.berg", "zarquon.se")}2/a.json`, "email"],
+    ["an address with a dot and a digit after it, as a folder name", `people/${address("ann.berg", "zarquon.se")}.2/a.json`, "email"],
+  ])("finds %s, and sees its shape", (_case, path, kind) => {
     expect(pathKinds(path)).toEqual([kind]);
+    // The shape test is looser than the rules, so it sees every value they find.
+    expect(hasValueShape(path)).toBe(true);
+  });
+
+  it("finds an address in a folder name that a line lets through, because a digit follows it", () => {
+    const folder = `people/${address("ann.berg", "zarquon.se")}2/a.json`;
+    expect(kinds(folder)).toEqual([]);
+    expect(pathKinds(folder)).toEqual(["email"]);
   });
 
   it("gives each value once, keyed without the extension", () => {
@@ -345,15 +470,19 @@ describe("hasValueShape", () => {
     ["a run of 12 digits with a dash", "a/19900101-2385-anna"],
     ["an address at example.com", `x/${address("ann", "example.com")}.json`],
     ["an address", `x/${address("ann.berg", "zarquon.se")}/y`],
+    ["a VAT number", "fakturor/SE556000016701.xml"],
+    ["a domain after an '@' without a local part, which no rule finds", "people/@zarquon.se/a.json"],
   ])("sees %s", (_case, text) => {
     expect(hasValueShape(text)).toBe(true);
   });
 
   it.each([
     ["a high-density picture", "docs/logo@2x.png"],
+    ["a high-density picture with a dash and a word", "docs/logo@2x-dark.png"],
     ["a plain path", "docs/a.md"],
     ["a scoped package", "@types/node"],
     ["a version", "typescript@7.0.2"],
+    ["a pre-release version", "pkg@1.0.0-rc.1"],
     ["a run of 9 digits", "123456789"],
   ])("sees no shape in %s", (_case, text) => {
     expect(hasValueShape(text)).toBe(false);

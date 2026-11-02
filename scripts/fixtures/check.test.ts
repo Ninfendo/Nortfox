@@ -51,6 +51,16 @@ describe("unlistedKinds", () => {
     ["in an HTML character reference", ["ann", "zarquon.se"].join("&#64;"), "email"],
     ["in base64, as in the payload of a test token", `eyJhbGciOiJub25lIn0.${base64(`{"email":"${address("ann", "zarquon.se")}"}`)}.`, "email"],
     ["a number in base64", base64("pnr 19900101-2385"), "personal-identity-number"],
+    [
+      "percent-encoded as the user name of a URL",
+      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.se"))}@git.zarquon.se/team/repo.git`,
+      "email",
+    ],
+    [
+      "percent-encoded as the user name of a URL at a reserved host, where only the decoded reading holds it",
+      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.se"))}@git.example.com/team/repo.git`,
+      "email",
+    ],
   ])("finds a value %s", (_how, line, kind) => {
     expect(unlistedKinds(line, NONE)).toEqual([kind]);
   });
@@ -151,6 +161,9 @@ describe("scanFile", () => {
   it.each<[string, string, Reason]>([
     ["a scan named by an identity number", "skannat/900101-2385-kontrakt.pdf", "personal-identity-number"],
     ["a photo named by an address", `bilder/${address("ann.berg", "zarquon.se")}.jpg`, "email"],
+    ["a photo named by an address with a dash and a word after it", `avatars/${address("ann.berg", "zarquon.se")}-photo.png`, "email"],
+    ["a photo in a folder named by an address with a dash and a year", `inbox/${address("ann.berg", "zarquon.se")}-2024/mail.png`, "email"],
+    ["a photo named by an address with a digit after it", `avatars/${address("ann.berg", "zarquon.se")}2.png`, "email"],
   ])("refuses %s, a binary file, by its alias", (_case, path, reason) => {
     const findings = scanFile(file(path, new Uint8Array([0x25, 0x50, 0x44, 0x46])), NONE);
     expect(findings).toEqual<Finding[]>([
@@ -161,13 +174,28 @@ describe("scanFile", () => {
   });
 
   it("names a file by its alias when its path holds only the shape of a value", () => {
-    // A listed number, an address at example.com and a timestamp are no finding, but the path is kept out of the log all the same.
-    for (const path of ["fixtures/19900101-2385-anna.json", `fixtures/${address("ann", "example.com")}.json`, "logs/1767225600.json"]) {
+    // A listed number, an address at example.com, a timestamp and a domain without a local part are no finding,
+    // but the path is kept out of the log all the same.
+    for (const path of [
+      "fixtures/19900101-2385-anna.json",
+      `fixtures/${address("ann", "example.com")}.json`,
+      "logs/1767225600.json",
+      "people/@zarquon.se/a.json",
+    ]) {
       expect(scanFile(file(path, "20000101-2384\n"), LISTED)).toEqual([{ place: `${ALIAS}:1`, reason: "personal-identity-number" }]);
     }
+    const binary = scanFile(file("people/@zarquon.se-photo.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47])), NONE);
+    expect(binary).toEqual([{ place: ALIAS, reason: "binary" }]);
+    expectNoValue(binary);
     expect(scanFile(file("docs/logo@2x.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47])), NONE)).toEqual([
       { place: "docs/logo@2x.png", reason: "binary" },
     ]);
+  });
+
+  it("refuses a clean text file whose path holds an address with a dash and a year after it", () => {
+    const findings = scanFile(file(`people/${address("ann.berg", "zarquon.se")}-2024.json`, "{}\n"), NONE);
+    expect(findings).toEqual<Finding[]>([{ place: `${ALIAS} (its path)`, reason: "email" }]);
+    expectNoValue(findings);
   });
 
   it("lets through a listed address used as a file name, with any extension", () => {
