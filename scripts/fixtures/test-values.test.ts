@@ -68,7 +68,7 @@ describe("the committed list", () => {
     ["a third listed number in 10 digits with a plus", numberWith("100101", "+", "238")],
     ["a listed coordination number in 10 digits with a plus", numberWith("260161", "+", "238")],
     ["another organisation number", numberWith("556000", "-", "017")],
-    ["another address", address("noreply", "zarquon.se")],
+    ["another address", address("noreply", "zarquon.zz")],
   ])("does not let %s through", (_case, text) => {
     expect(isListed(only(text), values)).toBe(false);
   });
@@ -127,7 +127,7 @@ describe("parseTestValues", () => {
       "organisation-number 456000-0168",
       "is not an organisation number with a valid group digit and check digit, so the guard lets it through without an entry",
     ],
-    ["an address in capitals", `email ${address("NoReply", "zarquon.se")}`, "is not one e-mail address in lower case"],
+    ["an address in capitals", `email ${address("NoReply", "zarquon.zz")}`, "is not one e-mail address in lower case"],
     ["something that is not an address", "email noreply", "is not one e-mail address in lower case"],
     ["a file name shaped like an address", "email logo@2x.png", "is not one e-mail address in lower case"],
     [
@@ -144,14 +144,47 @@ describe("parseTestValues", () => {
     expect(problemsOf(line)).toEqual([`list.txt:1: the value ${problem}.`]);
   });
 
+  describe("in the year 2026", () => {
+    const AGE_PROBLEM =
+      'list.txt:1: the value is for a person who is 100 or older this year, or born after this year. In 10 digits with "-", its digits name another person, so it cannot be on the list.';
+    const parsed = (kind: string, number: string) => parseTestValues(`${kind} ${number}`, "list.txt", 2026);
+
+    // Skatteverket's series of test numbers starts with people born in 1890, so the list could be offered one of these.
+    it.each([
+      ["a person born in 1890", "personal-identity-number", numberWith("18900101", "-", "980")],
+      ["a person born in 1910", "personal-identity-number", numberWith("19100101", "-", "980")],
+      ["a person who turns 100 this year", "personal-identity-number", numberWith("19261231", "-", "980")],
+      ["a person born after this year", "personal-identity-number", numberWith("20270101", "-", "980")],
+      ["a coordination number of a person born in 1910", "coordination-number", numberWith("19100161", "-", "980")],
+    ])("refuses the number of %s", (_case, kind, number) => {
+      const { values, problems } = parsed(kind, number);
+      expect(problems).toEqual([AGE_PROBLEM]);
+      // So its 10 digits with "-", which name a person born a century later, are not listed.
+      expect([...values.identities, ...values.identityTails]).toEqual([]);
+      const dashed = number.slice(2);
+      expect(isListed(only(dashed), values)).toBe(false);
+    });
+
+    it.each([
+      ["a person who turns 99 this year", "personal-identity-number", numberWith("19270101", "-", "980")],
+      ["a person born this year", "personal-identity-number", numberWith("20261231", "-", "980")],
+      ["a coordination number of a person born this year", "coordination-number", numberWith("20260161", "-", "980")],
+    ])("takes the number of %s, and lets it through in 10 digits with a dash", (_case, kind, number) => {
+      const { values, problems } = parsed(kind, number);
+      expect(problems).toEqual([]);
+      expect(isListed(only(number.slice(2)), values)).toBe(true);
+      expect(isListed(only(`${number.slice(2, 8)}+${number.slice(9)}`), values)).toBe(false);
+    });
+  });
+
   it("refuses a value that is on the list already, and names each line", () => {
     expect(
       problemsOf(
         [
           "personal-identity-number 19900101-2385",
           "personal-identity-number 19900101-2385",
-          `email ${address("noreply", "zarquon.se")}`,
-          `email ${address("noreply", "zarquon.se")}`,
+          `email ${address("noreply", "zarquon.zz")}`,
+          `email ${address("noreply", "zarquon.zz")}`,
         ].join("\n"),
       ),
     ).toEqual(["list.txt:2: the value is on the list already.", "list.txt:4: the value is on the list already."]);
@@ -162,7 +195,7 @@ describe("parseTestValues", () => {
       "phone 19900101-2385",
       "personal-identity-number 19900101-2386",
       "organisation-number 556000-0168",
-      `email ${address("NoReply", "zarquon.se")}`,
+      `email ${address("NoReply", "zarquon.zz")}`,
       "personal-identity-number 20000101-2384",
       "personal-identity-number 20000101-2384",
     ];

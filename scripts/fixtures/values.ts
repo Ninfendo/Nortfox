@@ -4,8 +4,9 @@
 // personal identity number (personnummer), a coordination number
 // (samordningsnummer), an organisation number, each also inside a VAT number,
 // and an e-mail address (docs/plan.md, step 1). A number counts only when its date and its check
-// digit are valid, so a random run of digits, such as a hash, a version or a
-// timestamp, almost never does. Nothing here prints what it finds.
+// digit are valid, so a run of digits in a hash or a version seldom does. A
+// date with four digits after it, such as a time, always has a valid date, so
+// it counts about one time in ten. Nothing here prints what it finds.
 
 export type Kind = "personal-identity-number" | "coordination-number" | "organisation-number" | "email";
 
@@ -22,11 +23,30 @@ export interface Value {
 
 /**
  * A run of 10 or 12 digits, with "-" or "+" before the last four or without.
- * It stands alone: no letter or digit right before or after it, and it is not
- * part of a decimal number (1.8112189876). An identity number written in 10
- * digits drops the century, and "+" there says the person is 100 or older.
+ * It stands alone: no letter or digit right before or after it. An identity
+ * number written in 10 digits drops the century, and "+" there says the person
+ * is 100 or older.
  */
-const NUMBER = /(?<![0-9A-Za-z])(?<!\d\.)(\d{6}|\d{8})([-+]?)(\d{4})(?![0-9A-Za-z]|\.\d)/g;
+const NUMBER = /(?<![0-9A-Za-z])(\d{6}|\d{8})([-+]?)(\d{4})(?![0-9A-Za-z])/g;
+
+/** True when the character at this index is a digit. */
+function isDigitAt(text: string, index: number): boolean {
+  const code = text.charCodeAt(index);
+  return code >= 48 && code <= 57;
+}
+
+/**
+ * True when a match of NUMBER is a part of a decimal number: a digit and a
+ * dot come right before it (0.9001012385), or a dot and a digit right after
+ * it (9001012385.25). Only a run of digits without "-" or "+" can be one. With
+ * "-" or "+" it is a number, also before ".2024" or after "1.".
+ */
+function isPartOfDecimal(text: string, start: number, end: number, separator: string): boolean {
+  return (
+    separator === "" &&
+    ((text.charAt(start - 1) === "." && isDigitAt(text, start - 2)) || (text.charAt(end) === "." && isDigitAt(text, end + 1)))
+  );
+}
 
 /**
  * What follows the first two groups of a UUID (8 hex digits, a dash and 4
@@ -203,14 +223,14 @@ const DOMAIN = /^(?:[\p{L}\p{N}-]+\.)+\p{L}{2,63}(?!\p{L})/u;
 
 /**
  * What may stand between a URL's scheme and an address that is the user part
- * of the URL: nothing (https://user@host.se), or a user name and a colon
- * before a password (https://user:token@host.se). A dot, a ";" or a "|"
+ * of the URL: nothing (https://user@example.com), or a user name and a colon
+ * before a password (https://user:token@example.com). A dot, a ";" or a "|"
  * there says the text is not one URL, as in a CSV row
- * (https://zarquon.se;<address>).
+ * (https://example.com;<address>).
  */
 const USER_BEFORE_PASSWORD = /^(?:[\p{L}\p{N}_~%+-]*:)?$/u;
 
-/** A path after an address and a colon, as in a git remote (git@host.se:owner/repo). */
+/** A path after an address and a colon, as in a git remote (git@example.com:owner/repo). */
 const REMOTE_PATH = /^:[\w.~%+-]*\//u;
 
 /** The rest of a URL's user and host part after a match: up to a path, a query, a fragment or the end of the URL. */
@@ -245,8 +265,8 @@ function addressDomain(domain: string): string | undefined {
 
 /**
  * True when what looks like an address in a line is part of something else:
- * the user part of a URL (https://user@host.se), or a host and path in a git
- * remote (git@host.se:owner/repo). A local part that holds "%40" is an
+ * the user part of a URL (https://user@example.com), or a host and path in a
+ * git remote (git@example.com:owner/repo). A local part that holds "%40" is an
  * address in percent-encoding, and a second "@" after the match makes the
  * match part of a URL's user name, so neither is excused.
  */
@@ -269,17 +289,19 @@ function isPartOfSomethingElse(line: string, start: number, end: number, local: 
 /**
  * Every value in a text, in the order found: numbers, then VAT numbers, then
  * addresses. In a line, a match that is part of something else is not a
- * value: the user part of a URL, a git remote, or the start of a UUID. A part
- * of a path is read strictly, without those exceptions: a file or folder name
- * is none of them.
+ * value: the user part of a URL, a git remote, the start of a UUID, or a part
+ * of a decimal number. A part of a path is read strictly, without those
+ * exceptions: a file or folder name is none of them.
  */
 function find(text: string, strict: boolean): Value[] {
   const found: Value[] = [];
   if (/\d{4}/.test(text)) {
     for (const match of text.matchAll(NUMBER)) {
       const [whole, datePart = "", separator = "", lastFour = ""] = match;
-      const uuid = datePart.length === 8 && separator === "-" && UUID_TAIL.test(text.slice(match.index + whole.length));
-      const value = strict || !uuid ? numberValue(datePart, separator, lastFour) : undefined;
+      const end = match.index + whole.length;
+      const uuid = datePart.length === 8 && separator === "-" && UUID_TAIL.test(text.slice(end));
+      const excused = uuid || isPartOfDecimal(text, match.index, end, separator);
+      const value = strict || !excused ? numberValue(datePart, separator, lastFour) : undefined;
       if (value !== undefined) {
         found.push(value);
       }

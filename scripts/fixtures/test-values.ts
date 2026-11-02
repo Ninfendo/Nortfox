@@ -4,8 +4,9 @@
 // organisation numbers that tests may use (docs/plan.md, section 6), and the
 // one address that the Co-Authored-By example in AGENTS.md needs. The list is
 // short on purpose, and each entry says where it comes from. The guard holds
-// the list to its own rules, so an entry that would not be found anyway, or a
-// value in a wrong form, fails the guard.
+// the list to its own rules, so an entry that would not be found anyway, a
+// value in a wrong form, or a number whose 10-digit form names another person
+// this year, fails the guard.
 
 import { identityKind, isAlwaysAllowedDomain, isOrganisationNumber, valuesIn, type Kind, type Value } from "./values.ts";
 
@@ -34,8 +35,18 @@ const KINDS: readonly Kind[] = ["personal-identity-number", "coordination-number
 const IDENTITY_FORM = /^(\d{8})-(\d{4})$/;
 const ORGANISATION_FORM = /^\d{6}-\d{4}$/;
 
-/** Why an entry of this kind and value does not belong on the list, or undefined when it does. */
-function entryProblem(kind: Kind, value: string): string | undefined {
+/**
+ * True when a person born in the year `born` writes their number in 10
+ * digits with "-" in the year `year`. From the year a person turns 100, the
+ * "-" becomes a "+". So 10 digits with "-" name a person born in the last 100
+ * years, and never one born later.
+ */
+function writesDashIn(born: number, year: number): boolean {
+  return born > year - 100 && born <= year;
+}
+
+/** Why an entry of this kind and value does not belong on the list in this year, or undefined when it does. */
+function entryProblem(kind: Kind, value: string, year: number): string | undefined {
   switch (kind) {
     case "personal-identity-number":
     case "coordination-number": {
@@ -43,9 +54,13 @@ function entryProblem(kind: Kind, value: string): string | undefined {
       if (form === null) {
         return "is not in the form YYYYMMDD-NNNN";
       }
-      return identityKind(form[1] ?? "", form[2] ?? "") === kind
+      const datePart = form[1] ?? "";
+      if (identityKind(datePart, form[2] ?? "") !== kind) {
+        return `is not a ${kind === "coordination-number" ? "coordination" : "personal identity"} number with a valid date and check digit, so the guard lets it through without an entry`;
+      }
+      return writesDashIn(Number(datePart.slice(0, 4)), year)
         ? undefined
-        : `is not a ${kind === "coordination-number" ? "coordination" : "personal identity"} number with a valid date and check digit, so the guard lets it through without an entry`;
+        : 'is for a person who is 100 or older this year, or born after this year. In 10 digits with "-", its digits name another person, so it cannot be on the list';
     }
     case "organisation-number":
       if (!ORGANISATION_FORM.test(value)) {
@@ -75,8 +90,10 @@ function keyOf(kind: Kind, value: string): string {
 /**
  * Reads the list: one entry per line, "<kind> <value>". Empty lines and lines
  * that start with # are skipped. `file` names the list in the problems.
+ * `year` is the current year, which says what each listed identity number
+ * looks like in 10 digits.
  */
-export function parseTestValues(text: string, file = TEST_VALUES_FILE): ParsedTestValues {
+export function parseTestValues(text: string, file = TEST_VALUES_FILE, year = new Date().getFullYear()): ParsedTestValues {
   const identities = new Set<string>();
   const identityTails = new Set<string>();
   const organisations = new Set<string>();
@@ -95,7 +112,7 @@ export function parseTestValues(text: string, file = TEST_VALUES_FILE): ParsedTe
       problems.push(`${place} is not "<kind> <value>", where the kind is one of ${KINDS.join(", ")}.`);
       continue;
     }
-    const problem = entryProblem(kind, value);
+    const problem = entryProblem(kind, value, year);
     if (problem !== undefined) {
       problems.push(`${place}: the value ${problem}.`);
       continue;
@@ -121,7 +138,9 @@ export function parseTestValues(text: string, file = TEST_VALUES_FILE): ParsedTe
 /**
  * True when a value found in a file is one of the listed test values. A
  * 10-digit identity number with "+" keeps the "+" in its key, so it never
- * matches a listed number: it names the person a century earlier.
+ * matches a listed number: it names the person a century earlier. The list
+ * holds no one who is 100 or older this year, so a listed number in 10 digits
+ * with "-" names the listed person.
  */
 export function isListed(value: Value, list: TestValues): boolean {
   switch (value.kind) {

@@ -43,9 +43,9 @@ const PLANTED: readonly (readonly [string, string])[] = [
   ["165560000167", "organisation number"],
   ["SE556000016701", "organisation number"],
   ["SE900101238501", "personal identity number (personnummer)"],
-  [address("ann.berg", "zarquon.se"), "e-mail address"],
-  [`mailto:${address("Ann", "Zarquon.SE")}`, "e-mail address"],
-  [`"${address("bo", "mail.zarquon.se")}"`, "e-mail address"],
+  [address("ann.berg", "zarquon.zz"), "e-mail address"],
+  [`mailto:${address("Ann", "Zarquon.ZZ")}`, "e-mail address"],
+  [`"${address("bo", "mail.zarquon.zz")}"`, "e-mail address"],
 ];
 
 /** Values that look like the kinds above but are not, so the guard lets them through without a list. */
@@ -67,7 +67,7 @@ const NEAR_MISSES = [
   "@types/node",
   "typescript@7.0.2",
   "git@github.com:owner/repo.git",
-  "https://user:token@registry.zarquon.se/",
+  "https://user:token@registry.zarquon.zz/",
   "logo@2x.png",
 ];
 
@@ -170,8 +170,8 @@ describe("--all", () => {
   it("finds a value used as a file or folder name, and never shows the path", () => {
     const r = repo();
     r.write("docs/clean.md", "Nothing here.\n");
-    r.write(`fixtures/${address("ann.berg", "zarquon.se")}.json`, "{}\n");
-    r.write(`inbox/${address("ann.berg", "zarquon.se")}/statement.csv`, "{}\n");
+    r.write(`fixtures/${address("ann.berg", "zarquon.zz")}.json`, "{}\n");
+    r.write(`inbox/${address("ann.berg", "zarquon.zz")}/statement.csv`, "{}\n");
     r.write("kunder/900101-2385-faktura.csv", "20000101-2384\n");
     r.commitAll("Start");
 
@@ -239,7 +239,7 @@ describe("--staged", () => {
     const r = repo();
     r.commitAll("Start");
     r.write("docs/clean.md", "clean\n");
-    r.write(`docs/${address("ann", "zarquon.se")} notes.md`, "clean\n");
+    r.write(`docs/${address("ann", "zarquon.zz")} notes.md`, "clean\n");
     r.git("add", "--all");
     const result = run(["--staged"], r.dir);
     expect(result.err).toEqual([
@@ -321,7 +321,7 @@ describe("the command line", () => {
 
   it("runs from the command line with the committed list, and its output holds no value", () => {
     const r = repo();
-    r.write("docs/a.md", `19900101-2385\n${address("ann", "zarquon.se")}\n`);
+    r.write("docs/a.md", `19900101-2385\n${address("ann", "zarquon.zz")}\n`);
     r.commitAll("Start");
     const found = spawnSync(process.execPath, [CLI, "--all"], { cwd: r.dir, encoding: "utf8" });
     expect(found.status).toBe(1);

@@ -5,7 +5,8 @@
 // are read without the list, to show that the guard finds them. Every other
 // number that should be found is built while the test runs, and every
 // address that should be found is joined from its parts, so neither appears
-// in this file as written.
+// in this file as written. Such an address is at zarquon.zz, or at another
+// name that no one can register (scripts/testing/personal-data.ts).
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -89,6 +90,16 @@ describe("identity numbers", () => {
     expect(kinds(line)).toEqual(["personal-identity-number"]);
   });
 
+  it.each([
+    ["12 digits with a dash, before a dot and a year, as in a file name in JSON", '{"file": "19900101-2385.2024.pdf"}'],
+    ["10 digits with a dash, before a dot and a digit", "900101-2385.1"],
+    ["10 digits with a plus, before a dot and a digit", `${plus}.1`],
+    ["12 digits with a plus, before a dot and a year", "19900101+2385.2024"],
+    ["12 digits with a dash, after a digit and a dot", "v1.19900101-2385"],
+  ])("finds one in %s, since a number with a dash or a plus is never a decimal number", (_case, line) => {
+    expect(kinds(line)).toEqual(["personal-identity-number"]);
+  });
+
   it("finds every number in a line, in order", () => {
     expect(kinds("19900101-2385, 20000101-2384 and 260161-2381")).toEqual([
       "personal-identity-number",
@@ -118,6 +129,7 @@ describe("identity numbers", () => {
     ["the start of a UUID in capitals", "19900101-2385-4ABC-8DEF-0123456789AB"],
     ["the decimals of a number", "0.9001012385"],
     ["the whole part of a decimal number", "9001012385.25"],
+    ["12 digits without a dash before a dot and a year, which is a decimal number in a line", "199001012385.2024"],
     ["a space for the dash", "900101 2385"],
   ])("lets through %s", (_case, line) => {
     expect(valuesIn(line)).toEqual([]);
@@ -205,6 +217,13 @@ describe("organisation numbers", () => {
     ["NNNNNNNNNN in a Peppol e-invoice", '<cbc:EndpointID schemeID="0007">5999990129</cbc:EndpointID>'],
   ])("finds the form %s", (_form, line) => {
     expect(valuesIn(line)).toEqual([{ kind: "organisation-number", key: line.replace(/\D/g, "").slice(-10) }]);
+  });
+
+  it.each([
+    ["NNNNNN-NNNN before a dot and a digit", "Org.nr 556000-0167.1"],
+    ["16NNNNNN-NNNN before a dot and a year, as in a file name", "16556000-0167.2024.pdf"],
+  ])("finds the form %s, since a number with a dash is never a decimal number", (_form, line) => {
+    expect(valuesIn(line)).toEqual([{ kind: "organisation-number", key: "5560000167" }]);
   });
 
   it.each(["1", "2", "3", "5", "6", "7", "8", "9"])("finds one with the group digit %s", (group) => {
@@ -313,50 +332,50 @@ describe("VAT numbers", () => {
 
 describe("e-mail addresses", () => {
   it.each([
-    ["alone", address("ann.berg", "zarquon.se")],
-    ["in capitals", address("Ann.Berg", "ZARQUON.SE")],
-    ["with a plus and digits", address("ann+invoices2", "mail.zarquon.se")],
-    ["at a domain with letters outside ASCII", address("ann", "zarquön.se")],
-    ["after mailto:", `mailto:${address("ann", "zarquon.se")}`],
-    ["in angle brackets", `Ann Berg <${address("ann", "zarquon.se")}>`],
-    ["in JSON", `{"email":"${address("ann", "zarquon.se")}"}`],
-    ["at the end of a sentence", `Write to ${address("ann", "zarquon.se")}.`],
-    ["before a colon and a space", `${address("ann", "zarquon.se")}: the invoice`],
-    ["in a URL's query", `https://zarquon.se/send?to=${address("ann", "zarquon.se")}`],
-    ["after a word with a colon", `email:${address("ann", "zarquon.se")}`],
-    ["in a ';' separated row, after a URL without a path", `Zarquon AB;https://zarquon.se;${address("ann.berg", "zarquon.se")};08-123 45 67`],
-    ["in a '|' separated row, after a URL without a path", `Zarquon AB|https://zarquon.se|${address("ann.berg", "zarquon.se")}|08-123 45 67`],
-    ["after a URL and a word with a dot", `https://ann.berg:${address("ann", "zarquon.se")}`],
-    ["before a colon and a password", `${address("ann.berg", "zarquon.se")}:hunter2`],
-    ["used as a file name", `attachment: ${address("ann.berg", "zarquon.se")}.csv`],
-    ["used as a file name in JSON", `{"file": "${address("ann.berg", "zarquon.se")}.json"}`],
-    ["used as a file name with two extensions", `${address("ann.berg", "zarquon.se")}.json.map`],
-    ["used as a folder name", `fixtures/${address("ann.berg", "zarquon.se")}/receipt.json`],
-    ["used as a file name with a dash and a word after it", `${address("ann.berg", "zarquon.se")}-photo.png`],
-    ["used as a file name with a digit after it", `${address("ann.berg", "zarquon.se")}2.png`],
-    ["before a dash and a word, as in a Swedish compound", `Skicka till ${address("ekonomi", "zarquon.se")}-adressen.`],
-    ["in a path that is not a URL", `/npm/${address("pkg", "zarquon.se")}/file`],
-    ["in a URL's path, as in a REST call", `GET https://api.zarquon.se/v1.0/users/${address("ann.berg", "zarquon.se")}/messages`],
-    ["in a URL's path, in JSON", `{"url": "https://api.zarquon.se/v1/users/${address("ann.berg", "zarquon.se")}/messages?x=1"}`],
-    ["in a ';' separated row, before a path", `Zarquon AB;https://zarquon.se;${address("ann.berg", "zarquon.se")}/kontakt`],
-    ["in a URL's query, before a '/'", `https://zarquon.se/send?to=${address("ann", "zarquon.se")}/`],
-    ["after a ',' in a URL's path", `https://zarquon.se/a,${address("ann", "zarquon.se")}/b`],
+    ["alone", address("ann.berg", "zarquon.zz")],
+    ["in capitals", address("Ann.Berg", "ZARQUON.ZZ")],
+    ["with a plus and digits", address("ann+invoices2", "mail.zarquon.zz")],
+    ["at a domain with letters outside ASCII", address("ann", "zarquön.zz")],
+    ["after mailto:", `mailto:${address("ann", "zarquon.zz")}`],
+    ["in angle brackets", `Ann Berg <${address("ann", "zarquon.zz")}>`],
+    ["in JSON", `{"email":"${address("ann", "zarquon.zz")}"}`],
+    ["at the end of a sentence", `Write to ${address("ann", "zarquon.zz")}.`],
+    ["before a colon and a space", `${address("ann", "zarquon.zz")}: the invoice`],
+    ["in a URL's query", `https://zarquon.zz/send?to=${address("ann", "zarquon.zz")}`],
+    ["after a word with a colon", `email:${address("ann", "zarquon.zz")}`],
+    ["in a ';' separated row, after a URL without a path", `Zarquon AB;https://zarquon.zz;${address("ann.berg", "zarquon.zz")};08-123 45 67`],
+    ["in a '|' separated row, after a URL without a path", `Zarquon AB|https://zarquon.zz|${address("ann.berg", "zarquon.zz")}|08-123 45 67`],
+    ["after a URL and a word with a dot", `https://ann.berg:${address("ann", "zarquon.zz")}`],
+    ["before a colon and a password", `${address("ann.berg", "zarquon.zz")}:hunter2`],
+    ["used as a file name", `attachment: ${address("ann.berg", "zarquon.zz")}.csv`],
+    ["used as a file name in JSON", `{"file": "${address("ann.berg", "zarquon.zz")}.json"}`],
+    ["used as a file name with two extensions", `${address("ann.berg", "zarquon.zz")}.json.map`],
+    ["used as a folder name", `fixtures/${address("ann.berg", "zarquon.zz")}/receipt.json`],
+    ["used as a file name with a dash and a word after it", `${address("ann.berg", "zarquon.zz")}-photo.png`],
+    ["used as a file name with a digit after it", `${address("ann.berg", "zarquon.zz")}2.png`],
+    ["before a dash and a word, as in a Swedish compound", `Skicka till ${address("ekonomi", "zarquon.zz")}-adressen.`],
+    ["in a path that is not a URL", `/npm/${address("pkg", "zarquon.zz")}/file`],
+    ["in a URL's path, as in a REST call", `GET https://api.zarquon.zz/v1.0/users/${address("ann.berg", "zarquon.zz")}/messages`],
+    ["in a URL's path, in JSON", `{"url": "https://api.zarquon.zz/v1/users/${address("ann.berg", "zarquon.zz")}/messages?x=1"}`],
+    ["in a ';' separated row, before a path", `Zarquon AB;https://zarquon.zz;${address("ann.berg", "zarquon.zz")}/kontakt`],
+    ["in a URL's query, before a '/'", `https://zarquon.zz/send?to=${address("ann", "zarquon.zz")}/`],
+    ["after a ',' in a URL's path", `https://zarquon.zz/a,${address("ann", "zarquon.zz")}/b`],
     [
       "as the user name of a URL, percent-encoded",
-      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.se"))}@git.zarquon.se/team/repo.git`,
+      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.zz"))}@git.zarquon.zz/team/repo.git`,
     ],
-    ["as the user name of a URL, before the host's '@'", `https://${address("ann.berg", "zarquon.se")}@git.example.com/team/repo.git`],
-    ["as the user name of a URL, before a password", `https://${address("ann", "zarquon.se")}:token@git.example.com/`],
+    ["as the user name of a URL, before the host's '@'", `https://${address("ann.berg", "zarquon.zz")}@git.example.com/team/repo.git`],
+    ["as the user name of a URL, before a password", `https://${address("ann", "zarquon.zz")}:token@git.example.com/`],
   ])("finds one %s", (_where, line) => {
     expect(kinds(line)).toEqual(["email"]);
   });
 
   it("keys an address in lower case, and without what follows it when it is used as a file name", () => {
-    const key = address("ann", "zarquon.se");
-    expect(valuesIn(address("Ann", "Zarquon.SE"))).toEqual([{ kind: "email", key }]);
-    expect(valuesIn(`${address("Ann", "Zarquon.SE")}.JSON`)).toEqual([{ kind: "email", key }]);
-    expect(valuesIn(`${address("ann", "zarquon.se")}-photo.png`)).toEqual([{ kind: "email", key }]);
-    expect(valuesIn(`${address("ann", "zarquon.se")}2.png`)).toEqual([{ kind: "email", key }]);
+    const key = address("ann", "zarquon.zz");
+    expect(valuesIn(address("Ann", "Zarquon.ZZ"))).toEqual([{ kind: "email", key }]);
+    expect(valuesIn(`${address("Ann", "Zarquon.ZZ")}.JSON`)).toEqual([{ kind: "email", key }]);
+    expect(valuesIn(`${address("ann", "zarquon.zz")}-photo.png`)).toEqual([{ kind: "email", key }]);
+    expect(valuesIn(`${address("ann", "zarquon.zz")}2.png`)).toEqual([{ kind: "email", key }]);
   });
 
   it.each([
@@ -376,9 +395,10 @@ describe("e-mail addresses", () => {
   });
 
   it.each([
-    ["an address at a domain that only looks reserved", address("ann", "example.se")],
-    ["an address at a name that ends in example.com", address("ann", "myexample.com")],
-    ["an address at a name with test in it", address("ann", "zarquontest.se")],
+    ["an address at a domain that only looks reserved", address("ann", "example.zz")],
+    // No registry takes a name with "--" as its third and fourth characters, so this one is never real.
+    ["an address at a name that ends in example.com", address("ann", "my--example.com")],
+    ["an address at a name with test in it", address("ann", "zarquontest.zz")],
   ])("finds %s", (_case, line) => {
     expect(kinds(line)).toEqual(["email"]);
   });
@@ -394,12 +414,12 @@ describe("e-mail addresses", () => {
     ["a JSDoc tag", " * @param value the amount"],
     ["a host without a top-level domain", "ann@localhost"],
     ["a git remote", "git@github.com:owner/repo.git"],
-    ["a git remote with a port", `${address("git", "git.zarquon.se")}:22/owner/repo.git`],
-    ["a copy target with a path from the root", `${address("ann", "build.zarquon.se")}:/srv/app`],
+    ["a git remote with a port", `${address("git", "git.zarquon.zz")}:22/owner/repo.git`],
+    ["a copy target with a path from the root", `${address("ann", "build.zarquon.zz")}:/srv/app`],
     ["an ssh URL", "ssh://git@github.com/owner/repo.git"],
-    ["the user part of a URL", "https://user:token@registry.zarquon.se/"],
-    ["the user part of a URL, without a path", "https://ann@zarquon.se"],
-    ["the user part of a URL, with an allowed address after its path", `https://ann@zarquon.se/ ${address("bo", "example.com")}`],
+    ["the user part of a URL", "https://user:token@registry.zarquon.zz/"],
+    ["the user part of a URL, without a path", "https://ann@zarquon.zz"],
+    ["the user part of a URL, with an allowed address after its path", `https://ann@zarquon.zz/ ${address("bo", "example.com")}`],
     ["a scope in a URL", "https://www.npmjs.com/package/@types/node"],
     ["a file name for a high-density picture", "logo@2x.png"],
     ["another such file name", "icons/arrow@3x.webp"],
@@ -414,27 +434,32 @@ describe("e-mail addresses", () => {
   });
 
   it("finds an address after a URL on the same line", () => {
-    expect(kinds(`https://zarquon.se/ ${address("ann", "zarquon.se")}`)).toEqual(["email"]);
+    expect(kinds(`https://zarquon.zz/ ${address("ann", "zarquon.zz")}`)).toEqual(["email"]);
   });
 });
 
 describe("paths", () => {
   it.each([
-    ["an address before .json", `fixtures/${address("ann.berg", "zarquon.se")}.json`, "email"],
-    ["an address before an extension that is not on the list", `mail/${address("ann.berg", "zarquon.se")}.eml`, "email"],
-    ["an address as a folder name", `fixtures/${address("ann.berg", "zarquon.se")}/statement.csv`, "email"],
-    ["an address before a colon", `notes/${address("ann.berg", "zarquon.se")}:old.txt`, "email"],
-    ["an address as a folder name after a URL's scheme", `https:/${address("ann.berg", "zarquon.se")}/a`, "email"],
+    ["an address before .json", `fixtures/${address("ann.berg", "zarquon.zz")}.json`, "email"],
+    ["an address before an extension that is not on the list", `mail/${address("ann.berg", "zarquon.zz")}.eml`, "email"],
+    ["an address as a folder name", `fixtures/${address("ann.berg", "zarquon.zz")}/statement.csv`, "email"],
+    ["an address before a colon", `notes/${address("ann.berg", "zarquon.zz")}:old.txt`, "email"],
+    ["an address as a folder name after a URL's scheme", `https:/${address("ann.berg", "zarquon.zz")}/a`, "email"],
     ["an identity number joined by dashes", "kunder/900101-2385-faktura.csv", "personal-identity-number"],
     ["an identity number with the century, joined by dashes", "kunder/19900101-2385-2024.csv", "personal-identity-number"],
     ["an identity number that starts a UUID", "fixtures/19900101-2385-4abc-8def-0123456789ab.json", "personal-identity-number"],
+    ["an identity number with a dash, a dot and a year", "kunder/19900101-2385.2024.csv", "personal-identity-number"],
+    ["an identity number in 10 digits with a dash, a dot and a digit", "kunder/900101-2385.1.json", "personal-identity-number"],
+    ["an identity number without a dash, before a dot and a year", "kunder/199001012385.2024.csv", "personal-identity-number"],
+    ["an identity number without a dash, after a digit and a dot", "kunder/1.9001012385", "personal-identity-number"],
+    ["an organisation number with a dash, a dot and a digit", "bolag/556000-0167.1.json", "organisation-number"],
     ["an organisation number as a file name", "bolag/5560000167.json", "organisation-number"],
     ["an organisation number in a VAT number", "fakturor/SE556000016701.xml", "organisation-number"],
-    ["an address with a dash and a word after it", `avatars/${address("ann.berg", "zarquon.se")}-photo.png`, "email"],
-    ["an address with a dash and a year after it, as a folder name", `inbox/${address("ann.berg", "zarquon.se")}-2024/mail.png`, "email"],
-    ["an address with a digit after it", `avatars/${address("ann.berg", "zarquon.se")}2.png`, "email"],
-    ["an address with a digit after it, as a folder name", `people/${address("ann.berg", "zarquon.se")}2/a.json`, "email"],
-    ["an address with a dot and a digit after it, as a folder name", `people/${address("ann.berg", "zarquon.se")}.2/a.json`, "email"],
+    ["an address with a dash and a word after it", `avatars/${address("ann.berg", "zarquon.zz")}-photo.png`, "email"],
+    ["an address with a dash and a year after it, as a folder name", `inbox/${address("ann.berg", "zarquon.zz")}-2024/mail.png`, "email"],
+    ["an address with a digit after it", `avatars/${address("ann.berg", "zarquon.zz")}2.png`, "email"],
+    ["an address with a digit after it, as a folder name", `people/${address("ann.berg", "zarquon.zz")}2/a.json`, "email"],
+    ["an address with a dot and a digit after it, as a folder name", `people/${address("ann.berg", "zarquon.zz")}.2/a.json`, "email"],
   ])("finds %s, and sees its shape", (_case, path, kind) => {
     expect(pathKinds(path)).toEqual([kind]);
     // The shape test is looser than the rules, so it sees every value they find.
@@ -442,14 +467,21 @@ describe("paths", () => {
   });
 
   it("finds an address in a folder name that a line lets through, because a digit follows it", () => {
-    const folder = `people/${address("ann.berg", "zarquon.se")}2/a.json`;
+    const folder = `people/${address("ann.berg", "zarquon.zz")}2/a.json`;
     expect(kinds(folder)).toEqual([]);
     expect(pathKinds(folder)).toEqual(["email"]);
   });
 
+  it("finds a number in a file name that a line reads as a part of a decimal number", () => {
+    for (const name of ["199001012385.2024.csv", "9001012385.25", "0.9001012385"]) {
+      expect(kinds(name)).toEqual([]);
+      expect(pathKinds(`kunder/${name}`)).toEqual(["personal-identity-number"]);
+    }
+  });
+
   it("gives each value once, keyed without the extension", () => {
-    expect(valuesInPath(`a/${address("Ann", "Zarquon.se")}.json/${address("ann", "zarquon.se")}`)).toEqual([
-      { kind: "email", key: address("ann", "zarquon.se") },
+    expect(valuesInPath(`a/${address("Ann", "Zarquon.zz")}.json/${address("ann", "zarquon.zz")}`)).toEqual([
+      { kind: "email", key: address("ann", "zarquon.zz") },
     ]);
   });
 
@@ -469,9 +501,9 @@ describe("hasValueShape", () => {
     ["a run of 10 digits", "logs/1767225600.json"],
     ["a run of 12 digits with a dash", "a/19900101-2385-anna"],
     ["an address at example.com", `x/${address("ann", "example.com")}.json`],
-    ["an address", `x/${address("ann.berg", "zarquon.se")}/y`],
+    ["an address", `x/${address("ann.berg", "zarquon.zz")}/y`],
     ["a VAT number", "fakturor/SE556000016701.xml"],
-    ["a domain after an '@' without a local part, which no rule finds", "people/@zarquon.se/a.json"],
+    ["a domain after an '@' without a local part, which no rule finds", "people/@zarquon.zz/a.json"],
   ])("sees %s", (_case, text) => {
     expect(hasValueShape(text)).toBe(true);
   });
@@ -502,6 +534,22 @@ describe("random data", () => {
       "sha512-2iPzY1ZAiA0ZlBpXr0lVx8XUhnKsqTqA5h7Hk4G6qVd1j4c3d5f6789gT==",
     ]) {
       expect(valuesIn(line)).toEqual([]);
+    }
+  });
+
+  it("finds a date with a time after it one time in ten, as CONTRIBUTING.md says, and nothing in a time written with a T", () => {
+    const times: string[] = [];
+    for (let hour = 0; hour < 24; hour += 1) {
+      for (let minute = 0; minute < 60; minute += 1) {
+        times.push(`${String(hour).padStart(2, "0")}${String(minute).padStart(2, "0")}`);
+      }
+    }
+    // The date always has a valid date, so only the check digit decides: one minute in ten.
+    expect(times.filter((time) => kinds(`backup-20261102-${time}.sql`).length > 0)).toHaveLength(144);
+    expect(times.filter((time) => kinds(`"generated": "20261102${time}"`).length > 0)).toHaveLength(144);
+    for (const time of times) {
+      expect(valuesIn(`backup-20261102T${time}.sql`)).toEqual([]);
+      expect(valuesIn(`backup-2026-11-02T${time.slice(0, 2)}:${time.slice(2)}.sql`)).toEqual([]);
     }
   });
 

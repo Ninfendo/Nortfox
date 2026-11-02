@@ -12,7 +12,7 @@ import { parseTestValues } from "./test-values.ts";
 
 const NONE = parseTestValues("").values;
 const LISTED = parseTestValues(
-  "personal-identity-number 19900101-2385\norganisation-number 556000-0167\nemail " + address("noreply", "zarquon.se"),
+  "personal-identity-number 19900101-2385\norganisation-number 556000-0167\nemail " + address("noreply", "zarquon.zz"),
 ).values;
 const placeOf = (line: number): string => `f:${String(line)}`;
 
@@ -47,18 +47,18 @@ describe("unlistedKinds", () => {
   });
 
   it.each([
-    ["percent-encoded", `https://zarquon.se/send?to=${encodeURIComponent(address("ann", "zarquon.se"))}`, "email"],
-    ["in an HTML character reference", ["ann", "zarquon.se"].join("&#64;"), "email"],
-    ["in base64, as in the payload of a test token", `eyJhbGciOiJub25lIn0.${base64(`{"email":"${address("ann", "zarquon.se")}"}`)}.`, "email"],
+    ["percent-encoded", `https://zarquon.zz/send?to=${encodeURIComponent(address("ann", "zarquon.zz"))}`, "email"],
+    ["in an HTML character reference", ["ann", "zarquon.zz"].join("&#64;"), "email"],
+    ["in base64, as in the payload of a test token", `eyJhbGciOiJub25lIn0.${base64(`{"email":"${address("ann", "zarquon.zz")}"}`)}.`, "email"],
     ["a number in base64", base64("pnr 19900101-2385"), "personal-identity-number"],
     [
       "percent-encoded as the user name of a URL",
-      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.se"))}@git.zarquon.se/team/repo.git`,
+      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.zz"))}@git.zarquon.zz/team/repo.git`,
       "email",
     ],
     [
       "percent-encoded as the user name of a URL at a reserved host, where only the decoded reading holds it",
-      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.se"))}@git.example.com/team/repo.git`,
+      `url = https://${encodeURIComponent(address("ann.berg", "zarquon.zz"))}@git.example.com/team/repo.git`,
       "email",
     ],
   ])("finds a value %s", (_how, line, kind) => {
@@ -68,7 +68,7 @@ describe("unlistedKinds", () => {
 
 describe("unlistedPathKinds", () => {
   it("reads a path as it decodes, and strictly", () => {
-    expect(unlistedPathKinds(`fixtures/${encodeURIComponent(address("ann", "zarquon.se"))}.json`, NONE)).toEqual(["email"]);
+    expect(unlistedPathKinds(`fixtures/${encodeURIComponent(address("ann", "zarquon.zz"))}.json`, NONE)).toEqual(["email"]);
     expect(unlistedPathKinds("kunder/900101-2385-faktura.csv", NONE)).toEqual(["personal-identity-number"]);
     expect(unlistedPathKinds("kunder/900101-2385-faktura.csv", LISTED)).toEqual([]);
   });
@@ -79,7 +79,7 @@ describe("scanText", () => {
     const text = [
       "fine",
       "pnr 19900101-2385",
-      `org 556000-0167, mail ${address("ann", "zarquon.se")}`,
+      `org 556000-0167, mail ${address("ann", "zarquon.zz")}`,
       "samordningsnummer 260161-2381",
     ].join("\r\n");
     expect(scanText(text, NONE, placeOf)).toEqual<Finding[]>([
@@ -144,9 +144,9 @@ describe("scanFile", () => {
   });
 
   it.each<[string, string, Reason]>([
-    ["an address before .json", `fixtures/${address("ann.berg", "zarquon.se")}.json`, "email"],
-    ["an address as a folder name", `fixtures/${address("ann.berg", "zarquon.se")}/statement.csv`, "email"],
-    ["an address before a space", `fixtures/${address("ann.berg", "zarquon.se")} a.json`, "email"],
+    ["an address before .json", `fixtures/${address("ann.berg", "zarquon.zz")}.json`, "email"],
+    ["an address as a folder name", `fixtures/${address("ann.berg", "zarquon.zz")}/statement.csv`, "email"],
+    ["an address before a space", `fixtures/${address("ann.berg", "zarquon.zz")} a.json`, "email"],
     ["an identity number joined by dashes", "kunder/900101-2385-faktura.csv", "personal-identity-number"],
     ["an identity number with the century, joined by dashes", "kunder/19900101-2385-2024.csv", "personal-identity-number"],
   ])("refuses %s in a path, and the report never shows it", (_case, path, reason) => {
@@ -160,10 +160,10 @@ describe("scanFile", () => {
 
   it.each<[string, string, Reason]>([
     ["a scan named by an identity number", "skannat/900101-2385-kontrakt.pdf", "personal-identity-number"],
-    ["a photo named by an address", `bilder/${address("ann.berg", "zarquon.se")}.jpg`, "email"],
-    ["a photo named by an address with a dash and a word after it", `avatars/${address("ann.berg", "zarquon.se")}-photo.png`, "email"],
-    ["a photo in a folder named by an address with a dash and a year", `inbox/${address("ann.berg", "zarquon.se")}-2024/mail.png`, "email"],
-    ["a photo named by an address with a digit after it", `avatars/${address("ann.berg", "zarquon.se")}2.png`, "email"],
+    ["a photo named by an address", `bilder/${address("ann.berg", "zarquon.zz")}.jpg`, "email"],
+    ["a photo named by an address with a dash and a word after it", `avatars/${address("ann.berg", "zarquon.zz")}-photo.png`, "email"],
+    ["a photo in a folder named by an address with a dash and a year", `inbox/${address("ann.berg", "zarquon.zz")}-2024/mail.png`, "email"],
+    ["a photo named by an address with a digit after it", `avatars/${address("ann.berg", "zarquon.zz")}2.png`, "email"],
   ])("refuses %s, a binary file, by its alias", (_case, path, reason) => {
     const findings = scanFile(file(path, new Uint8Array([0x25, 0x50, 0x44, 0x46])), NONE);
     expect(findings).toEqual<Finding[]>([
@@ -180,11 +180,11 @@ describe("scanFile", () => {
       "fixtures/19900101-2385-anna.json",
       `fixtures/${address("ann", "example.com")}.json`,
       "logs/1767225600.json",
-      "people/@zarquon.se/a.json",
+      "people/@zarquon.zz/a.json",
     ]) {
       expect(scanFile(file(path, "20000101-2384\n"), LISTED)).toEqual([{ place: `${ALIAS}:1`, reason: "personal-identity-number" }]);
     }
-    const binary = scanFile(file("people/@zarquon.se-photo.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47])), NONE);
+    const binary = scanFile(file("people/@zarquon.zz-photo.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47])), NONE);
     expect(binary).toEqual([{ place: ALIAS, reason: "binary" }]);
     expectNoValue(binary);
     expect(scanFile(file("docs/logo@2x.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47])), NONE)).toEqual([
@@ -193,15 +193,15 @@ describe("scanFile", () => {
   });
 
   it("refuses a clean text file whose path holds an address with a dash and a year after it", () => {
-    const findings = scanFile(file(`people/${address("ann.berg", "zarquon.se")}-2024.json`, "{}\n"), NONE);
+    const findings = scanFile(file(`people/${address("ann.berg", "zarquon.zz")}-2024.json`, "{}\n"), NONE);
     expect(findings).toEqual<Finding[]>([{ place: `${ALIAS} (its path)`, reason: "email" }]);
     expectNoValue(findings);
   });
 
   it("lets through a listed address used as a file name, with any extension", () => {
     for (const extension of [".json", ".eml"]) {
-      expect(scanFile(file(`mail/${address("noreply", "zarquon.se")}${extension}`, "{}\n"), LISTED)).toEqual([]);
-      expect(scanFile(file(`mail/${address("ann", "zarquon.se")}${extension}`, "{}\n"), LISTED)).toEqual([
+      expect(scanFile(file(`mail/${address("noreply", "zarquon.zz")}${extension}`, "{}\n"), LISTED)).toEqual([]);
+      expect(scanFile(file(`mail/${address("ann", "zarquon.zz")}${extension}`, "{}\n"), LISTED)).toEqual([
         { place: `${ALIAS} (its path)`, reason: "email" },
       ]);
     }

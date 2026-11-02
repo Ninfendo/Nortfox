@@ -15,6 +15,9 @@
 # front, and either one in a VAT number (SE, the 10 digits and 01). It never
 # lets through a listed number in 10 digits with "+". There, "+" says the
 # person is 100 or older, so the same digits name a person a century earlier.
+# For the same reason, the list takes no number for a person who is 100 or
+# older this year, or born after this year: in 10 digits with "-", its digits
+# name another person.
 #
 # The guard refuses an entry that it would let through anyway, so these need
 # none: a number whose date or check digit is not valid, and an address at
