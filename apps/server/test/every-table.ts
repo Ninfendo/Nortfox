@@ -193,7 +193,7 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
   // Only a deletion writes the record, so the trigger refuses the owner's
   // own insert before row level security does.
   "ledger.deleted_vouchers": (company, scenario) => ({
-    sql: `INSERT INTO ledger.deleted_vouchers (id, company_id, fiscal_year_id, series_code, number, deletion_count, description, comments,
+    sql: `INSERT INTO ledger.deleted_vouchers (voucher_id, company_id, fiscal_year_id, series_code, number, deletion_count, description, comments,
             transaction_date, reference_type, reference_number, created_at, created_by, created_by_kind, created_xact, modified_at,
             deleted_at, deleted_by, deleted_by_kind, deleted_xact)
           VALUES (pg_catalog.gen_random_uuid(), $1, $2, 'A', 99, 1, 'Kontorsmaterial', '', '2030-05-15', 'MANUAL', '', pg_catalog.now(), $1, 'user',
@@ -201,7 +201,7 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
     params: [company, yearOf(scenario, company)],
   }),
   "ledger.deleted_voucher_rows": (company, scenario) => ({
-    sql: `INSERT INTO ledger.deleted_voucher_rows (id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit,
+    sql: `INSERT INTO ledger.deleted_voucher_rows (row_id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit,
             transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description)
           VALUES (pg_catalog.gen_random_uuid(), $1, $2, $3, 9, 1930, 0, 0, '', 0, false, pg_catalog.now(), $1, 'user', 'Företagskonto')`,
     params: [company, vouchersOf(scenario, company).deleted, yearOf(scenario, company)],
@@ -876,8 +876,8 @@ class Vouchers {
     };
   }
 
-  private static byId(table: string, id: string, operation: Change["operation"]): Made {
-    return { table, operation, find: { sql: `SELECT t.id, pg_catalog.to_jsonb(t) AS row FROM ${table} AS t WHERE t.id = $1`, params: [id] } };
+  private static byId(table: string, id: string, operation: Change["operation"], column = "id"): Made {
+    return { table, operation, find: { sql: `SELECT t.id, pg_catalog.to_jsonb(t) AS row FROM ${table} AS t WHERE t.${column} = $1`, params: [id] } };
   }
 
   private static row(company: string, voucher: string, id: string, [account, debit, credit]: Sides): Step {
@@ -940,8 +940,9 @@ class Vouchers {
   /** Deletes the last voucher of a series: it moves to the record, its rows go by the cascade, and the counter goes back. */
   async remove(who: Actor, series: string, voucher: Booked): Promise<void> {
     const made: Made[] = [
-      Vouchers.byId("ledger.deleted_vouchers", voucher.id, "INSERT"),
-      ...voucher.rows.map((row) => Vouchers.byId("ledger.deleted_voucher_rows", row, "INSERT")),
+      // An entry and its rows have ids of their own, and keep the voucher's id and the rows' ids.
+      Vouchers.byId("ledger.deleted_vouchers", voucher.id, "INSERT", "voucher_id"),
+      ...voucher.rows.map((row) => Vouchers.byId("ledger.deleted_voucher_rows", row, "INSERT", "row_id")),
       ...voucher.rows.map((row) => Vouchers.byId("ledger.voucher_rows", row, "DELETE")),
       Vouchers.counterOf(series),
     ];

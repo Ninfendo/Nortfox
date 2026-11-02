@@ -411,6 +411,15 @@ export const INSERT_ROW = `INSERT INTO ledger.voucher_rows (company_id, voucher_
 export const INSERT_ROW_WITHOUT_QUANTITY = `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, debit, credit, transaction_information)
   VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${ROW_COLUMNS}`;
 
+/**
+ * The statement that locks a voucher until the transaction ends. Every
+ * caller runs it before it changes one of the voucher's rows (db/README.md,
+ * the lock order): a row's change locks the row before its trigger locks the
+ * voucher, and a deletion locks the voucher before its rows, so the two
+ * would otherwise deadlock.
+ */
+export const LOCK_VOUCHER = "SELECT 1 FROM ledger.vouchers WHERE id = $1 FOR NO KEY UPDATE";
+
 /** Adds one row to a voucher as `client`, in the open transaction, and gives it. */
 export async function writeRow(client: Client, company: string, voucher: string, row: NewRow): Promise<VoucherRow> {
   const sides = [row.debit ?? 0n, row.credit ?? 0n];
@@ -489,27 +498,36 @@ export async function nextNumberOf(client: Client, company: string, year: string
   });
 }
 
-/** An entry of the record of deleted vouchers, with its dates, times and transactions as text. */
+/**
+ * An entry of the record of deleted vouchers, with its dates, times and
+ * transactions as text: the voucher as it was, under its own id, with the
+ * entry's own id as entry_id.
+ */
 export interface DeletedVoucher extends Voucher {
   readonly deletion_count: number;
   readonly deleted_at: string;
   readonly deleted_by: string;
   readonly deleted_by_kind: string;
   readonly deleted_xact: string;
+  readonly entry_id: string;
 }
 
 /** The columns of an entry in the record of deleted vouchers. */
-export const DELETED_VOUCHER_COLUMNS = `${VOUCHER_COLUMNS}, deletion_count, deleted_at::text AS deleted_at, deleted_by, deleted_by_kind,
-  deleted_xact::text AS deleted_xact`;
+export const DELETED_VOUCHER_COLUMNS = `${VOUCHER_COLUMNS.replace(/^id,/, "voucher_id AS id,")}, deletion_count, deleted_at::text AS deleted_at,
+  deleted_by, deleted_by_kind, deleted_xact::text AS deleted_xact, id AS entry_id`;
 
-/** A row of an entry in the record of deleted vouchers: the row as it was, with its account's name at the deletion. */
+/**
+ * A row of an entry in the record of deleted vouchers: the row as it was,
+ * under its own id, with its entry's id and its account's name at the
+ * deletion.
+ */
 export interface DeletedVoucherRow extends Omit<VoucherRow, "voucher_id"> {
   readonly deleted_voucher_id: string;
   readonly account_description: string;
 }
 
 /** The columns of a row in the record of deleted vouchers. */
-export const DELETED_ROW_COLUMNS = `${ROW_COLUMNS.replace("voucher_id,", "deleted_voucher_id,")}, account_description`;
+export const DELETED_ROW_COLUMNS = `${ROW_COLUMNS.replace(/^id,/, "row_id AS id,").replace("voucher_id,", "deleted_voucher_id,")}, account_description`;
 
 /** The record of deleted vouchers of `company`, in the order they were deleted, read as `client`. */
 export async function deletedVouchersOf(client: Client, company: string): Promise<DeletedVoucher[]> {
@@ -519,7 +537,7 @@ export async function deletedVouchersOf(client: Client, company: string): Promis
   });
 }
 
-/** The rows of an entry in the record of deleted vouchers, in their order, read as `client`. */
+/** The rows of an entry in the record of deleted vouchers, by the entry's own id (entry_id), in their order, read as `client`. */
 export async function deletedRowsOf(client: Client, company: string, entry: string): Promise<DeletedVoucherRow[]> {
   return inTransaction(client, { company }, async () => {
     const found = await client.query<DeletedVoucherRow>(

@@ -110,19 +110,21 @@ describe("Radera", () => {
       deleted_by: deleter.actor,
       deleted_by_kind: "system",
       deleted_xact: transaction,
+      entry_id: entry?.entry_id,
     });
+    expect(entry?.entry_id).not.toBe(voucher.id);
     expect(await isAfter(app, entry?.deleted_at ?? "", started)).toBe(true);
     expect(await isAfter(app, entry?.deleted_at ?? "", ended)).toBe(false);
     const names: Record<number, string> = { 1930: "Företagskonto", 3001: "Försäljning inom Sverige", 6110: "Kontorsmaterial" };
-    expect(await deletedRowsOf(app, books.company, voucher.id)).toEqual(
+    expect(await deletedRowsOf(app, books.company, entry?.entry_id ?? "")).toEqual(
       rows.map((row) => {
         const { voucher_id: voucherId, ...kept } = row;
         expect(voucherId).toBe(voucher.id);
-        return { ...kept, deleted_voucher_id: voucher.id, account_description: names[row.account_number] };
+        return { ...kept, deleted_voucher_id: entry?.entry_id, account_description: names[row.account_number] };
       }),
     );
     expect(
-      (await deletedRowsOf(app, books.company, voucher.id)).map((row) => [row.position, row.account_number, row.debit, row.credit, row.removed]),
+      (await deletedRowsOf(app, books.company, entry?.entry_id ?? "")).map((row) => [row.position, row.account_number, row.debit, row.credit, row.removed]),
     ).toEqual([
       [1, 6110, 2500n, 500n, true],
       [2, 1930, 0n, 2000n, false],
@@ -166,6 +168,48 @@ describe("Radera", () => {
     const closing = await bookVoucher(app, books.company, aVoucher(books, { series: "I" }), booker);
     await remove(books.company, closing.id);
     expect((await deletedVouchersOf(app, books.company)).at(-1)).toMatchObject({ series_code: "I", number: 1, deletion_count: 1 });
+  });
+
+  it("deletes a voucher booked with the id of a deleted voucher, and rows with the ids of deleted rows, each deletion as an entry of its own", async () => {
+    const books = await addBooks(app);
+    const id = randomUUID();
+    const rowIds = [randomUUID(), randomUUID()];
+    const bookWithIds = (company: string, year: string, description: string): Promise<void> =>
+      inTransaction(app, { company, ...booker }, async () => {
+        await app.query(
+          `INSERT INTO ledger.vouchers (id, company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
+           VALUES ($1, $2, $3, 'A', $4, '2090-03-15', 'MANUAL')`,
+          [id, company, year, description],
+        );
+        for (const [index, row] of balanced(2000n).entries()) {
+          await app.query("INSERT INTO ledger.voucher_rows (id, company_id, voucher_id, account_number, debit, credit) VALUES ($1, $2, $3, $4, $5, $6)", [
+            rowIds[index],
+            company,
+            id,
+            row.account,
+            row.debit ?? 0n,
+            row.credit ?? 0n,
+          ]);
+        }
+      });
+    await bookWithIds(books.company, books.year.id, "Första");
+    expect(await remove(books.company, id)).toBe(1);
+    await bookWithIds(books.company, books.year.id, "Andra");
+    expect(await remove(books.company, id)).toBe(1);
+    const entries = await deletedVouchersOf(app, books.company);
+    expect(entries.map((entry) => [entry.id, entry.number, entry.deletion_count, entry.description])).toEqual([
+      [id, 1, 1, "Första"],
+      [id, 1, 2, "Andra"],
+    ]);
+    expect(new Set(entries.map((entry) => entry.entry_id)).size).toBe(2);
+    for (const entry of entries) {
+      expect((await deletedRowsOf(app, books.company, entry.entry_id)).map((row) => row.id)).toEqual(rowIds);
+    }
+    // An id deleted in another company stands in the way of no deletion either.
+    const other = await addBooks(app);
+    await bookWithIds(other.company, other.year.id, "Tredje");
+    expect(await remove(other.company, id)).toBe(1);
+    expect((await deletedVouchersOf(app, other.company)).map((entry) => [entry.id, entry.deletion_count])).toEqual([[id, 1]]);
   });
 
   it("refuses to delete the voucher just below a void range, and books the next voucher above the range", async () => {
@@ -266,7 +310,7 @@ describe("Radera", () => {
         [1, 1, "Första"],
         [1, 2, "Andra"],
       ]);
-      expect((await deletedRowsOf(app, books.company, entries[0]?.id ?? "")).map((row) => [row.debit, row.credit])).toEqual([
+      expect((await deletedRowsOf(app, books.company, entries[0]?.entry_id ?? "")).map((row) => [row.debit, row.credit])).toEqual([
         [2000n, 0n],
         [0n, 2000n],
       ]);
@@ -312,7 +356,7 @@ describe("Radera", () => {
       try {
         for (const client of [app, reader]) {
           const seen = await inTransaction(client, { company: books.company }, async () =>
-            (await client.query<{ id: string }>("SELECT id FROM ledger.deleted_vouchers")).rows.map((row) => row.id),
+            (await client.query<{ id: string }>("SELECT voucher_id AS id FROM ledger.deleted_vouchers")).rows.map((row) => row.id),
           );
           expect(seen).toEqual([voucher.id]);
           for (const sql of [...WRITES, "TRUNCATE ledger.deleted_vouchers CASCADE"]) {
@@ -346,12 +390,12 @@ describe("Radera", () => {
       await expectRefusal(
         inTransaction(owner, settings, () =>
           owner.query(
-            `INSERT INTO ledger.deleted_vouchers (id, company_id, fiscal_year_id, series_code, number, deletion_count, description, comments,
+            `INSERT INTO ledger.deleted_vouchers (voucher_id, company_id, fiscal_year_id, series_code, number, deletion_count, description, comments,
                transaction_date, reference_type, reference_number, created_at, created_by, created_by_kind, created_xact, modified_at,
                deleted_at, deleted_by, deleted_by_kind, deleted_xact)
-             SELECT gen_random_uuid(), company_id, fiscal_year_id, series_code, number, 2, description, comments, transaction_date, reference_type,
+             SELECT voucher_id, company_id, fiscal_year_id, series_code, number, 2, description, comments, transaction_date, reference_type,
                reference_number, created_at, created_by, created_by_kind, created_xact, modified_at, deleted_at, deleted_by, deleted_by_kind, deleted_xact
-             FROM ledger.deleted_vouchers WHERE id = $1`,
+             FROM ledger.deleted_vouchers WHERE voucher_id = $1`,
             [voucher.id],
           ),
         ),
@@ -361,12 +405,12 @@ describe("Radera", () => {
       await expectRefusal(
         inTransaction(owner, settings, () =>
           owner.query(
-            `INSERT INTO ledger.deleted_voucher_rows (id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit,
+            `INSERT INTO ledger.deleted_voucher_rows (row_id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit,
                transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description)
              SELECT gen_random_uuid(), company_id, deleted_voucher_id, fiscal_year_id, position + 10, account_number, debit, credit,
                transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description
              FROM ledger.deleted_voucher_rows WHERE deleted_voucher_id = $1`,
-            [voucher.id],
+            [entry?.entry_id],
           ),
         ),
         "internal_only",

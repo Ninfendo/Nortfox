@@ -15,7 +15,9 @@
 #   backup and the WAL archive in both repositories;
 # - write 1, then the time T, then write 2: a restore to T from repo1 gives
 #   write 1 and not write 2, and so does a restore to T from repo2. Each
-#   restore reads its backup and its WAL from its own repository only.
+#   restore reads its backup and its WAL from its own repository only. T
+#   falls in a later whole second than either backup's stop, as a restore to
+#   a time needs.
 #
 # The containers, the volumes and the secrets go when the test ends, also when
 # it fails. Run it with `pnpm backup:test`. It needs Docker with Compose v2,
@@ -205,6 +207,22 @@ for repo in 1 2; do
   grep --quiet "repo$repo: backup" <<< "$info" || fail "pgbackrest info shows no backup in repo$repo."
 done
 step "ok, pgbackrest info shows the stanza ok, with a full backup in repo1 and in repo2."
+
+# pgBackRest keeps a backup's stop time in whole seconds, and a restore to a
+# time takes only a backup that stopped in an earlier whole second than the
+# target. So T must fall in a later second than the newest backup's stop:
+# wait until PostgreSQL's clock, which gives T, is past that second.
+newest_stop=$(backrest --log-level-console=warn --output=json info | grep --only-matching --extended-regexp '"stop":[0-9]+' | cut -d: -f2 | sort -n | tail -n 1 || true)
+[[ "$newest_stop" =~ ^[0-9]+$ ]] || fail "pgbackrest info gave no stop time for a backup."
+past_stop=no
+for _ in $(seq 30); do
+  if (($(sql postgres <<< 'SELECT floor(extract(epoch FROM pg_catalog.clock_timestamp()))::bigint') > newest_stop)); then
+    past_stop=yes
+    break
+  fi
+  sleep 1
+done
+expect "PostgreSQL's clock past the second in which the newest backup stopped" "$past_stop" yes
 
 # Made-up companies and actor. The organisation numbers are on the fixture
 # guard's list of test values.

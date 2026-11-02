@@ -394,6 +394,39 @@ describe("booking a voucher", () => {
       expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
     });
 
+    it("a strike in the booking's own transaction: a new voucher has no struck row, striking belongs to Ändra", async () => {
+      const books = await addBooks(app);
+      // Both rows struck: the voucher would be booked with no row that counts.
+      await expectRefusal(
+        inTransaction(app, { company: books.company, ...who }, async () => {
+          const voucher = await writeVoucher(app, books.company, aVoucher(books, { rows: balanced(2000n) }));
+          await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1", [voucher.id]);
+        }),
+        "immutable_field",
+        { field: "removed", operation: "create" },
+      );
+      // A zero row and a credit, with the credit struck: one row would count.
+      await expectRefusal(
+        inTransaction(app, { company: books.company, ...who }, async () => {
+          const voucher = await writeVoucher(app, books.company, aVoucher(books, { rows: [{ account: 6110 }, { account: 1930, credit: 5000n }] }));
+          await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND account_number = 1930", [voucher.id]);
+        }),
+        "immutable_field",
+        { field: "removed", operation: "create" },
+      );
+      expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+      // A row's text may still change before the commit, as on the new-voucher screen.
+      const booked = await inTransaction(app, { company: books.company, ...who }, async () => {
+        const voucher = await writeVoucher(app, books.company, aVoucher(books));
+        await app.query("UPDATE ledger.voucher_rows SET transaction_information = 'Rättad text' WHERE voucher_id = $1 AND position = 1", [voucher.id]);
+        return voucher;
+      });
+      expect((await rowsOf(app, books.company, booked.id)).map((row) => [row.transaction_information, row.removed])).toEqual([
+        ["Rättad text", false],
+        ["", false],
+      ]);
+    });
+
     it("a voucher that breaks several rules with the first in a fixed order: description, comments, series, manual, year, date, rows", async () => {
       const books = await addBooks(app);
       await addBooksYear(app, books.company, "2091-01-01", "2091-12-31");

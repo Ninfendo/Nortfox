@@ -174,14 +174,38 @@ BEGIN ATOMIC
   SELECT r.company_id FROM ledger.reader_roles AS r WHERE r.role_name = CURRENT_USER;
 END;
 
--- The transaction's actor and its kind. A write with no actor is refused.
+-- The actor that each backend's writing transaction keeps. A rule that
+-- depends on the actor, such as the period lock, is checked for the actor
+-- that is set when its trigger runs, and the stamps and the history record
+-- the actor that is set when theirs run. Any role can change a setting at any
+-- time, also in the middle of a statement. So the first time a transaction's
+-- write reads its actor, ledger.current_actor() keeps that actor and its kind
+-- here, and refuses any other for the rest of the transaction. The table
+-- holds one row per backend, for the transaction that last wrote in it: each
+-- such transaction writes over it. It is not ledger data, and is unlogged, so
+-- a crash, which ends every transaction, empties it. Only the owner writes it,
+-- through ledger.current_actor(), and no other role may read it.
+CREATE UNLOGGED TABLE ledger.transaction_actors (
+  backend_pid integer PRIMARY KEY,
+  transaction_id xid8 NOT NULL,
+  actor_id uuid NOT NULL,
+  actor_kind text NOT NULL
+);
+
+-- The transaction's actor and its kind. A write with no actor is refused,
+-- and so is a write under another actor or kind than the transaction's
+-- first write had (insufficient privilege, 42501). The writes of a savepoint
+-- that rolled back keep no actor.
 CREATE FUNCTION ledger.current_actor(OUT actor_id uuid, OUT actor_kind text)
-LANGUAGE plpgsql STABLE
+LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $actor$
 DECLARE
   id_setting text := NULLIF(current_setting('nortfox.actor_id', true), '');
   kind_setting text := NULLIF(current_setting('nortfox.actor_kind', true), '');
+  kept_transaction xid8;
+  kept_id uuid;
+  kept_kind text;
 BEGIN
   IF id_setting IS NULL THEN
     PERFORM ledger.refuse('actor_missing', jsonb_build_object('setting', 'nortfox.actor_id'));
@@ -191,6 +215,21 @@ BEGIN
   END IF;
   actor_id := id_setting::uuid;
   actor_kind := kind_setting;
+  SELECT t.transaction_id, t.actor_id, t.actor_kind INTO kept_transaction, kept_id, kept_kind
+  FROM ledger.transaction_actors AS t
+  WHERE t.backend_pid = pg_backend_pid();
+  IF kept_transaction = pg_current_xact_id() THEN
+    IF kept_id IS DISTINCT FROM current_actor.actor_id OR kept_kind IS DISTINCT FROM current_actor.actor_kind THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'insufficient_privilege',
+        MESSAGE = 'The transaction''s actor changed after its first write. A transaction keeps one actor.';
+    END IF;
+    RETURN;
+  END IF;
+  INSERT INTO ledger.transaction_actors AS t (backend_pid, transaction_id, actor_id, actor_kind)
+  VALUES (pg_backend_pid(), pg_current_xact_id(), current_actor.actor_id, current_actor.actor_kind)
+  ON CONFLICT (backend_pid) DO UPDATE
+  SET transaction_id = excluded.transaction_id, actor_id = excluded.actor_id, actor_kind = excluded.actor_kind;
 END
 $actor$;
 
@@ -234,7 +273,11 @@ $isolation$;
 -- Writes the history row of one row change. Its argument is the table's key
 -- column. Every company table has this trigger (the table guard checks it),
 -- so it is also where a write at another level than READ COMMITTED is
--- refused, whichever table it is on.
+-- refused, whichever table it is on, and where a row that would move to
+-- another company is: a statement can change the transaction's company after
+-- row level security has let the old row through, and the new row is then
+-- checked against the new company. The history row of an insert or a delete
+-- must be the transaction's company's, by the owner's policy on the history.
 CREATE FUNCTION audit.write_history() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -245,13 +288,16 @@ DECLARE
   new_row jsonb;
 BEGIN
   PERFORM ledger.assert_read_committed();
-  SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
   IF TG_OP <> 'INSERT' THEN
     old_row := to_jsonb(OLD);
   END IF;
   IF TG_OP <> 'DELETE' THEN
     new_row := to_jsonb(NEW);
   END IF;
+  IF TG_OP = 'UPDATE' AND (old_row ->> 'company_id') IS DISTINCT FROM (new_row ->> 'company_id') THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'company_id', 'operation', 'update'));
+  END IF;
+  SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
   INSERT INTO audit.history
     (company_id, table_name, row_id, operation, old_values, new_values, actor_id, actor_kind, transaction_id, at)
   VALUES (

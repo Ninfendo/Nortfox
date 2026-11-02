@@ -19,6 +19,10 @@ import {
   type TestDatabase,
 } from "../../../test/database.ts";
 import { ROW_INSERTS, TRIGGER_ONLY_INSERTS, companyTables, fillEveryTable, type Scenario } from "../../../test/every-table.ts";
+import { addCompany, addFiscalYear, addPeriod, setLock } from "../../../test/ledger.ts";
+
+/** PostgreSQL's SQLSTATE for a foreign key that refused a row. */
+const FOREIGN_KEY_VIOLATION = "23503";
 
 describe("company isolation", () => {
   let db: TestDatabase;
@@ -120,6 +124,89 @@ describe("company isolation", () => {
           ? expectRefusal(inserted, "internal_only", internal)
           : expectError(inserted, INSUFFICIENT_PRIVILEGE));
       }
+    }
+  });
+
+  /** How many rows of each company table, and of the history, each company holds, as the owner sees them. */
+  async function rowCounts(companies: readonly string[]): Promise<Record<string, number>> {
+    const counts: Record<string, number> = {};
+    for (const company of companies) {
+      for (const table of tables) {
+        const found = await inTransaction(as("owner"), { company }, () => as("owner").query<{ count: bigint }>(`SELECT count(*) AS count FROM ${table}`));
+        counts[`${company} ${table}`] = Number(found.rows[0]?.count);
+      }
+    }
+    return counts;
+  }
+
+  it("refuses to move a row to another company by a switch of the company inside the statement, on every company table", async () => {
+    const [from, to] = [scenario.companyA, scenario.companyB];
+    const before = await rowCounts([from, to]);
+    // Row level security lets the old row through while `from` is set. The
+    // statement then sets `to`, and the new row is checked against that.
+    const move = (table: string): string =>
+      `UPDATE ${table} SET company_id = $2::uuid WHERE company_id = $1 AND pg_catalog.set_config('nortfox.company_id', $2::text, true) IS NOT NULL`;
+    for (const table of tables) {
+      for (const role of ["owner", "app"] as const) {
+        const error = await failureOf(write(role, from, move(table), [from, to]));
+        expect(error, `${role} moved rows of ${table} to another company`).toBeDefined();
+      }
+    }
+    expect(await rowCounts([from, to])).toEqual(before);
+  });
+
+  it("refuses that move with immutable_field where nothing else stops it: a lock date row and an empty fiscal year", async () => {
+    const app = as("app");
+    const who = { actor, kind: "user" } as const;
+    const [from, to] = [await addCompany(app), await addCompany(app)];
+    await setLock(app, from, "all", "2090-06-30");
+    const year = await addFiscalYear(app, from, { from: "2095-01-01", to: "2095-12-31" });
+    const before = await rowCounts([from, to]);
+    for (const [table, where] of [
+      ["ledger.period_locks", "scope = 'all'"],
+      ["ledger.fiscal_years", `id = '${year.id}'`],
+    ] as const) {
+      await expectRefusal(
+        inTransaction(app, { company: from, ...who }, () =>
+          app.query(
+            `UPDATE ${table} SET company_id = $2::uuid
+             WHERE company_id = $1 AND ${where} AND pg_catalog.set_config('nortfox.company_id', $2::text, true) IS NOT NULL`,
+            [from, to],
+          ),
+        ),
+        "immutable_field",
+        { field: "company_id", operation: "update" },
+      );
+    }
+    expect(await rowCounts([from, to])).toEqual(before);
+    const lockedThrough = await inTransaction(app, { company: from }, () =>
+      app.query<{ through: string | null }>("SELECT ledger.locked_through($1, 'user', $2, ledger.today_in_sweden())::text AS through", [from, actor]),
+    );
+    expect(lockedThrough.rows[0]?.through).toBe("2090-06-30");
+  });
+
+  it("tells a company nothing about another company's periods: a period that names that company's year gets one error, period or not", async () => {
+    const app = as("app");
+    const [owner, prober] = [await addCompany(app), await addCompany(app)];
+    const theirs = await addFiscalYear(app, owner, { from: "2091-01-01", to: "2091-12-31" });
+    await addPeriod(app, owner, theirs.id, "2091-03-01", "2091-03-31");
+    const ownYear = await addFiscalYear(app, prober, { from: "2091-01-01", to: "2091-12-31" });
+    const ownPeriod = await addPeriod(app, prober, ownYear.id, "2091-01-01", "2091-01-31");
+    for (const day of ["2091-03-15", "2091-04-15"]) {
+      await expectError(
+        inTransaction(app, { company: prober, actor, kind: "user" }, () =>
+          app.query("INSERT INTO ledger.periods (company_id, fiscal_year_id, from_date, to_date) VALUES ($1, $2, $3, $3)", [prober, theirs.id, day]),
+        ),
+        FOREIGN_KEY_VIOLATION,
+        /periods_company_id_fiscal_year_id_fkey/,
+      );
+      await expectError(
+        inTransaction(app, { company: prober, actor, kind: "user" }, () =>
+          app.query("UPDATE ledger.periods SET fiscal_year_id = $2, from_date = $3, to_date = $3 WHERE id = $1", [ownPeriod, theirs.id, day]),
+        ),
+        FOREIGN_KEY_VIOLATION,
+        /periods_company_id_fiscal_year_id_fkey/,
+      );
     }
   });
 

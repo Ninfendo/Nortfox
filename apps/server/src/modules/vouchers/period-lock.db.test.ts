@@ -6,15 +6,19 @@
 // its old date or its new date, and deleting one. Each refusal names the
 // through-date, the kind of lock and, for a manual lock, who set it. Once the
 // date is cleared, or the automatic lock turned off, the same acts pass. The
-// closing series of the voucher's year passes every lock. A lock that is
-// being set and a change of a voucher never overlap: each waits for the
-// other, so no change goes in under a lock that it did not see.
+// closing series of the voucher's year passes every lock. A change of what a
+// lock depends on and a change of a voucher never overlap: each waits for the
+// other, so no change goes in under a lock that it did not see. That holds
+// for a lock date, the automatic lock's settings, the end of the voucher's
+// fiscal year, which places the automatic lock at 60 days after it, and the
+// closing mark of the voucher's series.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backendPid, begin, expectRefusal, freshDatabase, inTransaction, untilWaitingForLock, type TestDatabase } from "../../../test/database.ts";
 import {
+  LOCK_VOUCHER,
   addBooks,
   balanced,
   bookVoucher,
@@ -25,6 +29,7 @@ import {
   someUser,
   voucherOf,
   writeRow,
+  writeVoucher,
   type Actor,
   type Books,
   type LockScope,
@@ -251,6 +256,135 @@ describe("the period lock on vouchers", () => {
       }
       expect((await voucherOf(app, books.company, voucher.id))?.altered_at).toBe(altered);
       await expectRefusal(inTransaction(app, { company: books.company, ...userOne }, () => app.query(DESCRIBE, [voucher.id])), "period_locked_manual");
+    });
+
+    /**
+     * Each kind of change of a voucher, run as `client` in its open
+     * transaction. A row change locks its voucher first, as every caller
+     * does (db/README.md, the lock order).
+     */
+    const CHANGES: readonly (readonly [string, (client: Client, books: Books, voucher: Voucher) => Promise<unknown>])[] = [
+      ["a booking", (client, books, voucher) => writeVoucher(client, books.company, aVoucher(books, { series: voucher.series_code, date: voucher.transaction_date }))],
+      ["a change of the description", (client, _books, voucher) => client.query(DESCRIBE, [voucher.id])],
+      [
+        "a change of a row's text",
+        async (client, _books, voucher) => {
+          await client.query(LOCK_VOUCHER, [voucher.id]);
+          await client.query("UPDATE ledger.voucher_rows SET transaction_information = 'Ny text' WHERE voucher_id = $1 AND position = 1", [voucher.id]);
+        },
+      ],
+      [
+        "a strike",
+        async (client, books, voucher) => {
+          await client.query(LOCK_VOUCHER, [voucher.id]);
+          await client.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 1", [voucher.id]);
+          await writeRow(client, books.company, voucher.id, { account: 6110, debit: 2000n });
+        },
+      ],
+      ["an added row", (client, books, voucher) => writeRow(client, books.company, voucher.id, { account: 3001 })],
+      ["a deletion", (client, _books, voucher) => client.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id])],
+    ];
+
+    /** A day counted from today in Sweden, as the database gives it. */
+    async function fromToday(days: number): Promise<string> {
+      const found = await app.query<{ day: string }>("SELECT (ledger.today_in_sweden() + $1::integer)::text AS day", [days]);
+      return found.rows[0]?.day ?? "";
+    }
+
+    /**
+     * Books whose one fiscal year runs from 200 days ago to 100 days ahead,
+     * with the automatic lock on at 60 days after the year's end, so it locks
+     * nothing yet, and one voucher in series A, dated 150 days ago. Cutting
+     * the year short to end 100 days ago moves the lock over the voucher.
+     */
+    async function yearEndBooks(): Promise<{ books: Books; voucher: Voucher; shorten: string; shortEnd: string }> {
+      const books = await addBooks(app, someUser(), await fromToday(-200), await fromToday(100));
+      const voucher = await bookVoucher(app, books.company, aVoucher(books, { date: await fromToday(-150) }), booker);
+      await setAutomaticLock(app, books.company, "year_end_60", setter);
+      const shortEnd = await fromToday(-100);
+      return { books, voucher, shorten: `UPDATE ledger.fiscal_years SET to_date = '${shortEnd}' WHERE id = '${books.year.id}'`, shortEnd };
+    }
+
+    /** Books with Alla användare locked through 2090-06-30 and one voucher in the closing series I, dated 2090-03-10, inside the lock. */
+    async function closingBooks(): Promise<{ books: Books; voucher: Voucher; unmark: string }> {
+      const books = await addBooks(app);
+      const voucher = await bookVoucher(app, books.company, aVoucher(books, { series: "I", date: "2090-03-10" }), booker);
+      await setLock(app, books.company, "all", "2090-06-30", { who: setter });
+      return { books, voucher, unmark: `UPDATE ledger.voucher_series SET is_closing = false WHERE fiscal_year_id = '${books.year.id}' AND code = 'I'` };
+    }
+
+    /** Runs `change` open as `userOne`, starts `writer` in another connection, sees it wait, then commits both, the change first. */
+    async function changeFirst(books: Books, voucher: Voucher, change: (typeof CHANGES)[number][1], writer: string): Promise<void> {
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...userOne });
+      try {
+        await change(app, books, voucher);
+        const written = inTransaction(other, { company: books.company, ...setter }, () => other.query(writer));
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        await written;
+      } finally {
+        await app.query("ROLLBACK");
+      }
+    }
+
+    /** Runs `writer` open, starts `change` in another connection, sees it wait, then commits the writer and expects the change refused with `reason`. */
+    async function writerFirst(
+      books: Books,
+      voucher: Voucher,
+      change: (typeof CHANGES)[number][1],
+      writer: string,
+      reason: "period_locked_manual" | "period_locked_automatic",
+    ): Promise<void> {
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...setter });
+      try {
+        await app.query(writer);
+        const changed = expectRefusal(
+          inTransaction(other, { company: books.company, ...userOne }, () => change(other, books, voucher)),
+          reason,
+        );
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        await changed;
+      } finally {
+        await app.query("ROLLBACK");
+      }
+    }
+
+    it.each(CHANGES)("holds a cut of the voucher's fiscal year, which moves the automatic lock over it, until %s commits", async (_name, change) => {
+      const { books, voucher, shorten, shortEnd } = await yearEndBooks();
+      await changeFirst(books, voucher, change, shorten);
+      // The cut came after the change, and now locks the voucher's date.
+      await expectRefusal(bookVoucher(app, books.company, aVoucher(books, { date: voucher.transaction_date }), userOne), "period_locked_automatic", {
+        end_date: shortEnd,
+        interval: "year_end_60",
+      });
+    });
+
+    it.each(CHANGES)("holds %s until a cut of the fiscal year commits, and then refuses it by the automatic lock that moved over it", async (_name, change) => {
+      const { books, voucher, shorten } = await yearEndBooks();
+      const rows = await rowsOf(app, books.company, voucher.id);
+      await writerFirst(books, voucher, change, shorten, "period_locked_automatic");
+      expect(await voucherOf(app, books.company, voucher.id)).toEqual(voucher);
+      expect(await rowsOf(app, books.company, voucher.id)).toEqual(rows);
+    });
+
+    it.each(CHANGES)("holds taking the closing mark off a series until %s in it commits", async (_name, change) => {
+      const { books, voucher, unmark } = await closingBooks();
+      await changeFirst(books, voucher, change, unmark);
+      // The mark came off after the change, and the lock now holds the series.
+      await expectRefusal(bookVoucher(app, books.company, aVoucher(books, { series: "I", date: "2090-03-10" }), userOne), "period_locked_manual");
+    });
+
+    it.each(CHANGES)("holds %s in the closing series until the mark comes off, and then refuses it by the manual lock", async (_name, change) => {
+      const { books, voucher, unmark } = await closingBooks();
+      const rows = await rowsOf(app, books.company, voucher.id);
+      await writerFirst(books, voucher, change, unmark, "period_locked_manual");
+      expect(await voucherOf(app, books.company, voucher.id)).toEqual(voucher);
+      expect(await rowsOf(app, books.company, voucher.id)).toEqual(rows);
     });
   });
 

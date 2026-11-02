@@ -112,8 +112,20 @@ describe("the migration runner", () => {
 
   it("runs a migration with only pg_catalog on the search path, so every name of ours is written in full", async () => {
     const { owner } = await empty();
-    const error = await failureOf(migrate(owner, migrationsWith({ "0002_short.sql": "SELECT current_company_id();\n" })));
-    expect(String(error)).toContain("0002_short.sql: function current_company_id() does not exist");
+    const path = `-- SPDX-License-Identifier: AGPL-3.0-only
+DO $path$
+BEGIN
+  IF pg_catalog.current_setting('search_path') <> 'pg_catalog, pg_temp' THEN
+    RAISE EXCEPTION 'the search path is %', pg_catalog.current_setting('search_path');
+  END IF;
+END
+$path$;
+`;
+    expect(await migrate(owner, migrationsWith({ "0002_path.sql": path }))).toEqual(["0001_foundation.sql", "0002_path.sql"]);
+    // The session's own path holds ledger, so only the runner's path keeps the short name from working.
+    await owner.query("SET search_path = ledger, public");
+    const error = await failureOf(migrate(owner, migrationsWith({ "0002_path.sql": path, "0003_short.sql": "SELECT current_company_id();\n" })));
+    expect(String(error)).toContain("0003_short.sql: function current_company_id() does not exist");
   });
 
   it("refuses a migration that ends the runner's transaction", async () => {

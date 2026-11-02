@@ -37,7 +37,9 @@ CREATE UNIQUE INDEX fiscal_years_one_default ON ledger.fiscal_years (company_id)
 -- A fiscal year's periods, each with a from and a to date. A period lies
 -- inside its year, and two periods of one year never overlap. A period has no
 -- lock state of its own: a lock is a date, and a period is locked when its
--- dates are.
+-- dates are. The overlap check, like a foreign key's, skips row level
+-- security, so it compares company_id first: a period that names another
+-- company's year then meets none of that company's periods.
 
 CREATE TABLE ledger.periods (
   id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
@@ -48,7 +50,7 @@ CREATE TABLE ledger.periods (
   UNIQUE (company_id, id),
   FOREIGN KEY (company_id, fiscal_year_id) REFERENCES ledger.fiscal_years (company_id, id),
   CONSTRAINT periods_dates_in_order CHECK (from_date <= to_date),
-  CONSTRAINT periods_no_overlap EXCLUDE USING gist (fiscal_year_id WITH =, daterange(from_date, to_date, '[]') WITH &&)
+  CONSTRAINT periods_no_overlap EXCLUDE USING gist (company_id WITH =, fiscal_year_id WITH =, daterange(from_date, to_date, '[]') WITH &&)
 );
 
 -- The period lock ---------------------------------------------------------------
@@ -394,7 +396,8 @@ END;
 -- Refuses the transaction's actor a date that is locked for it today:
 -- period_locked_manual with the through-date, the row it comes from and who
 -- set it, or period_locked_automatic with the through-date and the interval.
--- The closing series is exempt from every lock. The voucher triggers call it.
+-- The closing series is exempt from every lock. The voucher triggers call it
+-- through ledger.assert_voucher_open (0004).
 --
 -- It first locks the company's automatic lock row FOR SHARE until the
 -- transaction ends. Every change of a lock date or of the automatic lock
@@ -402,7 +405,10 @@ END;
 -- a lock never overlap: a lock set while the voucher's change is open waits
 -- for it, and a change of a voucher while a new lock is open waits, and then
 -- reads that lock. Writes run at READ COMMITTED (ledger.assert_read_committed),
--- so the read after the lock sees what is committed.
+-- so the read after the lock sees what is committed. The answer also depends
+-- on the end of the voucher's fiscal year, for the automatic lock at 60 days
+-- after it, and on the closing mark of its series. ledger.assert_voucher_open
+-- locks those two rows FOR SHARE, and reads the mark, before it calls this.
 CREATE FUNCTION ledger.assert_open(company uuid, day date, is_closing_series boolean) RETURNS void
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp

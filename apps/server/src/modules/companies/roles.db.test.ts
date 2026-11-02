@@ -24,6 +24,7 @@ const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "ledger.period_locks": ["INSERT", "SELECT", "UPDATE"],
   "ledger.periods": ["INSERT", "SELECT", "UPDATE"],
   "ledger.reader_roles": [],
+  "ledger.transaction_actors": [],
   "ledger.void_ranges": ["SELECT"],
   "ledger.voucher_counters": ["SELECT"],
   "ledger.voucher_rows": ["INSERT", "SELECT", "UPDATE"],
@@ -44,6 +45,7 @@ const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "ledger.period_locks": ["SELECT"],
   "ledger.periods": ["SELECT"],
   "ledger.reader_roles": ["SELECT"],
+  "ledger.transaction_actors": [],
   "ledger.void_ranges": ["SELECT"],
   "ledger.voucher_counters": ["SELECT"],
   "ledger.voucher_rows": ["SELECT"],
@@ -118,7 +120,10 @@ describe("the database roles", () => {
     ["give itself a role", "GRANT nortfox_owner TO nortfox_app"],
     ["call a function that only triggers call", "SELECT ledger.refuse('unbalanced', '{}')"],
     ["check a date against the lock as the triggers do", `SELECT ledger.assert_open('${randomUUID()}', '2090-01-01', true)`],
+    ["check a voucher against the lock as the triggers do", `SELECT ledger.assert_voucher_open('${randomUUID()}', '${randomUUID()}', 'A', '2090-01-01')`],
     ["read the actor through the trigger's helper", "SELECT * FROM ledger.current_actor()"],
+    ["read the actor that a transaction keeps", "SELECT * FROM ledger.transaction_actors"],
+    ["change the actor that a transaction keeps", "DELETE FROM ledger.transaction_actors"],
     ["give out the next tenant id", "SELECT nextval('ledger.database_number_seq')"],
   ])("refuses the app to %s", async (_case, sql) => {
     await expectError(app.query(sql), INSUFFICIENT_PRIVILEGE);

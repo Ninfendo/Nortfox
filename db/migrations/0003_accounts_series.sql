@@ -38,8 +38,10 @@ CREATE TABLE ledger.accounts (
 -- trigger gives the code's refusals with their reasons; the checks and the
 -- unique key below hold the same rules if it is ever off.
 --
--- The counter is a table of its own, so that a booking never moves the
--- series' modified time.
+-- The next number is the series' too, as the compatible API shows it, so
+-- every move of it is a change of the series. The counter is a table of its
+-- own, with a modified time of its own that each move sets. The series'
+-- modified time, as lastmodified reads it, is the later of the two.
 
 CREATE TABLE ledger.voucher_series (
   id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
@@ -64,13 +66,15 @@ CREATE UNIQUE INDEX voucher_series_one_closing ON ledger.voucher_series (company
 -- with its series, and it goes only with its series. Only the database's own
 -- triggers move it, and only with proof in the same transaction: past a void
 -- range that starts at it. 0004 adds the booking that moves it up by one and
--- the deletion of the last voucher that moves it back by one.
+-- the deletion of the last voucher that moves it back by one. modified_at is
+-- when it was made or last moved.
 
 CREATE TABLE ledger.voucher_counters (
   id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
   company_id uuid NOT NULL,
   series_id uuid NOT NULL,
   next_number integer NOT NULL DEFAULT 1,
+  modified_at timestamptz NOT NULL,
   UNIQUE (company_id, id),
   CONSTRAINT voucher_counters_one_per_series UNIQUE (company_id, series_id),
   CONSTRAINT voucher_counters_series FOREIGN KEY (company_id, series_id) REFERENCES ledger.voucher_series (company_id, id) ON DELETE CASCADE,
@@ -159,7 +163,10 @@ $rules$;
 -- year, by a lock on the year's row, so the check of the code sees every
 -- series and refuses a duplicate with its reason. A series' year and id never
 -- change, its name is at most 200 characters, and the trigger alone writes
--- its modified time.
+-- its modified time. The closing mark decides whether the period lock applies
+-- to the series' vouchers. A change of a voucher locks its series' row FOR
+-- SHARE before it reads the mark (ledger.assert_voucher_open, 0004), so a
+-- change of the mark waits for it, and it waits for a change of the mark.
 CREATE FUNCTION ledger.voucher_series_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -216,9 +223,9 @@ $made$;
 -- make, move or remove one, never a statement that a caller sent. Every
 -- change of the next number needs its proof in the same transaction: a void
 -- range recorded in it that starts at the old next number and ends just
--- before the new one. Anything else is a counter_move. A counter goes only
--- when its series has gone, which is the cascade. Its id and its series never
--- change.
+-- before the new one. Anything else is a counter_move. Each accepted move
+-- sets the modified time. A counter goes only when its series has gone, which
+-- is the cascade. Its id and its series never change.
 CREATE FUNCTION ledger.voucher_counters_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -230,6 +237,7 @@ BEGIN
     PERFORM ledger.refuse('internal_only', jsonb_build_object('table', 'ledger.voucher_counters', 'field', CASE WHEN TG_OP = 'UPDATE' THEN 'next_number' END));
   END IF;
   IF TG_OP = 'INSERT' THEN
+    NEW.modified_at := clock_timestamp();
     RETURN NEW;
   END IF;
   IF TG_OP = 'DELETE' THEN
@@ -253,6 +261,7 @@ BEGIN
       AND v.first_number = OLD.next_number AND v.last_number + 1 = NEW.next_number
       AND v.created_xact = pg_current_xact_id()
   ) THEN
+    NEW.modified_at := clock_timestamp();
     RETURN NEW;
   END IF;
   PERFORM ledger.refuse('counter_move', jsonb_build_object('series', series.code, 'from', OLD.next_number, 'to', NEW.next_number));

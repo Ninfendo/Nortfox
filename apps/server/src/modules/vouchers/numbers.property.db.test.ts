@@ -10,7 +10,10 @@
 // series, number or year, strikes with a new row in place, and deletions of
 // the last voucher and of one that is not last. Now and then a fifth
 // connection, as the owner, records a void range. Each operation is one
-// transaction. A deadlock or a serialization failure counts as a rollback.
+// transaction, and takes its locks in the order db/README.md gives: a strike
+// locks its voucher before the row. So no two of them wait for each other in
+// a circle, and a deadlock fails the run, as any error that is not a refusal
+// does.
 //
 // After every operation, the connection that ran it reads the books in one
 // snapshot and checks: in each series and year, the numbers of the live
@@ -26,7 +29,7 @@ import fc from "fast-check";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { begin, freshDatabase, type Settings, type TestDatabase } from "../../../test/database.ts";
-import { addBooksYear, addCompany, bookVoucher, someSystemUser, someUser, writeVoucher, type FiscalYear } from "../../../test/ledger.ts";
+import { LOCK_VOUCHER, addBooksYear, addCompany, bookVoucher, someSystemUser, someUser, writeVoucher, type FiscalYear } from "../../../test/ledger.ts";
 import { readRefusal, type RefusalReason } from "../../db/refusals.ts";
 
 const RUNS = Number(process.env["NORTFOX_PROPERTY_RUNS"] ?? "25");
@@ -78,10 +81,7 @@ const operation: fc.Arbitrary<Operation> = fc.oneof(
 );
 
 /** How one operation ended. */
-type Outcome = { readonly kind: "done"; readonly changed: number } | { readonly kind: "refused"; readonly reason: RefusalReason } | { readonly kind: "rolled back" };
-
-/** The SQLSTATEs of a deadlock and of a serialization failure: the transaction rolled back, as any may. */
-const ROLLED_BACK = new Set(["40P01", "40001"]);
+type Outcome = { readonly kind: "done"; readonly changed: number } | { readonly kind: "refused"; readonly reason: RefusalReason };
 
 interface Books {
   readonly company: string;
@@ -201,7 +201,7 @@ describe("voucher numbers under parallel bookings, changes, deletions, rollbacks
     return { company, years: [first, second] };
   }
 
-  /** Runs `work` as one transaction, and says how it ended. Any error that is neither a refusal nor a rollback fails the run. */
+  /** Runs `work` as one transaction, and says how it ended. Any error that is not a refusal, a deadlock too, fails the run. */
   async function attempt(client: Client, settings: Settings, work: () => Promise<number>, end: "COMMIT" | "ROLLBACK" = "COMMIT"): Promise<Outcome> {
     try {
       await begin(client, settings);
@@ -210,10 +210,6 @@ describe("voucher numbers under parallel bookings, changes, deletions, rollbacks
       return { kind: "done", changed };
     } catch (error) {
       await client.query("ROLLBACK");
-      const code = (error as { code?: unknown }).code;
-      if (typeof code === "string" && ROLLED_BACK.has(code)) {
-        return { kind: "rolled back" };
-      }
       const refusal = readRefusal(error);
       if (refusal === undefined) {
         throw error;
@@ -284,7 +280,8 @@ describe("voucher numbers under parallel bookings, changes, deletions, rollbacks
       case "strike":
         return attempt(client, settings, async () => {
           const id = await target(client, books, op);
-          if (id === undefined) {
+          // The voucher first, then its row, as every caller does: a deletion locks them in that order.
+          if (id === undefined || (await client.query(LOCK_VOUCHER, [id])).rowCount === 0) {
             return 0;
           }
           const struck = await client.query<{ account_number: number; debit: bigint; credit: bigint }>(
@@ -368,7 +365,7 @@ describe("voucher numbers under parallel bookings, changes, deletions, rollbacks
       /** How often each kind of operation ended in each way, over every run, so the test can show that it did what it says. */
       const seen = new Map<string, number>();
       const tally = (op: Operation, outcome: Outcome): void => {
-        const way = outcome.kind === "done" ? (outcome.changed > 0 ? "done" : "nothing to do") : outcome.kind === "refused" ? outcome.reason : outcome.kind;
+        const way = outcome.kind === "done" ? (outcome.changed > 0 ? "done" : "nothing to do") : outcome.reason;
         seen.set(`${op.kind} ${way}`, (seen.get(`${op.kind} ${way}`) ?? 0) + 1);
       };
       await fc.assert(

@@ -133,12 +133,15 @@ describe("void ranges", () => {
       );
       return { rangeRow: ranges.rows[0]?.row, counterRow: counters.rows[0]?.row, history: found.rows };
     });
+    // The move sets the counter's modified time.
+    const madeAt = String((history[1]?.old_values as { modified_at?: unknown } | undefined)?.modified_at);
+    expect(await isAfter(app, String(counterRow?.["modified_at"]), madeAt)).toBe(true);
     expect(history).toEqual([
       { table_name: "ledger.void_ranges", operation: "INSERT", old_values: null, new_values: rangeRow, actor_id: restorer.actor, actor_kind: "system", transaction },
       {
         table_name: "ledger.voucher_counters",
         operation: "UPDATE",
-        old_values: { ...counterRow, next_number: 1 },
+        old_values: { ...counterRow, next_number: 1, modified_at: madeAt },
         new_values: counterRow,
         actor_id: restorer.actor,
         actor_kind: "system",

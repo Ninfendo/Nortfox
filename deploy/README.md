@@ -110,8 +110,8 @@ Do this only after a failed first start. `--volumes` removes the data and the lo
 Bokföringslagen (1999:1078) 7 kap. 2 §, 3 a § and 4 § say where räkenskapsinformation may be kept:
 
 - In Sweden.
-- Electronic räkenskapsinformation also in another EU country, or in a country with equal rules on mutual assistance, when the company reports the place, and every change of it, to Skatteverket; gives Skatteverket immediate electronic access to the information; and can print it in Sweden at once.
-- Anywhere else, only with Skatteverket's permission.
+- Electronic räkenskapsinformation also in another EU country, or in a country with equal rules on mutual assistance, when the company reports the place, and every change of it, to Skatteverket, or to Finansinspektionen if Finansinspektionen supervises the company; gives Skatteverket or Tullverket, when either asks, immediate electronic access to the information; and can print it in Sweden at once.
+- Anywhere else, only with Skatteverket's permission, or Finansinspektionen's for a company that Finansinspektionen supervises.
 
 This section states the law, and nothing more. It does not settle how the law applies to a backup copy, or where a company keeps its repositories.
 

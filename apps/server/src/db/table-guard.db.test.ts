@@ -3,7 +3,7 @@
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { freshDatabase, type TestDatabase } from "../../test/database.ts";
-import { GUARD_EXCEPTIONS, guardedRelations, tableGuardProblems } from "./table-guard.ts";
+import { GUARD_EXCEPTIONS, KEY_EXCEPTIONS, guardedRelations, tableGuardProblems } from "./table-guard.ts";
 
 const COMPANY = "(company_id = ledger.current_company_id())";
 const READER = "(company_id = ledger.reader_company_id())";
@@ -63,6 +63,7 @@ describe("the table guard", () => {
       "ledger.period_locks",
       "ledger.periods",
       "ledger.reader_roles",
+      "ledger.transaction_actors",
       "ledger.void_ranges",
       "ledger.voucher_counters",
       "ledger.voucher_rows",
@@ -73,8 +74,10 @@ describe("the table guard", () => {
     expect(Object.fromEntries([...GUARD_EXCEPTIONS].map(([table, exception]) => [table, exception.kind]))).toEqual({
       "audit.history": "no history trigger",
       "ledger.reader_roles": "own policies",
+      "ledger.transaction_actors": "not a company table",
       "meta.schema_migrations": "not a company table",
     });
+    expect([...KEY_EXCEPTIONS.keys()]).toEqual(["audit.history_pkey", "ledger.companies_database_number_key", "ledger.reader_roles_role_name_key"]);
     await owner.query("BEGIN");
     try {
       await owner.query("CREATE TABLE ledger.bare (id uuid); CREATE VIEW audit.seen AS SELECT 1 AS one");
@@ -214,7 +217,11 @@ describe("the table guard", () => {
     `;
     const noKey = "ledger.bare: has no primary key of one uuid column, which the history needs as the row's id.";
     expect(await problemsAfter(keyed("uuid PRIMARY KEY"))).toEqual([]);
-    expect(await problemsAfter(keyed("bigint PRIMARY KEY"))).toEqual([noKey, NO_HISTORY]);
+    expect(await problemsAfter(keyed("bigint PRIMARY KEY"))).toEqual([
+      noKey,
+      NO_HISTORY,
+      "ledger.bare: the unique index bare_pkey does not have company_id as a key column, so its check compares the rows of every company.",
+    ]);
     expect(await problemsAfter(keyed("uuid"))).toEqual([noKey, NO_HISTORY]);
     expect(await problemsAfter(`${keyed("uuid")} ALTER TABLE ledger.bare ADD PRIMARY KEY (id, company_id);`)).toEqual([noKey, NO_HISTORY]);
   });
@@ -231,6 +238,34 @@ describe("the table guard", () => {
     expect(
       await problemsAfter(child("CONSTRAINT crossed FOREIGN KEY (company_id, bare_id) REFERENCES ledger.bare (id, company_id)")),
     ).toEqual(["ledger.child: the foreign key crossed to ledger.bare does not include company_id on both sides."]);
+  });
+
+  it("fails a unique key or an exclusion constraint of a company table that leaves company_id out", async () => {
+    const unique = (name: string): string =>
+      `ledger.bare: the unique index ${name} does not have company_id as a key column, so its check compares the rows of every company.`;
+    const exclusion = (name: string): string =>
+      `ledger.bare: the exclusion constraint ${name} does not compare company_id with =, so its check compares the rows of every company.`;
+    expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare (note);`)).toEqual([unique("bare_note")]);
+    expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ADD CONSTRAINT bare_note_unique UNIQUE (note);`)).toEqual([unique("bare_note_unique")]);
+    expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ADD CONSTRAINT bare_apart EXCLUDE USING gist (note WITH =);`)).toEqual([exclusion("bare_apart")]);
+    // company_id must be a key column: in INCLUDE, in the WHERE or inside an expression it is not.
+    expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare (note) INCLUDE (company_id);`)).toEqual([unique("bare_note")]);
+    expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare (note) WHERE company_id IS NOT NULL;`)).toEqual([unique("bare_note")]);
+    expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare ((company_id::text), note);`)).toEqual([unique("bare_note")]);
+    // An exclusion constraint must compare company_id with =.
+    expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ADD CONSTRAINT bare_apart EXCLUDE USING gist (company_id WITH <>, note WITH =);`)).toEqual([
+      exclusion("bare_apart"),
+    ]);
+    // A primary key of one uuid column is the one key without company_id; one of another type is not.
+    expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ADD COLUMN number bigint; CREATE UNIQUE INDEX bare_number ON ledger.bare (number);`)).toEqual([
+      unique("bare_number"),
+    ]);
+    // With company_id as a key column, or compared with =, each passes, a partial one too.
+    expect(
+      await problemsAfter(`${GUARDED}
+        CREATE UNIQUE INDEX bare_note ON ledger.bare (note, company_id) WHERE note IS NOT NULL;
+        ALTER TABLE ledger.bare ADD CONSTRAINT bare_apart EXCLUDE USING gist (company_id WITH =, note WITH =);`),
+    ).toEqual([]);
   });
 
   it.each([

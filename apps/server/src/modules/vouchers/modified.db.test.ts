@@ -2,26 +2,29 @@
 
 // The modified time (rule 24 of the slice): every accepted change to a
 // voucher or its rows moves the voucher's modified time, and a refused change
-// moves nothing. A booking never moves its series' modified time, since the
-// counter is a table of its own. The accounts' and the series' own modified
-// times are tested with them.
+// moves nothing. Every move of a series' next number, by a booking, by the
+// deletion of the last voucher or by a void range, moves the series' modified
+// time as lastmodified reads it, as in the established system, where a booked
+// voucher moves its series' lastmodified. The counter keeps that time, and the
+// series' lastmodified is the later of its own and its counter's. The
+// accounts' and the series' own modified times are tested with them.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import { expectError, expectRefusal, failureOf, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import {
-  SERIES_COLUMNS,
   addBooks,
   balanced,
   bookVoucher,
   isAfter,
+  recordVoidRange,
   setLock,
   someUser,
   voucherOf,
   writeRow,
+  writeVoucher,
   type Books,
   type Voucher,
-  type VoucherSeries,
 } from "../../../test/ledger.ts";
 
 /** PostgreSQL's SQLSTATE for a NOT NULL column that refused a value. */
@@ -30,11 +33,13 @@ const NOT_NULL_VIOLATION = "23502";
 describe("a voucher's modified time", () => {
   let db: TestDatabase;
   let app: Client;
+  let owner: Client;
   const who = someUser();
 
   beforeAll(async () => {
     db = await freshDatabase();
     app = await db.connect("app");
+    owner = await db.connect("owner");
   });
 
   afterAll(async () => {
@@ -92,17 +97,64 @@ describe("a voucher's modified time", () => {
     expect(await voucherOf(app, books.company, voucher.id)).toEqual(voucher);
   });
 
-  it("never moves the series' modified time: a booking and a deletion only move its counter", async () => {
+  /** The series A of the books' year: its own modified time, its counter's, the next number, and lastmodified, the later of the two times. */
+  async function seriesA(books: Books): Promise<{ own: string; counter: string; next: number; lastmodified: string }> {
+    return inTransaction(app, { company: books.company }, async () => {
+      const found = await app.query<{ own: string; counter: string; next: number; lastmodified: string }>(
+        `SELECT s.modified_at::text AS own, c.modified_at::text AS counter, c.next_number AS next,
+           greatest(s.modified_at, c.modified_at)::text AS lastmodified
+         FROM ledger.voucher_series AS s JOIN ledger.voucher_counters AS c ON c.series_id = s.id
+         WHERE s.fiscal_year_id = $1 AND s.code = 'A'`,
+        [books.year.id],
+      );
+      const [row] = found.rows;
+      if (row === undefined) {
+        throw new Error("The books have no series A.");
+      }
+      return row;
+    });
+  }
+
+  it("moves the series' modified time with every move of its next number: a booking, a deletion and a void range", async () => {
     const books = await addBooks(app);
-    const read = async (): Promise<VoucherSeries | undefined> =>
-      inTransaction(app, { company: books.company }, async () => {
-        const found = await app.query<VoucherSeries>(`SELECT ${SERIES_COLUMNS} FROM ledger.voucher_series WHERE fiscal_year_id = $1 AND code = 'A'`, [books.year.id]);
-        return found.rows[0];
-      });
-    const series = await read();
-    const voucher = await booked(books);
-    await asApp(books.company, "UPDATE ledger.vouchers SET description = 'Ny text' WHERE id = $1", [voucher.id]);
-    await asApp(books.company, "DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id]);
-    expect(await read()).toEqual(series);
+    let before = await seriesA(books);
+    expect(before.counter).toBe(before.lastmodified);
+    let last: Voucher | undefined;
+    const moves: readonly (readonly [string, () => Promise<unknown>])[] = [
+      ["a booking", async () => (last = await booked(books))],
+      ["the deletion of the last voucher", () => asApp(books.company, "DELETE FROM ledger.vouchers WHERE id = $1", [last?.id])],
+      ["a void range", () => recordVoidRange(owner, books.company, { year: books.year.id, code: "A", first: 1, last: 2 })],
+    ];
+    for (const [move, run] of moves) {
+      await run();
+      const after = await seriesA(books);
+      expect(after.next, move).not.toBe(before.next);
+      expect(await isAfter(app, after.counter, before.counter), move).toBe(true);
+      expect(after.lastmodified, move).toBe(after.counter);
+      // The series' own row stays as it was: a booking never writes it.
+      expect(after.own, move).toBe(before.own);
+      before = after;
+    }
+  });
+
+  it("leaves the series' modified time with a booking that is refused or rolled back, a deletion that is refused, and a change of a voucher", async () => {
+    const books = await addBooks(app);
+    const first = await booked(books);
+    await booked(books);
+    const before = await seriesA(books);
+    await expectRefusal(
+      bookVoucher(app, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: [{ account: 6110, debit: 1n }] }, who),
+      "too_few_rows",
+    );
+    const rolledBack = await failureOf(
+      inTransaction(app, { company: books.company, ...who }, async () => {
+        await writeVoucher(app, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced(2000n) });
+        throw new Error("rolled back");
+      }),
+    );
+    expect(String(rolledBack)).toContain("rolled back");
+    await expectRefusal(asApp(books.company, "DELETE FROM ledger.vouchers WHERE id = $1", [first.id]), "not_last_in_series");
+    await asApp(books.company, "UPDATE ledger.vouchers SET description = 'Ny text' WHERE id = $1", [first.id]);
+    expect(await seriesA(books)).toEqual(before);
   });
 });

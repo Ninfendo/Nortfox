@@ -15,6 +15,11 @@
 // - the refuse_truncate trigger;
 // - company_id in every foreign key to another company table, because a
 //   foreign key check skips row level security;
+// - company_id as a key column of every unique index, and compared with = in
+//   every exclusion constraint, because their checks skip row level security
+//   too: one company could learn from the error whether another company holds
+//   a value. A primary key of one uuid column, and the pinned KEY_EXCEPTIONS,
+//   leave it out;
 // - nortfox_owner as its owner.
 // And every table and view: privileges only for the app (never TRUNCATE,
 // REFERENCES or TRIGGER) and for the readers (only SELECT). A view reads with
@@ -61,6 +66,13 @@ export type GuardException =
 /** The tables the guard holds to other rules. A test pins the list. */
 export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<string, GuardException>([
   ["meta.schema_migrations", { kind: "not a company table", why: "It holds no company data: it is the runner's list of applied migrations." }],
+  [
+    "ledger.transaction_actors",
+    {
+      kind: "not a company table",
+      why: "It holds no company data: it keeps the actor of each backend's writing transaction, so the transaction keeps one actor. Only the owner reads and writes it.",
+    },
+  ],
   ["audit.history", { kind: "no history trigger", why: "It is the behandlingshistorik itself." }],
   [
     "ledger.reader_roles",
@@ -70,6 +82,17 @@ export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<str
       policies: [OWNER_POLICY, { role: READER, command: "SELECT", using: "(role_name = CURRENT_USER)", check: null }],
     },
   ],
+]);
+
+/**
+ * The unique indexes of company tables that may leave company_id out, by
+ * schema-qualified name, and why their checks tell no company anything about
+ * another. A test pins the list.
+ */
+export const KEY_EXCEPTIONS: ReadonlyMap<string, string> = new Map<string, string>([
+  ["audit.history_pkey", "The history's own id is an identity column that only the history trigger writes. No caller gives it."],
+  ["ledger.companies_database_number_key", "The tenant id comes from one sequence for the install. No caller gives it or changes it."],
+  ["ledger.reader_roles_role_name_key", "A reader role is bound to one company. Only the owner writes the bindings, and the app has no access."],
 ]);
 
 const COMMANDS: Readonly<Record<string, string>> = { "*": "ALL", r: "SELECT", a: "INSERT", w: "UPDATE", d: "DELETE" };
@@ -155,6 +178,15 @@ interface PrivilegeRow {
   readonly column: string | null;
 }
 
+interface UniqueRow {
+  readonly relation: string;
+  readonly name: string;
+  readonly qualified: string;
+  readonly exclusion: boolean;
+  readonly uuidKey: boolean;
+  readonly company: boolean;
+}
+
 /** Every table and view the guard reads, by name. */
 export async function guardedRelations(client: ClientBase): Promise<string[]> {
   const found = await client.query<{ relation: string }>(`SELECT r.relation FROM (${RELATIONS}) AS r ORDER BY 1`);
@@ -226,7 +258,50 @@ async function read(client: ClientBase) {
     CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) AS g
     WHERE g.grantee <> c.relowner
     ORDER BY 1, 2, 3, 4`);
-  return { relations: relations.rows, policies: policies.rows, triggers: triggers.rows, keys: keys.rows, privileges: privileges.rows };
+  // Every unique index and every exclusion constraint: whether it is a
+  // primary key of one uuid column, and whether company_id is one of its key
+  // columns, compared with = in an exclusion constraint.
+  const uniques = await client.query<UniqueRow>(`
+    SELECT r.relation, i.relname AS name, n.nspname || '.' || i.relname AS qualified,
+      k.contype IS NOT DISTINCT FROM 'x' AS exclusion,
+      (x.indisprimary AND x.indnkeyatts = 1 AND EXISTS (
+        SELECT FROM pg_catalog.pg_attribute AS a
+        WHERE a.attrelid = x.indrelid AND a.attnum = x.indkey[0] AND a.atttypid = 'pg_catalog.uuid'::pg_catalog.regtype
+      )) AS "uuidKey",
+      EXISTS (
+        SELECT FROM pg_catalog.generate_series(0, x.indnkeyatts - 1) AS p (place)
+        JOIN pg_catalog.pg_attribute AS a ON a.attrelid = x.indrelid AND a.attnum = x.indkey[p.place]
+        WHERE a.attname = 'company_id'
+          AND (
+            k.contype IS DISTINCT FROM 'x'
+            OR (SELECT o.oprname FROM pg_catalog.pg_operator AS o WHERE o.oid = k.conexclop[p.place + 1]) = '='
+          )
+      ) AS company
+    FROM (${RELATIONS}) AS r
+    JOIN pg_catalog.pg_index AS x ON x.indrelid = r.oid
+    JOIN pg_catalog.pg_class AS i ON i.oid = x.indexrelid
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = i.relnamespace
+    LEFT JOIN pg_catalog.pg_constraint AS k ON k.conindid = x.indexrelid AND k.conrelid = x.indrelid AND k.contype IN ('p', 'u', 'x')
+    WHERE x.indisunique OR k.contype = 'x'
+    ORDER BY 1, 2`);
+  return {
+    relations: relations.rows,
+    policies: policies.rows,
+    triggers: triggers.rows,
+    keys: keys.rows,
+    privileges: privileges.rows,
+    uniques: uniques.rows,
+  };
+}
+
+/** The problem of a unique index or an exclusion constraint of a company table, or undefined when it has none. */
+function uniqueProblem(row: UniqueRow): string | undefined {
+  if (row.company || row.uuidKey || KEY_EXCEPTIONS.has(row.qualified)) {
+    return undefined;
+  }
+  return row.exclusion
+    ? `the exclusion constraint ${row.name} does not compare company_id with =, so its check compares the rows of every company.`
+    : `the unique index ${row.name} does not have company_id as a key column, so its check compares the rows of every company.`;
 }
 
 function describePolicy(policy: Policy): string {
@@ -315,6 +390,12 @@ export async function tableGuardProblems(client: ClientBase): Promise<string[]> 
           const paired = key.columns.some((column, place) => column === "company_id" && key.referencedColumns[place] === "company_id");
           if (isCompanyTable.get(key.referenced) === true && !paired) {
             own.push(`the foreign key ${key.name} to ${key.referenced} does not include company_id on both sides.`);
+          }
+        }
+        for (const unique of of(catalog.uniques)) {
+          const problem = uniqueProblem(unique);
+          if (problem !== undefined) {
+            own.push(problem);
           }
         }
       }

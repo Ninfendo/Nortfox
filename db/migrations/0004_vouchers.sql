@@ -8,10 +8,21 @@
 -- As in 0001: every name of ours is written in full, every function pins its
 -- search path, and every trigger function runs with the owner's rights.
 --
--- Locks are taken in one order, so two transactions never wait for each
--- other in a circle: a voucher's fiscal year (FOR SHARE), then the voucher a
--- booking reverses, then the series' counter. A deletion locks its voucher,
--- then the counter.
+-- The locks. A booking, a change and a deletion of a voucher each lock what
+-- the period lock reads, FOR SHARE, in this order: the voucher's fiscal year,
+-- its series, and the company's automatic lock row (ledger.assert_voucher_open).
+-- A booking then locks the voucher it reverses, then the series' counter. A
+-- deletion locks its voucher first, as its statement's target, then those
+-- three rows, then the counter, and then its own rows, by the cascade. A
+-- change of a row locks the row first, as its statement's target, then its
+-- voucher, then those three rows.
+-- So a row change and a deletion of the same voucher take the voucher and the
+-- row in opposite orders, and can deadlock: every caller that changes a row
+-- first locks its voucher (SELECT ... FROM ledger.vouchers WHERE id = ...
+-- FOR NO KEY UPDATE). A change of a fiscal year's dates or of a series'
+-- closing mark locks only that row, and a change of a lock date locks its own
+-- row and then the automatic lock row, so none of them waits in a circle with
+-- a single change of a voucher.
 
 -- Vouchers --------------------------------------------------------------------
 --
@@ -121,13 +132,17 @@ CREATE INDEX voucher_rows_by_account ON ledger.voucher_rows (company_id, fiscal_
 -- Deleting a voucher moves it here, with every column it had, and its rows
 -- with every column they had and their account's name at the deletion. Each
 -- deletion is its own entry, with how many times its number has been deleted
--- in its series and year (1, 2, ...), and who deleted it and when. Its id is
--- the deleted voucher's own id, and each row's id is the row's own. Only the
--- deletion writes the record, and no role changes or deletes it. The series
--- stays while the record names it.
+-- in its series and year (1, 2, ...), and who deleted it and when. An entry
+-- and each of its rows have an id of their own, and keep the deleted
+-- voucher's id in voucher_id and each row's id in row_id. So the deletion of
+-- a voucher whose id an earlier deleted voucher had, here or in another
+-- company, is an entry of its own too. Only the deletion writes the record,
+-- and no role changes or deletes it. The series stays while the record names
+-- it.
 
 CREATE TABLE ledger.deleted_vouchers (
-  id uuid PRIMARY KEY,
+  id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+  voucher_id uuid NOT NULL,
   company_id uuid NOT NULL,
   fiscal_year_id uuid NOT NULL,
   series_code text NOT NULL,
@@ -160,7 +175,8 @@ CREATE TABLE ledger.deleted_vouchers (
 );
 
 CREATE TABLE ledger.deleted_voucher_rows (
-  id uuid PRIMARY KEY,
+  id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
+  row_id uuid NOT NULL,
   company_id uuid NOT NULL,
   deleted_voucher_id uuid NOT NULL,
   fiscal_year_id uuid NOT NULL,
@@ -239,6 +255,38 @@ BEGIN
 END
 $year$;
 
+-- Refuses the transaction's actor a voucher whose date `day` is locked for it
+-- (ledger.assert_open), in the voucher's fiscal year and series. What the
+-- lock says depends on rows that other transactions can change: the lock
+-- dates and the automatic lock, the end of the fiscal year, which places the
+-- automatic lock at 60 days after it, and the series' closing mark. So it
+-- locks the year's row and the series' row FOR SHARE until the transaction
+-- ends, and reads the mark from the locked row; ledger.assert_open then locks
+-- the automatic lock row. A change of the year's dates or of the mark waits
+-- for an open change of a voucher, and a change of a voucher waits for an
+-- open change of either, and then reads it. Of the years' ends, only the
+-- voucher's own year's matters: the automatic lock reaches a date of that
+-- year only once some year that ends on or after the date ended 60 days ago,
+-- and every such year ends no earlier than the voucher's own.
+CREATE FUNCTION ledger.assert_voucher_open(company uuid, fiscal_year uuid, series_code text, day date) RETURNS void
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $open$
+DECLARE
+  closing boolean;
+BEGIN
+  PERFORM 1 FROM ledger.fiscal_years AS y
+  WHERE y.company_id = assert_voucher_open.company AND y.id = assert_voucher_open.fiscal_year
+  FOR SHARE;
+  SELECT s.is_closing INTO closing
+  FROM ledger.voucher_series AS s
+  WHERE s.company_id = assert_voucher_open.company AND s.fiscal_year_id = assert_voucher_open.fiscal_year
+    AND s.code = assert_voucher_open.series_code
+  FOR SHARE;
+  PERFORM ledger.assert_open(assert_voucher_open.company, assert_voucher_open.day, closing);
+END
+$open$;
+
 -- How many vouchers hold a row on the account, struck rows included. A
 -- deleted voucher holds none: its rows are in the record.
 CREATE OR REPLACE FUNCTION ledger.account_voucher_count(company uuid, fiscal_year uuid, account_number integer) RETURNS bigint
@@ -316,7 +364,7 @@ BEGIN
   IF char_length(NEW.comments) > 1000 THEN
     PERFORM ledger.refuse('value_too_long', jsonb_build_object('field', 'comments', 'value', NEW.comments));
   END IF;
-  SELECT s.manual, s.is_closing INTO series
+  SELECT s.manual INTO series
   FROM ledger.voucher_series AS s
   WHERE s.company_id = NEW.company_id AND s.fiscal_year_id = NEW.fiscal_year_id AND s.code = NEW.series_code;
   IF NOT FOUND THEN
@@ -326,7 +374,7 @@ BEGIN
     PERFORM ledger.refuse('series_not_manual', jsonb_build_object('code', NEW.series_code));
   END IF;
   PERFORM ledger.assert_in_own_year(NEW.company_id, NEW.fiscal_year_id, NEW.transaction_date);
-  PERFORM ledger.assert_open(NEW.company_id, NEW.transaction_date, series.is_closing);
+  PERFORM ledger.assert_voucher_open(NEW.company_id, NEW.fiscal_year_id, NEW.series_code, NEW.transaction_date);
   IF NEW.reverses_voucher_id IS NOT NULL THEN
     -- The old voucher stays locked until the transaction ends, so a second
     -- reversing voucher booked at the same time waits and then sees this
@@ -485,7 +533,6 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $alter$
 DECLARE
-  is_closing boolean;
   actor record;
   stamp timestamptz;
 BEGIN
@@ -548,12 +595,9 @@ BEGIN
   IF NEW.transaction_date IS DISTINCT FROM OLD.transaction_date THEN
     PERFORM ledger.assert_in_own_year(NEW.company_id, NEW.fiscal_year_id, NEW.transaction_date);
   END IF;
-  SELECT s.is_closing INTO is_closing
-  FROM ledger.voucher_series AS s
-  WHERE s.company_id = OLD.company_id AND s.fiscal_year_id = OLD.fiscal_year_id AND s.code = OLD.series_code;
-  PERFORM ledger.assert_open(OLD.company_id, OLD.transaction_date, is_closing);
+  PERFORM ledger.assert_voucher_open(OLD.company_id, OLD.fiscal_year_id, OLD.series_code, OLD.transaction_date);
   IF NEW.transaction_date IS DISTINCT FROM OLD.transaction_date THEN
-    PERFORM ledger.assert_open(NEW.company_id, NEW.transaction_date, is_closing);
+    PERFORM ledger.assert_voucher_open(NEW.company_id, NEW.fiscal_year_id, NEW.series_code, NEW.transaction_date);
   END IF;
   IF pg_trigger_depth() < 2 AND OLD.created_xact <> pg_current_xact_id()
     AND (NEW.description IS DISTINCT FROM OLD.description OR NEW.transaction_date IS DISTINCT FROM OLD.transaction_date) THEN
@@ -588,11 +632,10 @@ BEGIN
   IF NEW.company_id IS DISTINCT FROM ledger.current_company_id() THEN
     RETURN NEW;
   END IF;
-  SELECT v.fiscal_year_id, v.transaction_date, v.created_xact, s.is_closing INTO voucher
+  SELECT v.fiscal_year_id, v.series_code, v.transaction_date, v.created_xact INTO voucher
   FROM ledger.vouchers AS v
-  JOIN ledger.voucher_series AS s ON s.company_id = v.company_id AND s.fiscal_year_id = v.fiscal_year_id AND s.code = v.series_code
   WHERE v.company_id = NEW.company_id AND v.id = NEW.voucher_id
-  FOR NO KEY UPDATE OF v;
+  FOR NO KEY UPDATE;
   has_voucher := FOUND;
   IF NEW.fiscal_year_id IS NOT NULL THEN
     PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'fiscal_year_id', 'operation', 'create'));
@@ -638,8 +681,10 @@ BEGIN
   IF char_length(NEW.transaction_information) > 100 THEN
     PERFORM ledger.refuse('value_too_long', jsonb_build_object('field', 'transaction_information', 'value', NEW.transaction_information));
   END IF;
+  -- A row of the booking's own transaction is part of the booking, which was
+  -- checked for the transaction's one actor (ledger.current_actor).
   IF voucher.created_xact <> pg_current_xact_id() THEN
-    PERFORM ledger.assert_open(NEW.company_id, voucher.transaction_date, voucher.is_closing);
+    PERFORM ledger.assert_voucher_open(NEW.company_id, voucher.fiscal_year_id, voucher.series_code, voucher.transaction_date);
   END IF;
   NEW.position := (
     SELECT COALESCE(max(r.position), 0) + 1 FROM ledger.voucher_rows AS r WHERE r.company_id = NEW.company_id AND r.voucher_id = NEW.voucher_id
@@ -652,11 +697,14 @@ BEGIN
 END
 $add$;
 
--- A change to a row: only its text changes, and it can be struck. Its
--- account, debit, credit, position, quantity, voucher, year and created
--- stamps never change, a struck row never loses its mark, and who struck it
--- and when never change (immutable_field). The period lock applies by the voucher's date. A
--- strike gets who struck the row and when from the transaction.
+-- A change to a row: only its text changes, and it can be struck, though not
+-- in the booking's own transaction. Its account, debit, credit, position,
+-- quantity, voucher, year and created stamps never change, a struck row never
+-- loses its mark, and who struck it and when never change (immutable_field).
+-- The period lock applies by the voucher's date. A strike gets who struck the
+-- row and when from the transaction. The row is locked as the statement's
+-- target before this trigger locks its voucher, so the caller locks the
+-- voucher first (the lock order at the top of this file).
 CREATE FUNCTION ledger.voucher_rows_alter() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -713,12 +761,18 @@ BEGIN
   IF char_length(NEW.transaction_information) > 100 THEN
     PERFORM ledger.refuse('value_too_long', jsonb_build_object('field', 'transaction_information', 'value', NEW.transaction_information));
   END IF;
-  SELECT v.transaction_date, s.is_closing INTO voucher
+  SELECT v.fiscal_year_id, v.series_code, v.transaction_date, v.created_xact INTO voucher
   FROM ledger.vouchers AS v
-  JOIN ledger.voucher_series AS s ON s.company_id = v.company_id AND s.fiscal_year_id = v.fiscal_year_id AND s.code = v.series_code
   WHERE v.company_id = OLD.company_id AND v.id = OLD.voucher_id
-  FOR NO KEY UPDATE OF v;
-  PERFORM ledger.assert_open(OLD.company_id, voucher.transaction_date, voucher.is_closing);
+  FOR NO KEY UPDATE;
+  -- A new voucher has no struck row: the established system's new voucher
+  -- takes a row away before it is booked, and striking is a change by Ändra.
+  -- So a strike in the booking's own transaction is refused, as a row made
+  -- struck is, and a booked voucher never holds fewer than two rows that count.
+  IF NEW.removed AND NOT OLD.removed AND voucher.created_xact = pg_current_xact_id() THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'removed', 'operation', 'create'));
+  END IF;
+  PERFORM ledger.assert_voucher_open(OLD.company_id, voucher.fiscal_year_id, voucher.series_code, voucher.transaction_date);
   IF NEW.removed AND NOT OLD.removed THEN
     SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
     NEW.removed_at := clock_timestamp();
@@ -783,7 +837,9 @@ $keep$;
 -- two checks here: the record holds no voucher that could not have been
 -- booked. Then it moves to the record with its rows, each with its account's
 -- name, as its number's next deletion, with who deleted it and when. The
--- counter goes back by one, and the rows go by the cascade.
+-- counter goes back by one, and the rows go by the cascade. The voucher is
+-- locked as the statement's target before this trigger runs, and its rows
+-- after it, by the cascade (the lock order at the top of this file).
 CREATE FUNCTION ledger.vouchers_delete() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -795,12 +851,13 @@ DECLARE
   actor record;
   stamp timestamptz;
   deletions integer;
+  entry uuid;
 BEGIN
   PERFORM ledger.assert_company(OLD.company_id);
-  SELECT s.id, s.is_closing INTO series
+  PERFORM ledger.assert_voucher_open(OLD.company_id, OLD.fiscal_year_id, OLD.series_code, OLD.transaction_date);
+  SELECT s.id INTO series
   FROM ledger.voucher_series AS s
   WHERE s.company_id = OLD.company_id AND s.fiscal_year_id = OLD.fiscal_year_id AND s.code = OLD.series_code;
-  PERFORM ledger.assert_open(OLD.company_id, OLD.transaction_date, series.is_closing);
   SELECT c.next_number INTO counter
   FROM ledger.voucher_counters AS c
   WHERE c.company_id = OLD.company_id AND c.series_id = series.id
@@ -823,7 +880,7 @@ BEGIN
     WHERE d.company_id = OLD.company_id AND d.fiscal_year_id = OLD.fiscal_year_id AND d.series_code = OLD.series_code AND d.number = OLD.number
   );
   INSERT INTO ledger.deleted_vouchers (
-    id, company_id, fiscal_year_id, series_code, number, description, comments, transaction_date, reference_type, reference_number,
+    voucher_id, company_id, fiscal_year_id, series_code, number, description, comments, transaction_date, reference_type, reference_number,
     reverses_voucher_id, created_at, created_by, created_by_kind, created_xact, modified_at, altered_at, altered_by, altered_by_kind,
     deletion_count, deleted_at, deleted_by, deleted_by_kind, deleted_xact
   ) VALUES (
@@ -831,12 +888,13 @@ BEGIN
     OLD.reference_type, OLD.reference_number, OLD.reverses_voucher_id, OLD.created_at, OLD.created_by, OLD.created_by_kind,
     OLD.created_xact, OLD.modified_at, OLD.altered_at, OLD.altered_by, OLD.altered_by_kind,
     deletions, stamp, actor.actor_id, actor.actor_kind, pg_current_xact_id()
-  );
+  )
+  RETURNING id INTO entry;
   INSERT INTO ledger.deleted_voucher_rows (
-    id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit, transaction_information, quantity,
+    row_id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit, transaction_information, quantity,
     removed, removed_at, removed_by, removed_by_kind, created_at, created_by, created_by_kind, account_description
   )
-  SELECT r.id, r.company_id, r.voucher_id, r.fiscal_year_id, r.position, r.account_number, r.debit, r.credit, r.transaction_information, r.quantity,
+  SELECT r.id, r.company_id, entry, r.fiscal_year_id, r.position, r.account_number, r.debit, r.credit, r.transaction_information, r.quantity,
     r.removed, r.removed_at, r.removed_by, r.removed_by_kind, r.created_at, r.created_by, r.created_by_kind, a.description
   FROM ledger.voucher_rows AS r
   JOIN ledger.accounts AS a ON a.company_id = r.company_id AND a.fiscal_year_id = r.fiscal_year_id AND a.number = r.account_number
@@ -871,7 +929,7 @@ $append$;
 -- up by one when the voucher with the old next number was booked in the same
 -- transaction, and back by one while the voucher with the new next number is
 -- being deleted: it is in the record from this transaction, and not yet out
--- of the vouchers.
+-- of the vouchers. Each accepted move sets the modified time.
 CREATE OR REPLACE FUNCTION ledger.voucher_counters_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -883,6 +941,7 @@ BEGIN
     PERFORM ledger.refuse('internal_only', jsonb_build_object('table', 'ledger.voucher_counters', 'field', CASE WHEN TG_OP = 'UPDATE' THEN 'next_number' END));
   END IF;
   IF TG_OP = 'INSERT' THEN
+    NEW.modified_at := clock_timestamp();
     RETURN NEW;
   END IF;
   IF TG_OP = 'DELETE' THEN
@@ -906,6 +965,7 @@ BEGIN
       AND v.first_number = OLD.next_number AND v.last_number + 1 = NEW.next_number
       AND v.created_xact = pg_current_xact_id()
   ) THEN
+    NEW.modified_at := clock_timestamp();
     RETURN NEW;
   END IF;
   IF NEW.next_number = OLD.next_number + 1 AND EXISTS (
@@ -913,14 +973,16 @@ BEGIN
     WHERE v.company_id = NEW.company_id AND v.fiscal_year_id = series.fiscal_year_id AND v.series_code = series.code
       AND v.number = OLD.next_number AND v.created_xact = pg_current_xact_id()
   ) THEN
+    NEW.modified_at := clock_timestamp();
     RETURN NEW;
   END IF;
   IF NEW.next_number = OLD.next_number - 1 AND EXISTS (
     SELECT FROM ledger.deleted_vouchers AS d
-    JOIN ledger.vouchers AS v ON v.company_id = d.company_id AND v.id = d.id
+    JOIN ledger.vouchers AS v ON v.company_id = d.company_id AND v.id = d.voucher_id
     WHERE d.company_id = NEW.company_id AND d.fiscal_year_id = series.fiscal_year_id AND d.series_code = series.code
       AND d.number = NEW.next_number AND d.deleted_xact = pg_current_xact_id()
   ) THEN
+    NEW.modified_at := clock_timestamp();
     RETURN NEW;
   END IF;
   PERFORM ledger.refuse('counter_move', jsonb_build_object('series', series.code, 'from', OLD.next_number, 'to', NEW.next_number));
@@ -932,7 +994,11 @@ $rules$;
 -- neither a period nor a voucher of the year outside it. A booking and a
 -- change of a voucher's date lock the year's row FOR SHARE until their
 -- transaction ends, and writes run at READ COMMITTED
--- (ledger.assert_read_committed), so this count sees every voucher.
+-- (ledger.assert_read_committed), so this count sees every voucher. The
+-- year's end also places the automatic lock, at 60 days after it, so every
+-- booking, change and deletion of one of the year's vouchers locks the year's
+-- row FOR SHARE too (ledger.assert_voucher_open): a change of the year's
+-- dates waits for each, and each waits for it and then reads the new end.
 CREATE OR REPLACE FUNCTION ledger.fiscal_years_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
