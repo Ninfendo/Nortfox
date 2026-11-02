@@ -69,7 +69,7 @@ Format with `Intl.NumberFormat('sv-SE')`. The API always sends and receives amou
 
 ## 4. Locked, with its reason
 
-Vouchers in a locked period, locked periods, closed financial years, filed reports, settings controlled by something else, missing permissions. All are shown read-only, never hidden, never greyed out without explanation.
+Vouchers in a locked period, locked periods, filed reports, settings controlled by something else, missing permissions. All are shown read-only, never hidden, never greyed out without explanation.
 
 A locked state says, in the words of its source:
 1. **What** is locked and who locked it, through which date: `Karin Ek har låst perioden t.o.m. 2026-09-30.` An automatic lock reads `Bokföringsdatumet ligger i en automatlåst period.`

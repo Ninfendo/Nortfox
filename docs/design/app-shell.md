@@ -30,7 +30,7 @@ Modules are collapsible groups; each opens to its sections, drawn indented with 
 Order for the first release:
 
 1. **Inkorg** (count badge): receipts and documents waiting to be booked
-2. **Bokföring**: Verifikationer, Kontoplan, Periodiseringar, Dagskassa, Avstämning, Budget
+2. **Bokföring**: Verifikationer, Registrera dagskassa, Registrera kvitto, Kontoplan, Periodiseringar, Avstämning, Budget
 3. **Bank**: Bankhändelser, Bokföringsregler, Betalningar
 4. **Leverantörer** (count of invoices to approve): Leverantörsfakturor, Leverantörsregister
 5. **Moms och rapporter**: Momsrapport, Periodisk sammanställning, Rapporter, Behandlingshistorik
@@ -63,14 +63,14 @@ API: `GET /companies?query=&cursor=`, `GET /me/companies/recent`, `POST /session
 
 ## Financial year switcher
 
-In the top bar, right side, left of search: `calendar` icon (or `lock` when the year is locked), `Räkenskapsår 2026`, chevron.
+In the top bar, right side, left of search: `calendar` icon, `Räkenskapsår 2026`, chevron.
 
 Popover (340 px), one row per year, newest first:
-- Year, range (`2026-01-01 till 2026-12-31`), one line of state (`Perioder till och med 2026-09 är låsta.`), and a badge: `Öppet` (ok) or `Låst` (neutral).
-- Locked years are selectable. Everything in them is read-only, and the page shows the year's lock reason. Actions that create entries show `Låst år, kan inte bokföras` next to them.
+- Year, range (`2026-01-01 till 2026-12-31`), and one line of state: the period lock as it applies to the current user, for example `Perioder till och med 2026-09 är låsta.` A year has no open or closed state of its own; a whole year is locked with the period lock, through its last date.
+- Every year is selectable. Booking in a locked period follows [screens/vouchers.md](screens/vouchers.md): `Bokför` stays enabled, a refused booking names who locked and through which date, and the company's closing series is never locked.
 - Footer: `Räkenskapsår och perioder` (settings) and `Nytt räkenskapsår`.
 
-The selected year is part of the URL so links and the API agree. API: `GET /financial-years`, each with `locked`.
+The selected year is part of the URL so links and the API agree. API: `GET /financial-years`, each with `lockedThrough`: the date the periods are locked through for the current user.
 
 ## Search and commands
 

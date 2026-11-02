@@ -1,6 +1,6 @@
 # Screen spec: vouchers (Verifikationer)
 
-Applies [../rules.md](../rules.md) and [../app-shell.md](../app-shell.md). Where this spec and rules.md differ, this spec wins.
+Applies [../rules.md](../rules.md) and [../app-shell.md](../app-shell.md). Where this spec differs from rules.md or app-shell.md, this spec wins.
 
 This spec copies the behaviour of an established voucher workflow, called "the reference" below: its steps, fields, field order, keys and messages. The look is NortFox's own.
 
@@ -9,7 +9,7 @@ Screens: the voucher list, the voucher form in its five modes (new, copy, revers
 ## How vouchers behave
 
 - **No Save.** The voucher form has two actions, `Avbryt` and `Bokför`. An unbooked voucher has no number and is not stored on the server.
-- **An unfinished form is kept in this browser only.** Leaving the form does not ask. Opening `Skapa verifikation` again brings the form back with the notice `Du har en påbörjad registrering, klicka här för att rensa den ifyllda informationen.` Clicking `klicka här` empties it. `Avbryt` empties it and goes to the list without asking. One unbooked form is kept per browser.
+- **An unfinished form is kept in this browser only.** Leaving the form does not ask. Opening `Skapa verifikation` again brings the form back with the notice `Du har en påbörjad registrering, klicka här för att rensa den ifyllda informationen.` Clicking `klicka här` empties it. `Avbryt` empties it and goes to the list without asking. One unbooked form is kept per browser. What `Skapa verifikation` and `Alt N` do on a form that already holds an unfinished entry is open (see Open points).
 - **The number is a preview until booking.** The title shows the next number with an asterisk: `Verifikation A143*`. `Bokför` gives the number, shows `Verifikation A143 har skapats.` with a print icon, and opens an empty form for the next number in the same series.
 - **A booked voucher can still be changed** with `Ändra`, reversed with `Ändringsverifikation`, and deleted with `Radera` when it is the last in its series.
 - **The period lock makes vouchers final.** In a locked period nothing can be booked, changed or deleted. The series the company names as its closing series (`Bokslutsserie (Ej låsbar serie)`) is not locked. In the examples it is I.
@@ -31,6 +31,8 @@ Every control maps to one of these. MCP tools call the same operations. A vouche
 | `PUT /vouchers/{series}/{number}/comment?financialyear=` | `Kommentar`, `Spara` on a booked voucher |
 | `GET /vouchers/{series}/{number}/pdf?financialyear=` | `Skriv ut`, the print icon in the `har skapats` toast, `Bokför och skriv ut` |
 | `POST /inbox/documents`, `POST /vouchers/{series}/{number}/attachments?financialyear= {inboxDocumentId}` | Underlag. Files picked before booking are uploaded to the inbox and linked when the voucher is booked |
+| `DELETE /vouchers/{series}/{number}/attachments/{id}?financialyear=` | `Koppla bort` in the Underlag panel. The file goes back to the inbox and the processing history logs the unlinking |
+| `GET /inbox/documents/{id}/file` | `Ladda ner`, rotate and zoom in the Underlag panel |
 | `GET /inbox/documents?linked=false` | Underlag panel: the inbox list, its refresh icon, `Hantera i Inkorgen` |
 | `GET /settings/inbox-addresses` | The company's mail-in address for vouchers: the list's tool row (section 1) and `E-posta bild` in the Underlag panel |
 | `GET /voucher-series?financialyear=` | `Verifikationsserie` on the form and the list filter; which series is the closing series and which allow manual entry |
@@ -41,7 +43,7 @@ Every control maps to one of these. MCP tools call the same operations. A vouche
 | `GET /quick-texts` | The quick texts behind the Beskrivning chevron |
 | `GET /registration-templates?type=receipt\|daily-takings` | The `Mall` list on the registration screens |
 | `GET /registration-templates/{id}` | One template's body: groups, rows, series, the description it prefills |
-| `GET /me/settings/voucher-entry`, `PUT /me/settings/voucher-entry {transactionInfoInTabOrder, showAccountBalanceColumn}` | The two user options on the voucher form |
+| `GET /settings/voucher-entry`, `PUT /settings/voucher-entry {transactionInfoEnabled, transactionInfoInTabOrder, showAccountBalanceColumn}` | The Konteringsvy options (section 2), set in Inställningar, Bokföring, Konteringsvy |
 | `GET /settings/locked-period` | Lock reasons |
 
 Refusals come back as 422 with the message the screen shows (the texts in section 2) and a pointer to the field or row. A locked period answers with the lock message.
@@ -52,7 +54,7 @@ Refusals come back as 422 with the message the screen shows (the texts in sectio
 - **Tool row, right:** the company's mail-in address for vouchers (a mailto link; documents sent there land in the inbox) and `Skriv ut lista`, which prints the current list.
 - **Filter row:** `Verifikationsserie`: `Alla`, then every series as letter and name.
 - **Table toolbar, right:** row height (cycles medium, large, small), page size (10, 25, 50, 75, 100), the total (`av 16`), and the pager: first, previous, page numbers, next, last.
-- **Columns:** Verifikationsnummer (series and number), Bokföringsdatum, Beskrivning, Belopp (the debit total, right-aligned), an icon column, and the row action `Kopiera`. The icon column has a person icon whose tooltip reads `Skapad: 2026-10-14 Av: Karin Ek`, and a speech bubble when the voucher has a comment.
+- **Columns:** Verifikationsnummer (series and number), Bokföringsdatum, Beskrivning, Belopp (the debit total, right-aligned), an icon column, and the row action `Kopiera`. The icon column has a picture symbol when the voucher has a linked file (no count), a person icon whose tooltip reads `Skapad: 2026-10-14 Av: Karin Ek`, and a speech bubble when the voucher has a comment.
 - **Sort:** Verifikationsnummer ascending by default, per series and then by number, so B9 comes before B10. Verifikationsnummer, Bokföringsdatum and Beskrivning sort; clicking again reverses. Belopp does not sort.
 - **Remembered in this browser:** sort column and direction, page size, page, row height.
 - **No hits:** the column headers and a total of 0, with no text.
@@ -66,7 +68,7 @@ One full page for every mode. Fixed footer, primary `Bokför` rightmost.
 ### Header
 
 - Left: the title and number, badges, and for a booked voucher a line of history: `Skapad: 2026-10-14 Av: Karin Ek`, `Ändrad: 2026-10-16 Av: Karin Ek`, the source reference for vouchers made by another module (for a customer invoice `Fakturanr: 11`, with the number as a link to the invoice), and the links `Rättelsepost avser: A138` and `Rättelsepost finns: A140` (each opens the other voucher).
-- Right: `Visa lista` (goes to the voucher list), `Underlag n`, `Kommentar`, `Skriv ut` (disabled on the new, copy and reversing forms until the voucher is booked, reason `Skriv ut går när verifikationen är bokförd.`), `Kopiera` (not on unbooked forms), first, previous, next and last voucher (by series and number), and `Skapa verifikation` (in every mode; on the new form it opens a fresh form).
+- Right: `Visa lista` (goes to the voucher list), `Underlag n`, `Kommentar`, `Skriv ut` (disabled on the new, copy and reversing forms until the voucher is booked, reason `Skriv ut går när verifikationen är bokförd.`), `Kopiera` (not on unbooked forms), first, previous, next and last voucher (by series and number), and `Skapa verifikation` (in every mode; on an empty new form it opens a fresh form; on a form that holds an unfinished entry, see Open points).
 - The four arrows show on a voucher opened from the list, both booked and in Ändra. They do not show when the voucher's address is opened directly, and never on the new, copy or reversing form.
 - No shortcuts are shown on the screen.
 
@@ -95,21 +97,21 @@ Row tools:
 
 Column header tools: on the new, copy and reversing forms an icon that clears all rows; in Ändra an icon that strikes all existing rows.
 
-The settings button under the rows holds two user options, saved for the user: `Låt transaktionsinfo ingå vid tabb-/enterinmatning` (off by default) and `Visa kontosaldokolumn i konteringsvyn` (on by default; off hides the Kontosaldo column).
+The options for this form are set in Inställningar, Bokföring, Konteringsvy (out of scope here, like the period-lock screen). That section has its own `Spara`, a link to Snabbtexter and three Ja/Nej options: `Aktivera transaktionsinfo` (Ja in the test company), `Låt transaktionsinfo ingå vid tabb-/enterinmatning` (Nej) and `Visa kontosaldokolumn i konteringsvyn` (Ja; Nej hides the Kontosaldo column). What `Aktivera transaktionsinfo` does when set to Nej was not tested.
 
-In the booked mode every field is plain text and Kontosaldo is empty. The settings button is not shown.
+In the booked mode every field is plain text and Kontosaldo is empty.
 
 ### Account picker and keyboard flow
 
 - Typing in Konto lists the accounts whose number starts with the text. **Tab accepts the first match** and moves on. Only number prefixes match: `bank` matches nothing. The list has a `+` button in its header that creates a new account.
 - An unknown account empties the field, marks it with the error border and shows a short bubble at the field: `Inga sökresultat hittades.` Focus still moves on to Debet.
 - Focus starts in Beskrivning when the form opens.
-- Tab moves through the whole path: Beskrivning, Verifikationsserie, Bokföringsdatum, Konteringsmall, Belopp (with a template), Konto, Debet, Kredit, next row's Konto. In the row fields (Konto, Debet, Kredit) Enter acts like Tab. A filled Debet skips Kredit. Transaktionsinfo joins the order with the user option `Låt transaktionsinfo ingå vid tabb-/enterinmatning`.
+- Tab moves through the whole path: Beskrivning, Verifikationsserie, Bokföringsdatum, Konteringsmall, Belopp (with a template), Konto, Debet, Kredit, next row's Konto. In the row fields (Konto, Debet, Kredit) Enter acts like Tab. A filled Debet skips Kredit. Transaktionsinfo joins the order with the option `Låt transaktionsinfo ingå vid tabb-/enterinmatning`.
 - An empty Konto and Tab or Enter goes to `Bokför`. Further Tab stays on `Bokför`.
 - Shift+Tab walks back the same way, and also skips Transaktionsinfo (unless the option is on).
 - `+` and Enter in Transaktionsinfo copies the text from the row above.
-- Keys: `Alt B` books, `Alt N` opens a new form, `Alt K` opens Underlag, `Alt C` copies a booked voucher. No other shortcuts.
-- Controls outside this path (`Avbryt`, the header tools, the row tools, the settings button) are reached with the mouse. See "For the owner to decide".
+- Keys: `Alt B` books, `Alt N` opens a new form (on a form that holds an unfinished entry, see Open points), `Alt K` opens Underlag, `Alt C` copies a booked voucher. No other shortcuts.
+- Controls outside this path (`Avbryt`, the header tools, the row tools) are reached with the mouse. See "For the owner to decide".
 
 ### Bokför and refused bookings
 
@@ -173,7 +175,7 @@ Opened with `Ändra`. The title keeps the number and gets the `Ändra` badge.
 - To change an account or an amount: strike the row and add a new one. The Differens goes back to 0,00 once the voucher balances again.
 - `Bokför` saves the change on the same number, shows `Verifikation A139 har uppdaterats.` and goes to the list. The voucher gains `Ändrad: date Av: user`. Struck rows record who struck them and when.
 - Konto, Debet and Kredit of existing rows are plain text, and Kontosaldo shows each account's balance.
-- The Tab path skips existing rows: Beskrivning, Bokföringsdatum, Konteringsmall, then Konto on the first new row. Their Transaktionsinfo and `Stryk rad` are reached with the mouse. Transaktionsinfo also joins the Tab path with the user option `Låt transaktionsinfo ingå vid tabb-/enterinmatning`.
+- The Tab path skips existing rows: Beskrivning, Bokföringsdatum, Konteringsmall, then Konto on the first new row. Their Transaktionsinfo and `Stryk rad` are reached with the mouse. Transaktionsinfo also joins the Tab path with the option `Låt transaktionsinfo ingå vid tabb-/enterinmatning`.
 
 ## 5. Ändringsverifikation
 
@@ -201,11 +203,11 @@ Opened with `Ändringsverifikation` on a booked voucher. A new, unbooked form:
 ## 8. Kommentar and Underlag
 
 - **Kommentar** opens a dialog with one text area (at most 1000 characters) and the buttons `Avbryt` and `Spara`. On an unbooked form, `Spara` keeps the comment with the form and it is booked with the voucher. On a booked voucher `Kommentar` is enabled and `Spara` saves the comment at once (`PUT /vouchers/{series}/{number}/comment`), without Ändra. The list shows a speech bubble for vouchers with a comment.
-- **Underlag** opens a non-modal side panel on the right, 420 px: a drop zone with `Ladda upp`; `E-posta bild`, which shows the company's mail-in address for vouchers so a picture can be e-mailed into the inbox; `Hantera i Inkorgen`; the linked files; and the inbox with `Koppla` and a refresh icon. Files can be linked before and after booking. On an unbooked form a linked file can be removed and goes back to the inbox.
+- **Underlag** opens a non-modal side panel on the right, 420 px: a drop zone with `Ladda upp`; `E-posta bild`, which shows the company's mail-in address for vouchers so a picture can be e-mailed into the inbox; `Hantera i Inkorgen`; `Koppla fler`; the linked files, each with `Ladda ner`, rotate, zoom and `Koppla bort`; and the inbox with `Koppla` and a refresh icon. Files can be linked before and after booking. `Koppla bort` unlinks a file and puts it back in the inbox; the processing history logs it. It works on every voucher, booked ones too, also in a locked period (plan slice 3e). Whether the reference checks the lock there is settled in 3e's issue (see Open points).
 
 ## 9. Registrera kvitto and Registrera dagskassa
 
-Voucher entry with a registration template. They have their own menu entries. The booked voucher is an ordinary voucher in the template's series (for example K for receipts and F for daily takings) and opens in the voucher form.
+Voucher entry with a registration template. They have their own menu entries under Bokföring, right after Verifikationer: `Registrera dagskassa`, then `Registrera kvitto` (see [../app-shell.md](../app-shell.md)). The booked voucher is an ordinary voucher in the template's series (for example K for receipts and F for daily takings) and opens in the voucher form.
 
 - **Header:** the title and the preview number, for example `Registrera kvitto K13*`. Before a template is chosen the number is only `*`.
 - **Head fields:** **Mall**; then **Bokföringsdatum** (today) and **Verifikationsbeskrivning** side by side. With no template chosen, only these three fields show. Registrera kvitto prefills the template's text (`Utlägg`, `Resa`); Registrera dagskassa prefills the template name. Switching template clears the amounts without asking.
@@ -232,6 +234,9 @@ Not yet settled by tests:
 - What the voucher form does when `Bokför` is pressed on a voucher that cannot be booked. Proposal for the owner: mark the fields and show the refusal text from section 2.
 - Registrera kvitto and Registrera dagskassa: what Enter does; what `Bokför` and `Bokför och skriv ut` leave on the screen (for example whether `Verifikation K13 har skapats.` shows and the form empties); and the texts of a refused booking.
 - Saving a comment on a voucher in a locked period.
+- Whether the Konteringsvy options apply per user or per company.
+- What `Skapa verifikation` and `Alt N` do on a form that holds an unfinished entry: keep the form with the notice `Du har en påbörjad registrering, …`, or open a fresh one. The notice was seen only when coming back from the list.
+- Whether the reference checks the period lock when a file is unlinked from a booked voucher. Settled in plan slice 3e's issue.
 - The reason texts on a disabled `Kopiera` (section 3) and `Skriv ut` (section 2). This spec uses NortFox's own texts.
 - What Enter does in the head fields: Beskrivning (with its quick-text list), Verifikationsserie, Bokföringsdatum, Konteringsmall and Belopp.
 - The source reference on vouchers from other modules: supplier invoices, bank and the VAT report. Not seen yet.
@@ -241,13 +246,13 @@ For the owner to decide:
 - Whether the app-wide keys from [rules.md](../rules.md) section 9 apply on the voucher screens: `Ctrl Enter` (book), `/` (filter the list), `N` (new voucher from the list) and `?` (show all shortcuts). None of them is in the reference.
 - Whether closing the Kommentar dialog, the Transaktionsinformation dialog or the Underlag panel with unsaved changes asks first. Nobody has seen the reference ask.
 - Whether disabled buttons are Tab stops. [rules.md](../rules.md) section 7 makes them focusable; the measured paths skip them.
-- Keyboard access to the controls outside the measured Tab paths: on the new form `Avbryt`, the header tools, the row tools and the settings button; on a booked voucher the header tools, `Avbryt`, `Ändringsverifikation` and `Radera`. WCAG 2.1.1 needs them reachable.
+- Keyboard access to the controls outside the measured Tab paths: on the new form `Avbryt`, the header tools and the row tools; on a booked voucher the header tools, `Avbryt`, `Ändringsverifikation` and `Radera`. WCAG 2.1.1 needs them reachable.
 - Keyboard access to existing rows in Ändra. With them out of the Tab path, `Stryk rad` and their Transaktionsinfo need another keyboard route to meet WCAG 2.1.1. Proposal: with focus in the rows table, Up and Down move between rows without changing the Tab path.
 - Keyboard access to `Skapa verifikation`, `Utökad sökning`, `Skriv ut lista` and the table toolbar on the list, which the measured Tab path does not reach. WCAG 2.1.1 needs them reachable. Proposal: keep them in the Tab order after the series filter.
 
 Proposals for the owner (not in the reference, so not part of this spec):
 
-- Voucher list: quick filters `Ändrade`, `Rättelseposter` and `I låst period` with counts; a lock icon column; an Underlag column with a paperclip and count; a status column (`Ändrad 2026-10-16`, `Rättelsepost finns: A140`, `Rättelsepost avser: A138`); a totals row; a note above the list when a period is locked; a text when a search has no hits.
+- Voucher list: quick filters `Ändrade`, `Rättelseposter` and `I låst period` with counts; a lock icon column; a separate Underlag column and a count of linked files; a status column (`Ändrad 2026-10-16`, `Rättelsepost finns: A140`, `Rättelsepost avser: A138`); a totals row; a note above the list when a period is locked; a text when a search has no hits.
 - Account picker: name search (accounts whose name contains the text, after the number matches), and an arrow highlight in the list with Tab or Enter accepting the highlighted account.
 - Voucher form: `Alt Up` and `Alt Down` to step between vouchers; `Alt Down` in Beskrivning to open quick texts; date shorthands such as `1102`, `261102` and `20261102`; a footer status that says why a voucher cannot be booked yet; `Balanserar` in place of 0,00 on the Differens line; a row-number column.
 - Underlag panel: sending a document by e-mail to an address.
