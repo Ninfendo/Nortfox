@@ -1,6 +1,6 @@
 # 12. The compatible API
 
-Status: accepted, 2026-11-02
+Status: accepted, 2026-11-02. Amended 2026-11-02: the adapter's two PRs need no owner-ok label.
 
 ## Context
 
