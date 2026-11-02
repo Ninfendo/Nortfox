@@ -2,6 +2,8 @@
 
 Applies to every screen. Token names refer to [theming.md](theming.md). UI strings are given in Swedish and are the source text for translation keys.
 
+Where a screen spec says otherwise, the screen spec wins. The voucher screens ([screens/vouchers.md](screens/vouchers.md)) copy an established workflow and differ from these rules in several places.
+
 ## 1. Numbers and dates
 
 Format with `Intl.NumberFormat('sv-SE')`. The API always sends and receives amounts as decimals and dates as ISO 8601. Formatting is a display concern only.
@@ -19,26 +21,26 @@ Format with `Intl.NumberFormat('sv-SE')`. The API always sends and receives amou
 | Period | `2026-11` | Year and month |
 | Range | `2026-01-01 till 2026-12-31` | The word *till*, never a dash |
 | Time | `14:05` | 24 hours. Relative time only as an addition to the exact time |
-| Voucher number | `A 142` | Series, space, number |
+| Voucher number | `A142` | Series and number, no space. Before booking the number is a preview with an asterisk: `A143*` |
 
 **Tabular digits.** Amount, date and number cells use `font-variant-numeric: tabular-nums` and the `--font-num` family. DM Sans, Instrument Serif, Playfair Display, Raleway and Roboto Slab have no tabular digits; when the body font is one of them, `--font-num` resolves to Inter automatically. Screens never pick the number font themselves.
 
 **Input parsing** happens when the field loses focus:
-- Dates: `20261101`, `2026-11-01`, `261101`, and `1101` (month and day in the current financial year) all become `2026-11-01`.
+- Dates: `2026-11-01`. Whether a date field also accepts shorthands such as `20261101`, `261101` and `1101` follows the screen spec. The voucher screens accept ISO dates only.
 - Amounts: `1234,5`, `1234.5`, `1 234,50` all become `1 234,50`.
 - Invalid input stays in the field as typed and gets an inline error.
 
 ## 2. Tables and lists
 
-- **Density** is a per-user setting: *Kompakt* (32 px rows, the default) or *Standard* (40 px). Use `--row-h`; never hard-code a row height.
+- **Density** is a per-user setting: *Kompakt* (32 px rows, the default) or *Standard* (40 px). Use `--row-h`; never hard-code a row height. A list whose screen spec gives it its own row height control follows the screen spec (the voucher list cycles three heights, remembered in the browser).
 - **Column order:** identifier (number), date, text, dimensions (cost centre, project), amounts, status, row actions.
 - **Amount columns:** header and cells right-aligned, tabular digits, Swedish format, no currency symbol when all values are SEK. Debit and credit are separate columns. An empty value is an empty cell, never `0,00` and never a dash.
-- **Sorting:** click the header; one column at a time; the arrow shows direction; `aria-sort` on the `th`. Every list declares a default sort (vouchers: date descending, then number). Sorting never moves the totals row.
-- **Totals row:** in `tfoot`, `--muted` background, weight 600. The label says what is summed and the count: `Summa, 15 verifikationer`. With an active filter: `Summa för urvalet, 4 verifikationer`. Only sum columns where the sum means something.
+- **Sorting:** click the header; one column at a time; the arrow shows direction; `aria-sort` on the `th`. Every list declares a default sort (vouchers: voucher number ascending, per series, so B9 comes before B10). Sorting never moves the totals row.
+- **Totals row:** where the screen spec has one: in `tfoot`, `--muted` background, weight 600. The label says what is summed and the count: `Summa, 12 fakturor`. With an active filter: `Summa för urvalet, 4 fakturor`. Only sum columns where the sum means something. The voucher list has no totals row.
 - **Text** truncates with an ellipsis and shows in full on hover (`title`). Amounts and dates never truncate. On narrow screens the table scrolls horizontally inside its card.
 - **Rows** open on click and on Enter (`tabindex="0"`). Selection checkboxes appear only when the list has bulk actions. Secondary row actions go in a row menu at the far right.
-- **Loading:** lists page through the API cursor and scroll on. The count is always shown.
-- **Status column** shows exceptions, not the normal state. A booked voucher with nothing to report has an empty status cell.
+- **Loading:** lists page through the API cursor and scroll on, unless the screen spec gives a pager (the voucher list has page numbers and a page size). The count is always shown.
+- **Status column**, where the screen spec has one, shows exceptions, not the normal state. A paid invoice with nothing to report has an empty status cell. The voucher list has no status column.
 
 ### Quick filters and row colour
 
@@ -59,36 +61,36 @@ Format with `Intl.NumberFormat('sv-SE')`. The API always sends and receives amou
 - **Optional fields** are marked `(valfritt)`. Required fields are not marked. In grids (voucher rows), nothing is marked and the row is validated.
 - **Help text** sits under the field, one sentence at most, linked with `aria-describedby`.
 - **Inline errors** replace the help text under the field: icon plus text in `--destructive-ink`, field border `--destructive-ink`, `aria-invalid="true"`. The text says what to do: `Konto 1930 finns redan i kontoplanen. Välj ett annat nummer.`
-- **Validation** runs on blur and on submit. On submit, focus moves to the first error. More than one error adds a summary at the top of the form, with links to the fields.
-- **Server validation (422)** maps to fields through the API error's field pointer. Errors without a field go in the summary.
+- **Validation** runs on blur and on submit. What happens on submit follows the screen spec: by default focus moves to the first error, and more than one error adds a summary at the top of the form, with links to the fields. On the voucher form this is open.
+- **Server validation (422)** maps to fields through the API error's field pointer. Where errors without a field show follows the screen spec.
 - **Field width follows content:** date 128 px, account 88 px, amount 144 px right-aligned, text fills.
-- **Tab order** equals visual order. `Ctrl Enter` (`Cmd Enter`) runs the form's primary action.
+- **Tab order** equals visual order, unless the screen spec gives a measured Tab path. Whether `Ctrl Enter` (`Cmd Enter`) runs the form's primary action follows the screen spec.
 - **Field order** follows the workflow of the task, as defined in each screen spec.
 
 ## 4. Locked, with its reason
 
-Booked vouchers, locked periods, closed financial years, filed reports, settings controlled by something else, missing permissions. All are shown read-only, never hidden, never greyed out without explanation.
+Vouchers in a locked period, locked periods, filed reports, settings controlled by something else, missing permissions. All are shown read-only, never hidden, never greyed out without explanation.
 
-A locked state always has four parts:
-1. **What** is locked: `Perioder till och med 2026-09-30 är låsta.`
-2. **Why:** `Momsrapporten för juli till september är inlämnad.`
-3. **Who and when:** `Låst av Karin Ek 2026-10-12.`
-4. **What you can do instead**, when there is something: `Skapa rättelse`, `Visa perioder`.
+A locked state says, in the words of its source:
+1. **What** is locked and who locked it, through which date: `Karin Ek har låst perioden t.o.m. 2026-09-30.` An automatic lock reads `Bokföringsdatumet ligger i en automatlåst period.`
+2. **When**, where the source records it: the date the lock was set.
+3. **What you can do instead**, when there is something: a new voucher dated in an open period, `Visa perioder`.
 
 The API returns `locked: { reason_code, reason, by, at }` on every lockable resource. The UI shows `reason` verbatim and never writes its own.
 
 Patterns:
-- **Page level:** a note under the page header. `--muted` surface, `lock` icon, bold *what*, muted *why, who, when*, a link to the place it is managed.
-- **Record level:** a `Bokförd` badge with `lock` next to the title, the reason under it, the allowed action as an outline button.
+- **Page level:** a note under the page header. `--muted` surface, `lock` icon, bold *what*, muted *who and when*, a link to the place it is managed.
+- **Record level:** a `Låst period` badge with `lock` next to the title, the reason under it, the allowed action as an outline button.
 - **Field level:** the value rendered as text on `--muted` with a `lock` icon. Not a disabled input. The reason is the help text.
 - **Control level** (a setting forced by another setting): the control is replaced by its value plus the reason: `Stilen Lyra har alltid raka hörn.`
-- **Disabled buttons** have their reason visible next to them, not only in a tooltip.
+- **Disabled buttons** follow section 7: `aria-disabled`, with the reason as a tooltip on hover and on focus and as the button's accessible description. Whether they are Tab stops follows the screen spec.
 
 ## 5. Empty, loading and error
 
 **Empty** replaces the content where it would have been. One sentence on what is missing and the next step, if the user is allowed to take it. No illustrations.
-- First use: `Inga verifikationer ännu` + primary `Ny verifikation` + outline `Importera SIE`.
-- After a filter: `Inga verifikationer matchar filtret.` + the active filter in words + `Rensa filter`.
+- First use: `Inga leverantörsfakturor ännu` + primary `Registrera leverantörsfaktura`.
+- After a filter: `Inga leverantörsfakturor matchar filtret.` + the active filter in words + `Rensa filter`.
+- A list whose screen spec says otherwise follows it. The voucher list shows only its column headers and a total of 0.
 
 **Loading**
 - Skeleton rows only after 300 ms.
@@ -111,9 +113,9 @@ Four statuses, each an opaque tint and ink pair. Never a translucent overlay. Co
 
 | Status | Tokens | Used for |
 |---|---|---|
-| Neutral | `--muted` / `--foreground` | Utkast, Bokförd, Rättad med A 140 |
+| Neutral | `--muted` / `--foreground` | Bokförd, Registrerad, Makulerad |
 | Ok | `--ok-tint` / `--ok-ink` | Avstämd, Attesterad, Betald, Inlämnad |
-| Warning | `--warning-tint` / `--warning-ink` | Underlag saknas, Väntar på attest, Förfaller om 3 dagar |
+| Warning | `--warning-tint` / `--warning-ink` | Väntar på attest, Förfaller om 3 dagar |
 | Destructive | `--destructive-tint` / `--destructive-ink` | Förfallen, Avvisad, Differens 120,00 |
 
 Badge: 20 px high, 12 px text weight 500, `--radius-control`, 8 px side padding, 12 px icon. One status per row in lists. The status describes a state, never an action.
@@ -124,30 +126,30 @@ Variants: primary (`--primary`), secondary (`--secondary`), outline (`--border` 
 
 - **One primary per view.** A dialog or a side panel is its own view and gets its own primary.
 - **Placement:**
-  - List view: in the page header, right. It creates something new: `Ny verifikation`.
-  - Form and full page: a fixed footer bar at the bottom, right-aligned; order secondary actions, then primary, so the primary is rightmost: `Avbryt`, `Spara utkast`, `Bokför`.
+  - List view: in the page header, right. It creates something new: `Skapa verifikation`.
+  - Form and full page: a fixed footer bar at the bottom, right-aligned; order secondary actions, then primary, so the primary is rightmost: `Avbryt`, `Bokför`. An action that removes the record (`Radera`) sits alone at the far left of the same bar.
   - Dialog: footer, right-aligned, `Avbryt` left of the primary.
-- **Labels** start with a verb and say what happens: `Bokför`, `Attestera`, `Lås perioden`. Never `OK` or `Ja`.
+- **Labels** start with a verb and say what happens: `Bokför`, `Attestera`, `Lås perioden`. Never `Ja`. Where NortFox follows an established accounting workflow, that workflow's own labels and messages are kept as they are, including `OK` in the delete confirmation.
 - **Destructive colour** only on the button that confirms a destructive action, inside the dialog. On the page the same action is an outline button.
-- **Unavailable:** prefer an enabled button that explains on click. If disabled, the reason is visible next to it.
-- **Icon-only** buttons have `aria-label` and a tooltip. Shortcuts show in the tooltip, and inside the button in keyboard-heavy views (`Ny verifikation N`).
+- **Unavailable:** prefer an enabled button that explains on click. If disabled (`aria-disabled`), the reason shows as a tooltip on hover and on focus and is the button's accessible description. By default it stays focusable; whether it is a Tab stop follows the screen spec.
+- **Icon-only** buttons have `aria-label` and a tooltip. Shortcuts show in the tooltip. Whether a view also shows them on screen follows its screen spec; the voucher screens show none.
 
 ## 8. Dialog, side panel, page or popover
 
 | Surface | When | Behaviour | Examples |
 |---|---|---|---|
-| Dialog | A short decision, or 1 to 5 fields, that must be done before going on | Modal, 420 to 640 px, focus trapped, Esc closes | Lås period, Ta bort utkast, Nytt räkenskapsår |
-| Side panel | View or edit one row without leaving the list; tools that sit beside the work | Right edge, 420 to 560 px, non-modal; the list stays usable and Up/Down changes row | Voucher from the list, invoice to approve, Utseende, the assistant |
-| Full page | Long flows and keyboard-heavy work | Own URL, fixed footer with the primary | Ny verifikation, Momsrapport, Bankavstämning |
+| Dialog | A short decision, or 1 to 5 fields, that must be done before going on | Modal, 420 to 640 px, focus trapped, Esc closes | Lås period, Borttagning av verifikation, Nytt räkenskapsår |
+| Side panel | View or edit one row without leaving the list; tools that sit beside the work | Right edge, 420 to 560 px, non-modal; the list stays usable and Up/Down changes row | Invoice to approve, Underlag, Utseende, the assistant |
+| Full page | Long flows and keyboard-heavy work | Own URL, fixed footer with the primary | Skapa verifikation, Momsrapport, Bankavstämning |
 | Popover | A choice that belongs to a button | Under the button, Esc or click outside closes | Byt företag, Räkenskapsår, filters |
 
-Dialogs never stack. A dialog may open from a side panel. Closing with unsaved changes asks first. Focus returns to the control that opened the surface.
+Dialogs never stack. A dialog may open from a side panel. Whether closing a dialog or side panel with unsaved changes asks first follows the screen spec; on the voucher screens it is open. A full-page form also follows its screen spec: the voucher form keeps an unbooked entry in the browser and does not ask. Focus returns to the control that opened the surface.
 
 ## 9. Keyboard and focus
 
 - **Focus ring:** 2 px `outline` in `--ring`, 2 px offset, at least 3:1 against the background. Global `:focus-visible` rule. Never removed.
 - Every page starts with a `Hoppa till innehållet` skip link.
-- Tab order equals visual order.
+- Tab order equals visual order, unless the screen spec gives a measured Tab path.
 - Single-letter shortcuts only fire when focus is not in a field.
 
 | Key | Action |
@@ -161,20 +163,20 @@ Dialogs never stack. A dialog may open from a side panel. Closing with unsaved c
 | `Esc` | Close dialog, panel or popover |
 | `?` | Show all shortcuts |
 
-Every shortcut is also an API operation behind a visible control; shortcuts are never the only way. The voucher entry keyboard flow is specified in round 2.
+The keys `/`, `N`, `?` and `Ctrl Enter` apply where the screen spec lists them; the voucher screens list none of them. Every shortcut is also an API operation behind a visible control; shortcuts are never the only way. The voucher entry keyboard flow is specified in [screens/vouchers.md](screens/vouchers.md#account-picker-and-keyboard-flow).
 
 ## 10. Copy
 
 - Swedish first, English second. All strings go through translation keys.
 - No en dash or em dash in UI text. Use a full stop, a comma, a colon, or *till* for ranges.
-- Standard accounting words stay as they are: Verifikation, Bokför, Kontoplan, Räkenskapsår, Attest, Periodisering, Rättelse.
+- Standard accounting words stay as they are: Verifikation, Bokför, Kontoplan, Räkenskapsår, Attest, Periodisering, Ändringsverifikation, Rättelsepost.
 - Sentence case: capital letter only at the start of a heading or button.
 - Errors say what happened and what the user can do.
 
 | Write | Avoid |
 |---|---|
-| Bokför | OK |
+| Bokför | OK (except in the delete confirmation, which keeps `OK`; see section 7) |
 | Ange ett datum i räkenskapsåret 2026. | Ogiltigt värde. |
-| Perioden är låst. Momsrapporten är inlämnad. | Åtgärden är inte tillåten. |
+| Karin Ek har låst perioden t.o.m. 2026-09-30. | Åtgärden är inte tillåten. |
 | 2026-01-01 till 2026-12-31 | 2026-01-01 (dash) 2026-12-31 |
 | Servern svarade inte. Inget har sparats. | Något gick fel. |
