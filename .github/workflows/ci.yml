@@ -32,6 +32,21 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read # check out the code
+    # The database tests' cluster: PostgreSQL by the same digest as
+    # deploy/test-database/compose.yaml. It lives only as long as the job, so it
+    # trusts local connections and holds no secret.
+    services:
+      postgres:
+        image: postgres:18-bookworm@sha256:5c4783a8cc3f0074912164f94dfa1be4e043438f0f707cf968d7af9a0d31a2c8
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username postgres --dbname postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,6 +66,8 @@ jobs:
         run: pnpm typecheck
       - name: Test with coverage
         run: pnpm test:coverage
+        env:
+          NORTFOX_TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres
       - name: Build
         run: pnpm build
       - name: openapi.json and the client are up to date

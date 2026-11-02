@@ -94,6 +94,20 @@ describe("the licence guard", () => {
     },
   );
 
+  it("checks SQL files, .conf files and Dockerfiles too", () => {
+    expect(spdxProblem("db/migrations/0002_x.sql", "CREATE TABLE ledger.x (id uuid);\n")).toBe(
+      'db/migrations/0002_x.sql has no SPDX-License-Identifier line at the top. Add "SPDX-License-Identifier: AGPL-3.0-only".',
+    );
+    expect(spdxProblem("db/migrations/0002_x.sql", "-- SPDX-License-Identifier: MIT\n")).toContain('says "MIT"');
+    expect(spdxProblem("deploy/postgres/pgbackrest.conf", "[global]\n")).toContain("has no SPDX");
+    expect(spdxProblem("deploy/server/Dockerfile", "FROM node\n")).toContain("has no SPDX");
+    expect(spdxProblem("Dockerfile", "FROM node\n")).toContain("has no SPDX");
+    expect(spdxProblem("db/roles.sql", "-- SPDX-License-Identifier: AGPL-3.0-only\n\nDO $$ BEGIN END $$;\n")).toBeUndefined();
+    expect(spdxProblem("deploy/postgres/pgbackrest.conf", "# SPDX-License-Identifier: AGPL-3.0-only\n[global]\n")).toBeUndefined();
+    expect(spdxProblem("deploy/server/Dockerfile", "# SPDX-License-Identifier: AGPL-3.0-only\nFROM node\n")).toBeUndefined();
+    expect(spdxProblem("deploy/server/NotADockerfile", "FROM node\n")).toBeUndefined();
+  });
+
   it("passes the right line in each comment style and files that carry none", () => {
     expect(spdxProblem("packages/client/src/x.ts", "// SPDX-License-Identifier: MIT\n")).toBeUndefined();
     expect(spdxProblem("packages/client/src/x.ts", "// SPDX-License-Identifier: MIT\r\n")).toBeUndefined();

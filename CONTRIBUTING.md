@@ -7,10 +7,11 @@ Thank you for helping. Two documents come first:
 
 ## Set up
 
-You need Node 24 (see `.nvmrc`) and pnpm 12.16.1 (the version in `package.json`). Nothing else.
+You need Node 24 (see `.nvmrc`) and pnpm 12.16.1 (the version in `package.json`). The database tests also need PostgreSQL 18. Docker is the easy way to run it.
 
 ```sh
 pnpm install   # also points git at the hooks in .githooks
+pnpm db:test   # starts the test database in Docker
 pnpm check     # what CI runs: the names check, the fixture guard, lint, type check, tests with coverage, build
 ```
 
@@ -20,11 +21,20 @@ Other commands:
 | --- | --- |
 | `pnpm --filter @nortfox/server dev` | Runs the server on port 4100 (`PORT` changes it). |
 | `pnpm --filter @nortfox/web dev` | Runs the web app. It passes `/v1` to the server on port 4100. |
-| `pnpm test` | Runs every test suite once. `pnpm test:coverage` also checks the coverage floors. |
+| `pnpm test` | Runs every test suite once, the database tests too. `pnpm test:coverage` also checks the coverage floors. |
+| `pnpm db:test` | Starts the test database: PostgreSQL in Docker, on 127.0.0.1:55433, with its data in memory. `pnpm db:test:stop` stops it. |
 | `pnpm openapi` | After a change to the API: writes `packages/client/openapi.json` and the generated client. CI fails when they are out of date. |
 | `pnpm changeset` | Records what users will notice in your change. |
 | `pnpm names` | Runs the names check over every file. |
 | `pnpm fixtures` | Runs the fixture guard over every file. |
+
+## The database tests
+
+The ledger law lives in PostgreSQL ([decision 2](docs/decisions/0002-ledger-law-in-postgresql.md)), so its tests run against real PostgreSQL, never a mock. They are the files `apps/server/src/**/*.db.test.ts`. Each runs as the app role, unless it tests another role, in a database of its own. [db/README.md](db/README.md) says how the database works and how to add a migration.
+
+- `pnpm db:test` starts a test cluster that holds nothing else, with trust authentication on 127.0.0.1 only. CI runs the same PostgreSQL, by the same digest, as a service of the build job.
+- `NORTFOX_TEST_DATABASE_URL` points the tests at another cluster: a superuser on a cluster of its own, with trust authentication. The tests make roles, which belong to the whole cluster, so they refuse a cluster that holds any database they did not make.
+- Without a test cluster, the tests fail with a line that says how to start one. They never skip.
 
 ## The names check
 

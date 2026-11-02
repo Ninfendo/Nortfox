@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { defaultClientConditions, defaultServerConditions } from "vite";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // Every suite runs from this one file, as one project per package. Coverage
 // floors only go up (docs/decisions/0010-quality-gates.md).
+//
+// The database tests (*.db.test.ts) run against real PostgreSQL, as their own
+// project. Its global setup needs a test cluster: `pnpm db:test` starts one,
+// and NORTFOX_TEST_DATABASE_URL points elsewhere (apps/server/test/cluster.ts).
+// Without one it fails; it never skips.
 
 export default defineConfig({
   resolve: {
@@ -27,7 +32,21 @@ export default defineConfig({
       },
       {
         extends: true,
-        test: { name: "server", include: ["apps/server/src/**/*.test.ts"] },
+        test: {
+          name: "server",
+          include: ["apps/server/src/**/*.test.ts"],
+          exclude: [...configDefaults.exclude, "apps/server/src/**/*.db.test.ts"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "database",
+          include: ["apps/server/src/**/*.db.test.ts"],
+          globalSetup: ["apps/server/test/global-setup.ts"],
+          testTimeout: 60_000,
+          hookTimeout: 120_000,
+        },
       },
       {
         extends: true,
@@ -51,6 +70,7 @@ export default defineConfig({
         // Entry points: each only wires the tested parts together and starts
         // them. The tests start the same parts directly.
         "apps/server/src/main.ts",
+        "apps/server/src/db/migrate-main.ts",
         "apps/web/src/main.tsx",
         "packages/client/scripts/generate.ts",
         "scripts/turbo.ts",

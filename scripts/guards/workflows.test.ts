@@ -485,6 +485,23 @@ describe("the CI workflow", () => {
     }
   }
 
+  it("runs the database tests in the build job, against PostgreSQL as a service of the job, with no more permissions", () => {
+    const lines = ci.split(/\r?\n/);
+    const build = linesUnder(lines, lines.indexOf("  build:"));
+    const text = build.join("\n");
+    expect(text).toMatch(/^ {4}services:\n {6}postgres:\n {8}image: postgres:18-bookworm@sha256:[0-9a-f]{64}$/m);
+    expect(text).toContain("\n        env:\n          POSTGRES_HOST_AUTH_METHOD: trust\n");
+    expect(text).toContain('--health-cmd "pg_isready --username postgres --dbname postgres"');
+    expect(step(ci, "Test with coverage").map((line) => line.trim())).toEqual([
+      "- name: Test with coverage",
+      "run: pnpm test:coverage",
+      "env:",
+      "NORTFOX_TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres",
+    ]);
+    const permissions = linesUnder(build, build.indexOf("    permissions:")).map((line) => line.trim());
+    expect(permissions).toEqual(["permissions:", "contents: read # check out the code"]);
+  });
+
   it("never cancels a run on main, and cancels an older run of the same PR", () => {
     expect(/^concurrency:\n((?: {2}.*\n)*)/m.exec(ci)?.[1]).toBe(
       "  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n" +

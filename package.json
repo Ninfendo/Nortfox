@@ -17,6 +17,8 @@
     "check": "pnpm names && pnpm fixtures && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
     "names": "node scripts/names/cli.ts --all",
     "fixtures": "node scripts/fixtures/cli.ts --all",
+    "db:test": "docker compose --file deploy/test-database/compose.yaml up --detach --wait",
+    "db:test:stop": "docker compose --file deploy/test-database/compose.yaml down",
     "openapi": "pnpm --filter @nortfox/server run openapi && pnpm --filter @nortfox/client run generate",
     "changeset": "changeset",
     "prepare": "git config core.hooksPath .githooks"

@@ -16,10 +16,13 @@
     "@hono/node-server": "catalog:",
     "@hono/zod-openapi": "catalog:",
     "hono": "catalog:",
+    "pg": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

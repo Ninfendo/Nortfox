@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# The local test database for the database tests: PostgreSQL with trust
+# authentication, on 127.0.0.1:55433 only, with its data in memory. It holds
+# no real data and never keeps any. Start it with `pnpm db:test` and stop it
+# with `pnpm db:test:stop`. The tests find it through NORTFOX_TEST_DATABASE_URL,
+# which defaults to postgres://postgres@127.0.0.1:55433/postgres.
+#
+# The image is the same PostgreSQL, by the same digest, as the database service
+# in CI (scripts/guards/images.ts checks that every PostgreSQL image shares
+# one digest).
+
+name: nortfox-test-database
+
+services:
+  postgres:
+    image: postgres:18-bookworm@sha256:5c4783a8cc3f0074912164f94dfa1be4e043438f0f707cf968d7af9a0d31a2c8
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:55433:5432"
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "postgres", "--dbname", "postgres"]
+      interval: 1s
+      timeout: 5s
+      retries: 60

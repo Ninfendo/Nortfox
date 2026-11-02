@@ -8,9 +8,10 @@
 
 /**
  * File types that carry an SPDX line: every kind of TypeScript and JavaScript
- * file, CSS, HTML, YAML and shell. JSON and Markdown cannot or need not.
+ * file, CSS, HTML, YAML, shell, SQL, .conf files and Dockerfiles. JSON and
+ * Markdown cannot or need not.
  */
-const SOURCE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|css|html|ya?ml|sh)$|^\.githooks\//;
+const SOURCE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|css|html|ya?ml|sh|sql|conf)$|^\.githooks\/|(?:^|\/)Dockerfile$/;
 
 const TAG = "SPDX-License-Identifier:";
 
