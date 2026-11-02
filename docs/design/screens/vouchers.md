@@ -37,6 +37,7 @@ Every control maps to one of these. MCP tools call the same operations. A vouche
 | `GET /settings/inbox-addresses` | The company's mail-in address for vouchers: the list's tool row (section 1) and `E-posta bild` in the Underlag panel |
 | `GET /voucher-series?financialyear=` | `Verifikationsserie` on the form and the list filter; which series is the closing series and which allow manual entry |
 | `GET /accounts?financialyear=&numberPrefix=` | Account picker |
+| `POST /accounts {number, name}` | The `+` in the account picker's header: creates a new account in the chart of accounts |
 | `GET /accounts/{number}/ledger?financialyear=` | `Visa kontoanalys.` |
 | `GET /posting-templates` | The `Konteringsmall` list |
 | `POST /posting-templates/{id}/apply {amount}` | `Konteringsmall` and `Belopp`: the rows to add |
@@ -86,7 +87,7 @@ One full page for every mode. Fixed footer, primary `Bokför` rightmost.
 2. **Verifikationsserie**: series marked for manual entry. In Ändra it shows read-only, with no message.
 3. **Bokföringsdatum**: ISO date, `2026-11-02`. In the new and copy modes, on a test day of 2026-11-02 both forms showed 2026-11-01, the date of the voucher made last in series A (see Open points). The reversing form's default date is open (see Open points).
 4. **Konteringsmall** and **Belopp**: choosing a template fills Beskrivning; Tab or leaving Belopp adds the template's rows under the existing rows. On a booked voucher both show read-only.
-5. **Rows**: Konto, Benämning, Transaktionsinfo, Debet, Kredit, Kontosaldo (the account's balance including this row, updated as you type), row tools. Footer rows: `Summa`, and `Differens`, always shown: the amount under the side that must grow, or 0,00 when the voucher balances. Struck rows are not counted.
+5. **Rows**: Konto, Benämning, Transaktionsinfo, Debet, Kredit, Kontosaldo (the account's balance including every row of this voucher on that account, updated as you type), row tools. Footer rows: `Summa`, and `Differens`, always shown: the debit total minus the credit total, with its sign, under the Kredit column (`1,00` when credit is short, `−20,00` when debit is short), and 0,00 when the voucher balances. Struck rows are not counted.
 
 Row tools:
 - `Dra för att flytta raden`: a drag handle on the rows of an unbooked form and on the new rows in Ändra. Drag a row to a new position.
@@ -115,7 +116,7 @@ In the booked mode every field is plain text and Kontosaldo is empty.
 
 ### Bokför and refused bookings
 
-`Bokför` is an enabled primary button on every unbooked form, even an empty one. There is no status text. Problems show as red borders on the field (an unknown account, a date outside every financial year or in a locked period) and in the live Differens line. A row with an account and no amount is allowed.
+`Bokför` is an enabled primary button on every unbooked form, even an empty one. There is no status text. Problems show as red borders on the field (an unknown account, a date outside every financial year) and in the live Differens line. A row with an account and no amount is allowed. NortFox also gives a date in a locked period a red border; that is NortFox's own behaviour, since no lock was tried in the reference.
 
 When the API refuses a booking, it answers with these texts:
 
@@ -145,7 +146,7 @@ What the screen does when `Bokför` is pressed on a voucher that cannot be booke
 
 Opened from the list. Everything is read-only.
 
-Tab path: `Visa lista`, `Skapa verifikation`, `Ändra`; focus then stays on `Ändra`. The path starts at `Visa lista`, the first control in the header. Read-only fields, the tools (Underlag, Kommentar, Skriv ut, Kopiera, the arrows), the other footer buttons and the disabled buttons are skipped; they are reached with the mouse.
+Tab path: `Visa lista`, `Skapa verifikation`, `Ändra`; focus then stays on `Ändra`. The path starts at `Visa lista`, the first control in the header. Read-only fields, the tools (Underlag, Kommentar, Skriv ut, Kopiera, the arrows), the other footer buttons and the disabled buttons are skipped; they are reached with the mouse. This path was measured on a voucher made by another module, where `Ändringsverifikation`, `Radera` and `Kopiera` were disabled (see Open points).
 
 The actions and when they are unavailable (disabled with `aria-disabled`, reason as tooltip on hover and focus):
 
@@ -234,10 +235,11 @@ Not yet settled by tests:
 - What the voucher form does when `Bokför` is pressed on a voucher that cannot be booked. Proposal for the owner: mark the fields and show the refusal text from section 2.
 - Registrera kvitto and Registrera dagskassa: what Enter does; what `Bokför` and `Bokför och skriv ut` leave on the screen (for example whether `Verifikation K13 har skapats.` shows and the form empties); and the texts of a refused booking.
 - Saving a comment on a voucher in a locked period.
+- Whether an enabled `Ändringsverifikation` and an enabled `Radera` are Tab stops on a manual voucher that is last in its series. The measured path comes from a voucher made by another module.
 - Whether the Konteringsvy options apply per user or per company.
 - What `Skapa verifikation` and `Alt N` do on a form that holds an unfinished entry: keep the form with the notice `Du har en påbörjad registrering, …`, or open a fresh one. The notice was seen only when coming back from the list.
 - Whether the reference checks the period lock when a file is unlinked from a booked voucher. Settled in plan slice 3e's issue.
-- The reason texts on a disabled `Kopiera` (section 3) and `Skriv ut` (section 2). This spec uses NortFox's own texts.
+- NortFox's own texts in this spec: the reasons on a disabled `Kopiera` (section 3) and `Skriv ut` (section 2), the `Låst period` badge (section 2) and the `Låst period.` note under the header (section 3). No lock was tried in the reference.
 - What Enter does in the head fields: Beskrivning (with its quick-text list), Verifikationsserie, Bokföringsdatum, Konteringsmall and Belopp.
 - The source reference on vouchers from other modules: supplier invoices, bank and the VAT report. Not seen yet.
 
@@ -246,7 +248,7 @@ For the owner to decide:
 - Whether the app-wide keys from [rules.md](../rules.md) section 9 apply on the voucher screens: `Ctrl Enter` (book), `/` (filter the list), `N` (new voucher from the list) and `?` (show all shortcuts). None of them is in the reference.
 - Whether closing the Kommentar dialog, the Transaktionsinformation dialog or the Underlag panel with unsaved changes asks first. Nobody has seen the reference ask.
 - Whether disabled buttons are Tab stops. [rules.md](../rules.md) section 7 makes them focusable; the measured paths skip them.
-- Keyboard access to the controls outside the measured Tab paths: on the new form `Avbryt`, the header tools and the row tools; on a booked voucher the header tools, `Avbryt`, `Ändringsverifikation` and `Radera`. WCAG 2.1.1 needs them reachable.
+- Keyboard access to the controls outside the measured Tab paths: on the new form `Avbryt`, the header tools and the row tools; on a booked voucher the header tools and `Avbryt`, and `Ändringsverifikation` and `Radera` if they turn out not to be Tab stops. WCAG 2.1.1 needs them reachable.
 - Keyboard access to existing rows in Ändra. With them out of the Tab path, `Stryk rad` and their Transaktionsinfo need another keyboard route to meet WCAG 2.1.1. Proposal: with focus in the rows table, Up and Down move between rows without changing the Tab path.
 - Keyboard access to `Skapa verifikation`, `Utökad sökning`, `Skriv ut lista` and the table toolbar on the list, which the measured Tab path does not reach. WCAG 2.1.1 needs them reachable. Proposal: keep them in the Tab order after the series filter.
 

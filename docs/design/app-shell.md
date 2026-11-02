@@ -30,7 +30,7 @@ Modules are collapsible groups; each opens to its sections, drawn indented with 
 Order for the first release:
 
 1. **Inkorg** (count badge): receipts and documents waiting to be booked
-2. **Bokföring**: Verifikationer, Registrera dagskassa, Registrera kvitto, Kontoplan, Periodiseringar, Avstämning, Budget
+2. **Bokföring**: Verifikationer, Registrera dagskassa, Registrera kvitto, Kontoplan, Periodiseringar, Stäm av konto, Budget
 3. **Bank**: Bankhändelser, Bokföringsregler, Betalningar
 4. **Leverantörer** (count of invoices to approve): Leverantörsfakturor, Leverantörsregister
 5. **Moms och rapporter**: Momsrapport, Periodisk sammanställning, Rapporter, Behandlingshistorik
