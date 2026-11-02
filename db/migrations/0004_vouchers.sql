@@ -71,14 +71,14 @@ CREATE INDEX vouchers_by_date ON ledger.vouchers (company_id, fiscal_year_id, tr
 
 -- Voucher rows ----------------------------------------------------------------
 --
--- A row has an account of its voucher's year, one signed amount in öre
--- (debit positive, credit negative, decision 5), a text of at most 100
--- characters, and a quantity: a decimal of any scale that may be negative, 0
--- when none is given. Its position is the next in its voucher, and rows keep
--- that order. A row is never removed from a voucher that stays: it is struck,
--- with who struck it and when, and counts in no balance from then on. The
--- rows go only with their voucher, by the cascade, after the deletion has
--- moved them to the record.
+-- A row has an account of its voucher's year, a debit and a credit in öre,
+-- each zero or more and kept as they were sent, so one row can hold both
+-- (decision 5), a text of at most 100 characters, and a quantity: a decimal
+-- of any scale that may be negative, 0 when none is given. Its position is
+-- the next in its voucher, and rows keep that order. A row is never removed
+-- from a voucher that stays: it is struck, with who struck it and when, and
+-- counts in no balance from then on. The rows go only with their voucher, by
+-- the cascade, after the deletion has moved them to the record.
 
 CREATE TABLE ledger.voucher_rows (
   id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
@@ -87,7 +87,8 @@ CREATE TABLE ledger.voucher_rows (
   fiscal_year_id uuid NOT NULL,
   position integer NOT NULL,
   account_number integer NOT NULL,
-  amount bigint NOT NULL,
+  debit bigint NOT NULL DEFAULT 0,
+  credit bigint NOT NULL DEFAULT 0,
   transaction_information text NOT NULL DEFAULT '',
   quantity numeric NOT NULL DEFAULT 0,
   removed boolean NOT NULL DEFAULT false,
@@ -104,6 +105,8 @@ CREATE TABLE ledger.voucher_rows (
     REFERENCES ledger.accounts (company_id, fiscal_year_id, number) ON DELETE RESTRICT,
   CONSTRAINT voucher_rows_position_unique UNIQUE (company_id, voucher_id, position),
   CONSTRAINT voucher_rows_position_positive CHECK (position >= 1),
+  CONSTRAINT voucher_rows_debit_not_negative CHECK (debit >= 0),
+  CONSTRAINT voucher_rows_credit_not_negative CHECK (credit >= 0),
   CONSTRAINT voucher_rows_text_length CHECK (char_length(transaction_information) <= 100),
   CONSTRAINT voucher_rows_created_by_kind CHECK (created_by_kind IN ('user', 'system', 'integration')),
   CONSTRAINT voucher_rows_removed_stamps CHECK (
@@ -163,7 +166,8 @@ CREATE TABLE ledger.deleted_voucher_rows (
   fiscal_year_id uuid NOT NULL,
   position integer NOT NULL,
   account_number integer NOT NULL,
-  amount bigint NOT NULL,
+  debit bigint NOT NULL,
+  credit bigint NOT NULL,
   transaction_information text NOT NULL,
   quantity numeric NOT NULL,
   removed boolean NOT NULL,
@@ -177,7 +181,9 @@ CREATE TABLE ledger.deleted_voucher_rows (
   UNIQUE (company_id, id),
   CONSTRAINT deleted_voucher_rows_entry FOREIGN KEY (company_id, deleted_voucher_id)
     REFERENCES ledger.deleted_vouchers (company_id, id) ON DELETE RESTRICT,
-  CONSTRAINT deleted_voucher_rows_position_unique UNIQUE (company_id, deleted_voucher_id, position)
+  CONSTRAINT deleted_voucher_rows_position_unique UNIQUE (company_id, deleted_voucher_id, position),
+  CONSTRAINT deleted_voucher_rows_debit_not_negative CHECK (debit >= 0),
+  CONSTRAINT deleted_voucher_rows_credit_not_negative CHECK (credit >= 0)
 );
 
 -- Helpers -------------------------------------------------------------------------
@@ -252,10 +258,11 @@ END;
 -- refusal: the columns that the database writes, the description, the
 -- comments, the series, the manual flag, the date's fiscal year, the date in
 -- the voucher's own year (the closing series too), the period lock (not for
--- the closing series), and the voucher it reverses: locked first, then of the
--- same reference type, then not reversed already. Then the series' counter is
--- locked until the transaction ends and gives the number. The rows follow,
--- and at commit the voucher needs two rows and a balance.
+-- the closing series), and the voucher it reverses: locked first, then an
+-- earlier voucher of the company, then of the same reference type, then not
+-- reversed already. Then the series' counter is locked until the transaction
+-- ends and gives the number. The rows follow, and at commit the voucher needs
+-- two rows and a balance.
 CREATE FUNCTION ledger.vouchers_book() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -324,21 +331,31 @@ BEGIN
     -- The old voucher stays locked until the transaction ends, so a second
     -- reversing voucher booked at the same time waits and then sees this
     -- one, and a deletion of the old voucher waits too. The lock changes
-    -- nothing in it. When it is not there, the foreign key refuses the link.
+    -- nothing in it.
     SELECT v.reference_type INTO reversed
     FROM ledger.vouchers AS v
     WHERE v.company_id = NEW.company_id AND v.id = NEW.reverses_voucher_id
     FOR NO KEY UPDATE;
+    -- The old voucher is an earlier one, already there in this company. The
+    -- foreign key alone would also take the new voucher itself, or one
+    -- booked later in the same statement, since it is checked at the
+    -- statement's end. Such a voucher could never be deleted and never get
+    -- a real reversing voucher.
+    IF NOT FOUND THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'foreign_key_violation',
+        CONSTRAINT = 'vouchers_reverses',
+        MESSAGE = 'A voucher reverses only an earlier voucher of its company (vouchers_reverses).',
+        DETAIL = pg_catalog.format('Key (company_id, reverses_voucher_id)=(%s, %s) names no voucher booked before this one.', NEW.company_id, NEW.reverses_voucher_id);
+    END IF;
+    IF reversed.reference_type IS DISTINCT FROM NEW.reference_type THEN
+      PERFORM ledger.refuse('reversing_other_module', jsonb_build_object('reversed_type', reversed.reference_type, 'reversing_type', NEW.reference_type));
+    END IF;
+    SELECT r.series_code, r.number INTO reversing
+    FROM ledger.vouchers AS r
+    WHERE r.company_id = NEW.company_id AND r.reverses_voucher_id = NEW.reverses_voucher_id;
     IF FOUND THEN
-      IF reversed.reference_type IS DISTINCT FROM NEW.reference_type THEN
-        PERFORM ledger.refuse('reversing_other_module', jsonb_build_object('reversed_type', reversed.reference_type, 'reversing_type', NEW.reference_type));
-      END IF;
-      SELECT r.series_code, r.number INTO reversing
-      FROM ledger.vouchers AS r
-      WHERE r.company_id = NEW.company_id AND r.reverses_voucher_id = NEW.reverses_voucher_id;
-      IF FOUND THEN
-        PERFORM ledger.refuse('reversing_voucher_exists', jsonb_build_object('series', reversing.series_code, 'number', reversing.number));
-      END IF;
+      PERFORM ledger.refuse('reversing_voucher_exists', jsonb_build_object('series', reversing.series_code, 'number', reversing.number));
     END IF;
   END IF;
   SELECT c.next_number INTO counter
@@ -384,46 +401,71 @@ BEGIN
 END
 $moved$;
 
--- At commit: a voucher that is still there has at least two rows, struck
--- rows included.
-CREATE FUNCTION ledger.vouchers_enough_rows() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER
+-- Refuses a voucher with fewer than two rows, struck rows included
+-- (too_few_rows, with the count).
+CREATE FUNCTION ledger.assert_enough_rows(company uuid, voucher uuid) RETURNS void
+LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $enough$
 DECLARE
   found_rows bigint;
 BEGIN
+  found_rows := (
+    SELECT count(*) FROM ledger.voucher_rows AS r
+    WHERE r.company_id = assert_enough_rows.company AND r.voucher_id = assert_enough_rows.voucher
+  );
+  IF found_rows < 2 THEN
+    PERFORM ledger.refuse('too_few_rows', jsonb_build_object('count', found_rows));
+  END IF;
+END
+$enough$;
+
+-- Refuses a voucher whose rows that are not struck differ in debit and
+-- credit (unbalanced, with the two sums in öre, as strings). A row's debit
+-- and its credit each count on their own side.
+CREATE FUNCTION ledger.assert_balanced(company uuid, voucher uuid) RETURNS void
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $balanced$
+DECLARE
+  sums record;
+BEGIN
+  SELECT COALESCE(sum(r.debit), 0) AS debit, COALESCE(sum(r.credit), 0) AS credit
+  INTO sums
+  FROM ledger.voucher_rows AS r
+  WHERE r.company_id = assert_balanced.company AND r.voucher_id = assert_balanced.voucher AND NOT r.removed;
+  IF sums.debit <> sums.credit THEN
+    PERFORM ledger.refuse('unbalanced', jsonb_build_object('debit', sums.debit::text, 'credit', sums.credit::text));
+  END IF;
+END
+$balanced$;
+
+-- At commit: a voucher that is still there has at least two rows, struck
+-- rows included. A voucher deleted before the commit made this check, and
+-- the next one, at its deletion (ledger.vouchers_delete).
+CREATE FUNCTION ledger.vouchers_enough_rows() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $enough$
+BEGIN
   PERFORM ledger.assert_company(NEW.company_id);
   IF NOT EXISTS (SELECT FROM ledger.vouchers AS v WHERE v.company_id = NEW.company_id AND v.id = NEW.id) THEN
     RETURN NULL;
   END IF;
-  found_rows := (SELECT count(*) FROM ledger.voucher_rows AS r WHERE r.company_id = NEW.company_id AND r.voucher_id = NEW.id);
-  IF found_rows < 2 THEN
-    PERFORM ledger.refuse('too_few_rows', jsonb_build_object('count', found_rows));
-  END IF;
+  PERFORM ledger.assert_enough_rows(NEW.company_id, NEW.id);
   RETURN NULL;
 END
 $enough$;
 
 -- At commit: debit equals credit over the voucher's rows that are not
--- struck. The sums are öre, as strings.
+-- struck.
 CREATE FUNCTION ledger.voucher_rows_balance() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $balance$
-DECLARE
-  sums record;
 BEGIN
   PERFORM ledger.assert_company(NEW.company_id);
-  SELECT
-    COALESCE(sum(r.amount) FILTER (WHERE r.amount > 0), 0) AS debit,
-    COALESCE(-sum(r.amount) FILTER (WHERE r.amount < 0), 0) AS credit
-  INTO sums
-  FROM ledger.voucher_rows AS r
-  WHERE r.company_id = NEW.company_id AND r.voucher_id = NEW.voucher_id AND NOT r.removed;
-  IF sums.debit <> sums.credit THEN
-    PERFORM ledger.refuse('unbalanced', jsonb_build_object('debit', sums.debit::text, 'credit', sums.credit::text));
-  END IF;
+  PERFORM ledger.assert_balanced(NEW.company_id, NEW.voucher_id);
   RETURN NULL;
 END
 $balance$;
@@ -611,9 +653,9 @@ END
 $add$;
 
 -- A change to a row: only its text changes, and it can be struck. Its
--- account, amount, position, quantity, voucher, year and created stamps never
--- change, a struck row never loses its mark, and who struck it and when never
--- change (immutable_field). The period lock applies by the voucher's date. A
+-- account, debit, credit, position, quantity, voucher, year and created
+-- stamps never change, a struck row never loses its mark, and who struck it
+-- and when never change (immutable_field). The period lock applies by the voucher's date. A
 -- strike gets who struck the row and when from the transaction.
 CREATE FUNCTION ledger.voucher_rows_alter() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
@@ -629,8 +671,11 @@ BEGIN
   IF NEW.account_number IS DISTINCT FROM OLD.account_number THEN
     PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'account_number', 'operation', 'update'));
   END IF;
-  IF NEW.amount IS DISTINCT FROM OLD.amount THEN
-    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'amount', 'operation', 'update'));
+  IF NEW.debit IS DISTINCT FROM OLD.debit THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'debit', 'operation', 'update'));
+  END IF;
+  IF NEW.credit IS DISTINCT FROM OLD.credit THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'credit', 'operation', 'update'));
   END IF;
   IF NEW.position IS DISTINCT FROM OLD.position THEN
     PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'position', 'operation', 'update'));
@@ -731,10 +776,14 @@ $keep$;
 
 -- Radera: the period lock applies by the voucher's date (not in the closing
 -- series); the voucher is the last of its series, directly below the
--- counter, so the voucher just below a void range is never last; and no
--- voucher reverses it. Then it moves to the record with its rows, each with
--- its account's name, as its number's next deletion, with who deleted it and
--- when. The counter goes back by one, and the rows go by the cascade.
+-- counter, so the voucher just below a void range is never last; no voucher
+-- reverses it; and, as it stands now, it has two rows and they balance. The
+-- checks at commit never see a voucher that is gone, so a deletion in the
+-- transaction that booked the voucher, or that changed its rows, makes those
+-- two checks here: the record holds no voucher that could not have been
+-- booked. Then it moves to the record with its rows, each with its account's
+-- name, as its number's next deletion, with who deleted it and when. The
+-- counter goes back by one, and the rows go by the cascade.
 CREATE FUNCTION ledger.vouchers_delete() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -765,6 +814,8 @@ BEGIN
   IF FOUND THEN
     PERFORM ledger.refuse('reversing_voucher_exists', jsonb_build_object('series', reversing.series_code, 'number', reversing.number));
   END IF;
+  PERFORM ledger.assert_enough_rows(OLD.company_id, OLD.id);
+  PERFORM ledger.assert_balanced(OLD.company_id, OLD.id);
   SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
   stamp := clock_timestamp();
   deletions := 1 + (
@@ -782,10 +833,10 @@ BEGIN
     deletions, stamp, actor.actor_id, actor.actor_kind, pg_current_xact_id()
   );
   INSERT INTO ledger.deleted_voucher_rows (
-    id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, amount, transaction_information, quantity,
+    id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit, transaction_information, quantity,
     removed, removed_at, removed_by, removed_by_kind, created_at, created_by, created_by_kind, account_description
   )
-  SELECT r.id, r.company_id, r.voucher_id, r.fiscal_year_id, r.position, r.account_number, r.amount, r.transaction_information, r.quantity,
+  SELECT r.id, r.company_id, r.voucher_id, r.fiscal_year_id, r.position, r.account_number, r.debit, r.credit, r.transaction_information, r.quantity,
     r.removed, r.removed_at, r.removed_by, r.removed_by_kind, r.created_at, r.created_by, r.created_by_kind, a.description
   FROM ledger.voucher_rows AS r
   JOIN ledger.accounts AS a ON a.company_id = r.company_id AND a.fiscal_year_id = r.fiscal_year_id AND a.number = r.account_number
@@ -880,7 +931,8 @@ $rules$;
 -- The fiscal years' rules from 0002, with the vouchers: new dates may leave
 -- neither a period nor a voucher of the year outside it. A booking and a
 -- change of a voucher's date lock the year's row FOR SHARE until their
--- transaction ends, so this count sees every voucher.
+-- transaction ends, and writes run at READ COMMITTED
+-- (ledger.assert_read_committed), so this count sees every voucher.
 CREATE OR REPLACE FUNCTION ledger.fiscal_years_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp

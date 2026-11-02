@@ -125,7 +125,9 @@ BEGIN
   END IF;
   IF NEW.from_date IS DISTINCT FROM OLD.from_date OR NEW.to_date IS DISTINCT FROM OLD.to_date THEN
     -- A period that is added now waits for this row: ledger.periods_rules
-    -- locks the year's row FOR SHARE, so this count sees every period.
+    -- locks the year's row FOR SHARE, so this count sees every period. It
+    -- reads what is committed, since writes run at READ COMMITTED
+    -- (ledger.assert_read_committed).
     stranded := (
       SELECT count(*) FROM ledger.periods AS p
       WHERE p.company_id = NEW.company_id AND p.fiscal_year_id = NEW.id
@@ -164,7 +166,10 @@ END
 $rules$;
 
 -- Who set a lock date and when come from the transaction's actor, never from
--- the caller. A row's scope, its user and its id never change.
+-- the caller. A row's scope, its user and its id never change. A lock date
+-- changes under a lock on the company's automatic lock row until the
+-- transaction ends, as the automatic lock's own changes do, so it never
+-- overlaps a change of a voucher (ledger.assert_open).
 CREATE FUNCTION ledger.period_locks_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -172,6 +177,7 @@ AS $rules$
 DECLARE
   actor record;
 BEGIN
+  PERFORM 1 FROM ledger.automatic_locks AS a WHERE a.company_id = NEW.company_id FOR NO KEY UPDATE;
   IF TG_OP = 'INSERT' THEN
     IF NEW.set_by IS NOT NULL THEN
       PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'set_by', 'operation', 'create'));
@@ -282,13 +288,21 @@ GRANT UPDATE ON ledger.automatic_locks TO nortfox_app;
 
 -- Whether a date is locked ----------------------------------------------------------
 
--- The day in Sweden: the date in Europe/Stockholm when the transaction began.
--- It reads no setting, so neither the session's time zone nor any setting the
--- app can make moves it.
+-- The day in Sweden at an instant: its date in Europe/Stockholm, in winter
+-- time and in summer time. It reads no setting, so neither the session's time
+-- zone nor any setting the app can make moves it.
+CREATE FUNCTION ledger.day_in_sweden(instant timestamptz) RETURNS date
+LANGUAGE sql IMMUTABLE
+SET search_path = pg_catalog, pg_temp
+RETURN (day_in_sweden.instant AT TIME ZONE 'Europe/Stockholm')::date;
+
+-- The day in Sweden now: the day of the instant the current statement
+-- began, not the transaction. So a transaction kept open past midnight
+-- checks its next statement against the new day's automatic lock.
 CREATE FUNCTION ledger.today_in_sweden() RETURNS date
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
-RETURN (transaction_timestamp() AT TIME ZONE 'Europe/Stockholm')::date;
+RETURN ledger.day_in_sweden(statement_timestamp());
 
 -- The date the automatic lock reaches on `today`, or NULL when it is off or
 -- reaches nothing. A period that ends on day E is locked from day E + 50 on
@@ -381,6 +395,14 @@ END;
 -- period_locked_manual with the through-date, the row it comes from and who
 -- set it, or period_locked_automatic with the through-date and the interval.
 -- The closing series is exempt from every lock. The voucher triggers call it.
+--
+-- It first locks the company's automatic lock row FOR SHARE until the
+-- transaction ends. Every change of a lock date or of the automatic lock
+-- locks that row FOR NO KEY UPDATE. So a change of a voucher and a change of
+-- a lock never overlap: a lock set while the voucher's change is open waits
+-- for it, and a change of a voucher while a new lock is open waits, and then
+-- reads that lock. Writes run at READ COMMITTED (ledger.assert_read_committed),
+-- so the read after the lock sees what is committed.
 CREATE FUNCTION ledger.assert_open(company uuid, day date, is_closing_series boolean) RETURNS void
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -392,6 +414,7 @@ BEGIN
   IF assert_open.is_closing_series THEN
     RETURN;
   END IF;
+  PERFORM 1 FROM ledger.automatic_locks AS a WHERE a.company_id = assert_open.company FOR SHARE;
   SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
   SELECT c.source, c.end_date, c.user_id, c.set_by, c.set_by_kind, c.set_at, c.interval INTO covering
   FROM ledger.lock_covering(assert_open.company, actor.actor_kind, actor.actor_id, assert_open.day, ledger.today_in_sweden()) AS c;
@@ -418,6 +441,7 @@ $open$;
 -- The app reads the lock with these, as the compatible read of the locked
 -- period will. Row level security keeps each read to the transaction's company.
 GRANT EXECUTE ON FUNCTION
+  ledger.day_in_sweden(timestamptz),
   ledger.today_in_sweden(),
   ledger.automatic_lock_end_date(uuid, date),
   ledger.applicable_locks(uuid, text, uuid, date),

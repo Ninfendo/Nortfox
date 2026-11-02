@@ -109,7 +109,7 @@ const SNAPSHOT = `
     (SELECT COALESCE(pg_catalog.json_agg(pg_catalog.json_build_object(
        'year', v.fiscal_year_id, 'code', v.series_code, 'number', v.number,
        'inside', v.transaction_date BETWEEN y.from_date AND y.to_date,
-       'balance', (SELECT COALESCE(sum(r.amount), 0)::text FROM ledger.voucher_rows AS r WHERE r.voucher_id = v.id AND NOT r.removed))), '[]')
+       'balance', (SELECT COALESCE(sum(r.debit) - sum(r.credit), 0)::text FROM ledger.voucher_rows AS r WHERE r.voucher_id = v.id AND NOT r.removed))), '[]')
      FROM ledger.vouchers AS v JOIN ledger.fiscal_years AS y ON y.id = v.fiscal_year_id) AS vouchers,
     (SELECT COALESCE(pg_catalog.json_agg(pg_catalog.json_build_object('year', r.fiscal_year_id, 'code', r.series_code, 'first', r.first_number, 'last', r.last_number)), '[]')
      FROM ledger.void_ranges AS r) AS ranges,
@@ -189,8 +189,8 @@ describe("voucher numbers under parallel bookings, changes, deletions, rollbacks
               referenceType: code === "K" ? "INVOICE" : "MANUAL",
               date: dateIn(year, dayOfYear),
               rows: [
-                { account: 1930, amount: 500n },
-                { account: 3001, amount: -500n },
+                { account: 1930, debit: 500n },
+                { account: 3001, credit: 500n },
               ],
             },
             who,
@@ -241,7 +241,7 @@ describe("voucher numbers under parallel bookings, changes, deletions, rollbacks
       case "book":
       case "bookUnbalanced":
       case "bookRolledBack": {
-        const credit = op.kind === "bookUnbalanced" ? 1n - op.amount : -op.amount;
+        const credit = op.kind === "bookUnbalanced" ? op.amount - 1n : op.amount;
         return attempt(
           client,
           settings,
@@ -252,8 +252,8 @@ describe("voucher numbers under parallel bookings, changes, deletions, rollbacks
               referenceType,
               date: dateIn(year, op.day),
               rows: [
-                { account: 1930, amount: op.amount },
-                { account: 3001, amount: credit },
+                { account: 1930, debit: op.amount },
+                { account: 3001, credit },
               ],
             });
             return 1;
@@ -287,21 +287,22 @@ describe("voucher numbers under parallel bookings, changes, deletions, rollbacks
           if (id === undefined) {
             return 0;
           }
-          const struck = await client.query<{ account_number: number; amount: bigint }>(
+          const struck = await client.query<{ account_number: number; debit: bigint; credit: bigint }>(
             `UPDATE ledger.voucher_rows SET removed = true
              WHERE id = (SELECT r.id FROM ledger.voucher_rows AS r WHERE r.voucher_id = $1 AND NOT r.removed ORDER BY r.position LIMIT 1) AND NOT removed
-             RETURNING account_number, amount`,
+             RETURNING account_number, debit, credit`,
             [id],
           );
           const [row] = struck.rows;
           if (row === undefined) {
             return 0;
           }
-          await client.query("INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount) VALUES ($1, $2, $3, $4)", [
+          await client.query("INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, debit, credit) VALUES ($1, $2, $3, $4, $5)", [
             books.company,
             id,
             row.account_number,
-            row.amount,
+            row.debit,
+            row.credit,
           ]);
           return 1;
         });

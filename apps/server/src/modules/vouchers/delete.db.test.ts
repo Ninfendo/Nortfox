@@ -6,8 +6,12 @@
 // last. The voucher moves, with everything it held, to the record of deleted
 // vouchers, with who deleted it and when, and the counter goes back by one,
 // so the number is given out again. Each deletion is its own entry, counted
-// per number. Nothing in the record changes or goes, and no row is removed
-// from a voucher that stays. The locks come in period-lock.db.test.ts.
+// per number. The record holds only a voucher that could have been booked:
+// a deletion in the transaction that booked the voucher, or that changed its
+// rows, checks its two rows and its balance first, since the checks at
+// commit never see a voucher that is gone. Nothing in the record changes or
+// goes, and no row is removed from a voucher that stays. The locks come in
+// period-lock.db.test.ts.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
@@ -26,6 +30,7 @@ import {
   someUser,
   voucherOf,
   writeRow,
+  writeVoucher,
   type Actor,
   type Books,
   type NewVoucher,
@@ -69,8 +74,8 @@ describe("Radera", () => {
         description: "Fel konto",
         comments: "Bokades två gånger",
         rows: [
-          { account: 6110, amount: 2000n, text: "Pennor", quantity: "2.5" },
-          { account: 1930, amount: -2000n },
+          { account: 6110, debit: 2500n, credit: 500n, text: "Pennor", quantity: "2.5" },
+          { account: 1930, credit: 2000n },
         ],
       }),
       booker,
@@ -78,7 +83,7 @@ describe("Radera", () => {
     // Strike the first row and put a new one in its place, so the record shows a struck row.
     await inTransaction(app, { company: books.company, ...booker }, async () => {
       await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 1", [voucher.id]);
-      await writeRow(app, books.company, voucher.id, { account: 3001, amount: 2000n });
+      await writeRow(app, books.company, voucher.id, { account: 3001, debit: 2000n });
     });
     const changed = await voucherOf(app, books.company, voucher.id);
     const rows = await rowsOf(app, books.company, voucher.id);
@@ -116,10 +121,12 @@ describe("Radera", () => {
         return { ...kept, deleted_voucher_id: voucher.id, account_description: names[row.account_number] };
       }),
     );
-    expect((await deletedRowsOf(app, books.company, voucher.id)).map((row) => [row.position, row.account_number, row.amount, row.removed])).toEqual([
-      [1, 6110, 2000n, true],
-      [2, 1930, -2000n, false],
-      [3, 3001, 2000n, false],
+    expect(
+      (await deletedRowsOf(app, books.company, voucher.id)).map((row) => [row.position, row.account_number, row.debit, row.credit, row.removed]),
+    ).toEqual([
+      [1, 6110, 2500n, 500n, true],
+      [2, 1930, 0n, 2000n, false],
+      [3, 3001, 2000n, 0n, false],
     ]);
     // The counter went back by one, and the next voucher gets the same number.
     expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(2);
@@ -199,6 +206,73 @@ describe("Radera", () => {
     ]);
   });
 
+  describe("in the transaction that booked the voucher, or that changed its rows", () => {
+    /** Runs `work`, then deletes the voucher, in one transaction as the deleter. */
+    async function andDelete(company: string, work: () => Promise<Voucher>): Promise<void> {
+      await inTransaction(app, { company, ...deleter }, async () => {
+        const voucher = await work();
+        await app.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id]);
+      });
+    }
+
+    it("refuses a voucher of one row, with the count, and writes no entry", async () => {
+      const books = await addBooks(app);
+      await expectRefusal(
+        andDelete(books.company, () => writeVoucher(app, books.company, aVoucher(books, { rows: [{ account: 6110, debit: 999n }] }))),
+        "too_few_rows",
+        { count: 1 },
+      );
+      expect(await deletedVouchersOf(app, books.company)).toEqual([]);
+      expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+    });
+
+    it("refuses a voucher that does not balance, with both sums, and writes no entry", async () => {
+      const books = await addBooks(app);
+      await expectRefusal(
+        andDelete(books.company, () =>
+          writeVoucher(app, books.company, aVoucher(books, { rows: [{ account: 6110, debit: 999n }, { account: 1930, credit: 998n }] })),
+        ),
+        "unbalanced",
+        { debit: "999", credit: "998" },
+      );
+      expect(await deletedVouchersOf(app, books.company)).toEqual([]);
+    });
+
+    it("refuses a booked voucher with a row added that puts it out of balance, and leaves the voucher as it was", async () => {
+      const books = await addBooks(app);
+      const voucher = await bookVoucher(app, books.company, aVoucher(books), booker);
+      const rows = await rowsOf(app, books.company, voucher.id);
+      await expectRefusal(
+        andDelete(books.company, async () => {
+          await writeRow(app, books.company, voucher.id, { account: 6110, debit: 999n });
+          return voucher;
+        }),
+        "unbalanced",
+        { debit: "2999", credit: "2000" },
+      );
+      expect(await voucherOf(app, books.company, voucher.id)).toEqual(voucher);
+      expect(await rowsOf(app, books.company, voucher.id)).toEqual(rows);
+      expect(await deletedVouchersOf(app, books.company)).toEqual([]);
+    });
+
+    it("deletes a voucher of two rows that balance as its number's next deletion, and gives the number out again", async () => {
+      const books = await addBooks(app);
+      await andDelete(books.company, () => writeVoucher(app, books.company, aVoucher(books, { description: "Första" })));
+      const second = await bookVoucher(app, books.company, aVoucher(books, { description: "Andra" }), booker);
+      expect(second.number).toBe(1);
+      await remove(books.company, second.id);
+      const entries = await deletedVouchersOf(app, books.company);
+      expect(entries.map((entry) => [entry.number, entry.deletion_count, entry.description])).toEqual([
+        [1, 1, "Första"],
+        [1, 2, "Andra"],
+      ]);
+      expect((await deletedRowsOf(app, books.company, entries[0]?.id ?? "")).map((row) => [row.debit, row.credit])).toEqual([
+        [2000n, 0n],
+        [0n, 2000n],
+      ]);
+    });
+  });
+
   it("refuses a deletion with no actor, and leaves the voucher and the counter", async () => {
     const books = await addBooks(app);
     const voucher = await bookVoucher(app, books.company, aVoucher(books), booker);
@@ -229,7 +303,7 @@ describe("Radera", () => {
     const WRITES = [
       "UPDATE ledger.deleted_vouchers SET description = 'Ändrad'",
       "DELETE FROM ledger.deleted_vouchers",
-      "UPDATE ledger.deleted_voucher_rows SET amount = 0",
+      "UPDATE ledger.deleted_voucher_rows SET debit = 0",
       "DELETE FROM ledger.deleted_voucher_rows",
     ];
 
@@ -287,9 +361,9 @@ describe("Radera", () => {
       await expectRefusal(
         inTransaction(owner, settings, () =>
           owner.query(
-            `INSERT INTO ledger.deleted_voucher_rows (id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, amount,
+            `INSERT INTO ledger.deleted_voucher_rows (id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit,
                transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description)
-             SELECT gen_random_uuid(), company_id, deleted_voucher_id, fiscal_year_id, position + 10, account_number, amount,
+             SELECT gen_random_uuid(), company_id, deleted_voucher_id, fiscal_year_id, position + 10, account_number, debit, credit,
                transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description
              FROM ledger.deleted_voucher_rows WHERE deleted_voucher_id = $1`,
             [voucher.id],

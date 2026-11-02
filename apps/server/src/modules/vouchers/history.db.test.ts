@@ -92,10 +92,10 @@ describe("the history of a voucher", () => {
     await step(voucher, system, () => app.query("UPDATE ledger.vouchers SET transaction_date = '2090-03-20' WHERE id = $1", [voucher]));
     await step(voucher, booker, () => app.query("UPDATE ledger.voucher_rows SET transaction_information = 'Kvitto 1' WHERE voucher_id = $1 AND position = 1", [voucher]));
     await step(voucher, booker, () => app.query("UPDATE ledger.voucher_rows SET transaction_information = 'Kvitto 2' WHERE voucher_id = $1 AND position = 1", [voucher]));
-    await step(voucher, changer, () => writeRow(app, company, voucher, { account: 3001, amount: 0n, text: "Nollrad" }));
+    await step(voucher, changer, () => writeRow(app, company, voucher, { account: 3001, text: "Nollrad" }));
     await step(voucher, system, async () => {
       await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 1", [voucher]);
-      await writeRow(app, company, voucher, { account: 6110, amount: 2000n, text: "Rätt rad" });
+      await writeRow(app, company, voucher, { account: 6110, debit: 2000n, text: "Rätt rad" });
     });
 
     const history = await inTransaction(app, { company }, async () =>

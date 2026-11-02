@@ -5,7 +5,7 @@ import { REFUSALS, codeOf, readRefusal, refusalDrift } from "./refusals.ts";
 
 describe("the list of refusals", () => {
   it("gives each reason its own code in the class NF, and each code one reason", () => {
-    expect(REFUSALS.length).toBe(28);
+    expect(REFUSALS.length).toBe(29);
     expect(new Set(REFUSALS.map((refusal) => refusal.reason)).size).toBe(REFUSALS.length);
     expect(new Set(REFUSALS.map((refusal) => refusal.code)).size).toBe(REFUSALS.length);
     for (const { reason, code } of REFUSALS) {
@@ -19,6 +19,7 @@ describe("the list of refusals", () => {
     expect(codeOf("immutable_field")).toBe("NF020");
     expect(codeOf("actor_missing")).toBe("NF050");
     expect(codeOf("fiscal_year_strands_rows")).toBe("NF057");
+    expect(codeOf("read_committed_only")).toBe("NF058");
   });
 });
 

@@ -37,6 +37,7 @@ export const REFUSALS = [
   { reason: "void_range_not_at_counter", code: "NF055" },
   { reason: "period_outside_fiscal_year", code: "NF056" },
   { reason: "fiscal_year_strands_rows", code: "NF057" },
+  { reason: "read_committed_only", code: "NF058" },
 ] as const;
 
 export type RefusalReason = (typeof REFUSALS)[number]["reason"];

@@ -61,6 +61,7 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
     "ledger.applicable_locks",
     "ledger.automatic_lock_end_date",
     "ledger.current_company_id",
+    "ledger.day_in_sweden",
     "ledger.lock_covering",
     "ledger.locked_through",
     "ledger.today_in_sweden",

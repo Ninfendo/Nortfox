@@ -1,6 +1,6 @@
 # 5. Money
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: the compatible API takes amounts and exchange rates in the established API's forms.
+Status: accepted, 2026-11-01. Amended 2026-11-02: the compatible API takes amounts and exchange rates in the established API's forms. Amended 2026-11-02 by the owner, in slice 2a: a voucher row stores its debit and its credit separately, as the established API keeps them.
 
 ## Context
 
@@ -16,7 +16,7 @@ A JavaScript number is a binary float: `0.1 + 0.2` is not `0.3`. In accounting, 
   - In its answers, each amount has the form that the established endpoint gives it. That is mostly a JSON number, but some answers give a string.
   - It reads each amount from its own text in the request, never through a float, and writes each one in its answers from the exact value.
   - The established API rounds some amounts that have more decimals than it keeps. Each slice's issue records how its established endpoints round, and the compatible endpoint does the same.
-- A voucher row has one signed amount: debit is positive, credit is negative, as in SIE.
+- A voucher row stores a debit and a credit, each a `bigint` of zero or more, kept as they were sent. So one row can hold both, as in the established API, where a row sent with debit 10 and credit 4 reads back as 10 and 4. Balances and reports use debit minus credit. In SIE, which has one signed amount per row, a row is that difference: debit positive, credit negative.
 - On the native API, exchange rates are decimal strings too, never numbers.
 - The compatible API takes and gives an exchange rate in the forms that the established API uses, as it does an amount. It reads the rate like an amount, from its own text, never through a float. The same holds for any other exact decimal in the established API.
 - Rounding happens in one place, `packages/engine`, with one named rule for each case (VAT, currency conversion, accruals).

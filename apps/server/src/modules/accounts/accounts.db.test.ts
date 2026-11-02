@@ -212,11 +212,11 @@ describe("accounts", () => {
     const voucher = { year, series: "A", date: "2090-03-15" };
     // Two vouchers hold rows on 6110, one of them two rows; a third holds 6110 only on a row that is struck.
     await bookVoucher(app, company, { ...voucher, rows: balanced(2000n, 6110, 1930) }, who);
-    await bookVoucher(app, company, { ...voucher, rows: [{ account: 6110, amount: 100n }, { account: 6110, amount: 100n }, { account: 1930, amount: -200n }] }, who);
+    await bookVoucher(app, company, { ...voucher, rows: [{ account: 6110, debit: 100n }, { account: 6110, debit: 100n }, { account: 1930, credit: 200n }] }, who);
     const struck = await bookVoucher(app, company, { ...voucher, rows: balanced(300n, 6110, 1930) }, who);
     await inTransaction(app, { company, ...who }, async () => {
       await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND account_number = 6110", [struck.id]);
-      await writeRow(app, company, struck.id, { account: 3001, amount: 300n });
+      await writeRow(app, company, struck.id, { account: 3001, debit: 300n });
     });
     const remove = (number: number) => asApp(company, "DELETE FROM ledger.accounts WHERE fiscal_year_id = $1 AND number = $2", [year, number]);
     await expectRefusal(remove(6110), "account_has_rows", { number: 6110, count: 3 });

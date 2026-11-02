@@ -56,7 +56,7 @@ describe("a voucher's modified time", () => {
       ["the description", () => asApp(books.company, "UPDATE ledger.vouchers SET description = 'Ny text' WHERE id = $1", [voucher.id])],
       ["the date", () => asApp(books.company, "UPDATE ledger.vouchers SET transaction_date = '2090-03-16' WHERE id = $1", [voucher.id])],
       ["a row's text", () => asApp(books.company, "UPDATE ledger.voucher_rows SET transaction_information = 'Rad' WHERE voucher_id = $1 AND position = 1", [voucher.id])],
-      ["an added row", () => inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher.id, { account: 3001, amount: 0n }))],
+      ["an added row", () => inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher.id, { account: 3001 }))],
       ["a strike", () => asApp(books.company, "UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 3", [voucher.id])],
     ];
     for (const [change, run] of changes) {
@@ -74,11 +74,11 @@ describe("a voucher's modified time", () => {
     await expectRefusal(asApp(books.company, "UPDATE ledger.vouchers SET description = 'Ny', series_code = 'I' WHERE id = $1", [voucher.id]), "immutable_field");
     await expectRefusal(asApp(books.company, "UPDATE ledger.vouchers SET description = '' WHERE id = $1", [voucher.id]), "description_missing");
     await expectRefusal(asApp(books.company, "UPDATE ledger.vouchers SET transaction_date = '2091-01-01' WHERE id = $1", [voucher.id]), "no_fiscal_year");
-    await expectRefusal(asApp(books.company, "UPDATE ledger.voucher_rows SET transaction_information = 'Ny', amount = 1 WHERE voucher_id = $1", [voucher.id]), "immutable_field");
+    await expectRefusal(asApp(books.company, "UPDATE ledger.voucher_rows SET transaction_information = 'Ny', debit = 1 WHERE voucher_id = $1", [voucher.id]), "immutable_field");
     // Refused at commit: a strike that leaves the voucher out of balance, and an added row out of balance.
     await expectRefusal(asApp(books.company, "UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 1", [voucher.id]), "unbalanced");
     await expectRefusal(
-      inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher.id, { account: 3001, amount: 1n })),
+      inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher.id, { account: 3001, debit: 1n })),
       "unbalanced",
     );
     await expectError(asApp(books.company, "UPDATE ledger.voucher_rows SET transaction_information = NULL WHERE voucher_id = $1", [voucher.id]), NOT_NULL_VIOLATION);

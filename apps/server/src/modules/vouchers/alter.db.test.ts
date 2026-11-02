@@ -6,8 +6,8 @@
 // Each change sets the altered stamp, and a struck row gets who struck it and
 // when. Nothing else changes: not the series, the number, the year, the
 // reference, the comments, what it reverses, or a created stamp, and of an
-// existing row not its account, amount, position or quantity. A row is never
-// removed, and a struck row never loses its mark. The locks come in
+// existing row not its account, debit, credit, position or quantity. A row
+// is never removed, and a struck row never loses its mark. The locks come in
 // period-lock.db.test.ts.
 
 import { randomUUID } from "node:crypto";
@@ -152,15 +152,15 @@ describe("Ändra", () => {
     const books = await addBooks(app);
     const voucher = await booked(books);
     const added = await inTransaction(app, { company: books.company, ...changer }, async () => {
-      const zero = await writeRow(app, books.company, voucher.id, { account: 3001, amount: 0n, text: "Nollrad" });
-      const debit = await writeRow(app, books.company, voucher.id, { account: 6110, amount: 500n });
-      const credit = await writeRow(app, books.company, voucher.id, { account: 1930, amount: -500n });
+      const zero = await writeRow(app, books.company, voucher.id, { account: 3001, text: "Nollrad" });
+      const debit = await writeRow(app, books.company, voucher.id, { account: 6110, debit: 500n });
+      const credit = await writeRow(app, books.company, voucher.id, { account: 1930, credit: 500n });
       return [zero, debit, credit];
     });
-    expect(added.map((row) => [row.position, row.account_number, row.amount, row.created_by, row.created_by_kind])).toEqual([
-      [3, 3001, 0n, changer.actor, "integration"],
-      [4, 6110, 500n, changer.actor, "integration"],
-      [5, 1930, -500n, changer.actor, "integration"],
+    expect(added.map((row) => [row.position, row.account_number, row.debit, row.credit, row.created_by, row.created_by_kind])).toEqual([
+      [3, 3001, 0n, 0n, changer.actor, "integration"],
+      [4, 6110, 500n, 0n, changer.actor, "integration"],
+      [5, 1930, 0n, 500n, changer.actor, "integration"],
     ]);
     await expectAlteredBy(books.company, voucher, await voucherOf(app, books.company, voucher.id));
   });
@@ -170,12 +170,12 @@ describe("Ändra", () => {
     const voucher = await booked(books);
     await addAccount(app, books.company, books.year.id, { number: 1910, description: "Kassa", active: false });
     await expectRefusal(
-      inTransaction(app, { company: books.company, ...changer }, () => writeRow(app, books.company, voucher.id, { account: 998, amount: 0n })),
+      inTransaction(app, { company: books.company, ...changer }, () => writeRow(app, books.company, voucher.id, { account: 998 })),
       "account_missing",
       { number: 998 },
     );
     await expectRefusal(
-      inTransaction(app, { company: books.company, ...changer }, () => writeRow(app, books.company, voucher.id, { account: 1910, amount: 0n })),
+      inTransaction(app, { company: books.company, ...changer }, () => writeRow(app, books.company, voucher.id, { account: 1910 })),
       "account_inactive",
       { number: 1910 },
     );
@@ -192,17 +192,17 @@ describe("Ändra", () => {
         `UPDATE ledger.voucher_rows SET removed = true WHERE id = $1 RETURNING ${ROW_COLUMNS}, pg_catalog.transaction_timestamp()::text AS started`,
         [first?.id],
       );
-      await writeRow(app, books.company, voucher.id, { account: 6110, amount: 2000n });
+      await writeRow(app, books.company, voucher.id, { account: 6110, debit: 2000n });
       return found.rows[0];
     });
     expect(struck).toMatchObject({ ...first, removed: true, removed_at: struck?.removed_at, removed_by: changer.actor, removed_by_kind: "integration" });
     expect(struck?.removed_at).not.toBeNull();
     expect(await isAfter(app, struck?.removed_at ?? "", struck?.started ?? "")).toBe(true);
     const rows = await rowsOf(app, books.company, voucher.id);
-    expect(rows.map((row) => [row.position, row.amount, row.removed])).toEqual([
-      [1, 2000n, true],
-      [2, -2000n, false],
-      [3, 2000n, false],
+    expect(rows.map((row) => [row.position, row.debit, row.credit, row.removed])).toEqual([
+      [1, 2000n, 0n, true],
+      [2, 0n, 2000n, false],
+      [3, 2000n, 0n, false],
     ]);
     await expectAlteredBy(books.company, voucher, await voucherOf(app, books.company, voucher.id));
   });
@@ -213,7 +213,7 @@ describe("Ändra", () => {
       const head = await writeVoucher(app, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced() });
       await app.query("UPDATE ledger.vouchers SET description = 'Ny text', transaction_date = '2090-04-01' WHERE id = $1", [head.id]);
       await app.query("UPDATE ledger.voucher_rows SET transaction_information = 'Rad' WHERE voucher_id = $1", [head.id]);
-      await writeRow(app, books.company, head.id, { account: 3001, amount: 0n });
+      await writeRow(app, books.company, head.id, { account: 3001 });
       return head;
     });
     expect(await voucherOf(app, books.company, voucher.id)).toEqual({
@@ -275,7 +275,8 @@ describe("Ändra", () => {
     const ROW_FIELDS: readonly (readonly [string, string])[] = [
       ["id", `'${randomUUID()}'`],
       ["account_number", "3001"],
-      ["amount", "amount + 1"],
+      ["debit", "debit + 1"],
+      ["credit", "credit + 1"],
       ["position", "position + 10"],
       ["quantity", "1"],
       ["voucher_id", "$2"],
@@ -307,7 +308,7 @@ describe("Ändra", () => {
       const [first] = await rowsOf(app, books.company, voucher.id);
       await inTransaction(app, { company: books.company, ...changer }, async () => {
         await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE id = $1", [first?.id]);
-        await writeRow(app, books.company, voucher.id, { account: 6110, amount: 2000n });
+        await writeRow(app, books.company, voucher.id, { account: 6110, debit: 2000n });
       });
       const [struck] = await rowsOf(app, books.company, voucher.id);
       for (const [set, field] of [
@@ -351,7 +352,7 @@ describe("Ändra", () => {
       const books = await addBooks(app);
       const voucher = await booked(books);
       await expectRefusal(
-        inTransaction(app, { company: books.company }, () => writeRow(app, books.company, voucher.id, { account: 3001, amount: 0n })),
+        inTransaction(app, { company: books.company }, () => writeRow(app, books.company, voucher.id, { account: 3001 })),
         "actor_missing",
         { setting: "nortfox.actor_id" },
       );

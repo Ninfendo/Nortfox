@@ -69,13 +69,13 @@ const CASES: readonly Case[] = [
   {
     reason: "unbalanced",
     refused: (ledger) => ({
-      write: () => book(ledger, { rows: [{ account: 6110, amount: 2000n }, { account: 1930, amount: -1999n }] }),
+      write: () => book(ledger, { rows: [{ account: 6110, debit: 2000n }, { account: 1930, credit: 1999n }] }),
       facts: { debit: "2000", credit: "1999" },
     }),
   },
   {
     reason: "too_few_rows",
-    refused: (ledger) => ({ write: () => book(ledger, { rows: [{ account: 6110, amount: 0n }] }), facts: { count: 1 } }),
+    refused: (ledger) => ({ write: () => book(ledger, { rows: [{ account: 6110 }] }), facts: { count: 1 } }),
   },
   {
     reason: "account_missing",
@@ -253,7 +253,7 @@ describe("the refusals of rule 44", () => {
     const books = await addBooks(app, who);
     const voucher = await bookVoucher(app, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced() }, who);
     await expectRefusal(
-      inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher.id, { account: 998, amount: 0n })),
+      inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher.id, { account: 998 })),
       "account_missing",
       { number: 998 },
     );

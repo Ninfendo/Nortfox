@@ -352,7 +352,7 @@ export const VOUCHER_COLUMNS = `id, company_id, fiscal_year_id, series_code, num
   reference_type, reference_number, reverses_voucher_id, created_at::text AS created_at, created_by, created_by_kind,
   created_xact::text AS created_xact, modified_at::text AS modified_at, altered_at::text AS altered_at, altered_by, altered_by_kind`;
 
-/** A voucher row as the database holds it, with its times as text. The amount is whole öre, as a bigint. */
+/** A voucher row as the database holds it, with its times as text. The debit and the credit are whole öre, as bigints. */
 export interface VoucherRow {
   readonly id: string;
   readonly company_id: string;
@@ -360,7 +360,8 @@ export interface VoucherRow {
   readonly fiscal_year_id: string;
   readonly position: number;
   readonly account_number: number;
-  readonly amount: bigint;
+  readonly debit: bigint;
+  readonly credit: bigint;
   readonly transaction_information: string;
   readonly quantity: string;
   readonly removed: boolean;
@@ -373,13 +374,14 @@ export interface VoucherRow {
 }
 
 /** The columns of a voucher row, in the table's order, with its times as text. */
-export const ROW_COLUMNS = `id, company_id, voucher_id, fiscal_year_id, position, account_number, amount, transaction_information, quantity,
+export const ROW_COLUMNS = `id, company_id, voucher_id, fiscal_year_id, position, account_number, debit, credit, transaction_information, quantity,
   removed, removed_at::text AS removed_at, removed_by, removed_by_kind, created_at::text AS created_at, created_by, created_by_kind`;
 
-/** A row to book: its account, its signed amount in öre (debit positive), and its text and quantity when given. */
+/** A row to book: its account, its debit and its credit in öre (0 when not given), and its text and quantity when given. */
 export interface NewRow {
   readonly account: number;
-  readonly amount: bigint;
+  readonly debit?: bigint;
+  readonly credit?: bigint;
   readonly text?: string;
   readonly quantity?: string;
 }
@@ -402,19 +404,20 @@ export const INSERT_VOUCHER = `INSERT INTO ledger.vouchers
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING ${VOUCHER_COLUMNS}`;
 
 /** The statement that adds a row to a voucher, with its quantity. */
-export const INSERT_ROW = `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount, transaction_information, quantity)
-  VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${ROW_COLUMNS}`;
+export const INSERT_ROW = `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, debit, credit, transaction_information, quantity)
+  VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING ${ROW_COLUMNS}`;
 
 /** The statement that adds a row to a voucher, with no quantity given. */
-export const INSERT_ROW_WITHOUT_QUANTITY = `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount, transaction_information)
-  VALUES ($1, $2, $3, $4, $5) RETURNING ${ROW_COLUMNS}`;
+export const INSERT_ROW_WITHOUT_QUANTITY = `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, debit, credit, transaction_information)
+  VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${ROW_COLUMNS}`;
 
 /** Adds one row to a voucher as `client`, in the open transaction, and gives it. */
 export async function writeRow(client: Client, company: string, voucher: string, row: NewRow): Promise<VoucherRow> {
+  const sides = [row.debit ?? 0n, row.credit ?? 0n];
   const found =
     row.quantity === undefined
-      ? await client.query<VoucherRow>(INSERT_ROW_WITHOUT_QUANTITY, [company, voucher, row.account, row.amount, row.text ?? ""])
-      : await client.query<VoucherRow>(INSERT_ROW, [company, voucher, row.account, row.amount, row.text ?? "", row.quantity]);
+      ? await client.query<VoucherRow>(INSERT_ROW_WITHOUT_QUANTITY, [company, voucher, row.account, ...sides, row.text ?? ""])
+      : await client.query<VoucherRow>(INSERT_ROW, [company, voucher, row.account, ...sides, row.text ?? "", row.quantity]);
   const [written] = found.rows;
   if (written === undefined) {
     throw new Error("The row was not added.");
@@ -453,8 +456,8 @@ export async function bookVoucher(client: Client, company: string, voucher: NewV
 /** Two rows that balance: `amount` öre debit on one account, the same credit on the other. */
 export function balanced(amount = 2000n, debit = 6110, credit = 1930): NewRow[] {
   return [
-    { account: debit, amount },
-    { account: credit, amount: -amount },
+    { account: debit, debit: amount },
+    { account: credit, credit: amount },
   ];
 }
 

@@ -6,16 +6,19 @@
 // its old date or its new date, and deleting one. Each refusal names the
 // through-date, the kind of lock and, for a manual lock, who set it. Once the
 // date is cleared, or the automatic lock turned off, the same acts pass. The
-// closing series of the voucher's year passes every lock.
+// closing series of the voucher's year passes every lock. A lock that is
+// being set and a change of a voucher never overlap: each waits for the
+// other, so no change goes in under a lock that it did not see.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import { backendPid, begin, expectRefusal, freshDatabase, inTransaction, untilWaitingForLock, type TestDatabase } from "../../../test/database.ts";
 import {
   addBooks,
   balanced,
   bookVoucher,
+  isAfter,
   rowsOf,
   setAutomaticLock,
   setLock,
@@ -87,9 +90,9 @@ describe("the period lock on vouchers", () => {
       strike: () =>
         as(async () => {
           await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 1", [voucher.id]);
-          await writeRow(app, books.company, voucher.id, { account: 6110, amount: 2000n });
+          await writeRow(app, books.company, voucher.id, { account: 6110, debit: 2000n });
         }),
-      add: () => as(() => writeRow(app, books.company, voucher.id, { account: 3001, amount: 0n })),
+      add: () => as(() => writeRow(app, books.company, voucher.id, { account: 3001 })),
       remove: () => as(() => app.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id])),
     };
   }
@@ -205,6 +208,52 @@ describe("the period lock on vouchers", () => {
     });
   });
 
+  describe("set while a voucher changes", () => {
+    const DESCRIBE = "UPDATE ledger.vouchers SET description = 'Ny text' WHERE id = $1";
+
+    it("holds a change of a voucher until a lock that is being set commits, and then refuses it by that lock", async () => {
+      const books = await addBooks(app);
+      const voucher = await bookVoucher(app, books.company, aVoucher(books, { date: "2090-06-10" }), booker);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...setter });
+      try {
+        await app.query("INSERT INTO ledger.period_locks (company_id, scope, end_date) VALUES ($1, 'all', '2090-06-30')", [books.company]);
+        const changed = expectRefusal(
+          inTransaction(other, { company: books.company, ...userOne }, () => other.query(DESCRIBE, [voucher.id])),
+          "period_locked_manual",
+        );
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        await changed;
+      } finally {
+        await app.query("ROLLBACK");
+      }
+      expect(await voucherOf(app, books.company, voucher.id)).toEqual(voucher);
+    });
+
+    it("holds a lock that is being set until an open change of a voucher commits, and sets it after that change", async () => {
+      const books = await addBooks(app);
+      const voucher = await bookVoucher(app, books.company, aVoucher(books, { date: "2090-06-10" }), booker);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...userOne });
+      let altered: string | null | undefined;
+      try {
+        altered = (await app.query<{ altered_at: string | null }>(`${DESCRIBE} RETURNING altered_at::text AS altered_at`, [voucher.id])).rows[0]?.altered_at;
+        const locked = setLock(other, books.company, "all", "2090-06-30", { who: setter });
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        const lock = await locked;
+        expect(await isAfter(app, lock.set_at, altered ?? "")).toBe(true);
+      } finally {
+        await app.query("ROLLBACK");
+      }
+      expect((await voucherOf(app, books.company, voucher.id))?.altered_at).toBe(altered);
+      await expectRefusal(inTransaction(app, { company: books.company, ...userOne }, () => app.query(DESCRIBE, [voucher.id])), "period_locked_manual");
+    });
+  });
+
   describe("the automatic lock", () => {
     /** Books in a fiscal year 2020, which the automatic lock covers on any day this slice runs. */
     async function books2020(): Promise<Books> {
@@ -235,6 +284,29 @@ describe("the period lock on vouchers", () => {
       await expectAllRefused(books, voucher, open, system, "2020-05-15", "period_locked_automatic", await automaticFacts(books.company));
       await setAutomaticLock(app, books.company, null, setter);
       await expectAllAccepted(books, voucher, open, system, "2020-05-15");
+    });
+
+    it("holds a change of a voucher until the automatic lock that is being turned on commits, and then refuses it by that lock", async () => {
+      const books = await books2020();
+      const voucher = await bookVoucher(app, books.company, aVoucher(books, { date: "2020-05-15" }), booker);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...setter });
+      try {
+        await app.query("UPDATE ledger.automatic_locks SET enabled = true, interval = 'month_end_50'");
+        const changed = expectRefusal(
+          inTransaction(other, { company: books.company, ...userOne }, () =>
+            other.query("UPDATE ledger.vouchers SET description = 'Ny text' WHERE id = $1", [voucher.id]),
+          ),
+          "period_locked_automatic",
+        );
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        await changed;
+      } finally {
+        await app.query("ROLLBACK");
+      }
+      expect(await voucherOf(app, books.company, voucher.id)).toEqual(voucher);
     });
 
     it("names a manual lock with a later date than the automatic one", async () => {

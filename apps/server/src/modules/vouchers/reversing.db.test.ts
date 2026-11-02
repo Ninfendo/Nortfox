@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Ändringsverifikation (rules 27 to 30 of the slice): a booking can name an
-// earlier voucher that it reverses, and the link reads both ways. A voucher
+// earlier voucher that it reverses, and the link reads both ways. The voucher
+// it names must be there before it: never the voucher itself, nor one booked
+// after it in the same statement. A voucher
 // has at most one reversing voucher at a time, of its own reference type.
 // The reversing voucher is an ordinary voucher, with its own number and its
 // own lock check, and its rows are not checked against the old voucher's.
@@ -9,6 +11,7 @@
 // A voucher whose date is locked for the actor can be named: the link
 // changes nothing in it.
 
+import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { backendPid, begin, expectError, expectRefusal, freshDatabase, inTransaction, untilWaitingForLock, type TestDatabase } from "../../../test/database.ts";
@@ -17,9 +20,11 @@ import {
   balanced,
   bookVoucher,
   nextNumberOf,
+  rowsOf,
   setLock,
   someUser,
   voucherOf,
+  writeRow,
   writeVoucher,
   type Books,
   type NewVoucher,
@@ -81,7 +86,7 @@ describe("Ändringsverifikation", () => {
     const reverse = await bookVoucher(
       app,
       books.company,
-      reversing(books, old, { series: "I", rows: [{ account: 3001, amount: 1n }, { account: 1930, amount: -1n }] }),
+      reversing(books, old, { series: "I", rows: [{ account: 3001, debit: 1n }, { account: 1930, credit: 1n }] }),
       who,
     );
     expect(reverse).toMatchObject({ series_code: "I", number: 1, reverses_voucher_id: old.id });
@@ -120,7 +125,60 @@ describe("Ändringsverifikation", () => {
     const other = await addBooks(app);
     const theirs = await bookVoucher(app, other.company, aVoucher(other), who);
     await expectError(bookVoucher(app, books.company, aVoucher(books, { reverses: theirs.id }), who), FOREIGN_KEY_VIOLATION, /vouchers_reverses/);
+    await expectError(bookVoucher(app, books.company, aVoucher(books, { reverses: randomUUID() }), who), FOREIGN_KEY_VIOLATION, /vouchers_reverses/);
     expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+  });
+
+  const BOOK_WITH_ID = `INSERT INTO ledger.vouchers (id, company_id, fiscal_year_id, series_code, description, transaction_date, reference_type, reverses_voucher_id)`;
+
+  it("refuses a voucher that names itself as the one it reverses, which could then never be deleted or reversed", async () => {
+    const books = await addBooks(app);
+    const id = randomUUID();
+    await expectError(
+      inTransaction(app, { company: books.company, ...who }, () =>
+        app.query(`${BOOK_WITH_ID} VALUES ($1, $2, $3, 'A', 'Rättar sig själv', '2090-03-15', 'MANUAL', $1)`, [id, books.company, books.year.id]),
+      ),
+      FOREIGN_KEY_VIOLATION,
+      /vouchers_reverses/,
+    );
+    expect(await voucherOf(app, books.company, id)).toBeUndefined();
+    expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+  });
+
+  it("refuses a voucher that names one booked after it in the same statement, and lets the later one name the earlier", async () => {
+    const books = await addBooks(app);
+    const [first, second] = [randomUUID(), randomUUID()];
+    const params = [first, second, books.company, books.year.id];
+    // Each names the other: the first names one that is not there yet.
+    await expectError(
+      inTransaction(app, { company: books.company, ...who }, () =>
+        app.query(
+          `${BOOK_WITH_ID} VALUES ($1, $3, $4, 'A', 'Första', '2090-03-15', 'MANUAL', $2), ($2, $3, $4, 'A', 'Andra', '2090-03-15', 'MANUAL', $1)`,
+          params,
+        ),
+      ),
+      FOREIGN_KEY_VIOLATION,
+      /vouchers_reverses/,
+    );
+    expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+    // The second names the first, which the statement booked before it.
+    await inTransaction(app, { company: books.company, ...who }, async () => {
+      await app.query(
+        `${BOOK_WITH_ID} VALUES ($1, $3, $4, 'A', 'Första', '2090-03-15', 'MANUAL', NULL), ($2, $3, $4, 'A', 'Andra', '2090-03-15', 'MANUAL', $1)`,
+        params,
+      );
+      for (const [voucher, rows] of [
+        [first, balanced(2000n)],
+        [second, balanced(2000n, 1930, 6110)],
+      ] as const) {
+        for (const row of rows) {
+          await writeRow(app, books.company, voucher, row);
+        }
+      }
+    });
+    expect(await voucherOf(app, books.company, second)).toMatchObject({ number: 2, reverses_voucher_id: first });
+    expect(await reversedBy(books.company, first)).toEqual([second]);
+    expect(await rowsOf(app, books.company, second)).toHaveLength(2);
   });
 
   it("keeps the old voucher while its reversing voucher exists, and after that is deleted points to none and takes a new one", async () => {

@@ -6,7 +6,8 @@
 // fiscal years. No job runs for it. A period is locked on the 50th day after
 // the end of its month or quarter, and on the 60th day after the end of the
 // fiscal year; quarters are calendar quarters. The tests use days away from
-// those boundaries, which slice 3b settles.
+// those boundaries, which slice 3b settles. Today is the day in Sweden when
+// the statement began, in winter time and in summer time.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
@@ -225,7 +226,7 @@ describe("the automatic lock", () => {
         await app.query("SELECT pg_catalog.set_config('nortfox.today', '2001-01-01', true)");
         const row = await app.query<{ sweden: string; local: string; millis: bigint }>(
           `SELECT ledger.today_in_sweden()::text AS sweden, CURRENT_DATE::text AS local,
-             (extract(epoch FROM pg_catalog.transaction_timestamp()) * 1000)::bigint AS millis`,
+             (extract(epoch FROM pg_catalog.statement_timestamp()) * 1000)::bigint AS millis`,
         );
         const [day] = row.rows;
         if (day !== undefined) {
@@ -242,5 +243,48 @@ describe("the automatic lock", () => {
     expect(days.map((day) => day.sweden)).toEqual(TIME_ZONES.map(() => inSweden));
     // The session's own date does move: 25 hours lie between Kiritimati and Pago Pago.
     expect(new Set(days.map((day) => day.local)).size).toBeGreaterThan(1);
+  });
+
+  /** Instants in UTC, and the day in Sweden at each: either side of midnight in winter time and in summer time, and on the days the clock changes. */
+  const SWEDISH_DAYS: readonly (readonly [instant: string, day: string])[] = [
+    ["2026-11-01 22:59:59+00", "2026-11-01"],
+    ["2026-11-01 23:30:00+00", "2026-11-02"],
+    ["2026-06-30 21:59:59+00", "2026-06-30"],
+    ["2026-06-30 22:30:00+00", "2026-07-01"],
+    ["2026-03-28 22:59:59+00", "2026-03-28"],
+    ["2026-03-28 23:00:00+00", "2026-03-29"],
+    ["2026-03-29 21:59:59+00", "2026-03-29"],
+    ["2026-03-29 22:00:00+00", "2026-03-30"],
+    ["2026-10-24 21:59:59+00", "2026-10-24"],
+    ["2026-10-24 22:00:00+00", "2026-10-25"],
+    ["2026-10-25 22:59:59+00", "2026-10-25"],
+    ["2026-10-25 23:00:00+00", "2026-10-26"],
+  ];
+
+  it("gives the day in Sweden at an instant, in winter time and in summer time, whatever the session's time zone", async () => {
+    for (const timeZone of TIME_ZONES) {
+      const days = await inTransaction(app, {}, async () => {
+        await app.query("SELECT pg_catalog.set_config('TimeZone', $1, true)", [timeZone]);
+        const found: string[] = [];
+        for (const [instant] of SWEDISH_DAYS) {
+          const row = await app.query<{ day: string }>("SELECT ledger.day_in_sweden($1::timestamptz)::text AS day", [instant]);
+          found.push(row.rows[0]?.day ?? "");
+        }
+        return found;
+      });
+      expect(days, timeZone).toEqual(SWEDISH_DAYS.map(([, day]) => day));
+    }
+  });
+
+  it("takes today from the instant the statement began, not the transaction, so a transaction kept open past midnight reads the new day", async () => {
+    const found = await owner.query<{ body: string }>("SELECT pg_catalog.pg_get_functiondef('ledger.today_in_sweden()'::pg_catalog.regprocedure) AS body");
+    expect(found.rows[0]?.body).toMatch(/\nRETURN ledger\.day_in_sweden\(statement_timestamp\(\)\)\n$/);
+    expect(found.rows[0]?.body).not.toMatch(/transaction_timestamp|now\(\)|current_/);
+    const same = await inTransaction(app, {}, async () => {
+      await app.query("SELECT pg_catalog.pg_sleep(0.01)");
+      const row = await app.query<{ same: boolean }>("SELECT ledger.today_in_sweden() = ledger.day_in_sweden(pg_catalog.statement_timestamp()) AS same");
+      return row.rows[0]?.same;
+    });
+    expect(same).toBe(true);
   });
 });

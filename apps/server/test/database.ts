@@ -115,11 +115,16 @@ export async function emptyDatabase(): Promise<TestDatabase> {
   return testDatabase(name);
 }
 
-/** The settings a transaction may carry. A setting left out is not set. */
+/** The isolation levels a transaction can ask for. */
+export const ISOLATION_LEVELS = ["read uncommitted", "read committed", "repeatable read", "serializable"] as const;
+export type IsolationLevel = (typeof ISOLATION_LEVELS)[number];
+
+/** The settings a transaction may carry. A setting left out is not set, and the isolation level is then the default, READ COMMITTED. */
 export interface Settings {
   readonly company?: string;
   readonly actor?: string;
   readonly kind?: string;
+  readonly isolation?: IsolationLevel;
 }
 
 const SETTING_NAMES = { company: "nortfox.company_id", actor: "nortfox.actor_id", kind: "nortfox.actor_kind" } as const;
@@ -129,7 +134,7 @@ const SETTING_NAMES = { company: "nortfox.company_id", actor: "nortfox.actor_id"
  * set_config(name, value, true). The caller commits or rolls it back.
  */
 export async function begin(client: Client, settings: Settings): Promise<void> {
-  await client.query("BEGIN");
+  await client.query(settings.isolation === undefined ? "BEGIN" : `BEGIN ISOLATION LEVEL ${settings.isolation.toUpperCase()}`);
   for (const key of ["company", "actor", "kind"] as const) {
     const value = settings[key];
     if (value !== undefined) {

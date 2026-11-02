@@ -74,7 +74,8 @@ BEGIN ATOMIC
     ('counter_move', 'NF054'),
     ('void_range_not_at_counter', 'NF055'),
     ('period_outside_fiscal_year', 'NF056'),
-    ('fiscal_year_strands_rows', 'NF057')
+    ('fiscal_year_strands_rows', 'NF057'),
+    ('read_committed_only', 'NF058')
   ) AS v
   ORDER BY v.column2;
 END;
@@ -193,6 +194,33 @@ BEGIN
 END
 $actor$;
 
+-- The isolation level ------------------------------------------------------------
+--
+-- The ledger is written at READ COMMITTED only, by every role. Its rules
+-- check other rows under row locks: a booking locks its fiscal year's row
+-- FOR SHARE, a change of the year's dates locks it for update, and the
+-- period lock serialises the same way. At READ COMMITTED, each statement of a
+-- trigger reads what is committed once it holds its lock. At REPEATABLE READ
+-- and SERIALIZABLE, every statement reads the transaction's first snapshot,
+-- and a lock that another transaction only held, and gave back at its
+-- commit, raises no serialization failure. So such a transaction could miss
+-- a voucher booked into the year it shortens, or a lock date set while it
+-- changes a voucher. A write at either level is refused (read_committed_only),
+-- with the level. READ UNCOMMITTED is READ COMMITTED in PostgreSQL. Reads may
+-- run at any level.
+CREATE FUNCTION ledger.assert_read_committed() RETURNS void
+LANGUAGE plpgsql STABLE
+SET search_path = pg_catalog, pg_temp
+AS $isolation$
+DECLARE
+  found_level text := current_setting('transaction_isolation');
+BEGIN
+  IF found_level NOT IN ('read committed', 'read uncommitted') THEN
+    PERFORM ledger.refuse('read_committed_only', jsonb_build_object('isolation', found_level));
+  END IF;
+END
+$isolation$;
+
 -- Triggers ----------------------------------------------------------------------
 --
 -- Every trigger function is SECURITY DEFINER and owned by the owner. Its
@@ -204,7 +232,9 @@ $actor$;
 -- app cannot reach depth 2 on its own: it can make no trigger and no function.
 
 -- Writes the history row of one row change. Its argument is the table's key
--- column.
+-- column. Every company table has this trigger (the table guard checks it),
+-- so it is also where a write at another level than READ COMMITTED is
+-- refused, whichever table it is on.
 CREATE FUNCTION audit.write_history() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -214,6 +244,7 @@ DECLARE
   old_row jsonb;
   new_row jsonb;
 BEGIN
+  PERFORM ledger.assert_read_committed();
   SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
   IF TG_OP <> 'INSERT' THEN
     old_row := to_jsonb(OLD);

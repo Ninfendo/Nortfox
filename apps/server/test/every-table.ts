@@ -187,7 +187,7 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
     params: [company, yearOf(scenario, company)],
   }),
   "ledger.voucher_rows": (company, scenario) => ({
-    sql: "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount) VALUES ($1, $2, 1930, 0)",
+    sql: "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number) VALUES ($1, $2, 1930)",
     params: [company, vouchersOf(scenario, company).kept],
   }),
   // Only a deletion writes the record, so the trigger refuses the owner's
@@ -201,9 +201,9 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
     params: [company, yearOf(scenario, company)],
   }),
   "ledger.deleted_voucher_rows": (company, scenario) => ({
-    sql: `INSERT INTO ledger.deleted_voucher_rows (id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, amount,
+    sql: `INSERT INTO ledger.deleted_voucher_rows (id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit,
             transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description)
-          VALUES (pg_catalog.gen_random_uuid(), $1, $2, $3, 9, 1930, 0, '', 0, false, pg_catalog.now(), $1, 'user', 'Företagskonto')`,
+          VALUES (pg_catalog.gen_random_uuid(), $1, $2, $3, 9, 1930, 0, 0, '', 0, false, pg_catalog.now(), $1, 'user', 'Företagskonto')`,
     params: [company, vouchersOf(scenario, company).deleted, yearOf(scenario, company)],
   }),
 };
@@ -347,7 +347,7 @@ export const APP_WRITES: Readonly<Record<string, Readonly<Partial<Record<"INSERT
   "ledger.voucher_rows": {
     INSERT: (scenario) => ({
       company: scenario.companyA,
-      sql: "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount) VALUES ($1, $2, 1930, 0)",
+      sql: "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number) VALUES ($1, $2, 1930)",
       params: [scenario.companyA, vouchersOf(scenario, scenario.companyA).kept],
     }),
     UPDATE: (scenario) => ({
@@ -798,11 +798,11 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
   // then books A6 and deletes it. B books A2, deletes it, and books A2 again.
   const vouchers = new Vouchers(app, changes);
   const keptA = await vouchers.book({ company: companyA, actor: user, kind: "user" }, yearA, seriesA, [
-    [1930, 12_500],
-    [3001, -12_500],
+    [1930, 12_500, 0],
+    [3001, 0, 12_500],
   ]);
   await vouchers.alter({ company: companyA, actor: integration, kind: "integration" }, keptA, "ledger.vouchers", keptA.id, "description = 'Kontantförsäljning'");
-  const zeroRow = await vouchers.addRow({ company: companyA, actor: system, kind: "system" }, keptA, [1930, 0]);
+  const zeroRow = await vouchers.addRow({ company: companyA, actor: system, kind: "system" }, keptA, [1930, 0, 0]);
   await vouchers.alter({ company: companyA, actor: user, kind: "user" }, keptA, "ledger.voucher_rows", zeroRow, "removed = true");
   await vouchers.alter(
     { company: companyA, actor: integration, kind: "integration" },
@@ -816,24 +816,24 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     yearA,
     seriesA,
     [
-      [1930, -12_500],
-      [3001, 12_500],
+      [1930, 0, 12_500],
+      [3001, 12_500, 0],
     ],
     keptA.id,
   );
   const deletedA = await vouchers.book({ company: companyA, actor: user, kind: "user" }, yearA, seriesA, [
-    [1930, 990],
-    [3001, -990],
+    [1930, 990, 0],
+    [3001, 0, 990],
   ]);
   await vouchers.remove({ company: companyA, actor: integration, kind: "integration" }, seriesA, deletedA);
   const deletedB = await vouchers.book({ company: companyB, actor: integration, kind: "integration" }, yearB, seriesB, [
-    [1930, 5000],
-    [3001, -5000],
+    [1930, 5000, 0],
+    [3001, 0, 5000],
   ]);
   await vouchers.remove({ company: companyB, actor: system, kind: "system" }, seriesB, deletedB);
   const keptB = await vouchers.book({ company: companyB, actor: user, kind: "user" }, yearB, seriesB, [
-    [1930, 7000],
-    [3001, -7000],
+    [1930, 7000, 0],
+    [3001, 0, 7000],
   ]);
 
   return {
@@ -848,6 +848,9 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     changes,
   };
 }
+
+/** A row the scenario books: its account, its debit and its credit, in öre. */
+type Sides = readonly [account: number, debit: number, credit: number];
 
 /** A voucher the scenario booked: its id and its rows' ids, in order. */
 interface Booked {
@@ -877,21 +880,21 @@ class Vouchers {
     return { table, operation, find: { sql: `SELECT t.id, pg_catalog.to_jsonb(t) AS row FROM ${table} AS t WHERE t.id = $1`, params: [id] } };
   }
 
-  private static row(company: string, voucher: string, id: string, [account, amount]: readonly [number, number]): Step {
+  private static row(company: string, voucher: string, id: string, [account, debit, credit]: Sides): Step {
     return {
       table: "ledger.voucher_rows",
       operation: "INSERT",
       rowId: id,
       write: {
-        sql: `INSERT INTO ledger.voucher_rows AS t (id, company_id, voucher_id, account_number, amount) VALUES ($1, $2, $3, $4, $5)
+        sql: `INSERT INTO ledger.voucher_rows AS t (id, company_id, voucher_id, account_number, debit, credit) VALUES ($1, $2, $3, $4, $5, $6)
               RETURNING pg_catalog.to_jsonb(t) AS row`,
-        params: [id, company, voucher, account, amount],
+        params: [id, company, voucher, account, debit, credit],
       },
     };
   }
 
   /** Books a voucher dated 2030-05-15 in a series, with its rows and the counter's move, and gives it. */
-  async book(who: Actor, year: string, series: string, rows: readonly (readonly [number, number])[], reverses: string | null = null): Promise<Booked> {
+  async book(who: Actor, year: string, series: string, rows: readonly Sides[], reverses: string | null = null): Promise<Booked> {
     const id = randomUUID();
     const rowIds = rows.map(() => randomUUID());
     const head: Step = {
@@ -910,7 +913,7 @@ class Vouchers {
   }
 
   /** Adds a row to a booked voucher, which touches the voucher's altered stamp, and gives the row's id. */
-  async addRow(who: Actor, voucher: Booked, row: readonly [number, number]): Promise<string> {
+  async addRow(who: Actor, voucher: Booked, row: Sides): Promise<string> {
     const id = randomUUID();
     this.changes.push(
       ...(await changeOfSteps(this.app, who, [Vouchers.row(who.company, voucher.id, id, row)], [Vouchers.byId("ledger.vouchers", voucher.id, "UPDATE")])),

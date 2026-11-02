@@ -5,8 +5,9 @@
 // has a description of 1 to 200 characters, a date inside its own fiscal
 // year, a series, comments of at most 1000 characters, one of seven reference
 // types, a reference number and at least two rows. A row has an account of
-// the voucher's year that is active, one signed amount in öre, a text of at
-// most 100 characters and a quantity. A refused voucher uses no number.
+// the voucher's year that is active, a debit and a credit in öre, each zero
+// or more and kept as sent, a text of at most 100 characters and a quantity.
+// A refused voucher uses no number.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
@@ -70,9 +71,9 @@ describe("booking a voucher", () => {
         referenceType: "MANUAL",
         referenceNumber: "K-17",
         rows: [
-          { account: 6110, amount: 1600n, text: "Pennor" },
-          { account: 6110, amount: 400n, text: "Papper" },
-          { account: 1930, amount: -2000n },
+          { account: 6110, debit: 1600n, text: "Pennor" },
+          { account: 6110, debit: 400n, text: "Papper" },
+          { account: 1930, credit: 2000n },
         ],
       });
       const stamps = await app.query<{ started: string; ended: string }>(
@@ -105,10 +106,10 @@ describe("booking a voucher", () => {
     });
     expect(await isAfter(app, voucher.created_at, started)).toBe(true);
     expect(await isAfter(app, voucher.created_at, ended)).toBe(false);
-    expect(rows.map((row) => [row.position, row.account_number, row.amount, row.transaction_information])).toEqual([
-      [1, 6110, 1600n, "Pennor"],
-      [2, 6110, 400n, "Papper"],
-      [3, 1930, -2000n, ""],
+    expect(rows.map((row) => [row.position, row.account_number, row.debit, row.credit, row.transaction_information])).toEqual([
+      [1, 6110, 1600n, 0n, "Pennor"],
+      [2, 6110, 400n, 0n, "Papper"],
+      [3, 1930, 0n, 2000n, ""],
     ]);
     for (const row of rows) {
       expect(row).toMatchObject({
@@ -128,32 +129,72 @@ describe("booking a voucher", () => {
     expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(2);
   });
 
-  it("stores one signed amount in öre as a bigint, debit positive and credit negative, beyond 2^53 too, and accepts a zero row", async () => {
+  it("stores a row's debit and its credit separately in öre, as bigints, beyond 2^53 too, and accepts a zero row", async () => {
     const books = await addBooks(app);
     const big = 9_007_199_254_740_993n;
     const voucher = await book(books, {
       rows: [
-        { account: 6110, amount: big },
-        { account: 1930, amount: -big },
-        { account: 3001, amount: 0n },
+        { account: 6110, debit: big },
+        { account: 1930, credit: big },
+        { account: 3001 },
       ],
     });
     const rows = await rowsOf(app, books.company, voucher.id);
-    expect(rows.map((row) => row.amount)).toEqual([big, -big, 0n]);
-    expect(typeof rows[0]?.amount).toBe("bigint");
-    const type = await app.query<{ type: string }>(
-      "SELECT pg_catalog.format_type(atttypid, atttypmod) AS type FROM pg_catalog.pg_attribute WHERE attrelid = 'ledger.voucher_rows'::pg_catalog.regclass AND attname = 'amount'",
+    expect(rows.map((row) => [row.debit, row.credit])).toEqual([
+      [big, 0n],
+      [0n, big],
+      [0n, 0n],
+    ]);
+    expect(typeof rows[0]?.debit).toBe("bigint");
+    expect(typeof rows[0]?.credit).toBe("bigint");
+    const types = await app.query<{ name: string; type: string; nullable: boolean; fallback: string | null }>(
+      `SELECT a.attname AS name, pg_catalog.format_type(a.atttypid, a.atttypmod) AS type, NOT a.attnotnull AS nullable,
+         pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS fallback
+       FROM pg_catalog.pg_attribute AS a
+       LEFT JOIN pg_catalog.pg_attrdef AS d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+       WHERE a.attrelid = 'ledger.voucher_rows'::pg_catalog.regclass AND a.attname IN ('debit', 'credit', 'amount') AND NOT a.attisdropped
+       ORDER BY a.attnum`,
     );
-    expect(type.rows[0]?.type).toBe("bigint");
+    expect(types.rows).toEqual([
+      { name: "debit", type: "bigint", nullable: false, fallback: "0" },
+      { name: "credit", type: "bigint", nullable: false, fallback: "0" },
+    ]);
+  });
+
+  it("keeps a row with both a debit and a credit as it was sent: Debit 10 and Credit 4 read back as 10 and 4", async () => {
+    const books = await addBooks(app);
+    const voucher = await book(books, {
+      rows: [
+        { account: 6110, debit: 1000n, credit: 400n },
+        { account: 1930, credit: 600n },
+      ],
+    });
+    expect((await rowsOf(app, books.company, voucher.id)).map((row) => [row.account_number, row.debit, row.credit])).toEqual([
+      [6110, 1000n, 400n],
+      [1930, 0n, 600n],
+    ]);
+  });
+
+  it.each([
+    ["debit", { debit: -1n }, "voucher_rows_debit_not_negative"],
+    ["credit", { credit: -1n }, "voucher_rows_credit_not_negative"],
+  ])("refuses a negative %s: each side is zero or more", async (_side, sides, constraint) => {
+    const books = await addBooks(app);
+    await expectError(
+      book(books, { rows: [{ account: 6110, debit: 1n, ...sides }, { account: 1930, credit: 1n }] }),
+      CHECK_VIOLATION,
+      new RegExp(constraint),
+    );
+    expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
   });
 
   it("keeps a row's quantity as given, 1.23456 and -1.5, and makes it 0 when none is given", async () => {
     const books = await addBooks(app);
     const voucher = await book(books, {
       rows: [
-        { account: 6110, amount: 2000n, quantity: "1.23456" },
-        { account: 1930, amount: -2000n, quantity: "-1.5" },
-        { account: 3001, amount: 0n },
+        { account: 6110, debit: 2000n, quantity: "1.23456" },
+        { account: 1930, credit: 2000n, quantity: "-1.5" },
+        { account: 3001 },
       ],
     });
     expect((await rowsOf(app, books.company, voucher.id)).map((row) => row.quantity)).toEqual(["1.23456", "-1.5", "0"]);
@@ -182,7 +223,7 @@ describe("booking a voucher", () => {
   describe("refuses, each with its reason, and uses no number", () => {
     it("a voucher with one row or none, at commit, with the count", async () => {
       const books = await addBooks(app);
-      await expectRefusal(book(books, { rows: [{ account: 6110, amount: 0n }] }), "too_few_rows", { count: 1 });
+      await expectRefusal(book(books, { rows: [{ account: 6110 }] }), "too_few_rows", { count: 1 });
       await expectRefusal(book(books, { rows: [] }), "too_few_rows", { count: 0 });
       expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
     });
@@ -220,11 +261,11 @@ describe("booking a voucher", () => {
       const books = await addBooks(app);
       const long = "t".repeat(101);
       await expectRefusal(
-        book(books, { rows: [{ account: 6110, amount: 2000n, text: long }, { account: 1930, amount: -2000n }] }),
+        book(books, { rows: [{ account: 6110, debit: 2000n, text: long }, { account: 1930, credit: 2000n }] }),
         "value_too_long",
         { field: "transaction_information", value: long },
       );
-      const voucher = await book(books, { rows: [{ account: 6110, amount: 2000n, text: "ä".repeat(100) }, { account: 1930, amount: -2000n }] });
+      const voucher = await book(books, { rows: [{ account: 6110, debit: 2000n, text: "ä".repeat(100) }, { account: 1930, credit: 2000n }] });
       expect((await rowsOf(app, books.company, voucher.id))[0]?.transaction_information).toBe("ä".repeat(100));
       expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(2);
     });
@@ -287,7 +328,7 @@ describe("booking a voucher", () => {
       const theirs = await book(other);
       for (const voucher of [randomUUID(), theirs.id]) {
         await expectError(
-          inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher, { account: 1930, amount: 0n })),
+          inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher, { account: 1930 })),
           "23502",
           /fiscal_year_id/,
         );
@@ -343,7 +384,7 @@ describe("booking a voucher", () => {
         inTransaction(app, { company: books.company, ...who }, async () => {
           const voucher = await writeVoucher(app, books.company, aVoucher(books, { rows: balanced() }));
           await app.query(
-            `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, amount, ${column}) VALUES ($1, $2, 6110, 0, ${value})`,
+            `INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, ${column}) VALUES ($1, $2, 6110, ${value})`,
             column === "fiscal_year_id" ? [books.company, voucher.id, books.year.id] : [books.company, voucher.id],
           );
         }),
@@ -357,7 +398,7 @@ describe("booking a voucher", () => {
       const books = await addBooks(app);
       await addBooksYear(app, books.company, "2091-01-01", "2091-12-31");
       const long = "c".repeat(1001);
-      const all = { description: "", comments: long, series: "K", date: "2089-01-01", rows: [{ account: 998, amount: 1n }] };
+      const all = { description: "", comments: long, series: "K", date: "2089-01-01", rows: [{ account: 998, debit: 1n }] };
       await expectRefusal(book(books, all), "description_missing", {});
       await expectRefusal(book(books, { ...all, description: "Ok" }), "value_too_long", { field: "comments", value: long });
       await expectRefusal(book(books, { ...all, description: "Ok", comments: "", series: "TZ" }), "series_missing", { code: "TZ" });
@@ -366,7 +407,7 @@ describe("booking a voucher", () => {
       await expectRefusal(book(books, { ...all, description: "Ok", comments: "", series: "A", date: "2091-06-01" }), "date_outside_fiscal_year");
       await expectRefusal(book(books, { ...all, description: "Ok", comments: "", series: "A", date: "2090-06-01" }), "account_missing", { number: 998 });
       await expectRefusal(
-        book(books, { ...all, description: "Ok", comments: "", series: "A", date: "2090-06-01", rows: [{ account: 6110, amount: 1n }] }),
+        book(books, { ...all, description: "Ok", comments: "", series: "A", date: "2090-06-01", rows: [{ account: 6110, debit: 1n }] }),
         "too_few_rows",
         { count: 1 },
       );
@@ -378,8 +419,8 @@ describe("booking a voucher", () => {
     const books = await addBooks(app);
     await book(books);
     await expectRefusal(book(books, { description: "" }), "description_missing");
-    await expectRefusal(book(books, { rows: [{ account: 6110, amount: 2000n }, { account: 1930, amount: -1999n }] }), "unbalanced");
-    await expectRefusal(book(books, { rows: [{ account: 6110, amount: 0n }] }), "too_few_rows");
+    await expectRefusal(book(books, { rows: [{ account: 6110, debit: 2000n }, { account: 1930, credit: 1999n }] }), "unbalanced");
+    await expectRefusal(book(books, { rows: [{ account: 6110 }] }), "too_few_rows");
     await begin(app, { company: books.company, ...who });
     expect((await writeVoucher(app, books.company, aVoucher(books))).number).toBe(2);
     await app.query("ROLLBACK");
