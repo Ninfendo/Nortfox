@@ -1,6 +1,6 @@
 # 5. Money
 
-Status: accepted, 2026-11-01
+Status: accepted, 2026-11-01. Amended 2026-11-02: the compatible API takes amounts as JSON numbers.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # 3. Contract-first REST and MCP from one registry
 
-Status: accepted, 2026-11-01
+Status: accepted, 2026-11-01. Amended 2026-11-02: the compatible API serves the same operations.
 
 ## Context
 

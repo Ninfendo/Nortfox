@@ -1,6 +1,6 @@
 # 7. Self-hosting and backups
 
-Status: accepted, 2026-11-01
+Status: accepted, 2026-11-01. Amended 2026-11-02: Caddy passes the compatible API's paths, and a mistake is fixed in the books as decision 2 allows.
 
 ## Context
 

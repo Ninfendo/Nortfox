@@ -151,9 +151,9 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 **2a. Ledger core in PostgreSQL**
 
-- **What:** the first SQL migrations: the database roles (owner, app, and reader roles that are each bound to one company); companies; fiscal years and their periods; the period lock, with its locked-through dates per user, for the internal system user, for integrations and for all users, and the automatic lock's setting; accounts; voucher series, their void ranges and each year's closing series; vouchers and their rows; the record of deleted vouchers; the behandlingshistorik. The triggers for the ledger law, with the voucher rules of [decision 2](decisions/0002-ledger-law-in-postgresql.md). FORCE RLS on every company table. The compose file with PostgreSQL and pgBackRest. The tests set the actor's kind directly: a user, the internal system user or an integration. Which requests count as which kind is decision 2's working default, and the server applies it from 2b on.
+- **What:** the first SQL migrations: the database roles (owner, app, and reader roles that are each bound to one company); companies; fiscal years and their periods; the period lock, with its locked-through dates per user, for the internal system user, for integrations and for all users, and the automatic lock's setting; accounts; voucher series, their void ranges and each year's closing series; vouchers and their rows; the record of deleted vouchers; the behandlingshistorik. The triggers for the ledger law, with the voucher rules of [decision 2](decisions/0002-ledger-law-in-postgresql.md). FORCE RLS on every company table. The compose file with PostgreSQL and pgBackRest. The tests set the actor's kind directly: a user, the internal system user or an integration. Decision 2 sets which requests count as which kind. The server applies it from 2c on, where logins and tokens come.
 - **Done when:**
-  - Tests against real PostgreSQL, run as the app role, show that the database refuses: changing or deleting a voucher in a period that is locked for the actor, or dating a voucher there, except in that year's closing series; deleting a voucher that is not the last of its series; changing a row's account or amount, or removing a row; changing or deleting anything in the record of deleted vouchers; booking a voucher whose rows that are not struck differ in debit and credit; a voucher date outside an open fiscal year; reading or writing another company's rows.
+  - Tests against real PostgreSQL, run as the app role, show that the database refuses: changing or deleting a voucher in a period that is locked for the actor, or dating a voucher there, except in that year's closing series; deleting a voucher that is not the last of its series; changing a row's account or amount, or removing a row; changing or deleting anything in the record of deleted vouchers; booking a voucher whose rows that are not struck differ in debit and credit; a voucher date outside every existing fiscal year; reading or writing another company's rows.
   - Each lock date applies only to the actors it is set for. With a date set only for one user, for the internal system user, for integrations or for all users, a voucher dated on or before it is refused for those actors and accepted for the others. The automatic lock applies to everyone.
   - A voucher in the closing series of its fiscal year is accepted inside a locked period, under the manual and the automatic lock.
   - After any change to a voucher, the behandlingshistorik holds each earlier value, with the actor and the time. This is NortFox's own working default ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). A struck row stays, marked struck, with the actor and the time.
@@ -187,6 +187,7 @@ This is the repository setup. It lands before every other PR: until it does, not
   - The same MCP discovery and login work through the compose stack, with Caddy in front ([decision 8](decisions/0008-authentication.md)).
   - For every operation and every role, a test generated from the registry shows that a role without the permission is refused.
   - Logins, failed logins, and created and revoked tokens are in the behandlingshistorik.
+  - Each request runs as the kind of actor that [decision 2](decisions/0002-ledger-law-in-postgresql.md) sets, and a test checks each kind of request: a session runs as its user, and a request with an API token or from an MCP client runs as an integration.
 
 **2d. Web frame with the theme switcher**
 
@@ -220,10 +221,11 @@ This is the repository setup. It lands before every other PR: until it does, not
   - The query parameters follow the established API: the choice of fiscal year, `lastmodified` in the established API's date forms and time zone, the sorting, and the refusal of an unknown or wrongly cased parameter name, with its error. Tests with hand-written fixtures pin each.
   - Money in a request is read from the raw text of each number and never becomes a float. A test with amounts that a float cannot hold exactly shows it.
   - A program logs in with the established API's login flow: the authorization code flow, whose code works once and for 10 minutes; refresh tokens that each work once; a service account, activated once by a company administrator and then served by client credentials with the company's tenant id; and the revoke endpoint. The scopes and the token lifetimes are the established API's, and a call outside a token's scopes gets the established API's error.
-  - The authorization code flow keeps the established rules, and a test pins each: `state` is required and comes back unchanged; a redirect URI that differs from the client's registered one is refused, the registered one is used when none is sent, and the token step refuses one that differs from the request for the code; PKCE takes only `S256`; a client that requires PKCE is refused without a challenge; and when a challenge was sent, the token step refuses a missing or wrong `code_verifier`.
+  - The authorization code flow keeps the established rules, and a test pins each: `state` is required and comes back unchanged; a redirect URI that differs from the client's registered one is refused, the registered one is used when none is sent, and the token step refuses one that differs from the request for the code; PKCE takes only `S256`; a client that requires PKCE is refused without a challenge; when a challenge was sent, the token step refuses a missing or wrong `code_verifier`; a request for a scope that is not registered for the client is refused; and an activation with `account_type=service` for a client that does not allow service accounts is refused. Each refusal gives the established API's error.
   - The access token has the established token's shape, a JWT with the company's tenant id as a claim ([decision 8](decisions/0008-authentication.md)). A test reads the tenant id from it, as an integration does. Every token of the flow is stored only as a hash, looked up on every request, bound to one company, and refused outside the compatible API.
   - The revoke endpoint revokes a refresh token, as the established one does. Revoking a consent, or the client, stops every token it gave on the next request, access tokens included ([decision 8](decisions/0008-authentication.md)).
   - The login and a compatible call work through the compose stack, with Caddy in front.
+  - A request from a compatible client runs as an integration, and so does one from a service account ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). A test checks both.
   - The folder is on the marker allowlist and holds its marker. The names check passes on everything outside it, including `openapi.json`, the client, `packages/i18n` and the changesets. Inside it, the check still refuses every protected name but the established system's.
 
 ### Step 3: Bokföring
@@ -237,8 +239,8 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **3b. fiscal-years: räkenskapsår and the period lock**
 
-- **What:** create fiscal years and their monthly periods. The engine checks the year's length (normally 12 months; a first or changed year may be shorter, or at most 18 months).
-  - Opening balances, as the established system has them. When a year is created after another, the closing balances of the year before can be copied into it as its opening balances. That copy is made once: a later change in the old year does not reach it by itself. A transfer copies the old year's closing balances again, and the user runs it after such a change. An opening balance can also be set by hand, on a balance account only. 3b's issue confirms the details, such as whether a transfer overwrites a balance set by hand.
+- **What:** create fiscal years and their monthly periods. The engine checks the year's length (normally 12 months; a first or changed year may be shorter, or at most 18 months). A fiscal year has no open or closed state, as in the established system. The period lock, set through the year's last date, locks a whole year.
+  - Opening balances, as the established system has them. Only a balance account has one; a result account opens at zero. When a year is created after another, the closing balances of the year before can be copied into it as its opening balances. That copy is made once: a later change in the old year does not reach it by itself. A transfer copies the old year's closing balances again, and the user runs it after such a change. An opening balance can also be set by hand, on a balance account only. A transfer overwrites the opening balances set by hand, as in the established system.
   - The period lock, as the established system has it ([decision 2](decisions/0002-ledger-law-in-postgresql.md)):
     - The manual lock: a locked-through date for each user, for the internal system user, for integrations and for all users. Each date can be set, changed and cleared.
     - The automatic lock, on or off, for everyone, with one of the established system's intervals: 50 days after the end of the month, 50 days after the end of the quarter, or 60 days after the end of the fiscal year. The case for sole traders, at the date of the income tax return, comes once its rule is confirmed.
@@ -249,14 +251,14 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
     - Whether the latest date that applies to an actor is what locks, as the help pages suggest. Default: it is.
     - Which date the compatible API's read of the locked period returns, since the established API returns one date and does not say which row it reflects. Default: the date that is locked for the caller, which counts as an integration.
 - **Done when:**
-  - The database refuses a voucher dated in a period that is locked for the actor, except in that year's closing series, and a voucher dated outside every open year.
+  - The database refuses a voucher dated in a period that is locked for the actor, except in that year's closing series, and a voucher dated outside every existing fiscal year.
   - With a date set only for one user, for the internal system user, for integrations or for all users, a voucher dated on or before it is refused for the actors that the date applies to and accepted for the others.
   - A voucher in the year's closing series is accepted inside the manual and the automatic lock.
   - Once a period is locked for an actor, that actor's change or deletion of one of its vouchers is refused. After the date is cleared, both are allowed again.
   - For each interval of the automatic lock, a test at its boundary shows the last day the period is open and the first day it is locked. 3b's issue settles which day the established system locks on.
   - Every change to a lock date, to the automatic lock's setting and to the year's closing series is in the behandlingshistorik, with who and when.
-  - When a year is created after another with its balances copied, each opening balance equals the closing balance of the year before. After a late booking in the old year, the new year's opening balances stay as they were. After a new transfer, they match again. The transfer works through the API, MCP and the screen.
-  - A property test shows that right after a transfer, a year's opening balances always equal the closing balances of the year before.
+  - When a year is created after another with its balances copied, each balance account's opening balance equals its closing balance of the year before, and each result account opens at zero. After a late booking in the old year, the new year's opening balances stay as they were. After a new transfer, they match again. A transfer overwrites an opening balance set by hand. The transfer works through the API, MCP and the screen.
+  - A property test shows that right after a transfer, each balance account's opening balance always equals its closing balance of the year before.
   - An opening balance on a result account is refused, as in the established system.
 
 **3c. voucher-series**
@@ -287,28 +289,30 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
   - After a deletion, the next voucher in the series gets the freed number, and the deleted voucher can be read, with who and when, in the record of deleted vouchers. When that number is deleted again, the record holds both, each with its count.
   - Kopiera on a booked voucher opens a new, unbooked form with its rows that are not struck, and nothing is saved until Bokför. On a voucher that another module made, Kopiera is disabled.
   - Every booking, change, strike, correction and deletion is in the behandlingshistorik, with who and when.
+  - Inside a lock set only for integrations, a booking with an API token, from an MCP client or through the compatible API is refused, and the same booking from a session is accepted.
   - Booking the same request twice gives one voucher.
 
 **3e. files (platform): attachments**
 
 - **What:** upload files (PDF, images, XML) and link them to vouchers. The original file lives in NortFox's own storage, on disk or in S3-compatible object storage, with a SHA-256 hash. A pluggable storage layer can also copy each file to a cloud drive that the company connects itself.
-  - Removing a file works as in the established system. Ta bort moves it to a trash, where it can be restored for 30 days. Removing a link through the compatible API gives the established API's answer.
+  - Removing a file works as in the established system. Ta bort moves it to a trash, where it can be restored for 30 days. After that, a job deletes it for good. That job needs the job queue, so it comes in 3j; until then, a file stays in the trash. The trash can also be emptied at once, which deletes its files for good. Removing a link through the compatible API gives the established API's answer.
+  - The established system's paid archive also caps the size of the trash. That cap is out of scope for 3e.
   - Open: whether a locked period stops the removal of a file. 3e's issue settles it from the help pages, or from a lock test that the owner allows. Until one of them answers, removing a file has no lock check, as far as the established system is known: its help pages name none.
   - By default, the original stays in NortFox's own storage and a cloud drive holds only copies. This is a default that the owner may change. The docs recommend it, because a drive's users can delete its files, a drive account can be closed, and the law sets where räkenskapsinformation may be kept (BFL 7 kap. 2 § and 3 a §).
 - **Done when:**
-  - Ta bort on a linked file moves it to the trash. It can be restored for 30 days, and after that it is deleted. Removing a link through the compatible API gives the established API's answer. Unless 3e's issue finds a lock check, both work the same on a voucher in a locked period.
+  - Ta bort on a linked file moves it to the trash, where it can be restored for 30 days. Emptying the trash deletes its files at once. Removing a link through the compatible API gives the established API's answer. Unless 3e's issue finds a lock check, Ta bort and the removal of a link work the same on a voucher in a locked period.
   - The hash is checked on every read. The size and type limits are enforced by the server.
   - With a test cloud drive connected, a new file is stored in NortFox's own storage and copied to the drive. Disconnecting the drive, or deleting the copy there, loses no file and changes no voucher.
 
 **3f. dimensions: cost centres and projects**
 
 - **What:** dimensions and their objects, as in SIE. A voucher row can carry one object per dimension.
-- **Done when:** a row can carry a cost centre and a project; a property test shows that a report per project always equals the sum of its rows.
+- **Done when:** a row can carry a cost centre and a project; a property test shows that a report per project always equals the sum of its rows that are not struck.
 
 **3g. reports**
 
 - **What:** grundbok (vouchers in date order), huvudbok (rows per account), saldobalans, balansrapport and resultatrapport, for any date range and per dimension. JSON through the API, plus CSV and PDF downloads.
-- **Done when:** a property test shows the balansrapport always balances, with the year's result included; the reports for a fixed set of reference books match numbers worked out by hand.
+- **Done when:** a property test shows the balansrapport always balances, with the year's result included; the reports for a fixed set of reference books, with a struck row among them, match numbers worked out by hand from the rows that are not struck.
 
 **3h. sie: import and export**
 
@@ -322,8 +326,8 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **3j. jobs (platform): background jobs and the outbox**
 
-- **What:** a job queue in PostgreSQL, run by the server process; an outbox written in the same transaction as the change it reports; retries with backoff; jobs readable through the API. The first job is the reminder before each automatic lock run (3b), shown in the app as in the established system.
-- **Done when:** a job survives a server restart and runs exactly once; a test shows an outbox event exists if and only if its transaction committed; the reminder appears the chosen number of days before an automatic lock run.
+- **What:** a job queue in PostgreSQL, run by the server process; an outbox written in the same transaction as the change it reports; retries with backoff; jobs readable through the API. The first jobs are the reminder before each automatic lock run (3b), shown in the app as in the established system, and the job that deletes a file once it has been in the trash for 30 days (3e).
+- **Done when:** a job survives a server restart and runs exactly once; a test shows an outbox event exists if and only if its transaction committed; the reminder appears the chosen number of days before an automatic lock run; a file in the trash is deleted once it has been there for 30 days, and not before.
 
 **3k. currencies**
 
@@ -418,7 +422,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 ## 6. How a slice is built
 
-- **One issue per slice.** Each slice gets one GitHub issue, just before it is built. That timing is a default that the owner may change. The issue starts with the slice's terms: for each, what the law means by it, the word on the screen, and its name in the API and the code ([section 2](#names)). Then come the behaviour, the API, what the law requires, the done-when lines and what is out of scope.
+- **One issue per slice.** Each slice gets one GitHub issue, shortly before it is built. The issues of the next plan step may be written while the current step is built, but never more than one step ahead, and never the whole plan at once. That timing is a default that the owner may change. The issue starts with the slice's terms: for each, what the law means by it, the word on the screen, and its name in the API and the code ([section 2](#names)). Then come the behaviour, the API, what the law requires, the done-when lines and what is out of scope.
 - **One slice, one PR.** Each PR has its own branch. Merges are squash only, and the history stays linear. The PR title and body become the commit on `main`.
 - **Everything in the same PR:** the migration, the engine logic, the contract operations, the server module, the compatible endpoint where the established API has one, from slice 2e on ([decision 12](decisions/0012-compatible-api.md)), the screens, the docs that change, and a changeset for what users will notice.
 - **Tests first.** Each done-when line becomes a test before the code it tests is written, and each test is seen to fail for the right reason. Then the code is built until the tests pass.
