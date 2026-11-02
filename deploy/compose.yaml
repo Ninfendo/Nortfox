@@ -50,11 +50,15 @@ services:
     volumes:
       - data:/var/lib/postgresql
       - backups:/var/lib/pgbackrest
-    # Over TCP: on the first start, the image's setup server listens on its
-    # socket only. So the service is healthy only once the roles, the
-    # database and the stanza are made.
+    # Healthy only once the first start has finished. Its last step writes
+    # nortfox-first-start-done in the data folder, after the roles, the
+    # database and the stanza are made, so a first start that failed is never
+    # healthy, also after Docker restarts PostgreSQL and the image skips its
+    # setup. A restore brings the file back with the data. Then pg_isready
+    # over TCP: during the first start, the image's setup server listens on
+    # its socket only.
     healthcheck:
-      test: ["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "postgres", "--dbname", "nortfox"]
+      test: ["CMD-SHELL", "test -f /var/lib/postgresql/18/docker/nortfox-first-start-done && pg_isready --host 127.0.0.1 --username postgres --dbname nortfox"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -32,6 +32,14 @@ export const POSTGRES_COMMAND = [
   "archive_timeout=60",
 ];
 
+/**
+ * The postgres service's health check: the file that the first start writes
+ * as its last step (deploy/postgres/initdb/20-stanza.sh), in the data folder,
+ * and then pg_isready over TCP.
+ */
+export const POSTGRES_HEALTHCHECK =
+  '["CMD-SHELL", "test -f /var/lib/postgresql/18/docker/nortfox-first-start-done && pg_isready --host 127.0.0.1 --username postgres --dbname nortfox"]';
+
 /** The settings that only the postgres service's command sets. */
 const ARCHIVE_SETTING = /\b(wal_level|archive_mode|archive_command|archive_timeout)\b/;
 
@@ -202,10 +210,9 @@ export function composeProblems(text: string): string[] {
     "volumes must declare data and backups, so the data and the local repository are volumes of their own.",
   );
   need(
-    at("services", "postgres", "healthcheck", "test")?.value ===
-      '["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "postgres", "--dbname", "nortfox"]',
-    "services.postgres.healthcheck.test must be pg_isready over TCP, on 127.0.0.1. " +
-      "The first start's setup server listens on its socket only, so the migrations wait until the setup is done.",
+    at("services", "postgres", "healthcheck", "test")?.value === POSTGRES_HEALTHCHECK,
+    `services.postgres.healthcheck.test must be ${POSTGRES_HEALTHCHECK}: the mark that the first start finished, then pg_isready over TCP, on 127.0.0.1. ` +
+      "A failed first start is then never healthy, and the first start's setup server listens on its socket only, so the migrations wait until the setup is done.",
   );
 
   need(

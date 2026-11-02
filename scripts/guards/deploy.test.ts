@@ -10,6 +10,7 @@ import {
   BACKUP_TEST_COMPOSE,
   COMPOSE,
   PGBACKREST_CONF,
+  POSTGRES_HEALTHCHECK,
   POSTGRES_IMAGE,
   SERVER_IMAGE,
   backupTestProblems,
@@ -79,6 +80,9 @@ describe("the compose file", () => {
   const REPO2_PATH =
     "deploy/compose.yaml: services.postgres.environment.PGBACKREST_REPO2_PATH must be the required variable ${NORTFOX_REPO2_PATH:?...}, " +
     "so the stack does not start without the off-site repository.";
+  const HEALTHCHECK =
+    `deploy/compose.yaml: services.postgres.healthcheck.test must be ${POSTGRES_HEALTHCHECK}: the mark that the first start finished, then pg_isready over TCP, on 127.0.0.1. ` +
+    "A failed first start is then never healthy, and the first start's setup server listens on its socket only, so the migrations wait until the setup is done.";
   const VOLUMES =
     "deploy/compose.yaml: services.postgres.volumes must mount the volume data at /var/lib/postgresql, and the volume backups, " +
     "the local repository, at /var/lib/pgbackrest.";
@@ -160,10 +164,27 @@ describe("the compose file", () => {
     ],
     [
       "a health check on the socket",
-      '"pg_isready", "--host", "127.0.0.1",',
-      '"pg_isready",',
-      "deploy/compose.yaml: services.postgres.healthcheck.test must be pg_isready over TCP, on 127.0.0.1. " +
-        "The first start's setup server listens on its socket only, so the migrations wait until the setup is done.",
+      "pg_isready --host 127.0.0.1 --username",
+      "pg_isready --username",
+      HEALTHCHECK,
+    ],
+    [
+      "a health check that a failed first start passes",
+      "test -f /var/lib/postgresql/18/docker/nortfox-first-start-done && ",
+      "",
+      HEALTHCHECK,
+    ],
+    [
+      "a health check that reads the mark elsewhere",
+      "/var/lib/postgresql/18/docker/nortfox-first-start-done",
+      "/tmp/nortfox-first-start-done",
+      HEALTHCHECK,
+    ],
+    [
+      "a health check that passes without the mark",
+      "nortfox-first-start-done && pg_isready",
+      "nortfox-first-start-done || pg_isready",
+      HEALTHCHECK,
     ],
     [
       "no volume for the local repository",

@@ -6,6 +6,9 @@
 # top: a project of its own, made-up test secrets in a temporary folder, and
 # a second local volume as the off-site repository. Then it checks:
 #
+# - a first start that fails, here because the off-site repository cannot be
+#   written, never makes PostgreSQL healthy, also after Docker restarts it and
+#   the image skips its setup, so the migrate step never runs;
 # - on the running stack: PostgreSQL archives WAL through pgBackRest, with
 #   archive_timeout 1min; the migrate step exited 0, and the owner role
 #   applied every migration and owns every table; pgBackRest holds a full
@@ -41,8 +44,11 @@ native() {
 work=$(mktemp -d)
 mkdir "$work/secrets"
 
+# The variables of the stack: test.env, or broken.env for the failed first start.
+env_file=$work/test.env
+
 compose() {
-  docker compose --project-name "$project" --env-file "$(native "$work/test.env")" \
+  docker compose --project-name "$project" --env-file "$(native "$env_file")" \
     --file "$(native "$root/deploy/compose.yaml")" --file "$(native "$here/compose.yaml")" "$@"
 }
 
@@ -100,6 +106,43 @@ NORTFOX_TEST_SECRETS=$(native "$work/secrets")
 NORTFOX_REPO2_TYPE=posix
 NORTFOX_REPO2_PATH=/var/lib/pgbackrest-offsite
 EOF
+
+# The same, with an off-site repository that the user postgres cannot make.
+cat > "$work/broken.env" << EOF
+NORTFOX_TEST_SECRETS=$(native "$work/secrets")
+NORTFOX_REPO2_TYPE=posix
+NORTFOX_REPO2_PATH=/srv/offsite-not-writable
+EOF
+
+step "a first start that fails: the off-site repository cannot be written."
+env_file=$work/broken.env
+compose down --volumes --remove-orphans > /dev/null 2>&1 || true
+compose up --detach --build postgres
+broken=$(compose ps --all --quiet postgres)
+# 20-stanza.sh fails, the container stops, and Docker starts it again. The
+# image then skips its setup, and PostgreSQL answers over TCP.
+answers=no
+for _ in $(seq 180); do
+  if (($(docker inspect --format '{{.RestartCount}}' "$broken") >= 1)) &&
+    compose exec -T postgres pg_isready --quiet --host 127.0.0.1 --username postgres --dbname nortfox 2> /dev/null; then
+    answers=yes
+    break
+  fi
+  sleep 1
+done
+expect "PostgreSQL answering after a restart that skipped the failed setup" "$answers" yes
+logs=$(compose logs --no-color postgres)
+grep --quiet "Skipping initialization" <<< "$logs" || fail "the restart did not skip the setup."
+# Some health checks later, it is still not healthy, so nothing that waits
+# for it, such as the migrate step, starts.
+sleep 15
+health=$(docker inspect --format '{{.State.Health.Status}}' "$broken")
+if [[ "$health" == healthy ]]; then
+  fail "PostgreSQL is healthy after a failed first start."
+fi
+step "ok, after a failed first start PostgreSQL is $health, not healthy."
+compose down --volumes --remove-orphans > /dev/null 2>&1
+env_file=$work/test.env
 
 step "building and starting the stack."
 compose down --volumes --remove-orphans > /dev/null 2>&1 || true

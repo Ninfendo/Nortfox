@@ -78,9 +78,9 @@ docker compose up --detach
 docker compose ps --all
 ```
 
-On the first start, PostgreSQL makes the roles from `db/roles.sql`, sets their passwords, and makes the database `nortfox`, owned by `nortfox_owner`. Then it checks its archive settings, makes the pgBackRest stanza `nortfox` in both repositories, and has pgBackRest prove that a WAL segment reaches both. Only then is the service healthy, and the migrate step runs. `docker compose ps --all` shows the migrate step as exited with code 0.
+On the first start, PostgreSQL makes the roles from `db/roles.sql`, sets their passwords, and makes the database `nortfox`, owned by `nortfox_owner`. Then it checks its archive settings, makes the pgBackRest stanza `nortfox` in both repositories, and has pgBackRest prove that a WAL segment reaches both. As its last step, it writes the file `nortfox-first-start-done` in the data folder. The service is healthy only when that file is there and PostgreSQL answers over TCP. Only then does the migrate step run. `docker compose ps --all` shows the migrate step as exited with code 0. The file is part of the data, so a full backup holds it and a restore brings it back.
 
-If the first start fails, `docker compose logs postgres` says why. Fix the cause, then remove the half-made data and start again:
+If the first start fails, `docker compose logs postgres` says why. A wrong off-site repository is the most likely cause. Docker then starts PostgreSQL again, and the image skips its setup, because the data folder is no longer empty. But the file is missing, so the service never becomes healthy, the migrate step never runs, and `docker compose up` waits and then stops with an error. Fix the cause, then remove the half-made data and start again:
 
 ```sh
 docker compose down --volumes
