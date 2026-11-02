@@ -19,7 +19,7 @@ Format with `Intl.NumberFormat('sv-SE')`. The API always sends and receives amou
 | Period | `2026-11` | Year and month |
 | Range | `2026-01-01 till 2026-12-31` | The word *till*, never a dash |
 | Time | `14:05` | 24 hours. Relative time only as an addition to the exact time |
-| Voucher number | `A 142` | Series, space, number |
+| Voucher number | `A142` | Series and number, no space. Before booking the number is a preview with an asterisk: `A143*` |
 
 **Tabular digits.** Amount, date and number cells use `font-variant-numeric: tabular-nums` and the `--font-num` family. DM Sans, Instrument Serif, Playfair Display, Raleway and Roboto Slab have no tabular digits; when the body font is one of them, `--font-num` resolves to Inter automatically. Screens never pick the number font themselves.
 
@@ -67,19 +67,19 @@ Format with `Intl.NumberFormat('sv-SE')`. The API always sends and receives amou
 
 ## 4. Locked, with its reason
 
-Booked vouchers, locked periods, closed financial years, filed reports, settings controlled by something else, missing permissions. All are shown read-only, never hidden, never greyed out without explanation.
+Vouchers in a locked period, locked periods, closed financial years, filed reports, settings controlled by something else, missing permissions. All are shown read-only, never hidden, never greyed out without explanation.
 
 A locked state always has four parts:
 1. **What** is locked: `Perioder till och med 2026-09-30 är låsta.`
 2. **Why:** `Momsrapporten för juli till september är inlämnad.`
 3. **Who and when:** `Låst av Karin Ek 2026-10-12.`
-4. **What you can do instead**, when there is something: `Skapa rättelse`, `Visa perioder`.
+4. **What you can do instead**, when there is something: `Ändringsverifikation`, `Visa perioder`.
 
 The API returns `locked: { reason_code, reason, by, at }` on every lockable resource. The UI shows `reason` verbatim and never writes its own.
 
 Patterns:
 - **Page level:** a note under the page header. `--muted` surface, `lock` icon, bold *what*, muted *why, who, when*, a link to the place it is managed.
-- **Record level:** a `Bokförd` badge with `lock` next to the title, the reason under it, the allowed action as an outline button.
+- **Record level:** a `Låst period` badge with `lock` next to the title, the reason under it, the allowed action as an outline button.
 - **Field level:** the value rendered as text on `--muted` with a `lock` icon. Not a disabled input. The reason is the help text.
 - **Control level** (a setting forced by another setting): the control is replaced by its value plus the reason: `Stilen Lyra har alltid raka hörn.`
 - **Disabled buttons** have their reason visible next to them, not only in a tooltip.
@@ -87,7 +87,7 @@ Patterns:
 ## 5. Empty, loading and error
 
 **Empty** replaces the content where it would have been. One sentence on what is missing and the next step, if the user is allowed to take it. No illustrations.
-- First use: `Inga verifikationer ännu` + primary `Ny verifikation` + outline `Importera SIE`.
+- First use: `Inga verifikationer ännu` + primary `Skapa verifikation` + outline `Importera SIE`.
 - After a filter: `Inga verifikationer matchar filtret.` + the active filter in words + `Rensa filter`.
 
 **Loading**
@@ -111,9 +111,9 @@ Four statuses, each an opaque tint and ink pair. Never a translucent overlay. Co
 
 | Status | Tokens | Used for |
 |---|---|---|
-| Neutral | `--muted` / `--foreground` | Utkast, Bokförd, Rättad med A 140 |
+| Neutral | `--muted` / `--foreground` | Bokförd, Ändrad, Rättelsepost finns: A140 |
 | Ok | `--ok-tint` / `--ok-ink` | Avstämd, Attesterad, Betald, Inlämnad |
-| Warning | `--warning-tint` / `--warning-ink` | Underlag saknas, Väntar på attest, Förfaller om 3 dagar |
+| Warning | `--warning-tint` / `--warning-ink` | Väntar på attest, Förfaller om 3 dagar |
 | Destructive | `--destructive-tint` / `--destructive-ink` | Förfallen, Avvisad, Differens 120,00 |
 
 Badge: 20 px high, 12 px text weight 500, `--radius-control`, 8 px side padding, 12 px icon. One status per row in lists. The status describes a state, never an action.
@@ -124,24 +124,24 @@ Variants: primary (`--primary`), secondary (`--secondary`), outline (`--border` 
 
 - **One primary per view.** A dialog or a side panel is its own view and gets its own primary.
 - **Placement:**
-  - List view: in the page header, right. It creates something new: `Ny verifikation`.
-  - Form and full page: a fixed footer bar at the bottom, right-aligned; order secondary actions, then primary, so the primary is rightmost: `Avbryt`, `Spara utkast`, `Bokför`.
+  - List view: in the page header, right. It creates something new: `Skapa verifikation`.
+  - Form and full page: a fixed footer bar at the bottom, right-aligned; order secondary actions, then primary, so the primary is rightmost: `Avbryt`, `Bokför`. An action that removes the record (`Radera`) sits alone at the far left of the same bar.
   - Dialog: footer, right-aligned, `Avbryt` left of the primary.
-- **Labels** start with a verb and say what happens: `Bokför`, `Attestera`, `Lås perioden`. Never `OK` or `Ja`.
+- **Labels** start with a verb and say what happens: `Bokför`, `Attestera`, `Lås perioden`. Never `Ja`. Where NortFox follows an established accounting workflow, that workflow's own labels and messages are kept as they are, including `OK` in the delete confirmation.
 - **Destructive colour** only on the button that confirms a destructive action, inside the dialog. On the page the same action is an outline button.
-- **Unavailable:** prefer an enabled button that explains on click. If disabled, the reason is visible next to it.
-- **Icon-only** buttons have `aria-label` and a tooltip. Shortcuts show in the tooltip, and inside the button in keyboard-heavy views (`Ny verifikation N`).
+- **Unavailable:** prefer an enabled button that explains on click. If disabled (`aria-disabled`, still focusable), the reason shows as a tooltip on hover and on focus and is the button's accessible description.
+- **Icon-only** buttons have `aria-label` and a tooltip. Shortcuts show in the tooltip, and inside the button in keyboard-heavy views (`Bokför Alt B`).
 
 ## 8. Dialog, side panel, page or popover
 
 | Surface | When | Behaviour | Examples |
 |---|---|---|---|
-| Dialog | A short decision, or 1 to 5 fields, that must be done before going on | Modal, 420 to 640 px, focus trapped, Esc closes | Lås period, Ta bort utkast, Nytt räkenskapsår |
+| Dialog | A short decision, or 1 to 5 fields, that must be done before going on | Modal, 420 to 640 px, focus trapped, Esc closes | Lås period, Borttagning av verifikation, Nytt räkenskapsår |
 | Side panel | View or edit one row without leaving the list; tools that sit beside the work | Right edge, 420 to 560 px, non-modal; the list stays usable and Up/Down changes row | Voucher from the list, invoice to approve, Utseende, the assistant |
-| Full page | Long flows and keyboard-heavy work | Own URL, fixed footer with the primary | Ny verifikation, Momsrapport, Bankavstämning |
+| Full page | Long flows and keyboard-heavy work | Own URL, fixed footer with the primary | Skapa verifikation, Momsrapport, Bankavstämning |
 | Popover | A choice that belongs to a button | Under the button, Esc or click outside closes | Byt företag, Räkenskapsår, filters |
 
-Dialogs never stack. A dialog may open from a side panel. Closing with unsaved changes asks first. Focus returns to the control that opened the surface.
+Dialogs never stack. A dialog may open from a side panel. Closing a dialog or side panel with unsaved changes asks first. A full-page form follows its screen spec: the voucher form keeps an unbooked entry in the browser and does not ask. Focus returns to the control that opened the surface.
 
 ## 9. Keyboard and focus
 
@@ -167,7 +167,7 @@ Every shortcut is also an API operation behind a visible control; shortcuts are 
 
 - Swedish first, English second. All strings go through translation keys.
 - No en dash or em dash in UI text. Use a full stop, a comma, a colon, or *till* for ranges.
-- Standard accounting words stay as they are: Verifikation, Bokför, Kontoplan, Räkenskapsår, Attest, Periodisering, Rättelse.
+- Standard accounting words stay as they are: Verifikation, Bokför, Kontoplan, Räkenskapsår, Attest, Periodisering, Ändringsverifikation, Rättelsepost.
 - Sentence case: capital letter only at the start of a heading or button.
 - Errors say what happened and what the user can do.
 

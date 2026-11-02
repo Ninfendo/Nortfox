@@ -78,7 +78,7 @@ The top-bar button `Sök` with `Ctrl K` (`Cmd K` on Mac) opens a centred modal (
 - Input: `Sök verifikationer, konton, leverantörer eller kommandon`.
 - Results grouped: **Kommandon**, **Verifikationer**, **Konton**, **Leverantörer**, later more modules. Each row: icon, label, right-aligned meta (amount, org. number or shortcut).
 - The first result is selected. Up/Down, Enter, Esc. Footer shows these keys.
-- Commands are the same operations as the visible controls (`Ny verifikation`, `Byt företag`, `Byt räkenskapsår`, `Utseende`). Search never offers an action that isn't elsewhere in the UI and in the API.
+- Commands are the same operations as the visible controls (`Skapa verifikation`, `Byt företag`, `Byt räkenskapsår`, `Utseende`). Search never offers an action that isn't elsewhere in the UI and in the API.
 - No results: `Inga träffar för ”…”.`
 
 API: `GET /search?q=&types=`.
