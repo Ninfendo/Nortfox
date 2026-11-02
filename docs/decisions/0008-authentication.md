@@ -14,9 +14,17 @@ People log in from the web app. Programs and MCP clients need access too. Progra
 - Programs use API tokens: opaque, bound to one company, with scopes, stored only as hashes, shown once, and revocable.
 - MCP clients log in through NortFox's own OAuth 2.1 server: authorization code with PKCE, discovery through protected resource metadata, and opaque tokens that work only for `/mcp`.
 - Discovery uses the well-known paths at the root of the host. `/.well-known/oauth-protected-resource/mcp` (RFC 9728) names the authorization server, whose metadata is at `/.well-known/oauth-authorization-server` (RFC 8414). Some clients also ask for `/.well-known/openid-configuration`. The OAuth endpoints themselves live under `/v1/oauth`. Caddy passes all three well-known paths to the server, so a client never gets the web app's page instead of the server's answer.
-- Programs written for the established API log in to the compatible API with the established API's login flow, an OAuth 2 flow: the authorization code flow, refresh tokens that each work once, and client credentials for a service account. Each such program is registered in NortFox as a client, with an id and a secret, and the secret is stored only as a hash. The flow's endpoints live at the same paths as the established API's, on NortFox's own host. It comes in [slice 2e](../plan.md#step-2-the-foundation).
-- The tokens of that flow follow the rules for API tokens: opaque and random, stored only as hashes, revocable, and bound to one company. They work only on the compatible API's paths, as the MCP tokens work only for `/mcp`.
-- Every request acts as one user in one company. The permission it needs comes from the operation's entry in the registry.
+- Programs written for the established API log in to the compatible API with the established API's login flow, an OAuth 2 flow. Its endpoints live at the same paths as the established API's, on NortFox's own host. It comes in [slice 2e](../plan.md#step-2-the-foundation). It has what the established flow has:
+  - the authorization code flow. A code works once, for 10 minutes.
+  - refresh tokens. Each works once, and each refresh gives a new one.
+  - service accounts. A company administrator activates one through the authorization code flow, with `account_type=service`. After that, the program gets its tokens with client credentials and the company's tenant id, with no refresh token. A program has at most one service account per company. Each company has a tenant id, a number, as in the established API.
+  - the revoke endpoint, which revokes a refresh token.
+  - the established API's scopes. A consent keeps the scopes it was given, and a token never holds more. A call outside a token's scopes gets the established API's error.
+  - the established API's lifetimes, as they are today: an access token lasts 1 hour, and use does not extend it. A refresh token lasts 45 days.
+- Each such program is registered in NortFox as a client, with an id and a secret. The secret is stored only as a hash.
+- The access token of that flow has the established token's shape: a JWT that carries the company's tenant id as a claim. The established API's docs tell integrators to read the tenant id from the token, so an opaque token would break those integrations. 2e's issue takes the claim names from a token of the established system. NortFox never trusts what the token says: the token holds a random value, is stored only as a hash and is looked up on every request. This shape is a working default that the owner may change.
+- The code and the refresh token of that flow are opaque and random, and are stored only as hashes. Every token of that flow is revocable and bound to one company. It works only on the compatible API's paths, as the MCP tokens work only for `/mcp`.
+- Every request acts in one company, as one user. A service account has no user: its request acts as its client, with the rights its scopes give. The permission a request needs comes from the operation's entry in the registry.
 
 ## Consequences
 
