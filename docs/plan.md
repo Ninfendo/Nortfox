@@ -11,7 +11,7 @@ It runs on one small server that the company, or its accountant, controls. Every
 ## 2. Principles
 
 - **Everything through the API.** Every feature is an API operation first. MCP offers the same operations. The web app is one client of the API. A screen is never the only way in.
-- **The law lives in the database.** PostgreSQL itself refuses a change to a voucher in a locked period, a gap in a voucher series that is not a recorded void range, and a voucher where debit and credit differ. It erases nothing: a change adds rows, and a deleted voucher stays readable. Triggers write the behandlingshistorik. Each company sees only its own rows.
+- **The law lives in the database.** PostgreSQL itself refuses a change to a voucher in a locked period, a gap in a voucher series that is not a recorded void range, and a voucher where debit and credit differ. Triggers write the behandlingshistorik. Each company sees only its own rows.
 - **Money is exact.** Inside, an amount is whole öre in a `bigint`. On the native API, it is a decimal string with a currency code. The compatible API takes JSON numbers, as the established API does, and reads each one from its own text, never through a float. Never a JavaScript number.
 - **Contract first.** Each operation is defined once, with its data shapes. The REST paths, the committed `openapi.json`, the generated client, the MCP tools and the compatible API ([decision 12](decisions/0012-compatible-api.md)) all come from that one list.
 - **Self-hosted.** One Docker Compose file. Point-in-time backups from day one. A restore skips voucher numbers, as a recorded void range, rather than give one out twice.
@@ -34,7 +34,7 @@ Many people who will use NortFox already keep books in the established Swedish a
 - The screens use the words that users know from the established system. In Swedish, these are its Swedish screen words, such as Verifikationer, Bokför and Leverantörsfakturor. In English, they are its English screen words or, where it has none, the English names of the established API.
 - The API and the code use the English names of the established API, such as Voucher, VoucherSeries, FinancialYear and CostCenter, so that there is one vocabulary. This is a default that the owner may change. The module names in [section 4](#4-server-modules) are working names until each slice's issue fixes them by this rule.
 - The brand names and trademarks of the established system are never used. Generic accounting words are.
-- A word can mean one thing on the screen and another in the law. The screen's Bokför gives a voucher its number, but in the law's sense an entry is bokförd only once its period is locked. So each slice's issue starts with its terms ([section 6](#6-how-a-slice-is-built)).
+- A word can mean one thing on the screen and another in the law. The screen's Bokför gives a voucher its number, but in the law's sense an entry is bokförd only once its period is locked for everyone. So each slice's issue starts with its terms ([section 6](#6-how-a-slice-is-built)).
 
 ## 3. Structure
 
@@ -88,10 +88,10 @@ Each module lives in `apps/server/src/modules/<name>`. A module owns its tables,
 | appearance | Runtime themes: 8 shadcn styles, 7 base colours, 24 theme colours, chart colours, light and dark, radius, menu colour, menu accent, 26 self-hosted fonts. A style builder for company admins. Values only, never raw CSS. Contrast is checked. |
 | audit | The behandlingshistorik: who changed what, when, and through which client. Written by database triggers. |
 | jobs | Background jobs, the outbox, and webhooks. |
-| files | Attachments (underlag), stored with a hash in NortFox's own storage, with optional copies on the company's own cloud drive. A file on a voucher in a locked period cannot be removed. |
+| files | Attachments (underlag), stored with a hash in NortFox's own storage, with optional copies on the company's own cloud drive. A removed file goes to a trash for 30 days, as in the established system. |
 | status | Health checks and `nortfox doctor`, which checks that an install is sound. |
 | import | Bring a company's books in: from a SIE4 file, or from another system's API through an import adapter. Each adapter lives in its own folder, under a neutral id ([decision 11](decisions/0011-names-policy.md)). |
-| compatible-api | A second API surface that follows the established API, so that an integration only changes its base address. Its adapter lives in one folder, under a neutral id ([decision 12](decisions/0012-compatible-api.md)). |
+| compatible-api | A second API surface that follows the established API, its login flow included, so that an integration only changes its base address. Its adapter lives in one folder, under a neutral id ([decision 12](decisions/0012-compatible-api.md)). |
 | assistant | An AI assistant that works only through the API, with the user's own rights, and only through the operations that are open to it. |
 
 ### Bokföring
@@ -99,9 +99,9 @@ Each module lives in `apps/server/src/modules/<name>`. A module owns its tables,
 | Module | What it does |
 | --- | --- |
 | accounts | The kontoplan, from the BAS chart. |
-| fiscal-years | Räkenskapsår and their periods. Locking periods, by hand or automatically, and unlocking them. Opening balances. |
-| voucher-series | Verifikationsserier, with gap-free numbers per fiscal year. A series skips numbers only through a void range that a restore records. |
-| vouchers | Book, change, correct and delete vouchers, as the established system does. A voucher in a locked period is final. |
+| fiscal-years | Räkenskapsår and their periods. The period lock: a locked-through date per user, for the internal system user, for integrations and for all users, and the automatic lock. Opening balances. |
+| voucher-series | Verifikationsserier, with gap-free numbers per fiscal year, and each year's closing series, which the period lock does not apply to. A series skips numbers only through a void range that a restore records. |
+| vouchers | Book, change, correct, copy and delete vouchers, as the established system does. A voucher whose period is locked for everyone is final. |
 | dimensions | Cost centres (kostnadsställen) and projects. |
 | currencies | Currencies and exchange rates. |
 | budget | Budgets per account and period. |
@@ -150,11 +150,13 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 **2a. Ledger core in PostgreSQL**
 
-- **What:** the first SQL migrations: the database roles (owner, app, and reader roles that are each bound to one company); companies; fiscal years, their periods and the locked periods; accounts; voucher series and their void ranges; vouchers, their rows and their earlier versions; the record of deleted vouchers; the behandlingshistorik. The triggers for the ledger law, with the voucher rules of [decision 2](decisions/0002-ledger-law-in-postgresql.md). FORCE RLS on every company table. The compose file with PostgreSQL and pgBackRest.
+- **What:** the first SQL migrations: the database roles (owner, app, and reader roles that are each bound to one company); companies; fiscal years and their periods; the period lock, with its locked-through dates per user, for the internal system user, for integrations and for all users, and the automatic lock's setting; accounts; voucher series, their void ranges and each year's closing series; vouchers and their rows; the record of deleted vouchers; the behandlingshistorik. The triggers for the ledger law, with the voucher rules of [decision 2](decisions/0002-ledger-law-in-postgresql.md). FORCE RLS on every company table. The compose file with PostgreSQL and pgBackRest.
 - **Done when:**
-  - Tests against real PostgreSQL, run as the app role, show that the database refuses: changing or deleting a voucher in a locked period, or dating a voucher there; deleting a voucher that is not the last of its series; changing a row's account or amount, or removing a row; changing or deleting an earlier version of a voucher, or anything in the record of deleted vouchers; booking a voucher whose rows that are not struck differ in debit and credit; a voucher date outside an open fiscal year; reading or writing another company's rows.
-  - After any change to a voucher, every earlier version of it, its rows and its texts can still be read, with the actor and the time of each change. A struck row stays, marked struck, with the actor and the time.
-  - Deleting the last voucher of a series moves it, whole, to the record of deleted vouchers, with the actor and the time. The next voucher booked in that series gets its number.
+  - Tests against real PostgreSQL, run as the app role, show that the database refuses: changing or deleting a voucher in a period that is locked for the actor, or dating a voucher there, except in that year's closing series; deleting a voucher that is not the last of its series; changing a row's account or amount, or removing a row; changing or deleting anything in the record of deleted vouchers; booking a voucher whose rows that are not struck differ in debit and credit; a voucher date outside an open fiscal year; reading or writing another company's rows.
+  - Each lock date applies only to the actors it is set for. With a date set only for one user, for the internal system user, for integrations or for all users, a voucher dated on or before it is refused for those actors and accepted for the others. The automatic lock applies to everyone.
+  - A voucher in the closing series of its fiscal year is accepted inside a locked period, under the manual and the automatic lock.
+  - After any change to a voucher, the behandlingshistorik holds each earlier value, with the actor and the time. This is NortFox's own working default ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). A struck row stays, marked struck, with the actor and the time.
+  - Deleting the last voucher of a series moves it to the record of deleted vouchers, with the actor and the time. The next voucher booked in that series gets its number.
   - A property test with parallel bookings, deletions and rollbacks finds no gap in any series, and no number held by two vouchers that are not deleted. A series can only skip numbers through a recorded void range.
   - As the app role, recording a void range is refused, and so is any change to one. Only the owner role can record one, and the trigger writes its behandlingshistorik row like any other.
   - Every insert, update and delete leaves a behandlingshistorik row with the actor and the time. The app role cannot change or delete those rows.
@@ -165,7 +167,7 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 **2b. API and MCP spine**
 
-- **What:** the Hono server with `@hono/zod-openapi`. `packages/contract` holds the `createRoute` objects, which are the operation registry. Each operation declares its id, its path under `/v1`, its input and output shapes, its permission, its MCP tool text, and whether the AI assistant may call it (closed unless it says so). `openapi.json` is generated and committed; `packages/client` is generated from it. `/mcp` serves every operation as an MCP tool, from the same registry. On `/v1`, errors are problem details (RFC 9457), writes take an idempotency key, and lists use cursor paging.
+- **What:** the Hono server with `@hono/zod-openapi`. `packages/contract` holds the `createRoute` objects, which are the operation registry. Each operation declares its id, its path under `/v1`, its input and output shapes, its permission, its MCP tool text, and whether the AI assistant may call it (closed unless it says so). `openapi.json` is generated and committed; `packages/client` is generated from it. `/mcp` serves every operation as an MCP tool, from the same registry. On `/v1`, errors are problem details (RFC 9457), writes take an idempotency key, and lists use cursor paging. The compatible API comes in 2e, so 2b ships no compatible endpoint.
 - **Done when:**
   - One real operation (read a company, on the 2a tables) works by REST, by the generated client and as an MCP tool, with the same result.
   - CI fails when `openapi.json` or the client is out of date.
@@ -197,6 +199,24 @@ This is the repository setup. It lands before every other PR: until it does, not
   - The frame works at phone width and with the keyboard alone.
   - Fonts and icons are served by the install itself. The app makes no request to another site.
 
+**2e. The compatible API spine**
+
+- **What:** the shared parts of the compatible API ([decision 12](decisions/0012-compatible-api.md)):
+  - its adapter folder, named by a neutral id, with its marker, its line on the marker allowlist and its one docs page;
+  - the routing for the established API's paths, its paging, and its error format and codes;
+  - the money reader, which takes each amount from the number's own text in the request ([decision 5](decisions/0005-money.md));
+  - the established API's login flow, with the tokens of [decision 8](decisions/0008-authentication.md), and Caddy passing the compatible API's paths and its login paths to the server;
+  - the compatible endpoints for the operations of 2b to 2d that the established API also has, such as reading the company.
+  - 2e is the first slice that ships a compatible endpoint. From 2e on, each slice adds its own ([section 6](#6-how-a-slice-is-built)). The PR title, body, branch name, commits and changeset use neutral words.
+- **Owner step:** the PR adds the folder to the marker allowlist and puts the marker in it. Both are owner paths, so the PR needs the owner-ok label.
+- **Done when:**
+  - Reading the company through the compatible API calls the same operation as `/v1` and answers in the established API's shape. A test pins the shape.
+  - The paging and the error format, with its codes, follow the established API. Tests with hand-written fixtures pin both.
+  - Money in a request is read from the raw text of each number and never becomes a float. A test with amounts that a float cannot hold exactly shows it.
+  - A program logs in with the established API's login flow: the authorization code flow with refresh tokens that each work once, and client credentials for a service account. Its tokens are opaque, stored only as hashes, revocable, bound to one company, and refused outside the compatible API.
+  - The login and a compatible call work through the compose stack, with Caddy in front.
+  - The folder is on the marker allowlist and holds its marker. The names check passes on everything outside it, including `openapi.json`, the client, `packages/i18n`, `docs/system` and the changesets.
+
 ### Step 3: Bokföring
 
 The ledger comes first, then what a voucher carries, then the reports and SIE so the books can be checked and moved, then the VAT report, then the modules that bring money in and out. Two platform modules come in where the first Bokföring module needs them.
@@ -206,48 +226,58 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 - **What:** a new company gets the BAS chart for its year from `reference-data`. Users add, rename and deactivate accounts. Each account carries its VAT code and SRU code where the chart gives one.
 - **Done when:** the chart can be listed, changed and exported through the API and MCP; the database refuses to delete an account that has booked rows; the source and terms of the BAS data are written next to it in `reference-data`.
 
-**3b. fiscal-years: räkenskapsår and locked periods**
+**3b. fiscal-years: räkenskapsår and the period lock**
 
-- **What:** create fiscal years and their monthly periods; opening balances. Lock periods by hand, or automatically a set number of days after each month ends, and unlock a locked period, as the established system does. Locking a period makes its vouchers final ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). The engine checks the year's length (normally 12 months; a first or changed year may be shorter, or at most 18 months).
+- **What:** create fiscal years and their monthly periods; opening balances. The engine checks the year's length (normally 12 months; a first or changed year may be shorter, or at most 18 months). The period lock, as the established system has it ([decision 2](decisions/0002-ledger-law-in-postgresql.md)):
+  - The manual lock: a locked-through date for each user, for the internal system user, for integrations and for all users. Each date can be set, changed and cleared.
+  - The automatic lock, on or off, for everyone, with one of the established system's intervals: 50 days after the end of the month, 50 days after the end of the quarter, or 60 days after the end of the fiscal year. The case for sole traders, at the date of the income tax return, comes once its rule is confirmed.
+  - The automatic lock needs no job: the database works out its date from the day's date and the interval. The screen shows, as the established one does, the date locked now, the next date, the next lock run, and how many days before a lock run a reminder comes. The reminder itself needs the job queue, so it comes in 3j.
+  - The year's closing series (3c) is exempt from both locks, on every date.
 - **Done when:**
-  - The database refuses a voucher dated in a locked period or outside every open year.
-  - Once a period is locked, a change or a deletion of one of its vouchers is refused. After an unlock, both are allowed again.
-  - With automatic locking set to a number of days, a month is locked from that many days after its last day, and not a day before. A test at that boundary shows it.
-  - Every lock and unlock is in the behandlingshistorik, with who and when.
+  - The database refuses a voucher dated in a period that is locked for the actor, except in that year's closing series, and a voucher dated outside every open year.
+  - With a date set only for one user, for the internal system user, for integrations or for all users, a voucher dated on or before it is refused for the actors that the date applies to and accepted for the others.
+  - A voucher in the year's closing series is accepted inside the manual and the automatic lock.
+  - Once a period is locked for an actor, that actor's change or deletion of one of its vouchers is refused. After the date is cleared, both are allowed again.
+  - For each interval of the automatic lock, a test at its boundary shows the last day the period is open and the first day it is locked. 3b's issue settles which day the established system locks on.
+  - Every change to a lock date, to the automatic lock's setting and to the year's closing series is in the behandlingshistorik, with who and when.
   - A property test shows that a year's opening balances always equal the closing balances of the year before, also after a late booking in the old year.
 
 **3c. voucher-series**
 
-- **What:** series per company, a number range per series and fiscal year, a default series per kind of voucher (manual, supplier invoice, payment, bank, cash register). A voucher gets its number when it is booked. Deleting the last voucher of a series gives its number out again.
-- **Done when:** numbering starts again in each fiscal year; a used series cannot be deleted; after the last voucher of a series is deleted, the next voucher booked in it gets that number; a property test with parallel bookings and deletions in several series finds no gap, and no number held by two vouchers that are not deleted.
+- **What:** series per company, a number range per series and fiscal year, a default series per kind of voucher (manual, supplier invoice, payment, bank, cash register). One series per fiscal year can be marked as the closing series, which the period lock does not apply to ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). A voucher gets its number when it is booked. Deleting the last voucher of a series gives its number out again.
+- **Done when:** numbering starts again in each fiscal year; a used series cannot be deleted; a second closing series in one fiscal year is refused; after the last voucher of a series is deleted, the next voucher booked in it gets that number; a property test with parallel bookings and deletions in several series finds no gap, and no number held by two vouchers that are not deleted.
 
 **3d. vouchers: book and correct**
 
 - **What:** book, change, correct, delete, list and read vouchers, as the established system does ([decision 2](decisions/0002-ledger-law-in-postgresql.md)).
   - A voucher is booked at once and gets its number. Nothing is saved before that: an unfinished form stays in the browser.
-  - Until its period is locked, a voucher can be changed: its description, its date and its row texts can change, and rows can be added. A row's account or amount is never changed; the row is struck and a new row takes its place. The struck row stays on the voucher, struck through, with who and when.
-  - Until its period is locked, it can also be deleted, when it is the last voucher of its series. Its number is given out again, and the deleted voucher stays readable in full in the record of deleted vouchers, with who and when.
+  - Until its period is locked for the actor, a voucher can be changed: its description, its date and its row texts can change, and rows can be added. A row's account or amount is never changed; the row is struck and a new row takes its place. The struck row stays on the voucher, struck through, with who and when.
+  - Until its period is locked for the actor, it can also be deleted, when it is the last voucher of its series. Its number is given out again, and the deleted voucher goes to the record of deleted vouchers, with who and when.
   - At any time, a voucher can be corrected with a reversing voucher: a new voucher with its own number, in an open period, linked to the old one both ways. A voucher has at most one reversing voucher, and a voucher that another module made, such as a supplier invoice, gets none.
-  - A voucher in a locked period is final: it is only corrected, never changed or deleted.
-  - Booking through `/v1` takes an idempotency key. A voucher's behandlingshistorik, its earlier versions and the record of deleted vouchers are readable through the API and MCP.
-- **Design:** the screens follow [the vouchers screen spec](design/screens/vouchers.md) for the look. The spec was written before these voucher rules: it has drafts saved on the server, and no change or deletion after booking. Where it differs from this slice, this slice wins until the spec is updated.
+  - Kopiera opens a new, unbooked form with the voucher's rows that are not struck. Nothing is saved until Bokför. Kopiera is disabled on a voucher that another module made.
+  - A voucher in a period that is locked for the actor is only corrected by that actor, never changed or deleted, except in the year's closing series.
+  - Booking through `/v1` takes an idempotency key. A voucher's behandlingshistorik and the record of deleted vouchers are readable through the API and MCP.
+- **Design:** the screens follow [the vouchers screen spec](design/screens/vouchers.md) for the look. The spec was written before these voucher rules: it has drafts saved on the server, also for a copy, and no change or deletion after booking. Where it differs from this slice, this slice wins until the spec is updated.
 - **Done when:**
   - Booking, reading, changing, correcting and deleting work by REST, by MCP and on the screen.
   - The answer to a booking carries the voucher's number.
-  - Tests as the app role show the database refuses a change or a deletion in a locked period, the deletion of a voucher that is not last in its series, and a change to a row's account or amount.
-  - After a change, the voucher shows its struck rows with who and when, and every earlier version can be read through the API.
+  - Tests as the app role show the database refuses a change or a deletion in a period that is locked for the actor, except in the year's closing series, the deletion of a voucher that is not last in its series, and a change to a row's account or amount.
+  - After a change, the voucher shows its struck rows with who and when, and the behandlingshistorik, read through the API, holds each earlier value.
   - A reversing voucher reverses the rows of the old one that are not struck, and each points to the other. A second reversing voucher, and one for a voucher that another module made, are refused.
-  - After a deletion, the next voucher in the series gets the freed number, and the deleted voucher can be read in full, with who and when, in the record of deleted vouchers.
+  - After a deletion, the next voucher in the series gets the freed number, and the deleted voucher can be read, with who and when, in the record of deleted vouchers.
+  - Kopiera on a booked voucher opens a new, unbooked form with its rows that are not struck, and nothing is saved until Bokför. On a voucher that another module made, Kopiera is disabled.
   - Every booking, change, strike, correction and deletion is in the behandlingshistorik, with who and when.
   - Booking the same request twice gives one voucher.
 
 **3e. files (platform): attachments**
 
-- **What:** upload files (PDF, images, XML) and link them to vouchers. The original file lives in NortFox's own storage, on disk or in S3-compatible object storage, with a SHA-256 hash. A pluggable storage layer can also copy each file to a cloud drive that the company connects itself. A cloud drive is never the only copy.
+- **What:** upload files (PDF, images, XML) and link them to vouchers. The original file lives in NortFox's own storage, on disk or in S3-compatible object storage, with a SHA-256 hash. A pluggable storage layer can also copy each file to a cloud drive that the company connects itself.
+  - Removing a file works as in the established system. Ta bort moves it to a trash, where it can be restored for 30 days. Removing a link through the compatible API gives the established API's answer.
+  - Open: whether a locked period stops the removal of a file. 3e's issue settles it with a test of the established system, and the done-when lines follow from that.
+  - By default, the original stays in NortFox's own storage and a cloud drive holds only copies. This is a default that the owner may change. The docs recommend it, because a drive's users can delete its files, a drive account can be closed, and the law sets where räkenskapsinformation may be kept (BFL 7 kap. 2 § and 3 a §).
 - **Done when:**
-  - The database refuses to unlink or delete a file on a voucher in a locked period.
+  - Ta bort on a linked file moves it to the trash. It can be restored for 30 days, and after that it is deleted. Removing a link through the compatible API gives the established API's answer.
   - The hash is checked on every read. The size and type limits are enforced by the server.
-  - The server refuses a setting that would make a cloud drive the only place a file is kept.
   - With a test cloud drive connected, a new file is stored in NortFox's own storage and copied to the drive. Disconnecting the drive, or deleting the copy there, loses no file and changes no voucher.
 
 **3f. dimensions: cost centres and projects**
@@ -267,13 +297,13 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **3i. vat: VAT report and EU sales list**
 
-- **What:** VAT codes and report boxes per year from `reference-data`; the VAT report for a month, quarter or year; the file for the tax agency; the VAT settlement voucher; the EU sales list (periodisk sammanställning).
-- **Done when:** the box values for the reference books match numbers worked out by hand; a period locks when its report is marked as filed; a filed report can be produced again later with the same numbers.
+- **What:** VAT codes and report boxes per year from `reference-data`; the VAT report for a month, quarter or year; the file for the tax agency; the VAT settlement voucher; the EU sales list (periodisk sammanställning). As far as is known, the established system does not lock a period when its VAT report is booked. 3i's issue confirms this, and until then 3i adds no lock.
+- **Done when:** the box values for the reference books match numbers worked out by hand; a filed report can be produced again later with the same numbers.
 
 **3j. jobs (platform): background jobs and the outbox**
 
-- **What:** a job queue in PostgreSQL, run by the server process; an outbox written in the same transaction as the change it reports; retries with backoff; jobs readable through the API.
-- **Done when:** a job survives a server restart and runs exactly once; a test shows an outbox event exists if and only if its transaction committed.
+- **What:** a job queue in PostgreSQL, run by the server process; an outbox written in the same transaction as the change it reports; retries with backoff; jobs readable through the API. The first job is the reminder before each automatic lock run (3b), shown in the app as in the established system.
+- **Done when:** a job survives a server restart and runs exactly once; a test shows an outbox event exists if and only if its transaction committed; the reminder appears the chosen number of days before an automatic lock run.
 
 **3k. currencies**
 
@@ -329,7 +359,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **4c. Archive**
 
-- **What:** export a company's full räkenskapsinformation for a range of years: SIE4, vouchers with their earlier versions and their files, the record of deleted vouchers, the behandlingshistorik, the reports, and the version of the system documentation. Open formats, with a checksum list.
+- **What:** export a company's full räkenskapsinformation for a range of years: SIE4, vouchers with their files, the record of deleted vouchers, the behandlingshistorik, the reports, and the version of the system documentation. Open formats, with a checksum list.
 - **Done when:** the archive can be read without NortFox; the database refuses to delete a company's books before the seven years have passed.
 
 **4d. System documentation**
@@ -370,7 +400,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 - **One issue per slice.** Each slice gets one GitHub issue, just before it is built. That timing is a default that the owner may change. The issue starts with the slice's terms: for each, what the law means by it, the word on the screen, and its name in the API and the code ([section 2](#names)). Then come the behaviour, the API, what the law requires, the done-when lines and what is out of scope.
 - **One slice, one PR.** Each PR has its own branch. Merges are squash only, and the history stays linear. The PR title and body become the commit on `main`.
-- **Everything in the same PR:** the migration, the engine logic, the contract operations, the server module, the compatible endpoint where the established API has one ([decision 12](decisions/0012-compatible-api.md)), the screens, the docs that change, and a changeset for what users will notice.
+- **Everything in the same PR:** the migration, the engine logic, the contract operations, the server module, the compatible endpoint where the established API has one, from slice 2e on ([decision 12](decisions/0012-compatible-api.md)), the screens, the docs that change, and a changeset for what users will notice.
 - **Tests first.** Each done-when line becomes a test before the code it tests is written, and each test is seen to fail for the right reason. Then the code is built until the tests pass.
 - **Tests in the same PR:** unit tests for the engine (100% coverage), property tests for every invariant, server tests against real PostgreSQL as the app role, a test that drives the new operations through MCP, and tests that pin each compatible endpoint's shape.
 - **Review until a round finds no major problem.** The owner's review agent reviews each PR from the owner's account in rounds. The PR fixes the major problems that a round finds, and a new round checks again. The PR may merge once a round finds no major problem. A minor problem found after that becomes an issue, fixed in its own small PR.
@@ -443,7 +473,7 @@ The repository never contains a name on the owner's list of protected names ([de
 - It reads each path from the bytes git stores for it, which need not be UTF-8: in the same three ways, and as the name Git for Windows writes to disk. When any of these readings holds a match, the report names the file by its position, never by its path.
 - Dropping separators makes ordinary words match across a space. Such a text is reworded. The check keeps no allowlist of false positives: the only exceptions to the names rule are the markers and the marker allowlist, and both are owner paths.
 - A digest is data, so the check reads it the way it reads base64: it decodes it and searches what it decodes to. In `pnpm-lock.yaml`, the value of pnpm's own integrity key at the start of a line, at the exact length of its algorithm, is read only that way, because so many random letters spell a short word by chance. Anywhere else, also on a comment line or later on the same line, a run shaped like a digest is read as letters too.
-- A `.protected-name-ok` marker counts only in a folder on the marker allowlist, `.github/protected-name-allowlist.txt`. The allowlist holds at most two folders: the import adapter's (slice 4f) and the compatible API adapter's ([decision 12](decisions/0012-compatible-api.md)). It is empty until the first of them lands, and the PR that creates each folder adds it. A marker anywhere else fails the check.
+- A `.protected-name-ok` marker counts only in a folder on the marker allowlist, `.github/protected-name-allowlist.txt`. The allowlist holds at most two folders: the import adapter's (slice 4f) and the compatible API adapter's (slice 2e, [decision 12](decisions/0012-compatible-api.md)). It is empty until the first of them lands, and the PR that creates each folder adds it. A marker anywhere else fails the check.
 - Its tests inject fake words. The real names never appear in a test.
 
 ## 7. The legal frame
@@ -452,7 +482,7 @@ NortFox is built to meet Bokföringslagen (1999:1078) and Bokföringsnämndens g
 
 - Every business event is booked from a voucher (verifikation).
 - Bookings are kept in date order (grundbok) and by account (huvudbok).
-- An entry may stay preliminary, and be changed or deleted, until the company locks its period. The company must lock it within the booking deadlines (BFL 5 kap. 2 §, BFNAR 2013:2 kapitel 2 and 3). Once locked, the entry is bokförd and final: it is never removed or changed, only corrected by a new entry that shows when the correction was made and by whom.
+- An entry may stay preliminary, and be changed or deleted, until the company locks its period for everyone. The company must lock it within the booking deadlines (BFL 5 kap. 2 §, BFNAR 2013:2 kapitel 2 and 3). Once locked, the entry is bokförd and final: it is never removed or changed, only corrected by a new entry that shows when the correction was made and by whom.
 - The system keeps a behandlingshistorik of how the data was processed, and a systemdokumentation that describes how the system works.
 - All räkenskapsinformation is kept, readable, until the end of the seventh year after the calendar year in which the fiscal year ended.
 
