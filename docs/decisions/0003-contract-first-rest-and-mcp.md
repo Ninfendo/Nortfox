@@ -1,6 +1,6 @@
 # 3. Contract-first REST and MCP from one registry
 
-Status: accepted, 2026-11-01
+Status: accepted, 2026-11-01. Amended 2026-11-02: the compatible API serves the same operations.
 
 ## Context
 
@@ -13,6 +13,7 @@ Everything in NortFox must work through the API and through MCP. A screen must n
 - REST paths are versioned: `/v1/...`. A breaking change gets a new version beside the old one.
 - `openapi.json` is generated from the registry and committed. The TypeScript client in `packages/client` is generated from `openapi.json`.
 - MCP at `/mcp` offers the same operations as tools, built from the same registry.
+- The compatible API ([decision 12](0012-compatible-api.md)) serves the same operations in the established API's shapes. It calls the operations in this registry and adds no rules of its own: every check stays in the operation and in the database.
 - The server is Hono 4 on Node, in one process.
 - The web app calls the server only through the generated client.
 
