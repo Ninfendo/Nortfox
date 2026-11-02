@@ -1,0 +1,50 @@
+# The fixture guard's list of test values (docs/plan.md, section 6). Tests and
+# fixtures may use the numbers on this list, and nothing else that looks real.
+# For an address, they use one at the reserved example domains below. Keep the
+# list short. Add a number only from a published test series, and say where
+# each entry comes from.
+#
+# One entry per line: "<kind> <value>". The kinds and their forms:
+#   personal-identity-number  YYYYMMDD-NNNN
+#   coordination-number       YYYYMMDD-NNNN (the day plus 60)
+#   organisation-number       NNNNNN-NNNN
+#   email                     the address, in lower case
+# The guard also lets a listed number through in its other forms: an identity
+# number in 10 digits (YYMMDD-NNNN or YYMMDDNNNN) or in 12 digits without the
+# dash, an organisation number in 10 digits without the dash or with 16 in
+# front, and either one in a VAT number (SE, the 10 digits and 01). It never
+# lets through a listed number in 10 digits with "+". There, "+" says the
+# person is 100 or older, so the same digits name a person a century earlier.
+# For the same reason, the list takes no number for a person who is 100 or
+# older this year, or born after this year: in 10 digits with "-", its digits
+# name another person.
+#
+# The guard refuses an entry that it would let through anyway, so these need
+# none: a number whose date or check digit is not valid, and an address at
+# example.com, example.net or example.org, under .example, .test, .invalid or
+# .localhost (RFC 2606 and RFC 6761), or at users.noreply.github.com.
+
+# Skatteverket's test personal identity numbers, "Testpersonnummer": open data
+# under CC0 1.0, published for test environments only.
+# https://skatteverket.entryscape.net/rowstore/dataset/b4de7df7-63c0-4e7e-bb59-1f156a591763
+personal-identity-number 19900101-2385
+personal-identity-number 20000101-2384
+personal-identity-number 20100101-2382
+
+# Skatteverket's test coordination numbers, "Testsamordningsnummer 2026", from
+# the same open data set and under the same terms.
+# https://skatteverket.entryscape.net/store/9/resource/164
+coordination-number 20260161-2381
+
+# Organisation numbers from Skatteverket's published test cases for its tax
+# account API, "Skattekontot via API - Testfall och test data" (2025-08-15),
+# which writes them with 16 in front. 556000-0167 is its test company
+# "Bolag A".
+organisation-number 556000-0167
+organisation-number 599999-0129
+
+# The address in the Co-Authored-By line that AGENTS.md asks an AI agent to
+# end each commit message with. It is a tool's no-reply address, not a person's.
+# It is on the list only so that the example in AGENTS.md passes. Never use it
+# in a test or a fixture.
+email noreply@anthropic.com

@@ -14,8 +14,9 @@
     "typecheck": "node scripts/turbo.ts run typecheck && tsc -p tsconfig.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "check": "pnpm names && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
+    "check": "pnpm names && pnpm fixtures && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
     "names": "node scripts/names/cli.ts --all",
+    "fixtures": "node scripts/fixtures/cli.ts --all",
     "openapi": "pnpm --filter @nortfox/server run openapi && pnpm --filter @nortfox/client run generate",
     "changeset": "changeset",
     "prepare": "git config core.hooksPath .githooks"

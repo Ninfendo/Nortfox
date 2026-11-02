@@ -13,7 +13,7 @@ NortFox is an open-source Swedish accounting system. Everything in it works thro
 - When the names check fails on a PR from the owner's account, which is how you work, it shows only the file and line, or the field. Reword that text. On a PR from any other account it shows only how many places there are. Never try to work out the list, for example by probing the check with guesses, and never work around the check.
 - The tools, services and open standards that NortFox is built on or connects to may be named, for example PostgreSQL, Hono or BankID.
 - **Never:** personal data, real company data, private e-mail addresses, internal hostnames or IP addresses, or issue numbers of other repositories.
-- **Test data is made up:** fictional companies and people, and the test identity and organisation numbers on the fixture guard's list. Nothing is recorded from a real account. A file made by another program has its program record and its metadata rewritten. A file from a third party carries a note with its source and its terms.
+- **Test data is made up:** fictional companies and people, and the test identity and organisation numbers on [the fixture guard's list](scripts/fixtures/test-values.txt). Nothing is recorded from a real account. A file made by another program has its program record and its metadata rewritten. A file from a third party carries a note with its source and its terms.
 - **The marker file.** A folder that holds a `.protected-name-ok` marker may name one other system, but only the folder on the owner's marker allowlist counts. It is for one import adapter ([decision 11](docs/decisions/0011-names-policy.md)). Never add, move or delete a marker.
 
 ## How you work

@@ -11,7 +11,7 @@ You need Node 24 (see `.nvmrc`) and pnpm 12.16.1 (the version in `package.json`)
 
 ```sh
 pnpm install   # also points git at the hooks in .githooks
-pnpm check     # what CI runs: the names check, lint, type check, tests with coverage, build
+pnpm check     # what CI runs: the names check, the fixture guard, lint, type check, tests with coverage, build
 ```
 
 Other commands:
@@ -24,6 +24,7 @@ Other commands:
 | `pnpm openapi` | After a change to the API: writes `packages/client/openapi.json` and the generated client. CI fails when they are out of date. |
 | `pnpm changeset` | Records what users will notice in your change. |
 | `pnpm names` | Runs the names check over every file. |
+| `pnpm fixtures` | Runs the fixture guard over every file. |
 
 ## The names check
 
@@ -35,12 +36,31 @@ The owner keeps a private list of names that must never appear in the repository
 - A PR from any other account is checked in a run that the owner starts, after the owner has approved its head commit. A failure then says only how many places there are, never where, and the owner tells you what to change. Until the owner starts that run, and again after each push or edit of yours, Names fails and waits for the owner.
 - Never try to work out the list, and never work around the check.
 
+## The fixture guard
+
+Test data is made up ([plan, section 6](docs/plan.md#6-how-a-slice-is-built)). The fixture guard (`scripts/fixtures`) refuses a value in a file, or in a file's path, that looks like real personal data:
+
+- a personal identity number (personnummer) or a coordination number (samordningsnummer), in 10 or 12 digits, with or without the `-` or `+`, when its date and its check digit are valid;
+- an organisation number, as `NNNNNN-NNNN`, as 10 digits without the dash, or with `16` in front, when its group digit, its third digit and its check digit are valid. 10 digits without the dash and with the group digit 1 pass, because a Unix time from 2001 to 2033 has that form;
+- a VAT number, `SE` and 10 digits and `01`, when the 10 digits make an organisation number, or an identity number as in a sole trader's VAT number. Here the group digit 1 counts too;
+- an e-mail address, unless it is at `example.com`, `example.net` or `example.org`, under `.example`, `.test`, `.invalid` or `.localhost`, or a GitHub noreply address. An address used as a file or folder name counts too, also with an extension, a dash or a digit after it. A file name such as `logo@2x.png` is not an address.
+
+The guard reads a file as UTF-8. A file that is not UTF-8 it also reads as Windows-1252 and as CP437, the encodings of a CSV file from Excel on Windows and of a SIE file. It reads each line, and each path, as it is and as it decodes: from base64, percent-encoding, HTML character references, and the escapes of JSON and JavaScript, such as `\u00f6` and `\xf6`.
+
+A path is read more strictly than a line. In a line, the user part of a URL, a git remote, the start of a UUID and a run of digits without `-` or `+` in a decimal number are not values. An address in a URL's path is a value. In a path, each part between `/` is read on its own, without those exceptions.
+
+A number with a wrong date or check digit passes, so a hash or a version seldom trips the guard. A date with four digits after it, such as a time or a daily serial number (`YYYYMMDD-HHMM` or `YYYYMMDDHHMM`), always has a valid date, so it trips the guard about one time in ten. Write a time with a `T` or a `:`, as in `20261102T0112`, or give such an id another length. A made-up reference with a Luhn check digit, such as an OCR number, can still look like an identity or organisation number. Give it a length other than 10 or 12 digits. Or, in 10 digits, start it with 0 or 4 and make its third and fourth digits 13 or more.
+
+[The list of test values](scripts/fixtures/test-values.txt) holds Skatteverket's published test numbers, each with its source. They pass, and tests and fixtures may use them. A listed identity number in 10 digits with `+` does not pass: `+` says the person is 100 or older, so it is a different number. For the same reason, the list takes no number for a person who is 100 or older this year, or born after this year: in 10 digits with `-`, its digits name another person. For an address, use one at the reserved example domains above. The guard's own tests must show that it finds an address outside them, so they use one at `zarquon.zz`, which can never be real (see `scripts/testing/personal-data.ts`). The list also holds one no-reply address, only so that the Co-Authored-By example in AGENTS.md passes. Never use it in a test or a fixture. Add a number only from a published test series, and give its source.
+
+The guard runs in `pnpm check`, in CI, and in the pre-commit hook over the staged files. It names the file and line and the kind of value, never the value. When a file's path holds anything shaped like a value, it names the file by its place in the list of files instead of by its path. It refuses a binary file, because it cannot read one yet. In `pnpm-lock.yaml` it skips pnpm's integrity digests, which are random data.
+
 ## Pull requests
 
 - One slice or one fix per PR, with its tests and, when users will notice it, a changeset.
 - Every new rule has tests, and every new guard has a test that shows it fails on a bad input.
 - No PR lowers a coverage floor, switches off a lint rule or skips a check.
-- Test data is made up: fictional companies and people. Never personal data or real company data.
+- Test data is made up: fictional companies and people, the test numbers on the fixture guard's list, and addresses at the reserved example domains. Never personal data or real company data.
 - Commit messages, the PR title and the PR body are written with the same care as code. A merge is a squash, so the title and body become the commit on `main`.
 
 A PR can merge when five checks pass on its head commit:
