@@ -1,6 +1,6 @@
 # 11. Names policy
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: a second exception, the compatible API adapter.
+Status: accepted, 2026-11-01. Amended 2026-11-02: a second exception, the compatible API adapter, and a marker exempts only the established system's name.
 
 ## Context
 
@@ -16,12 +16,14 @@ The repository is public. Its text describes NortFox. The owner keeps a short li
   - the import adapter that reads from its API ([plan, slice 4f](../plan.md#step-4-the-rest-of-the-platform));
   - the compatible API adapter ([decision 12](0012-compatible-api.md)).
 - Each lives in one folder that holds a marker file named `.protected-name-ok` and is on the marker allowlist. Inside that folder, the adapter may name the established system. Its docs page, if it has one, lives in that folder too.
+- A marker exempts only the established system's name. Every other name on the list stays refused inside that folder too.
 - Nothing else in the repository may name the established system.
 
 ## Consequences
 
 - The names check honours a marker only in a folder on the marker allowlist, which it reads from `main`. A marker anywhere else fails the check. Adding, moving or removing a marker, or changing the allowlist, needs Owner OK.
-- So an adapter's folder comes in two PRs, in this order. First, a PR adds only the folder's line to the allowlist, with no marker and no text that names the established system. After it merges, the PR that adds the folder, its marker and its content follows. Each needs the owner-ok label. In one PR, the check would refuse the new marker, because the folder's line is not on `main` yet.
+- The list itself marks which of its names a marker exempts, so the repository still holds no name. Inside a folder with a marker, the check still refuses every other name on the list, in file contents and in the names of files and folders. The check learns this in a PR of its own, before the first folder's line is added to the allowlist. After that PR merges, the owner marks the established system's name in the list.
+- So an adapter's folder comes in two PRs, in this order. First, a PR adds only the folder's line to the allowlist, with the file's header brought up to date, and with no marker and no text that names the established system. After it merges, the PR that adds the folder, its marker and its content follows. Each needs the owner-ok label. In one PR, the check would refuse the new marker, because the folder's line is not on `main` yet.
 - Outside its folder, an adapter has only a neutral id, and its folder is named by that id. The import operations are generic: they take an adapter id. The server reads the import adapter's display name and texts from its folder at runtime and serves them through the API. So no protected name reaches `openapi.json`, the client, `packages/i18n`, `docs/system` or a changeset.
 - Both PRs that add an adapter use neutral words in their titles, bodies, branch names, commits and changesets, because a squash merge copies the title and body into `main`.
 - An adapter's sample data is hand-written from the other system's public API documentation, with made-up companies, people and numbers. It is never recorded from a real account.

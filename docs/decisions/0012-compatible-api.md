@@ -17,8 +17,9 @@ Many companies and their accountants use programs that talk to the established S
 - From 2e on, each slice that adds an operation the established API also has adds its compatible endpoint in the same PR.
 - The two surfaces over one registry, with a compatible endpoint in each slice, are the starting design. The owner may change it.
 - The compatible API is an adapter. Its code lives in one folder, named by a neutral id, and its one docs page lives in that folder. That folder is the second exception to the names rule ([decision 11](0011-names-policy.md)): inside it, the adapter may name the established system.
+- Before the folder, the names check learns that a marker exempts only the established system's name ([decision 11](0011-names-policy.md)).
 - The folder comes in two PRs, in this order, because the names check reads the marker allowlist from `main` ([decision 11](0011-names-policy.md)):
-  1. A PR adds only the folder's line to the marker allowlist. It has no marker and no text that names the established system.
+  1. A PR adds only the folder's line to the marker allowlist, with the file's header brought up to date. It has no marker and no text that names the established system.
   2. After that PR merges, the slice's PR adds the folder, its `.protected-name-ok` marker and its content, the docs page included.
 
   Both PRs change an owner path, so each needs the owner's owner-ok label. In one PR, the new marker would fail the names check, because its line is not on `main` yet.
