@@ -120,7 +120,7 @@ Every control is a radio group with `aria-checked`; colour swatches have `aria-l
 ## The style builder (company admins)
 
 `Inställningar > Företagets stil`. Left: the same controls plus two builder-only controls, `Egen` theme colour (hue and lightness) and `Text på temafärg` (Auto, Ljus, Mörk). Right: a live preview in tabs, scoped to the draft so the rest of the app keeps the user's own look:
-- **Vyer:** a small shell with menu, a voucher list with statuses and totals, a voucher entry card and a chart.
+- **Vyer:** a small shell with menu, a supplier invoice list with statuses and totals, a voucher entry card and a chart.
 - **Komponenter:** buttons, fields (normal, error, locked), checkbox, switch, select, badges, the three failure kinds, a dialog.
 
 Under the preview, **Kontrast** lists 15 pairs with sample, ratio and `Klarar` / `Klarar inte`.
