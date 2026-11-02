@@ -15,24 +15,32 @@ import { guardedRelations } from "../../db/table-guard.ts";
 /** The app's privileges on each table: SELECT, and only the writes each table needs. */
 const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "audit.history": ["SELECT"],
+  "ledger.accounts": ["DELETE", "INSERT", "SELECT", "UPDATE"],
   "ledger.automatic_locks": ["SELECT", "UPDATE"],
   "ledger.companies": ["INSERT", "SELECT", "UPDATE"],
   "ledger.fiscal_years": ["INSERT", "SELECT", "UPDATE"],
   "ledger.period_locks": ["INSERT", "SELECT", "UPDATE"],
   "ledger.periods": ["INSERT", "SELECT", "UPDATE"],
   "ledger.reader_roles": [],
+  "ledger.void_ranges": ["SELECT"],
+  "ledger.voucher_counters": ["SELECT"],
+  "ledger.voucher_series": ["DELETE", "INSERT", "SELECT", "UPDATE"],
   "meta.schema_migrations": [],
 };
 
 /** A reader's privileges: SELECT on each company table. */
 const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "audit.history": ["SELECT"],
+  "ledger.accounts": ["SELECT"],
   "ledger.automatic_locks": ["SELECT"],
   "ledger.companies": ["SELECT"],
   "ledger.fiscal_years": ["SELECT"],
   "ledger.period_locks": ["SELECT"],
   "ledger.periods": ["SELECT"],
   "ledger.reader_roles": ["SELECT"],
+  "ledger.void_ranges": ["SELECT"],
+  "ledger.voucher_counters": ["SELECT"],
+  "ledger.voucher_series": ["SELECT"],
   "meta.schema_migrations": [],
 };
 

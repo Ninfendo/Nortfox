@@ -2,7 +2,7 @@
 
 The ledger law lives here, in PostgreSQL itself ([decision 2](../docs/decisions/0002-ledger-law-in-postgresql.md)). The server's role cannot break it: the rules are constraints, triggers and row level security, and the app role cannot change them ([decision 9](../docs/decisions/0009-company-isolation-and-database-roles.md)).
 
-This version covers the foundation (the roles, the companies, row level security, the refusals and the behandlingshistorik) and the fiscal years, their periods and the period lock. The accounts, the voucher series and the vouchers come in the next migrations.
+This version covers the foundation (the roles, the companies, row level security, the refusals and the behandlingshistorik), the fiscal years, their periods and the period lock, and the accounts, the voucher series, their counters and the void ranges. The vouchers come in the next migration.
 
 ## Files
 
@@ -107,19 +107,43 @@ The functions:
 
 The app may call the first five. Row level security keeps each one to the transaction's company. The actor's kind is `user`, `system` or `integration`, and a user needs its id; anything else is an error (`22023`), not a refusal.
 
+## Accounts
+
+`ledger.accounts` holds each fiscal year's accounts: the `number`, the name `description`, and `active` (true unless told otherwise). A number is unique in its year (a unique key), and an account's number, year and id never change (`immutable_field`). `modified_at` moves with every accepted change. Only the trigger writes it: one given on insert is refused (`immutable_field`), and one written by an update too (`internal_only`). A refused change moves nothing. The app may insert, change and remove accounts. An unused account can be removed, and the behandlingshistorik keeps its last state. An account that holds rows cannot be removed (`account_has_rows`); `ledger.account_voucher_count` counts them, and it counts none until the vouchers come.
+
+## Voucher series
+
+`ledger.voucher_series` holds each fiscal year's series: the `code`, the name `description`, `manual` and `is_closing`. `manual` has no default, so whoever makes a series states it. `is_closing` is false unless told otherwise.
+
+- The code is 1 to 10 of `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ`, written out rather than as a range, so no collation can widen the set (`series_code_invalid`). It may start with a digit.
+- The code is unique in its year (`series_code_duplicate`). The trigger locks the year's row while it checks, so two series made at once in one year are checked one after the other. It never changes (`series_code_changed`), and neither do the series' year and id (`immutable_field`).
+- The name is at most 200 characters, counted as characters, and may be empty (`value_too_long`).
+- At most one series of a year is the closing series (a partial unique index). The mark moves when the old closing series gives it up first. The period lock does not apply to the closing series.
+- `modified_at` moves with every accepted change, as for accounts. A booking never moves it, because the counter is a table of its own.
+- Check constraints and the unique key hold the code's form, the name's length and the code's uniqueness also when the trigger is off.
+- The app may insert, change and remove series. An unused series can be removed, and its counter goes with it. A series that a void range names cannot (`ON DELETE RESTRICT`, `23001`).
+
+## Counters
+
+`ledger.voucher_counters` holds each series' `next_number`, one row per series. A trigger makes it at 1 with its series, so every series starts at 1 in every fiscal year. Only the database's own triggers write it (the internal-write rule below): a statement that a caller sends is refused (`internal_only`), and the app has no privilege at all. A trigger may change the next number only with proof in the same transaction, a void range recorded in it that starts at the old next number and ends just before the new one. Anything else is refused (`counter_move`). A counter is removed only by the cascade when its series goes. The migration for vouchers adds the booking that moves it up by one and the deletion of the last voucher that moves it back by one.
+
+## Void ranges
+
+`ledger.void_ranges` holds a recorded skip in a series: `fiscal_year_id` and `series_code`, `first_number` and `last_number`, and the `reason`, which may not be empty. Only the owner records one, as the restore tool will ([decision 7](../docs/decisions/0007-self-hosting-and-backups.md)); the app and the readers have no privilege. A range starts at the series' counter (`void_range_not_at_counter`), so it never leaves a gap and never covers a number that was given out. The trigger locks the counter while it checks, so a booking or another range waits and then sees the counter this one left. The counter then moves to `last_number + 1`. The trigger writes `created_at`, `created_by`, `created_by_kind` and `created_xact` from the transaction's actor, and refuses them when they are given. No role changes or deletes a void range, the owner neither (`append_only`). Its history row is written like any other.
+
 ## The behandlingshistorik
 
 `audit.history` gets one row per inserted, updated or deleted row of every company table, in the same transaction: the table, the row's id, the operation (`INSERT`, `UPDATE` or `DELETE`), the whole old and new row as JSON, the actor and its kind, the transaction id and the time to the microsecond. No role changes or deletes a history row, the owner neither, and only the trigger writes one.
 
 ## The internal-write rule
 
-Some rows may only be written by the database's own triggers, such as the history. A trigger refuses such a write when `pg_trigger_depth()` is 1, the depth of a statement that a caller sent. The app cannot reach depth 2 on its own: it can make no trigger and no function.
+Some rows may only be written by the database's own triggers, such as the history and the counters. A trigger refuses such a write when `pg_trigger_depth()` is 1, the depth of a statement that a caller sent. The app cannot reach depth 2 on its own: it can make no trigger and no function.
 
 ## Refusals
 
 Each refusal has its own SQLSTATE in the class `NF`. The error's message is the reason, and its detail is the facts, as JSON. Amounts in the facts are strings of öre. `apps/server/src/db/refusals.ts` holds the same list and reads an error into its reason and facts, and a test fails when the two lists differ. Later slices answer each reason with the established system's message.
 
-Migration 0001 raises `immutable_field`, `actor_missing`, `append_only` and `internal_only`. Migration 0002 raises `period_locked_manual`, `period_locked_automatic`, `period_outside_fiscal_year` and `fiscal_year_strands_rows`, and `immutable_field` for the year number, the lock rows' stamps, scope and user, and the ids. The others are listed now, so that their codes stay fixed. The migrations for accounts, series and vouchers raise them.
+Migration 0001 raises `immutable_field`, `actor_missing`, `append_only` and `internal_only`. Migration 0002 raises `period_locked_manual`, `period_locked_automatic`, `period_outside_fiscal_year` and `fiscal_year_strands_rows`, and `immutable_field` for the year number, the lock rows' stamps, scope and user, and the ids. Migration 0003 raises `series_code_invalid`, `series_code_duplicate`, `series_code_changed`, `value_too_long` (a series' name), `counter_move` and `void_range_not_at_counter`; `immutable_field`, `internal_only` and `append_only` for the accounts, the series, the counters and the void ranges; and `account_has_rows`, once the vouchers are there. The others are listed now, so that their codes stay fixed. The migration for vouchers raises them.
 
 | Code | Reason | Facts |
 | --- | --- | --- |

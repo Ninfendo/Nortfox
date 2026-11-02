@@ -54,12 +54,16 @@ describe("the table guard", () => {
   it("lists every table and view, and keeps exactly the pinned exceptions", async () => {
     expect(await guardedRelations(owner)).toEqual([
       "audit.history",
+      "ledger.accounts",
       "ledger.automatic_locks",
       "ledger.companies",
       "ledger.fiscal_years",
       "ledger.period_locks",
       "ledger.periods",
       "ledger.reader_roles",
+      "ledger.void_ranges",
+      "ledger.voucher_counters",
+      "ledger.voucher_series",
       "meta.schema_migrations",
     ]);
     expect(Object.fromEntries([...GUARD_EXCEPTIONS].map(([table, exception]) => [table, exception.kind]))).toEqual({

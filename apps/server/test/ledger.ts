@@ -170,3 +170,153 @@ export async function setAutomaticLock(
     return row;
   });
 }
+
+/** An account as the database holds it, with its modified time as text. */
+export interface Account {
+  readonly id: string;
+  readonly company_id: string;
+  readonly fiscal_year_id: string;
+  readonly number: number;
+  readonly description: string;
+  readonly active: boolean;
+  readonly modified_at: string;
+}
+
+export const ACCOUNT_COLUMNS = "id, company_id, fiscal_year_id, number, description, active, modified_at::text AS modified_at";
+
+export interface NewAccount {
+  readonly number: number;
+  readonly description?: string;
+  readonly active?: boolean;
+}
+
+/** Adds an account to a fiscal year as `client`, and gives its row. */
+export async function addAccount(client: Client, company: string, year: string, account: NewAccount, who: Actor = someUser()): Promise<Account> {
+  return inTransaction(client, { company, ...who }, async () => {
+    const found = await client.query<Account>(
+      `INSERT INTO ledger.accounts (company_id, fiscal_year_id, number, description, active)
+       VALUES ($1, $2, $3, $4, $5) RETURNING ${ACCOUNT_COLUMNS}`,
+      [company, year, account.number, account.description ?? "Kassa", account.active ?? true],
+    );
+    const [row] = found.rows;
+    if (row === undefined) {
+      throw new Error("The account was not added.");
+    }
+    return row;
+  });
+}
+
+/** A voucher series as the database holds it, with its modified time as text. */
+export interface VoucherSeries {
+  readonly id: string;
+  readonly company_id: string;
+  readonly fiscal_year_id: string;
+  readonly code: string;
+  readonly description: string;
+  readonly manual: boolean;
+  readonly is_closing: boolean;
+  readonly modified_at: string;
+}
+
+export const SERIES_COLUMNS = "id, company_id, fiscal_year_id, code, description, manual, is_closing, modified_at::text AS modified_at";
+
+export interface NewSeries {
+  readonly code: string;
+  readonly description?: string;
+  readonly manual?: boolean;
+  readonly isClosing?: boolean;
+}
+
+/** Adds a voucher series to a fiscal year as `client`, and gives its row. */
+export async function addSeries(client: Client, company: string, year: string, series: NewSeries, who: Actor = someUser()): Promise<VoucherSeries> {
+  return inTransaction(client, { company, ...who }, async () => {
+    const found = await client.query<VoucherSeries>(
+      `INSERT INTO ledger.voucher_series (company_id, fiscal_year_id, code, description, manual, is_closing)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${SERIES_COLUMNS}`,
+      [company, year, series.code, series.description ?? "Testserie", series.manual ?? true, series.isClosing ?? false],
+    );
+    const [row] = found.rows;
+    if (row === undefined) {
+      throw new Error("The voucher series was not added.");
+    }
+    return row;
+  });
+}
+
+/** A series' counter as the database holds it. */
+export interface VoucherCounter {
+  readonly id: string;
+  readonly company_id: string;
+  readonly series_id: string;
+  readonly next_number: number;
+}
+
+export const COUNTER_COLUMNS = "id, company_id, series_id, next_number";
+
+/** The counter of a series, read as `client` in `company`, or undefined when it has none. */
+export async function counterOf(client: Client, company: string, series: string): Promise<VoucherCounter | undefined> {
+  return inTransaction(client, { company }, async () => {
+    const found = await client.query<VoucherCounter>(`SELECT ${COUNTER_COLUMNS} FROM ledger.voucher_counters WHERE series_id = $1`, [series]);
+    return found.rows[0];
+  });
+}
+
+/** A void range as the database holds it, with its time and its transaction as text. */
+export interface VoidRange {
+  readonly id: string;
+  readonly company_id: string;
+  readonly fiscal_year_id: string;
+  readonly series_code: string;
+  readonly first_number: number;
+  readonly last_number: number;
+  readonly reason: string;
+  readonly created_at: string;
+  readonly created_by: string;
+  readonly created_by_kind: string;
+  readonly created_xact: string;
+}
+
+export const VOID_RANGE_COLUMNS =
+  "id, company_id, fiscal_year_id, series_code, first_number, last_number, reason, created_at::text AS created_at, created_by, created_by_kind, created_xact::text AS created_xact";
+
+/** The internal system user, made up for one test: a restore records its void ranges as this kind of actor. */
+export function someSystemUser(): Actor {
+  return { actor: randomUUID(), kind: "system" };
+}
+
+export interface NewVoidRange {
+  readonly year: string;
+  readonly code: string;
+  readonly first: number;
+  readonly last: number;
+  readonly reason?: string;
+}
+
+/** The statement that records a void range, as the restore tool will run it as the owner. */
+export const INSERT_VOID_RANGE = `INSERT INTO ledger.void_ranges (company_id, fiscal_year_id, series_code, first_number, last_number, reason)
+  VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${VOID_RANGE_COLUMNS}`;
+
+/** Records a void range as `owner`, in its own transaction, and gives its row. */
+export async function recordVoidRange(owner: Client, company: string, range: NewVoidRange, who: Actor = someSystemUser()): Promise<VoidRange> {
+  return inTransaction(owner, { company, ...who }, async () => {
+    const found = await owner.query<VoidRange>(INSERT_VOID_RANGE, [
+      company,
+      range.year,
+      range.code,
+      range.first,
+      range.last,
+      range.reason ?? "Återläsning av säkerhetskopia",
+    ]);
+    const [row] = found.rows;
+    if (row === undefined) {
+      throw new Error("The void range was not recorded.");
+    }
+    return row;
+  });
+}
+
+/** Whether the time `later` comes after `earlier`, both as timestamptz text. */
+export async function isAfter(client: Client, later: string, earlier: string): Promise<boolean> {
+  const found = await client.query<{ after: boolean }>("SELECT $1::timestamptz > $2::timestamptz AS after", [later, earlier]);
+  return found.rows[0]?.after === true;
+}

@@ -18,7 +18,7 @@ import {
   type Role,
   type TestDatabase,
 } from "../../../test/database.ts";
-import { ROW_INSERTS, companyTables, fillEveryTable, type Scenario } from "../../../test/every-table.ts";
+import { ROW_INSERTS, TRIGGER_ONLY_INSERTS, companyTables, fillEveryTable, type Scenario } from "../../../test/every-table.ts";
 
 describe("company isolation", () => {
   let db: TestDatabase;
@@ -114,9 +114,10 @@ describe("company isolation", () => {
         const insert = ROW_INSERTS[table]?.(other, scenario);
         expect(insert, `a row for ${table} in test/every-table.ts`).toBeDefined();
         const inserted = write(role, scenario.companyB, insert?.sql ?? "", insert?.params ?? []);
-        // Only the database's own triggers write the history, so its trigger refuses the owner first.
-        await (role === "owner" && table === "audit.history"
-          ? expectRefusal(inserted, "internal_only", { table, field: null })
+        // Only the database's own triggers write the history and the counters, so their triggers refuse the owner first.
+        const internal = TRIGGER_ONLY_INSERTS[table];
+        await (role === "owner" && internal !== undefined
+          ? expectRefusal(inserted, "internal_only", internal)
           : expectError(inserted, INSUFFICIENT_PRIVILEGE));
       }
     }
