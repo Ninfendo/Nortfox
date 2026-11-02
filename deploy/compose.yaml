@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# NortFox, self-hosted (docs/decisions/0007-self-hosting-and-backups.md):
+# PostgreSQL with pgBackRest, and the one-shot migrate step. The server and
+# Caddy come with later slices. deploy/README.md says how to set it up, take
+# backups and restore one.
+#
+# Before the first start: the secret files in deploy/secrets/, and the
+# off-site repository's type and path in NORTFOX_REPO2_TYPE and
+# NORTFOX_REPO2_PATH, for example in deploy/.env. The stack does not start
+# without them.
+#
+# scripts/guards/deploy.ts pins the backup settings and the migrate step in
+# this file, and deploy/backup-test/pitr.sh checks them on a running stack.
+# The guard reads the file line by line, so it keeps to plain block YAML: one
+# key per line, two spaces a level, no anchor, alias or merge key.
+
+name: nortfox
+
+services:
+  postgres:
+    build:
+      context: ..
+      dockerfile: deploy/postgres/Dockerfile
+    # WAL archiving to both pgBackRest repositories. PostgreSQL archives the
+    # WAL in whole segments, so archive_timeout closes the current segment
+    # after at most 60 seconds of writes.
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=pgbackrest --stanza=nortfox archive-push %p
+      - -c
+      - archive_timeout=60
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+      # repo2, the off-site repository: its type and its path. Its other
+      # options, such as a bucket and its keys, are in the repo2-options secret.
+      PGBACKREST_REPO2_TYPE: ${NORTFOX_REPO2_TYPE:?Set NORTFOX_REPO2_TYPE to the type of the off-site repository, as deploy/README.md says.}
+      PGBACKREST_REPO2_PATH: ${NORTFOX_REPO2_PATH:?Set NORTFOX_REPO2_PATH to the path of the off-site repository, as deploy/README.md says.}
+    secrets:
+      - postgres-password
+      - owner-password
+      - app-password
+      - source: repo2-options
+        target: /etc/pgbackrest/conf.d/repo2.conf
+    volumes:
+      - data:/var/lib/postgresql
+      - backups:/var/lib/pgbackrest
+    # Over TCP: on the first start, the image's setup server listens on its
+    # socket only. So the service is healthy only once the roles, the
+    # database and the stanza are made.
+    healthcheck:
+      test: ["CMD", "pg_isready", "--host", "127.0.0.1", "--username", "postgres", "--dbname", "nortfox"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5m
+      start_interval: 2s
+    stop_grace_period: 2m
+    restart: unless-stopped
+
+  # The migrations, as the owner role, once, after PostgreSQL is healthy.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/server/Dockerfile
+    command: ["node", "apps/server/dist/db/migrate-main.js"]
+    environment:
+      NORTFOX_DATABASE_URL: postgres://nortfox_owner@postgres:5432/nortfox
+      NORTFOX_DATABASE_PASSWORD_FILE: /run/secrets/owner-password
+    secrets:
+      - owner-password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+secrets:
+  # The superuser, postgres. Only the first start and the operator use it.
+  postgres-password:
+    file: ./secrets/postgres-password
+  # nortfox_owner: the migrations, and later the restore tool.
+  owner-password:
+    file: ./secrets/owner-password
+  # nortfox_app: the server, from slice 2b on.
+  app-password:
+    file: ./secrets/app-password
+  # The off-site repository's other options, in pgBackRest's own form.
+  repo2-options:
+    file: ./secrets/repo2.conf
+
+volumes:
+  # PostgreSQL's data.
+  data:
+  # repo1, the local pgBackRest repository.
+  backups:

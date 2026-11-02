@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { types } from "pg";
+import { Client, types, type ClientConfig } from "pg";
 import { describe, expect, it } from "vitest";
 import { configFromEnvironment, connectionConfig, typeParsers } from "./connect.ts";
 
 const { INT8, NUMERIC, TEXT } = types.builtins;
+
+/** What the driver connects with, from a config: the role, the host, the port, the database and the password. */
+function driverSees(config: ClientConfig): unknown[] {
+  const client = new Client(config);
+  return [client.user, client.host, client.port, client.database, client.password];
+}
 
 describe("typeParsers", () => {
   it("reads an int8 as a bigint, also past 2^53", () => {
@@ -22,16 +28,34 @@ describe("typeParsers", () => {
 });
 
 describe("connectionConfig", () => {
-  it("passes the address on, with the password and the type parsers", () => {
-    expect(connectionConfig("postgres://nortfox_app@db:5432/nortfox", "secret")).toEqual({
-      connectionString: "postgres://nortfox_app@db:5432/nortfox",
-      password: "secret",
-      types: typeParsers,
-    });
+  it("passes the address on with the type parsers, and without a password when none is given", () => {
     expect(connectionConfig("postgresql://nortfox_app@db/nortfox")).toEqual({
       connectionString: "postgresql://nortfox_app@db/nortfox",
       types: typeParsers,
     });
+    expect(driverSees(connectionConfig("postgresql://nortfox_app@db/nortfox"))).toEqual(["nortfox_app", "db", 5432, "nortfox", null]);
+  });
+
+  it("gives the driver the password, which the address's own empty password never takes the place of", () => {
+    const config = connectionConfig("postgres://nortfox_app@db:5433/nortfox", "secret");
+    expect(config.types).toBe(typeParsers);
+    expect(driverSees(config)).toEqual(["nortfox_app", "db", 5433, "nortfox", "secret"]);
+  });
+
+  it.each([["s%41cr:t@/é ?#&="], ["%"], [" leading and trailing "], ["back\\slash"]])("gives the driver the password %j exactly", (password) => {
+    expect(driverSees(connectionConfig("postgres://nortfox_owner@postgres:5432/nortfox", password))).toEqual([
+      "nortfox_owner",
+      "postgres",
+      5432,
+      "nortfox",
+      password,
+    ]);
+  });
+
+  it("refuses a password for an address without a host, which could not carry it", () => {
+    expect(() => connectionConfig("postgres:///nortfox", "secret")).toThrow(
+      "The database address has no host, so the driver would get no password. Write it as postgres://user@host:port/database.",
+    );
   });
 
   it("refuses an address with a password in it", () => {
@@ -59,14 +83,16 @@ describe("configFromEnvironment", () => {
   const url = "postgres://nortfox_owner@db/nortfox";
 
   it("reads the address and the password file, without the line break at its end", () => {
-    expect(configFromEnvironment({ NORTFOX_DATABASE_URL: url, NORTFOX_DATABASE_PASSWORD_FILE: "/run/secrets/db" }, readFile)).toEqual({
-      connectionString: url,
-      password: "secret",
-      types: typeParsers,
-    });
-    expect(
-      configFromEnvironment({ NORTFOX_DATABASE_URL: url, NORTFOX_DATABASE_PASSWORD_FILE: "/run/secrets/crlf" }, readFile).password,
-    ).toBe("secret");
+    const config = configFromEnvironment({ NORTFOX_DATABASE_URL: url, NORTFOX_DATABASE_PASSWORD_FILE: "/run/secrets/db" }, readFile);
+    expect(config.types).toBe(typeParsers);
+    expect(driverSees(config)).toEqual(["nortfox_owner", "db", 5432, "nortfox", "secret"]);
+    expect(driverSees(configFromEnvironment({ NORTFOX_DATABASE_URL: url, NORTFOX_DATABASE_PASSWORD_FILE: "/run/secrets/crlf" }, readFile))).toEqual([
+      "nortfox_owner",
+      "db",
+      5432,
+      "nortfox",
+      "secret",
+    ]);
   });
 
   it.each([

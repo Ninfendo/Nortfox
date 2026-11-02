@@ -2,7 +2,7 @@
 
 The ledger law lives here, in PostgreSQL itself ([decision 2](../docs/decisions/0002-ledger-law-in-postgresql.md)). The server's role cannot break it: the rules are constraints, triggers and row level security, and the app role cannot change them ([decision 9](../docs/decisions/0009-company-isolation-and-database-roles.md)).
 
-This version covers the foundation (the roles, the companies, row level security, the refusals and the behandlingshistorik), the fiscal years, their periods and the period lock, the accounts, the voucher series, their counters and the void ranges, and the vouchers with their rows, the reversing link and the record of deleted vouchers.
+It holds the foundation (the roles, the companies, row level security, the refusals and the behandlingshistorik), the fiscal years, their periods and the period lock, the accounts, the voucher series, their counters and the void ranges, and the vouchers with their rows, the reversing link and the record of deleted vouchers. [deploy/README.md](../deploy/README.md) says how an install runs it and backs it up.
 
 ## Files
 
@@ -13,6 +13,15 @@ This version covers the foundation (the roles, the companies, row level security
 
 The runner is `apps/server/src/db/migrate.ts`. The one-shot step that runs it is `apps/server/src/db/migrate-main.ts`.
 
+## In an install
+
+The compose file (`deploy/compose.yaml`) sets the database up in two steps:
+
+1. On the first start, PostgreSQL's image runs `deploy/postgres/initdb/10-roles.sh` as the superuser. It runs `roles.sql`, sets the passwords of `nortfox_owner` and `nortfox_app` from the compose secrets, and makes the database `nortfox`, owned by `nortfox_owner`. Then `20-stanza.sh` sets up the backups.
+2. The migrate step runs the runner as `nortfox_owner`, once PostgreSQL is healthy, and stops. It reads the address from `NORTFOX_DATABASE_URL`, which holds no password, and the password from the file that `NORTFOX_DATABASE_PASSWORD_FILE` names. The server's image carries the migrations of its own commit, so a deploy applies exactly those.
+
+The restore test (`pnpm backup:test`) checks both on a running stack: every migration applied by `nortfox_owner`, and every schema, table, index and sequence in `ledger`, `audit` and `meta` owned by it.
+
 ## Roles
 
 | Role | What it may do |
@@ -21,7 +30,7 @@ The runner is `apps/server/src/db/migrate.ts`. The one-shot step that runs it is
 | `nortfox_app` | The server's role. Reads and writes rows, and only the writes each table needs. It cannot change the schema, disable a trigger, bypass row level security, make a temporary table, or become another role. |
 | `nortfox_reader` | A group, never a login. Each reader role is a login role that is a member of it, bound to one company in `ledger.reader_roles`. A reader only reads. |
 
-No role here is a superuser, or may make databases or roles, replicate, or bypass row level security. Passwords are not in `roles.sql`.
+No role here is a superuser, or may make databases or roles, replicate, or bypass row level security. Passwords are not in `roles.sql`: an install's first start sets them from its secret files.
 
 A superuser makes a reader role, and the owner binds it to one company:
 

@@ -104,9 +104,26 @@ jobs:
           advanced-security: false
           annotations: true
 
+  # The point-in-time restore test: the compose file of an install, built and
+  # run with Docker on the runner, then restored to a moment between two
+  # writes from each pgBackRest repository (deploy/backup-test/pitr.sh). It
+  # needs no Node, no secret and no write scope.
+  backup:
+    name: backup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read # check out the code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point-in-time restore from both repositories
+        run: bash deploy/backup-test/pitr.sh
+
   ci-ok:
     name: CI OK
-    needs: [build, workflows]
+    needs: [build, workflows, backup]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

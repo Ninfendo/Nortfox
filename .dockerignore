@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# What the image builds leave out of their context, the repository root
+# (deploy/server/Dockerfile and deploy/postgres/Dockerfile). Each build
+# installs its own dependencies, so no node_modules, build output or secret
+# goes in.
+
+.git
+**/node_modules
+**/dist
+**/coverage
+**/.turbo
+**/*.tsbuildinfo
+deploy/secrets
+.env
+.env.*

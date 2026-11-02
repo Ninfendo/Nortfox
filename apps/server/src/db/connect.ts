@@ -6,7 +6,10 @@
 //   are whole öre in bigint columns (docs/decisions/0005-money.md). A numeric
 //   stays the string the driver gives.
 // - The address carries no password. The password comes from a file, such as
-//   a compose secret, so it is in no URL and in no environment variable.
+//   a compose secret, so it is in no URL that anyone writes and in no
+//   environment variable. The driver reads a connection string's fields over
+//   every other field of its config, the password among them, so the password
+//   reaches the driver inside the connection string, in memory only.
 
 import { readFileSync } from "node:fs";
 import { types, type ClientConfig, type CustomTypesConfig } from "pg";
@@ -41,7 +44,15 @@ export function connectionConfig(url: string, password?: string): ClientConfig {
   if (parsed.password !== "") {
     throw new Error("The database address holds a password. Put the password in the file that NORTFOX_DATABASE_PASSWORD_FILE names.");
   }
-  return { connectionString: url, ...(password === undefined ? {} : { password }), types: typeParsers };
+  if (password === undefined) {
+    return { connectionString: url, types: typeParsers };
+  }
+  // The driver decodes the password as a URI component, so it is encoded as one.
+  parsed.password = encodeURIComponent(password);
+  if (parsed.password === "") {
+    throw new Error("The database address has no host, so the driver would get no password. Write it as postgres://user@host:port/database.");
+  }
+  return { connectionString: parsed.toString(), types: typeParsers };
 }
 
 /** The environment, as process.env gives it. */

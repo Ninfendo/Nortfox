@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# The point-in-time restore test (pitr.sh) runs deploy/compose.yaml with this
+# file on top. It gives the test a project of its own, the test secrets from
+# the folder that pitr.sh makes, and a second local volume in place of a real
+# off-site repository. It sets nothing else, so the test runs the install's
+# own settings (scripts/guards/deploy.ts checks it).
+
+name: nortfox-backup-test
+
+services:
+  postgres:
+    volumes:
+      - offsite:/var/lib/pgbackrest-offsite
+
+secrets:
+  postgres-password:
+    file: ${NORTFOX_TEST_SECRETS:?pitr.sh sets NORTFOX_TEST_SECRETS}/postgres-password
+  owner-password:
+    file: ${NORTFOX_TEST_SECRETS:?pitr.sh sets NORTFOX_TEST_SECRETS}/owner-password
+  app-password:
+    file: ${NORTFOX_TEST_SECRETS:?pitr.sh sets NORTFOX_TEST_SECRETS}/app-password
+  repo2-options:
+    file: ${NORTFOX_TEST_SECRETS:?pitr.sh sets NORTFOX_TEST_SECRETS}/repo2.conf
+
+volumes:
+  offsite:

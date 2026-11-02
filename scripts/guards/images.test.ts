@@ -13,11 +13,13 @@ const OTHER = "41a369edc91d9bdd7a58be6bc71ea0f8f7a3f49e82818a9f0829021ea7840b7c"
 const tracked = nulList(gitText(ROOT, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]));
 
 describe("the repository", () => {
-  it("pins every container image by its digest, and runs one PostgreSQL everywhere", () => {
+  it("pins every container image by its digest, the Dockerfiles too, and runs one PostgreSQL everywhere", () => {
     const uses = tracked.filter(readsImages).flatMap((path) => imagesIn(path, readFileSync(`${ROOT}/${path}`, "utf8")));
     expect(imageProblems(uses)).toEqual([]);
     const postgres = uses.filter((use) => isPostgres(use.image)).map((use) => use.path);
-    expect(postgres).toEqual(expect.arrayContaining([".github/workflows/ci.yml", "deploy/test-database/compose.yaml"]));
+    expect(postgres).toEqual(expect.arrayContaining([".github/workflows/ci.yml", "deploy/test-database/compose.yaml", "deploy/postgres/Dockerfile"]));
+    const dockerfiles = uses.filter((use) => use.path.endsWith("Dockerfile")).map((use) => use.path);
+    expect(dockerfiles).toEqual(["deploy/postgres/Dockerfile", "deploy/server/Dockerfile", "deploy/server/Dockerfile"]);
   });
 });
 
