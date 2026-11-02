@@ -1,6 +1,6 @@
 # 11. Names policy
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: a second exception, the compatible API adapter, and a marker exempts only the established system's name. Amended again 2026-11-02: the markers and the allowlist need no owner-ok label.
+Status: accepted, 2026-11-01. Amended 2026-11-02: a second exception, the compatible API adapter, and a marker exempts only the established system's name. Amended again 2026-11-02: the markers and the allowlist need no owner-ok label, and agents start the names run on Dependabot's PRs.
 
 ## Context
 
@@ -28,4 +28,5 @@ The repository is public. Its text describes NortFox. The owner keeps a short li
 - Both PRs that add an adapter use neutral words in their titles, bodies, branch names, commits and changesets, because a squash merge copies the title and body into `main`.
 - An adapter's sample data is hand-written from the other system's public API documentation, with made-up companies, people and numbers. It is never recorded from a real account.
 - The check never prints a match. On a PR from the owner's account, it prints only where a match is. A PR from any other account it reads with the list only in a run that the owner's account starts, after the owner's account has approved its head commit, and then it prints only how many matches it found, never where. Otherwise anyone could open a PR with one guess per line and read from the public log which guesses are on the list.
+- On a PR that Dependabot opened from a branch in this repository, an agent starts that run, and no one who knows the list has read the PR first. Its title, body and commit messages hold release notes from other projects. So the count in the log can answer a guess that someone hid in a dependency's release notes. This is an accepted risk: such a guess costs a change merged in a dependency, and Dependabot opens such a PR about once a week per ecosystem ([plan, section 6](../plan.md#the-names-check)).
 - The names check reads each text by what it is. An integrity digest that pnpm writes in `pnpm-lock.yaml` is data: the check decodes it and searches what it decodes to, and does not read its base64 letters as words. This is how a digest is read, not an exception to the names rule. A digest written by hand is a hand edit of the lockfile, and the review reads it.

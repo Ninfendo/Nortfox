@@ -7,7 +7,9 @@
 # the owner, and each of them needs the owner's approving review anyway
 # ("Outside approval"). The owner's review agent reads everything else: the
 # licences, the exceptions to the names rule and the database migrations
-# too. With no owner path, Owner OK passes whenever Names passes.
+# too. With no owner path, no PR needs the label. Owner OK still fails a PR
+# whose changed files GitHub cannot list in full (more than 3000), so that it
+# holds again once a path is back on the list.
 #
 # The owner-ok label and its check stay, so the owner can put paths on this
 # list again. A list that is not empty also names itself, so that a PR that

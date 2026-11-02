@@ -41,7 +41,7 @@ NortFox is an open-source Swedish accounting system. Everything in it works thro
 
 - **CI OK:** every CI job passed.
 - **Names:** the names check found nothing.
-- **Owner OK:** Names passed, and a PR that changes an owner path (`.github/owner-paths.txt`) carries the owner-ok label on its head commit. The list is empty, so Owner OK passes whenever Names passes.
+- **Owner OK:** Names passed, and a PR that changes an owner path (`.github/owner-paths.txt`) carries the owner-ok label on its head commit. The list is empty, so no PR needs the label. Owner OK then asks for nothing beyond Names, as long as GitHub can list all the files the PR changes (at most 3000).
 - **Outside approval:** the PR comes from the owner's account, or the owner's account approved its head commit. A PR comes from the owner's account only when the owner opened it from a branch in this repository or in the owner's own fork.
 - **Review OK:** the owner's review agent passed the PR's head commit.
 
@@ -71,4 +71,6 @@ You review and merge a PR that Dependabot opened from a branch in this repositor
 3. An agent adds a label to the PR, any but owner-ok, and removes it again. That starts a new approval run from the owner's account, and in it Names reads the PR with the list. A re-run does not work on such a PR: it keeps Dependabot's rights, and GitHub gives it no secrets.
 4. When all five checks pass on that head commit, the agent squash-merges the PR. It names that commit in the merge, and writes the commit message itself: Dependabot's title and the PR number as the subject, and an empty body. For example: `gh pr merge <number> --squash --match-head-commit <sha> --subject "<title> (#<number>)" --body ""`. Dependabot's body holds release notes from other projects, with their issue numbers and their authors' accounts, and none of that may reach `main`. The `names-main` job in `ci.yml` checks the message after the merge.
 
-Do nothing else to such a PR. Never push to its branch, and never edit its title, body or base: that starts a run, and the merge message is set in the merge, not in the PR. When Dependabot pushes a new commit, the review starts again at step 1. When a check still fails after step 3, leave the PR as it is: Dependabot or the owner handles it.
+Branch protection merges a PR only when it is up to date with `main`, so GitHub refuses the merge of a PR that is behind, even with all five checks green. Dependabot brings its PR up to date by itself only when it has a conflict. So when the PR is behind `main`, comment `@dependabot rebase` on it. Do that before step 1 when you can, so the review is not done twice. A comment starts no approval run and no CI run. Dependabot then pushes a new commit.
+
+Do nothing else to such a PR but that comment. Never push to its branch, never use Update branch, which is a push too, and never edit its title, body or base: each of these starts a run, and the merge message is set in the merge, not in the PR. When Dependabot pushes a new commit, the review starts again at step 1. When a check still fails after step 3, leave the PR as it is: Dependabot or the owner handles it.
