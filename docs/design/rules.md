@@ -33,7 +33,7 @@ Format with `Intl.NumberFormat('sv-SE')`. The API always sends and receives amou
 - **Density** is a per-user setting: *Kompakt* (32 px rows, the default) or *Standard* (40 px). Use `--row-h`; never hard-code a row height.
 - **Column order:** identifier (number), date, text, dimensions (cost centre, project), amounts, status, row actions.
 - **Amount columns:** header and cells right-aligned, tabular digits, Swedish format, no currency symbol when all values are SEK. Debit and credit are separate columns. An empty value is an empty cell, never `0,00` and never a dash.
-- **Sorting:** click the header; one column at a time; the arrow shows direction; `aria-sort` on the `th`. Every list declares a default sort (vouchers: date descending, then number). Sorting never moves the totals row.
+- **Sorting:** click the header; one column at a time; the arrow shows direction; `aria-sort` on the `th`. Every list declares a default sort (vouchers: voucher number ascending, per series, so B9 comes before B10). Sorting never moves the totals row.
 - **Totals row:** in `tfoot`, `--muted` background, weight 600. The label says what is summed and the count: `Summa, 15 verifikationer`. With an active filter: `Summa för urvalet, 4 verifikationer`. Only sum columns where the sum means something.
 - **Text** truncates with an ellipsis and shows in full on hover (`title`). Amounts and dates never truncate. On narrow screens the table scrolls horizontally inside its card.
 - **Rows** open on click and on Enter (`tabindex="0"`). Selection checkboxes appear only when the list has bulk actions. Secondary row actions go in a row menu at the far right.
@@ -82,7 +82,7 @@ Patterns:
 - **Record level:** a `Låst period` badge with `lock` next to the title, the reason under it, the allowed action as an outline button.
 - **Field level:** the value rendered as text on `--muted` with a `lock` icon. Not a disabled input. The reason is the help text.
 - **Control level** (a setting forced by another setting): the control is replaced by its value plus the reason: `Stilen Lyra har alltid raka hörn.`
-- **Disabled buttons** have their reason visible next to them, not only in a tooltip.
+- **Disabled buttons** follow section 7: `aria-disabled` and still focusable, with the reason as a tooltip on hover and on focus and as the button's accessible description.
 
 ## 5. Empty, loading and error
 
@@ -137,7 +137,7 @@ Variants: primary (`--primary`), secondary (`--secondary`), outline (`--border` 
 | Surface | When | Behaviour | Examples |
 |---|---|---|---|
 | Dialog | A short decision, or 1 to 5 fields, that must be done before going on | Modal, 420 to 640 px, focus trapped, Esc closes | Lås period, Borttagning av verifikation, Nytt räkenskapsår |
-| Side panel | View or edit one row without leaving the list; tools that sit beside the work | Right edge, 420 to 560 px, non-modal; the list stays usable and Up/Down changes row | Voucher from the list, invoice to approve, Utseende, the assistant |
+| Side panel | View or edit one row without leaving the list; tools that sit beside the work | Right edge, 420 to 560 px, non-modal; the list stays usable and Up/Down changes row | Invoice to approve, Underlag, Utseende, the assistant |
 | Full page | Long flows and keyboard-heavy work | Own URL, fixed footer with the primary | Skapa verifikation, Momsrapport, Bankavstämning |
 | Popover | A choice that belongs to a button | Under the button, Esc or click outside closes | Byt företag, Räkenskapsår, filters |
 
@@ -161,7 +161,7 @@ Dialogs never stack. A dialog may open from a side panel. Closing a dialog or si
 | `Esc` | Close dialog, panel or popover |
 | `?` | Show all shortcuts |
 
-Every shortcut is also an API operation behind a visible control; shortcuts are never the only way. The voucher entry keyboard flow is specified in round 2.
+Every shortcut is also an API operation behind a visible control; shortcuts are never the only way. The voucher entry keyboard flow is specified in [screens/vouchers.md](screens/vouchers.md#account-picker-and-keyboard-flow).
 
 ## 10. Copy
 
@@ -173,7 +173,7 @@ Every shortcut is also an API operation behind a visible control; shortcuts are 
 
 | Write | Avoid |
 |---|---|
-| Bokför | OK |
+| Bokför | OK (except in the delete confirmation, which keeps `OK`; see section 7) |
 | Ange ett datum i räkenskapsåret 2026. | Ogiltigt värde. |
 | Perioden är låst. Momsrapporten är inlämnad. | Åtgärden är inte tillåten. |
 | 2026-01-01 till 2026-12-31 | 2026-01-01 (dash) 2026-12-31 |

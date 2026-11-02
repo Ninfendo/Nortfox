@@ -43,7 +43,7 @@ Rules:
 - Items the user's role can't use are hidden from navigation (unlike locked records, a module you have no role for is not content). Opening such a URL directly shows the *you may not* state with the required role.
 - The current section has `aria-current="page"` and the active colours. The menu accent setting chooses subtle (`--sidebar-accent`) or bold (`--sidebar-primary`).
 - Count badges show work waiting for the user, nothing else.
-- The toggle in the top bar collapses the sidebar to icons; labels remain as tooltips and `aria-label`s. Under 1024 px the sidebar becomes an overlay panel (mobile layouts come in round 2).
+- The toggle in the top bar collapses the sidebar to icons; labels remain as tooltips and `aria-label`s. Under 1024 px the sidebar becomes an overlay panel (mobile layouts come later).
 
 ## Company switcher
 
