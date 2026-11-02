@@ -14,14 +14,16 @@ NortFox is an open-source Swedish accounting system. Everything in it works thro
 - The tools, services and open standards that NortFox is built on or connects to may be named, for example PostgreSQL, Hono or BankID.
 - **Never:** personal data, real company data, private e-mail addresses, internal hostnames or IP addresses, or issue numbers of other repositories.
 - **Test data is made up:** fictional companies and people, and the test identity and organisation numbers on [the fixture guard's list](scripts/fixtures/test-values.txt). Nothing is recorded from a real account. A file made by another program has its program record and its metadata rewritten. A file from a third party carries a note with its source and its terms.
-- **The marker file.** A folder that holds a `.protected-name-ok` marker may name one other system, but only the folder on the owner's marker allowlist counts. It is for one import adapter ([decision 11](docs/decisions/0011-names-policy.md)). Never add, move or delete a marker.
+- **The marker file.** A folder that holds a `.protected-name-ok` marker may name the established system, but only a folder on the owner's marker allowlist counts. There are two such folders: the import adapter's and the compatible API adapter's ([decision 11](docs/decisions/0011-names-policy.md)). Nothing else may name the established system. Add, move or delete a marker only in a PR that the owner asked for, and that PR needs the owner-ok label.
 
 ## How you work
 
 - Work in your own git worktree, on your own branch, made from the latest `origin/main`. Never work in the main checkout, and never push to `main`.
 - One slice, one PR. The slices are in section 5 of the plan. If a slice grows, push what is finished and open the next PR for the rest.
-- Everything for a slice is in its PR: the migration, the engine logic, the contract operations, the server module, the screens, the docs that change, the tests, and a changeset for what users will notice.
-- A new feature starts as an operation in `packages/contract`. REST, `openapi.json`, the client and the MCP tool follow from it.
+- Each slice starts from its issue, which starts with the slice's terms. Write the tests first: turn each done-when line into a test, see it fail for the right reason, then build until it passes ([plan, section 6](docs/plan.md#6-how-a-slice-is-built)).
+- Behaviour copies the established system, and the screens use its words. The look and the controls are NortFox's own. Add nothing of your own to a familiar flow ([plan, section 2](docs/plan.md#how-behaviour-is-decided)).
+- Everything for a slice is in its PR: the migration, the engine logic, the contract operations, the server module, the compatible endpoint where there is one, the screens, the docs that change, the tests, and a changeset for what users will notice.
+- A new feature starts as an operation in `packages/contract`. REST, `openapi.json`, the client and the MCP tool follow from it. A compatible endpoint calls the same operation ([decision 12](docs/decisions/0012-compatible-api.md)).
 - No quiet loosening: never lower a coverage floor, switch off a lint rule, add `--passWithNoTests`, or skip a guard.
 - Shell scripts start with `set -euo pipefail`.
 - Before you push, run locally what CI runs. The root `package.json` holds the scripts once the frame (step 1) is in place.

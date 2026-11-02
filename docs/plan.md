@@ -1,6 +1,6 @@
 # The NortFox plan
 
-Status: roadmap, 2026-11-01. The plan changes as the work teaches us. Choices that are hard to undo are written down as [decision records](decisions/).
+Status: roadmap, 2026-11-01, updated 2026-11-02. The plan changes as the work teaches us. Choices that are hard to undo are written down as [decision records](decisions/).
 
 ## 1. What NortFox is
 
@@ -11,19 +11,36 @@ It runs on one small server that the company, or its accountant, controls. Every
 ## 2. Principles
 
 - **Everything through the API.** Every feature is an API operation first. MCP offers the same operations. The web app is one client of the API. A screen is never the only way in.
-- **The law lives in the database.** PostgreSQL itself refuses a change to a booked voucher, a gap in a voucher series that is not a recorded void range, and a voucher where debit and credit differ. Triggers write the behandlingshistorik. Each company sees only its own rows.
-- **Money is exact.** Inside, an amount is whole öre in a `bigint`. On the wire, it is a decimal string with a currency code. Never a JavaScript number.
-- **Contract first.** Each operation is defined once, with its data shapes. The REST paths, the committed `openapi.json`, the generated client and the MCP tools all come from that one list.
+- **The law lives in the database.** PostgreSQL itself refuses a change to a voucher in a locked period, a gap in a voucher series that is not a recorded void range, and a voucher where debit and credit differ. It erases nothing: a change adds rows, and a deleted voucher stays readable. Triggers write the behandlingshistorik. Each company sees only its own rows.
+- **Money is exact.** Inside, an amount is whole öre in a `bigint`. On the native API, it is a decimal string with a currency code. The compatible API takes JSON numbers, as the established API does, and reads each one from its own text, never through a float. Never a JavaScript number.
+- **Contract first.** Each operation is defined once, with its data shapes. The REST paths, the committed `openapi.json`, the generated client, the MCP tools and the compatible API ([decision 12](decisions/0012-compatible-api.md)) all come from that one list.
 - **Self-hosted.** One Docker Compose file. Point-in-time backups from day one. A restore skips voucher numbers, as a recorded void range, rather than give one out twice.
 - **Swedish first.** Bokföringslagen, BAS, SIE and the VAT report are built in. The screens are in Swedish and English.
 - **Strict from the first commit.** Strict types, zero lint warnings, real coverage floors, property tests for the rules, tests against real PostgreSQL. Every guard is proven to fail.
 - **Free software.** AGPL-3.0 for NortFox. MIT for the API client and the API description, so any program can use them.
 
+### How behaviour is decided
+
+Many people who will use NortFox already keep books in the established Swedish accounting system. NortFox should feel familiar to them.
+
+- **The law first, then the established system, then NortFox's own rules.** The law decides where it speaks. The established system decides what the law leaves open. NortFox's own rules come last, where neither says anything.
+- **Behaviour copies the established system:** what happens, the steps and their order, the rules, the names, the messages, the fields and their order, and the keyboard flow. NortFox adds no steps of its own to a familiar flow: no extra warnings, required fields, checklists or helpers.
+- **Where the established way looks unlawful,** NortFox first finds out how the established system stays within the law: its help pages, the reading of the law it relies on, and what it expects the company to do. Where that reading holds, NortFox copies the established way, also when it is lawful only if the company does its part, such as locking its periods in time. NortFox differs only where the law clearly forbids the established way.
+- **The look and the controls are NortFox's own, and modern:** shadcn components on Base UI, the themes, the layout from the [design rules](design/README.md), and controls such as comboboxes, date pickers and a command menu. Where a design file describes behaviour or words that differ from this section, this section wins until the file is updated.
+- **NortFox adds features only where the established system has none.** Every feature has an API operation and an MCP tool, also where the established system has no API for it. The other additions are the ones this plan lists, such as the theme switcher, the style builder, the import from another system's API, the PWA and the AI assistant. An improvement to a familiar flow is the owner's call. It is never built in by default.
+
+### Names
+
+- The screens use the words that users know from the established system. In Swedish, these are its Swedish screen words, such as Verifikationer, Bokför and Leverantörsfakturor. In English, they are its English screen words or, where it has none, the English names of the established API.
+- The API and the code use the English names of the established API, such as Voucher, VoucherSeries, FinancialYear and CostCenter, so that there is one vocabulary. This is a default that the owner may change. The module names in [section 4](#4-server-modules) are working names until each slice's issue fixes them by this rule.
+- The brand names and trademarks of the established system are never used. Generic accounting words are.
+- A word can mean one thing on the screen and another in the law. The screen's Bokför gives a voucher its number, but in the law's sense an entry is bokförd only once its period is locked. So each slice's issue starts with its terms ([section 6](#6-how-a-slice-is-built)).
+
 ## 3. Structure
 
 ```
 apps/
-  server/          Hono on Node, one process: the API under /v1, MCP under /mcp, background jobs
+  server/          Hono on Node, one process: the API under /v1, the compatible API, MCP under /mcp, background jobs
   web/             the React web app, which is also the PWA
 packages/
   engine/          pure accounting logic: checks, VAT, SIE, accruals, bank rules. No I/O.
@@ -71,9 +88,10 @@ Each module lives in `apps/server/src/modules/<name>`. A module owns its tables,
 | appearance | Runtime themes: 8 shadcn styles, 7 base colours, 24 theme colours, chart colours, light and dark, radius, menu colour, menu accent, 26 self-hosted fonts. A style builder for company admins. Values only, never raw CSS. Contrast is checked. |
 | audit | The behandlingshistorik: who changed what, when, and through which client. Written by database triggers. |
 | jobs | Background jobs, the outbox, and webhooks. |
-| files | Attachments (underlag), stored with a hash. A file on a booked voucher cannot be removed. |
+| files | Attachments (underlag), stored with a hash in NortFox's own storage, with optional copies on the company's own cloud drive. A file on a voucher in a locked period cannot be removed. |
 | status | Health checks and `nortfox doctor`, which checks that an install is sound. |
 | import | Bring a company's books in: from a SIE4 file, or from another system's API through an import adapter. Each adapter lives in its own folder, under a neutral id ([decision 11](decisions/0011-names-policy.md)). |
+| compatible-api | A second API surface that follows the established API, so that an integration only changes its base address. Its adapter lives in one folder, under a neutral id ([decision 12](decisions/0012-compatible-api.md)). |
 | assistant | An AI assistant that works only through the API, with the user's own rights, and only through the operations that are open to it. |
 
 ### Bokföring
@@ -81,9 +99,9 @@ Each module lives in `apps/server/src/modules/<name>`. A module owns its tables,
 | Module | What it does |
 | --- | --- |
 | accounts | The kontoplan, from the BAS chart. |
-| fiscal-years | Räkenskapsår, their periods, and locked periods. Opening balances. |
+| fiscal-years | Räkenskapsår and their periods. Locking periods, by hand or automatically, and unlocking them. Opening balances. |
 | voucher-series | Verifikationsserier, with gap-free numbers per fiscal year. A series skips numbers only through a void range that a restore records. |
-| vouchers | Book and correct vouchers. A booked voucher is never edited. |
+| vouchers | Book, change, correct and delete vouchers, as the established system does. A voucher in a locked period is final. |
 | dimensions | Cost centres (kostnadsställen) and projects. |
 | currencies | Currencies and exchange rates. |
 | budget | Budgets per account and period. |
@@ -97,6 +115,8 @@ Each module lives in `apps/server/src/modules/<name>`. A module owns its tables,
 | payments | Payment files. |
 
 Not in this plan: customer invoices, payroll, the annual report. They come after the books work.
+
+Nor is the fixed-asset register (anläggningsregister). The law needs one for most companies (BFL 5 kap. 4 §, BFNAR 2013:2 kapitel 4). Until NortFox has one, the company keeps its register outside NortFox and names it in its system documentation.
 
 ## 5. Build order
 
@@ -130,10 +150,12 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 **2a. Ledger core in PostgreSQL**
 
-- **What:** the first SQL migrations: the database roles (owner, app, and reader roles that are each bound to one company); companies; fiscal years and periods; accounts; voucher series and their void ranges; vouchers and their rows; the behandlingshistorik. The triggers for the ledger law. FORCE RLS on every company table. The compose file with PostgreSQL and pgBackRest.
+- **What:** the first SQL migrations: the database roles (owner, app, and reader roles that are each bound to one company); companies; fiscal years, their periods and the locked periods; accounts; voucher series and their void ranges; vouchers, their rows and their earlier versions; the record of deleted vouchers; the behandlingshistorik. The triggers for the ledger law, with the voucher rules of [decision 2](decisions/0002-ledger-law-in-postgresql.md). FORCE RLS on every company table. The compose file with PostgreSQL and pgBackRest.
 - **Done when:**
-  - Tests against real PostgreSQL, run as the app role, show that the database refuses: changing or deleting a booked voucher or its rows; booking a voucher where debit and credit differ; a voucher date outside an open fiscal year or inside a locked period; reading or writing another company's rows.
-  - A property test with parallel bookings and rollbacks finds no gap and no duplicate number in any series. A series can only skip numbers through a recorded void range.
+  - Tests against real PostgreSQL, run as the app role, show that the database refuses: changing or deleting a voucher in a locked period, or dating a voucher there; deleting a voucher that is not the last of its series; changing a row's account or amount, or removing a row; changing or deleting an earlier version of a voucher, or anything in the record of deleted vouchers; booking a voucher whose rows that are not struck differ in debit and credit; a voucher date outside an open fiscal year; reading or writing another company's rows.
+  - After any change to a voucher, every earlier version of it, its rows and its texts can still be read, with the actor and the time of each change. A struck row stays, marked struck, with the actor and the time.
+  - Deleting the last voucher of a series moves it, whole, to the record of deleted vouchers, with the actor and the time. The next voucher booked in that series gets its number.
+  - A property test with parallel bookings, deletions and rollbacks finds no gap in any series, and no number held by two vouchers that are not deleted. A series can only skip numbers through a recorded void range.
   - As the app role, recording a void range is refused, and so is any change to one. Only the owner role can record one, and the trigger writes its behandlingshistorik row like any other.
   - Every insert, update and delete leaves a behandlingshistorik row with the actor and the time. The app role cannot change or delete those rows.
   - The app role cannot change the schema, disable a trigger or bypass RLS.
@@ -143,12 +165,12 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 **2b. API and MCP spine**
 
-- **What:** the Hono server with `@hono/zod-openapi`. `packages/contract` holds the `createRoute` objects, which are the operation registry. Each operation declares its id, its path under `/v1`, its input and output shapes, its permission, its MCP tool text, and whether the AI assistant may call it (closed unless it says so). `openapi.json` is generated and committed; `packages/client` is generated from it. `/mcp` serves every operation as an MCP tool, from the same registry. Errors are problem details (RFC 9457). Writes take an idempotency key. Lists use cursor paging.
+- **What:** the Hono server with `@hono/zod-openapi`. `packages/contract` holds the `createRoute` objects, which are the operation registry. Each operation declares its id, its path under `/v1`, its input and output shapes, its permission, its MCP tool text, and whether the AI assistant may call it (closed unless it says so). `openapi.json` is generated and committed; `packages/client` is generated from it. `/mcp` serves every operation as an MCP tool, from the same registry. On `/v1`, errors are problem details (RFC 9457), writes take an idempotency key, and lists use cursor paging.
 - **Done when:**
   - One real operation (read a company, on the 2a tables) works by REST, by the generated client and as an MCP tool, with the same result.
   - CI fails when `openapi.json` or the client is out of date.
   - A guard fails when an operation has no permission or no MCP tool, and a test proves it.
-  - Money always travels as a decimal string with a currency code; a test shows a JSON number is refused.
+  - On `/v1`, money always travels as a decimal string with a currency code; a test shows a JSON number is refused.
   - Each request runs in one transaction that sets the company and the actor with `SET LOCAL`, so a pooled connection never carries them to the next request.
 
 **2c. Login, roles, tokens, MCP OAuth**
@@ -186,24 +208,47 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **3b. fiscal-years: räkenskapsår and locked periods**
 
-- **What:** create fiscal years and their monthly periods; lock and unlock periods; opening balances. The engine checks the year's length (normally 12 months; a first or changed year may be shorter, or at most 18 months).
-- **Done when:** the database refuses a voucher dated in a locked period or outside every open year; a property test shows that a year's opening balances always equal the closing balances of the year before, also after a late booking in the old year.
+- **What:** create fiscal years and their monthly periods; opening balances. Lock periods by hand, or automatically a set number of days after each month ends, and unlock a locked period, as the established system does. Locking a period makes its vouchers final ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). The engine checks the year's length (normally 12 months; a first or changed year may be shorter, or at most 18 months).
+- **Done when:**
+  - The database refuses a voucher dated in a locked period or outside every open year.
+  - Once a period is locked, a change or a deletion of one of its vouchers is refused. After an unlock, both are allowed again.
+  - With automatic locking set to a number of days, a month is locked from that many days after its last day, and not a day before. A test at that boundary shows it.
+  - Every lock and unlock is in the behandlingshistorik, with who and when.
+  - A property test shows that a year's opening balances always equal the closing balances of the year before, also after a late booking in the old year.
 
 **3c. voucher-series**
 
-- **What:** series per company, a number range per series and fiscal year, a default series per kind of voucher (manual, supplier invoice, payment, bank, cash register).
-- **Done when:** numbering starts again in each fiscal year; a used series cannot be deleted; a property test with parallel bookings in several series finds no gap and no duplicate.
+- **What:** series per company, a number range per series and fiscal year, a default series per kind of voucher (manual, supplier invoice, payment, bank, cash register). A voucher gets its number when it is booked. Deleting the last voucher of a series gives its number out again.
+- **Done when:** numbering starts again in each fiscal year; a used series cannot be deleted; after the last voucher of a series is deleted, the next voucher booked in it gets that number; a property test with parallel bookings and deletions in several series finds no gap, and no number held by two vouchers that are not deleted.
 
 **3d. vouchers: book and correct**
 
-- **What:** draft, book, list and read vouchers. A draft can change; a booked voucher never. A correction is a new voucher that reverses or adjusts the old one and points to it. Booking through the API takes an idempotency key. The behandlingshistorik of a voucher is readable through the API.
-- **Design:** the screens follow [the vouchers screen spec](design/screens/vouchers.md).
-- **Done when:** booking, reading and correcting work by REST, by MCP and on the screen; tests as the app role show the database refuses every change to a booked voucher; every correction shows who made it, when, and which voucher it corrects; booking the same request twice gives one voucher.
+- **What:** book, change, correct, delete, list and read vouchers, as the established system does ([decision 2](decisions/0002-ledger-law-in-postgresql.md)).
+  - A voucher is booked at once and gets its number. Nothing is saved before that: an unfinished form stays in the browser.
+  - Until its period is locked, a voucher can be changed: its description, its date and its row texts can change, and rows can be added. A row's account or amount is never changed; the row is struck and a new row takes its place. The struck row stays on the voucher, struck through, with who and when.
+  - Until its period is locked, it can also be deleted, when it is the last voucher of its series. Its number is given out again, and the deleted voucher stays readable in full in the record of deleted vouchers, with who and when.
+  - At any time, a voucher can be corrected with a reversing voucher: a new voucher with its own number, in an open period, linked to the old one both ways. A voucher has at most one reversing voucher, and a voucher that another module made, such as a supplier invoice, gets none.
+  - A voucher in a locked period is final: it is only corrected, never changed or deleted.
+  - Booking through `/v1` takes an idempotency key. A voucher's behandlingshistorik, its earlier versions and the record of deleted vouchers are readable through the API and MCP.
+- **Design:** the screens follow [the vouchers screen spec](design/screens/vouchers.md) for the look. The spec was written before these voucher rules: it has drafts saved on the server, and no change or deletion after booking. Where it differs from this slice, this slice wins until the spec is updated.
+- **Done when:**
+  - Booking, reading, changing, correcting and deleting work by REST, by MCP and on the screen.
+  - The answer to a booking carries the voucher's number.
+  - Tests as the app role show the database refuses a change or a deletion in a locked period, the deletion of a voucher that is not last in its series, and a change to a row's account or amount.
+  - After a change, the voucher shows its struck rows with who and when, and every earlier version can be read through the API.
+  - A reversing voucher reverses the rows of the old one that are not struck, and each points to the other. A second reversing voucher, and one for a voucher that another module made, are refused.
+  - After a deletion, the next voucher in the series gets the freed number, and the deleted voucher can be read in full, with who and when, in the record of deleted vouchers.
+  - Every booking, change, strike, correction and deletion is in the behandlingshistorik, with who and when.
+  - Booking the same request twice gives one voucher.
 
 **3e. files (platform): attachments**
 
-- **What:** upload files (PDF, images, XML), store them on disk or in object storage with a SHA-256 hash, and link them to vouchers.
-- **Done when:** the database refuses to unlink or delete a file on a booked voucher; the hash is checked on every read; the size and type limits are enforced by the server.
+- **What:** upload files (PDF, images, XML) and link them to vouchers. The original file lives in NortFox's own storage, on disk or in S3-compatible object storage, with a SHA-256 hash. A pluggable storage layer can also copy each file to a cloud drive that the company connects itself. A cloud drive is never the only copy.
+- **Done when:**
+  - The database refuses to unlink or delete a file on a voucher in a locked period.
+  - The hash is checked on every read. The size and type limits are enforced by the server.
+  - The server refuses a setting that would make a cloud drive the only place a file is kept.
+  - With a test cloud drive connected, a new file is stored in NortFox's own storage and copied to the drive. Disconnecting the drive, or deleting the copy there, loses no file and changes no voucher.
 
 **3f. dimensions: cost centres and projects**
 
@@ -271,7 +316,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **4a. nortfox doctor**
 
-- **What:** a command, and an admin API operation, that checks an install: migrations up to date; FORCE RLS, policies and triggers on every table; no extra rights for the app role; every series gap-free or with recorded void ranges; every booked voucher balanced; file hashes; the age of the last backup and the last restore drill; the archive lag, which fails when WAL older than twice `archive_timeout` has not reached both backup repositories; free disk space.
+- **What:** a command, and an admin API operation, that checks an install: migrations up to date; FORCE RLS, policies and triggers on every table; no extra rights for the app role; every series gap-free or with recorded void ranges; every voucher balanced in its rows that are not struck; file hashes; the age of the last backup and the last restore drill; the archive lag, which fails when WAL older than twice `archive_timeout` has not reached both backup repositories; free disk space.
 - **Done when:** each check has a test that breaks it on purpose and sees the doctor report it; the command exits non-zero when any check fails.
 
 **4b. Restore drill**
@@ -284,7 +329,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **4c. Archive**
 
-- **What:** export a company's full räkenskapsinformation for a range of years: SIE4, vouchers with their files, the behandlingshistorik, the reports, and the version of the system documentation. Open formats, with a checksum list.
+- **What:** export a company's full räkenskapsinformation for a range of years: SIE4, vouchers with their earlier versions and their files, the record of deleted vouchers, the behandlingshistorik, the reports, and the version of the system documentation. Open formats, with a checksum list.
 - **Done when:** the archive can be read without NortFox; the database refuses to delete a company's books before the seven years have passed.
 
 **4d. System documentation**
@@ -299,7 +344,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **4f. Import adapters**
 
-- **What:** the second part of the import module: an adapter reads another system's API, maps the data to NortFox shapes, shows a dry-run report, then imports. Each adapter lives in its own folder, named by a neutral id, with its own tests and sample data. The import operations are generic: they take an adapter id. The server reads an adapter's display name and texts from its folder at runtime and serves them through the API. The sample data is hand-written from the other system's public API documentation, with made-up companies, people and numbers; it is never recorded from a real account. The first adapter's folder is the one on the marker allowlist ([decision 11](decisions/0011-names-policy.md)). Its PR title, body, branch name, commits and changeset use neutral words.
+- **What:** the second part of the import module: an adapter reads another system's API, maps the data to NortFox shapes, shows a dry-run report, then imports. Each adapter lives in its own folder, named by a neutral id, with its own tests and sample data. The import operations are generic: they take an adapter id. The server reads an adapter's display name and texts from its folder at runtime and serves them through the API. The sample data is hand-written from the other system's public API documentation, with made-up companies, people and numbers; it is never recorded from a real account. The first adapter's folder is one of the two folders on the marker allowlist ([decision 11](decisions/0011-names-policy.md)). Its PR title, body, branch name, commits and changeset use neutral words.
 - **Done when:** a dry run changes nothing; running an import twice imports nothing twice; the first adapter passes on its sample data; after the adapter lands, the names check passes on everything outside the adapter's folder, including `openapi.json`, the client, `packages/i18n`, `docs/system` and the changesets.
 
 **4g. Style builder**
@@ -314,7 +359,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **4i. AI assistant**
 
-- **What:** an assistant that reads and acts only through the API operations, with the user's own rights, and only through the operations whose registry entry opens them to it. An operation is closed to it unless it says otherwise. Approvals, payments, supplier payment details, tokens, memberships, webhooks and settings stay closed. It proposes drafts; a person books them. The admin chooses the model provider; the assistant is off until turned on.
+- **What:** an assistant that reads and acts only through the API operations, with the user's own rights, and only through the operations whose registry entry opens them to it. An operation is closed to it unless it says otherwise. Approvals, payments, supplier payment details, tokens, memberships, webhooks and settings stay closed. It proposes vouchers; a person books them. The admin chooses the model provider; the assistant is off until turned on.
 - **Done when:**
   - The assistant cannot do anything the user cannot, and cannot call a closed operation.
   - An uploaded invoice that carries instructions for the assistant cannot make it call a closed operation, and a test proves it.
@@ -323,9 +368,12 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 ## 6. How a slice is built
 
+- **One issue per slice.** Each slice gets one GitHub issue, just before it is built. That timing is a default that the owner may change. The issue starts with the slice's terms: for each, what the law means by it, the word on the screen, and its name in the API and the code ([section 2](#names)). Then come the behaviour, the API, what the law requires, the done-when lines and what is out of scope.
 - **One slice, one PR.** Each PR has its own branch. Merges are squash only, and the history stays linear. The PR title and body become the commit on `main`.
-- **Everything in the same PR:** the migration, the engine logic, the contract operations, the server module, the screens, the docs that change, and a changeset for what users will notice.
-- **Tests in the same PR:** unit tests for the engine (100% coverage), property tests for every invariant, server tests against real PostgreSQL as the app role, and a test that drives the new operations through MCP.
+- **Everything in the same PR:** the migration, the engine logic, the contract operations, the server module, the compatible endpoint where the established API has one ([decision 12](decisions/0012-compatible-api.md)), the screens, the docs that change, and a changeset for what users will notice.
+- **Tests first.** Each done-when line becomes a test before the code it tests is written, and each test is seen to fail for the right reason. Then the code is built until the tests pass.
+- **Tests in the same PR:** unit tests for the engine (100% coverage), property tests for every invariant, server tests against real PostgreSQL as the app role, a test that drives the new operations through MCP, and tests that pin each compatible endpoint's shape.
+- **Review until a round finds no major problem.** The owner's review agent reviews each PR from the owner's account in rounds. The PR fixes the major problems that a round finds, and a new round checks again. The PR may merge once a round finds no major problem. A minor problem found after that becomes an issue, fixed in its own small PR.
 - **Made-up test data.** Fixtures use fictional companies and people, and the test identity and organisation numbers on the fixture guard's list. Nothing is recorded from a real account. A file made by another program has its program record and its metadata rewritten. A file from a third party, such as the BAS data, carries a note with its source and its terms.
 - **No quiet loosening.** A PR does not lower a coverage floor or switch off a lint rule. Workflows keep the rules from step 1.
 - **The MIT client is published** only through npm trusted publishing, from an environment that only `main` can use. No long-lived publish token exists.
@@ -395,12 +443,20 @@ The repository never contains a name on the owner's list of protected names ([de
 - It reads each path from the bytes git stores for it, which need not be UTF-8: in the same three ways, and as the name Git for Windows writes to disk. When any of these readings holds a match, the report names the file by its position, never by its path.
 - Dropping separators makes ordinary words match across a space. Such a text is reworded. The check keeps no allowlist of false positives: the only exceptions to the names rule are the markers and the marker allowlist, and both are owner paths.
 - A digest is data, so the check reads it the way it reads base64: it decodes it and searches what it decodes to. In `pnpm-lock.yaml`, the value of pnpm's own integrity key at the start of a line, at the exact length of its algorithm, is read only that way, because so many random letters spell a short word by chance. Anywhere else, also on a comment line or later on the same line, a run shaped like a digest is read as letters too.
-- A `.protected-name-ok` marker counts only in a folder on the marker allowlist, `.github/protected-name-allowlist.txt`. The allowlist is empty until the first import adapter (slice 4f), and then holds that adapter's folder. A marker anywhere else fails the check.
+- A `.protected-name-ok` marker counts only in a folder on the marker allowlist, `.github/protected-name-allowlist.txt`. The allowlist holds at most two folders: the import adapter's (slice 4f) and the compatible API adapter's ([decision 12](decisions/0012-compatible-api.md)). It is empty until the first of them lands, and the PR that creates each folder adds it. A marker anywhere else fails the check.
 - Its tests inject fake words. The real names never appear in a test.
 
 ## 7. The legal frame
 
-NortFox is built to meet Bokföringslagen (1999:1078) and Bokföringsnämndens general advice BFNAR 2013:2 on bokföring. In short: every business event is booked from a voucher (verifikation); bookings are kept in date order (grundbok) and by account (huvudbok); a booked entry is never removed or changed, only corrected by a new entry that shows when the correction was made and by whom; the system keeps a behandlingshistorik of how the data was processed, and a systemdokumentation that describes how the system works; and all räkenskapsinformation is kept, readable, until the end of the seventh year after the calendar year in which the fiscal year ended. NortFox gives a company the tools for this. The company stays responsible for its own books.
+NortFox is built to meet Bokföringslagen (1999:1078) and Bokföringsnämndens general advice BFNAR 2013:2 on bokföring. In short:
+
+- Every business event is booked from a voucher (verifikation).
+- Bookings are kept in date order (grundbok) and by account (huvudbok).
+- An entry may stay preliminary, and be changed or deleted, until the company locks its period. The company must lock it within the booking deadlines (BFL 5 kap. 2 §, BFNAR 2013:2 kapitel 2 and 3). Once locked, the entry is bokförd and final: it is never removed or changed, only corrected by a new entry that shows when the correction was made and by whom.
+- The system keeps a behandlingshistorik of how the data was processed, and a systemdokumentation that describes how the system works.
+- All räkenskapsinformation is kept, readable, until the end of the seventh year after the calendar year in which the fiscal year ended.
+
+NortFox gives a company the tools for this. The company stays responsible for its own books.
 
 ## 8. Decision records
 
@@ -415,3 +471,4 @@ NortFox is built to meet Bokföringslagen (1999:1078) and Bokföringsnämndens g
 9. [Company isolation and database roles](decisions/0009-company-isolation-and-database-roles.md)
 10. [Quality gates](decisions/0010-quality-gates.md)
 11. [Names policy](decisions/0011-names-policy.md)
+12. [The compatible API](decisions/0012-compatible-api.md)
