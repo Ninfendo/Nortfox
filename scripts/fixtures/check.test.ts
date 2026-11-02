@@ -36,6 +36,11 @@ function file(path: string, contents: string | Uint8Array | undefined, extra: Pa
   };
 }
 
+/** A text in a single-byte encoding: each character as the byte this table gives it, or else as its own code. */
+function encoded(text: string, table: Readonly<Record<string, number>>): Uint8Array {
+  return Uint8Array.from(text, (char) => table[char] ?? char.charCodeAt(0));
+}
+
 /** A digest of the exact sha512 shape that pnpm writes, with a test number among its letters. */
 const DIGEST = `sha512-${"Ab+199001012385/".padEnd(86, "Q")}==`;
 
@@ -61,6 +66,29 @@ describe("unlistedKinds", () => {
       `url = https://${encodeURIComponent(address("ann.berg", "zarquon.zz"))}@git.example.com/team/repo.git`,
       "email",
     ],
+    [
+      "at a domain with a letter outside ASCII in a JSON \\u escape, as Python's json.dumps writes it",
+      `{"email": "${address("ann", String.raw`zarqu\u00f6n.zz`)}"}`,
+      "email",
+    ],
+    ["at such a domain in a JavaScript \\x escape", `const to = "${address("ann", String.raw`zarqu\xf6n.zz`)}";`, "email"],
+    [
+      "at such a domain in a Python bytes literal, whose \\x escapes are UTF-8",
+      `to = b"${address("ann", String.raw`zarqu\xc3\xb6n.zz`)}"`,
+      "email",
+    ],
+    ["with its @ in a \\u escape", ["ann", "zarquon.zz"].join(String.raw`\u0040`), "email"],
+    [
+      "in JSON from .NET, which escapes the & of an HTML character reference",
+      `{"html": "${["ann", "zarquon.zz"].join(String.raw`\u0026#64;`)}"}`,
+      "email",
+    ],
+    [
+      "in base64 that holds a JSON \\u escape",
+      `eyJhbGciOiJub25lIn0.${base64(`{"email":"${address("ann", String.raw`zarqu\u00f6n.zz`)}"}`)}.`,
+      "email",
+    ],
+    ["a number in \\u escapes", String.raw`\u0031\u0039\u0039\u0030\u0030\u0031\u0030\u0031-2385`, "personal-identity-number"],
   ])("finds a value %s", (_how, line, kind) => {
     expect(unlistedKinds(line, NONE)).toEqual([kind]);
   });
@@ -117,6 +145,52 @@ describe("scanFile", () => {
       { place: "docs/a.md:2", reason: "personal-identity-number" },
     ]);
     expect(scanFile(file("docs/a.md", "one\n19900101-2385\n"), LISTED)).toEqual([]);
+  });
+
+  // Each of these files is found by one reading only. ö is 0xF6 in Latin-1 and in Windows-1252, which
+  // the guard reads in place of Latin-1, and 0x94 in CP437. ž is 0x9E in Windows-1252 alone. Read as
+  // UTF-8, each of those bytes breaks the domain.
+  it.each<[string, Uint8Array]>([
+    ["Latin-1", encoded(`#KONTAKT "${address("ann", "zarquön.zz")}"\n`, { ö: 0xf6 })],
+    ["Windows-1252, as Excel writes a CSV file", encoded(`Ann Berg;${address("ann", "zarquön.zz")};Zarqöby\n`, { ö: 0xf6 })],
+    ["Windows-1252, with a letter that Latin-1 and CP437 do not have", encoded(`Ann;${address("ann", "zarquož.zz")}\n`, { ž: 0x9e })],
+    ["CP437, as a SIE file is", encoded(`#KONTAKT "${address("ann", "zarquön.zz")}"\n`, { ö: 0x94 })],
+    [
+      "UTF-8, with a byte on another line that is not UTF-8",
+      Buffer.concat([Buffer.from(`${address("ann", "zarquön.zz")}\n`, "utf8"), encoded("Zarqöby\n", { ö: 0xf6 })]),
+    ],
+  ])("finds an address at a domain with a letter outside ASCII in a file in %s", (_encoding, bytes) => {
+    expect(scanFile(file("fixtures/kontakter.txt", bytes), NONE)).toEqual([{ place: "fixtures/kontakter.txt:1", reason: "email" }]);
+  });
+
+  it("gives each kind once on a line that more than one reading finds it on", () => {
+    const bytes = encoded(`Björn;19900101-2385;${address("bjorn", "zarquon.zz")}\n`, { ö: 0xf6 });
+    expect(scanFile(file("fixtures/kontakter.txt", bytes), NONE)).toEqual([
+      { place: "fixtures/kontakter.txt:1", reason: "personal-identity-number" },
+      { place: "fixtures/kontakter.txt:1", reason: "email" },
+    ]);
+  });
+
+  it("names the lines in order, also when a later reading finds an earlier line", () => {
+    // UTF-8 finds the number on line 2. Only Windows-1252 finds the address on line 1.
+    const bytes = encoded(`${address("ann", "zarquön.zz")}\n19900101-2385\n`, { ö: 0xf6 });
+    expect(scanFile(file("fixtures/kontakter.txt", bytes), NONE)).toEqual([
+      { place: "fixtures/kontakter.txt:1", reason: "email" },
+      { place: "fixtures/kontakter.txt:2", reason: "personal-identity-number" },
+    ]);
+  });
+
+  it("reads a UTF-8 file as UTF-8 only, where a ” after an allowed address is no letter", () => {
+    expect(scanFile(file("docs/a.md", `Write to “${address("ann", "example.com")}”.\n`), NONE)).toEqual([]);
+  });
+
+  it("reads a path as its escapes decode, both for a value and for the shape of one", () => {
+    expect(scanFile(file(["fixtures/ann", "zarquon.zz.json"].join(String.raw`\u0040`), "{}\n"), NONE)).toEqual([
+      { place: `${ALIAS} (its path)`, reason: "email" },
+    ]);
+    expect(scanFile(file(["fixtures/ann", "example.com.json"].join(String.raw`\u0040`), "20000101-2384\n"), NONE)).toEqual([
+      { place: `${ALIAS}:1`, reason: "personal-identity-number" },
+    ]);
   });
 
   it("reads pnpm-lock.yaml at the root as the lockfile, and a file of that name elsewhere as text", () => {

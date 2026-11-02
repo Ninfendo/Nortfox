@@ -100,6 +100,15 @@ describe("identity numbers", () => {
     expect(kinds(line)).toEqual(["personal-identity-number"]);
   });
 
+  it.each([
+    ["10 digits without a dash, at the end of a sentence", "Personnummer 9001012385.", "personal-identity-number"],
+    ["10 digits without a dash, before a dot and an extension, in JSON", '{"file": "9001012385.json"}', "personal-identity-number"],
+    ["12 digits without a dash, after a space and a dot", "see .199001012385", "personal-identity-number"],
+    ["an organisation number without a dash, after a word and a dot", "Org.nr.5560000167", "organisation-number"],
+  ])("finds one in %s, since a dot without a digit on its other side is no decimal point", (_case, line, kind) => {
+    expect(kinds(line)).toEqual([kind]);
+  });
+
   it("finds every number in a line, in order", () => {
     expect(kinds("19900101-2385, 20000101-2384 and 260161-2381")).toEqual([
       "personal-identity-number",
@@ -111,14 +120,6 @@ describe("identity numbers", () => {
   it.each([
     ["a wrong check digit", "19900101-2386"],
     ["a wrong check digit in 10 digits", "900101-2380"],
-    ["month 0", "19900001-2385"],
-    ["month 13", "19901301-2385"],
-    ["day 0", "19900100-2385"],
-    ["day 32", "19900132-2385"],
-    ["30 February", "19900230-2385"],
-    ["31 April", "19900431-2385"],
-    ["a coordination day past 91", "19900192-2385"],
-    ["a day between 31 and 61", "19900145-2385"],
     ["the century 17", "17900101-2385"],
     ["the century 21", "21900101-2385"],
     ["11 digits", "19001012385"],
@@ -133,6 +134,34 @@ describe("identity numbers", () => {
     ["a space for the dash", "900101 2385"],
   ])("lets through %s", (_case, line) => {
     expect(valuesIn(line)).toEqual([]);
+  });
+
+  // Each number here has a right check digit, so only its date can let it through. Its third digit is
+  // the first digit of a month, 0 or 1, so its ten digits make no organisation number either.
+  it.each([
+    ["month 0", "19900001"],
+    ["month 13", "19901301"],
+    ["day 0", "19900100"],
+    ["day 32", "19900132"],
+    ["30 February", "19900230"],
+    ["31 April", "19900431"],
+    ["31 June", "19900631"],
+    ["31 September", "19900931"],
+    ["31 November", "19901131"],
+    ["the coordination day for 31 April", "19900491"],
+    ["the coordination day for 31 November", "19901191"],
+    ["a coordination day past 91", "19900192"],
+    ["a day between 31 and 61", "19900145"],
+  ])("lets through a date that is not on the calendar, %s, though the check digit is right", (_case, date) => {
+    for (const head of [date, date.slice(2)]) {
+      for (const separator of ["-", "+", ""]) {
+        const number = numberWith(head, separator, "238");
+        const ten = number.replace(/\D/g, "").slice(-10);
+        expect(luhnValid(ten)).toBe(true);
+        expect(valuesIn(number)).toEqual([]);
+        expect(valuesIn(`SE${ten}01`)).toEqual([]);
+      }
+    }
   });
 
   it("knows the leap years: 29 February only in a leap year, and in any year that 10 digits may mean", () => {
@@ -308,7 +337,7 @@ describe("VAT numbers", () => {
 
   it.each([
     ["a wrong check digit", "SE556000016801"],
-    ["a date that is not on the calendar", "SE901301238501"],
+    ["a date that is not on the calendar, and a right check digit", `SE${numberWith("901301", "", "238")}01`],
     ["the group digit 4", `SE${ten("462000012")}01`],
     ["an end other than 01", "SE556000016702"],
     ["a letter before it", "XSE556000016701"],

@@ -48,15 +48,21 @@ const PLANTED: readonly (readonly [string, string])[] = [
   [`"${address("bo", "mail.zarquon.zz")}"`, "e-mail address"],
 ];
 
-/** Values that look like the kinds above but are not, so the guard lets them through without a list. */
+/**
+ * Values that look like the kinds above but are not, so the guard lets them through without a list. A
+ * number with a date that is not on the calendar is built with a right check digit, so only its date
+ * lets it through.
+ */
 const NEAR_MISSES = [
   "19900101-2386",
   "900101-2380",
-  "19901301-2385",
-  "19900132-2385",
-  "19900230-2385",
-  "19000229-2385",
-  "19900192-2385",
+  numberWith("19901301", "-", "238"),
+  numberWith("19900132", "-", "238"),
+  numberWith("19900230", "-", "238"),
+  numberWith("19000229", "-", "238"),
+  numberWith("19900431", "-", "238"),
+  numberWith("900631", "", "238"),
+  numberWith("19900192", "-", "238"),
   "21900101-2385",
   "556000-0168",
   "SE556000016801",
