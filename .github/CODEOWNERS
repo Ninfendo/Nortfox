@@ -1,9 +1,9 @@
-# The owner paths (.github/owner-paths.txt): the database migrations, the
-# licences and the exceptions to the names rule. GitHub asks the owner to
-# review every PR that touches one. CODEOWNERS matches case, so each licence
-# name is listed in its three usual spellings.
+# The owner paths (.github/owner-paths.txt): the licences, the exceptions to
+# the names rule and the list itself. GitHub asks the owner to review every PR
+# that touches one. CODEOWNERS matches case, so each licence name is listed in
+# its three usual spellings. The database migrations come back here when they
+# go back on that list, before NortFox keeps real books (docs/plan.md, step 4d).
 
-/db/migrations/ @Ninfendo
 LICENSE* @Ninfendo
 LICENCE* @Ninfendo
 COPYING* @Ninfendo

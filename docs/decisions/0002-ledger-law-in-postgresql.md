@@ -19,7 +19,7 @@ PostgreSQL enforces the ledger law itself, with constraints and triggers:
 
 `packages/engine` checks the same rules first, to give clear error messages. The database is the authority.
 
-A change to a ledger rule needs the owner's approval. The law lives in the SQL migrations, and `db/migrations/**` is an owner path, so a PR that changes a migration passes Owner OK only with the owner-ok label on its head commit ([plan, section 6](../plan.md#owner-paths)).
+The law lives in the SQL migrations. Until NortFox keeps real books, the database migrations are not an owner path, so a change to a ledger rule needs no owner-ok label. There are no real books yet, so a mistake in a rule can still be fixed freely, and the tests guard the rules. Before NortFox keeps real books, `db/migrations/**` goes back on the owner path list ([plan, section 6](../plan.md#owner-paths)). From then on, a change to a ledger rule needs the owner's approval: a PR that changes a migration passes Owner OK only with the owner-ok label on its head commit.
 
 ## Consequences
 

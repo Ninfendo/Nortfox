@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // CODEOWNERS asks the owner to review exactly the owner paths
-// (.github/owner-paths.txt): the database migrations, the licences and the
-// exceptions to the names rule, and nothing else. CODEOWNERS matches case and
+// (.github/owner-paths.txt): the licences, the exceptions to the names rule
+// and the list itself, and nothing else. CODEOWNERS matches case and
 // the owner path list does not, so a name that may sit in any folder comes in
 // the three spellings people write: LICENSE, license and License.
 

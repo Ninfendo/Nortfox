@@ -201,14 +201,14 @@ describe("owner-ok", () => {
       {
         [`GET ${p}/pulls/7`]: pr("owner"),
         [`GET ${p}/pulls/7/files?per_page=100`]: {
-          body: [{ filename: "db/0001_start.sql", previous_filename: "db/migrations/0001_start.sql" }],
+          body: [{ filename: "docs/terms.md", previous_filename: "LICENSE" }],
         },
       },
       env,
     );
     expect(result).toMatchObject({
       code: 1,
-      out: ["Owner path: db/migrations/0001_start.sql"],
+      out: ["Owner path: LICENSE"],
       err: ["Owner OK: The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label."],
     });
   });

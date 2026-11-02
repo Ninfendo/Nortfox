@@ -290,7 +290,9 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 **4d. System documentation**
 
 - **What:** the systemdokumentation in `docs/system`: what the system is made of, how data flows, the controls in the database, how the behandlingshistorik and the backups work, and a template for the company's own routines. The lists of operations, tables, triggers and checks are generated from the code.
-- **Done when:** CI fails when a generated list is out of date; each release carries its version of the documentation.
+- **Done when:**
+  - CI fails when a generated list is out of date; each release carries its version of the documentation.
+  - `db/migrations/**` is back on the owner path list ([section 6](#owner-paths)), CODEOWNERS mirrors it, and the test that pins the list pins it. From then on, a change to a ledger rule needs the owner-ok label again.
 
 **4e. Webhooks**
 
@@ -365,7 +367,6 @@ A pin to GitHub Actions shuts out commit statuses and checks from any other sour
 Only the files a PR changes decide whether it needs the owner. When it does, the owner-ok label on the PR, set on its head commit, is the only label that counts: other labels, and labels on a linked issue, play no part. The list of owner paths is `.github/owner-paths.txt`. The workflow reads it from `main`, so a PR cannot shorten it for itself, and the list names itself, so a PR that shortens it for later PRs needs the owner too. The list is exactly:
 
 ```
-db/migrations/**
 **/LICENSE*
 **/LICENCE*
 **/COPYING*
@@ -374,7 +375,9 @@ db/migrations/**
 .github/owner-paths.txt
 ```
 
-These are the changes that only the owner approves: the database, where the ledger law lives; the licences; and the exceptions to the names rule, which are the markers and the marker allowlist. Everything else is read by the owner's review agent, and every PR from someone other than the owner needs the owner's approving review anyway (Outside approval).
+These are the changes that only the owner approves: the licences, and the exceptions to the names rule, which are the markers and the marker allowlist. Everything else is read by the owner's review agent, and every PR from someone other than the owner needs the owner's approving review anyway (Outside approval).
+
+Until NortFox keeps real books, the database migrations are not an owner path, so a PR that changes a migration needs no owner-ok label. There are no real books yet, so a mistake in a ledger rule can still be fixed freely, and the tests guard the rules. Before NortFox keeps real books, `db/migrations/**` goes back on the list (slice 4d in [step 4](#step-4-the-rest-of-the-platform)).
 
 The owner-ok label counts only for the head commit it was set on. A push after the label removes it. A PR that changes an owner path then fails Owner OK until the owner sets the label again.
 

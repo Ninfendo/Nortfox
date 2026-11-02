@@ -13,9 +13,9 @@ describe("owner paths", () => {
     expect(parseOwnerPaths("# Owner paths\n\ndb/migrations/**\r\n  LICENSE  \n")).toEqual(["db/migrations/**", "LICENSE"]);
   });
 
-  it("are the database, the licences, the exceptions to the names rule and the list itself", () => {
+  it("are the licences, the exceptions to the names rule and the list itself", () => {
+    // The database migrations go back on the list before NortFox keeps real books (docs/plan.md, step 4d).
     expect(GLOBS).toEqual([
-      "db/migrations/**",
       "**/LICENSE*",
       "**/LICENCE*",
       "**/COPYING*",
@@ -26,12 +26,8 @@ describe("owner paths", () => {
   });
 
   it.each([
-    // The database.
-    ["db/migrations/0001_start.sql", true],
-    ["db/migrations/sub/x.sql", true],
-    ["db/migrations", true],
-    ["DB/Migrations/0001_start.sql", true],
-    ["db/migrationsx/a.sql", false],
+    // The database: no owner path until NortFox keeps real books.
+    ["db/migrations/0001_start.sql", false],
     ["db/seed.sql", false],
     // The licences, in any case and at any depth.
     ["LICENSE", true],
@@ -77,11 +73,11 @@ describe("owner paths", () => {
 
   it.each([
     // A line break or a line separator in a name: git and GitHub keep it, and most views do not show it.
-    "db/migrations/a .sql",
-    "db/migrations/a\n.sql",
-    "db/migrations/a\r.sql",
-    "db/migrations/x y/b.sql",
-    "db/migrations/\r\n",
+    "LICENCE .md",
+    "docs/COPYING\n.txt",
+    "docs/LICENCE\r",
+    "x y/LICENCE",
+    "\r\n/.protected-name-ok",
     "a\rb/COPYING",
     "x y/LICENSE",
     "packages/client/LICENSE\n.md",
@@ -110,6 +106,21 @@ describe("owner paths", () => {
     }
     expect(globToRegExp("a/?.ts").test("a///.ts")).toBe(false);
     expect(globToRegExp("a/*.ts").test("a/b/c.ts")).toBe(false);
+  });
+
+  it("matches a folder glob for the folder and everything in it, in any case, and nothing beside it", () => {
+    const inside = [
+      "db/migrations/0001_start.sql",
+      "db/migrations/sub/x.sql",
+      "db/migrations",
+      "DB/Migrations/0001_start.sql",
+      "db/migrations/a .sql",
+      "db/migrations/a\n.sql",
+      "db/migrations/a\r.sql",
+      "db/migrations/x y/b.sql",
+      "db/migrations/\r\n",
+    ];
+    expect(ownerPathsIn([...inside, "db/migrationsx/a.sql", "db/seed.sql"], ["db/migrations/**"])).toEqual(inside);
   });
 
   it("matches a pattern without a slash at the root only", () => {
@@ -211,11 +222,11 @@ describe("Owner OK", () => {
   });
 
   it("fails a PR that changes an owner path, until the owner-ok label is set", () => {
-    const input = { namesResult: "success", paths: ["README.md", "db/migrations/0001_start.sql"], globs: GLOBS };
+    const input = { namesResult: "success", paths: ["README.md", "packages/client/LICENSE"], globs: GLOBS };
     expect(decideOwnerOk({ ...input, labels: ["other"] })).toEqual({
       pass: false,
       why: "The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label.",
-      ownerPaths: ["db/migrations/0001_start.sql"],
+      ownerPaths: ["packages/client/LICENSE"],
     });
     expect(decideOwnerOk({ ...input, labels: ["owner-ok"] })).toMatchObject({ pass: true });
   });
