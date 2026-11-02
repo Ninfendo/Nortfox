@@ -1,6 +1,6 @@
 # 2. The ledger law lives in PostgreSQL
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: vouchers and the period lock follow the established system's behaviour.
+Status: accepted, 2026-11-01. Amended 2026-11-02: vouchers and the period lock follow the established system's behaviour, and the migrations are not an owner path.
 
 ## Context
 
@@ -51,7 +51,7 @@ PostgreSQL enforces the ledger law itself, with constraints and triggers:
 
 `packages/engine` checks the same rules first, to give clear error messages. The database is the authority.
 
-A change to a ledger rule needs the owner's approval. The law lives in the SQL migrations, and `db/migrations/**` is an owner path, so a PR that changes a migration passes Owner OK only with the owner-ok label on its head commit ([plan, section 6](../plan.md#owner-paths)).
+The law lives in the SQL migrations. They are not an owner path ([plan, section 6](../plan.md#owner-paths)), so a change to a ledger rule needs no owner-ok label. The owner's review agent reads such a PR like any other, and the tests guard the rules. A PR from an outside contributor needs the owner's approval anyway.
 
 ## Consequences
 

@@ -8,30 +8,32 @@ import { globToRegExp, ownerPathsIn, parseOwnerPaths } from "./owner-paths.ts";
 /** The repository's own list, as the workflow reads it from the default branch. */
 const GLOBS = parseOwnerPaths(readFileSync(new URL("../../.github/owner-paths.txt", import.meta.url), "utf8"));
 
+/** A sample list, not the repository's: it shows how globs match. */
+const SAMPLE = parseOwnerPaths(
+  [
+    "# A sample list",
+    "",
+    "**/LICENSE*",
+    "**/LICENCE*",
+    "**/COPYING*",
+    "**/.protected-name-ok",
+    ".github/protected-name-allowlist.txt",
+    ".github/owner-paths.txt",
+  ].join("\n"),
+);
+
 describe("owner paths", () => {
   it("reads one glob per line, without comments", () => {
     expect(parseOwnerPaths("# Owner paths\n\ndb/migrations/**\r\n  LICENSE  \n")).toEqual(["db/migrations/**", "LICENSE"]);
   });
 
-  it("are the database, the licences, the exceptions to the names rule and the list itself", () => {
-    expect(GLOBS).toEqual([
-      "db/migrations/**",
-      "**/LICENSE*",
-      "**/LICENCE*",
-      "**/COPYING*",
-      "**/.protected-name-ok",
-      ".github/protected-name-allowlist.txt",
-      ".github/owner-paths.txt",
-    ]);
+  it("are none: of all PRs, only those from outside contributors need the owner", () => {
+    expect(GLOBS).toEqual([]);
   });
 
   it.each([
     // The database.
-    ["db/migrations/0001_start.sql", true],
-    ["db/migrations/sub/x.sql", true],
-    ["db/migrations", true],
-    ["DB/Migrations/0001_start.sql", true],
-    ["db/migrationsx/a.sql", false],
+    ["db/migrations/0001_start.sql", false],
     ["db/seed.sql", false],
     // The licences, in any case and at any depth.
     ["LICENSE", true],
@@ -42,7 +44,7 @@ describe("owner paths", () => {
     ["License.txt", true],
     ["COPYING", true],
     ["apps/web/copying.lesser", true],
-    // The exceptions to the names rule, and this list.
+    // The exceptions to the names rule, and the list.
     ["adapters/a1/.protected-name-ok", true],
     [".protected-name-ok", true],
     [".github/protected-name-allowlist.txt", true],
@@ -50,8 +52,7 @@ describe("owner paths", () => {
     [".github/owner-paths.txt", true],
     ["docs/.github/protected-name-allowlist.txt", false],
     ["docs/.github/owner-paths.txt", false],
-    // Everything else is the review agent's, and an outside PR needs the
-    // owner's approving review anyway.
+    // Anything else.
     [".github/workflows/ci.yml", false],
     [".github/workflows/approvals.yml", false],
     [".github/CODEOWNERS", false],
@@ -71,17 +72,24 @@ describe("owner paths", () => {
     ["packages/engine/src/money.ts", false],
     ["packages/engine/src/ledger/checks.ts", false],
     ["README.md", false],
-  ])("%s is an owner path: %s", (path, expected) => {
-    expect(ownerPathsIn([path], GLOBS).length > 0).toBe(expected);
+  ])("%s matches the sample list: %s", (path, expected) => {
+    expect(ownerPathsIn([path], SAMPLE).length > 0).toBe(expected);
+    // The repository's own list is empty, so no path is an owner path, and Owner OK passes on Names alone.
+    expect(ownerPathsIn([path], GLOBS)).toEqual([]);
+    expect(decideOwnerOk({ namesResult: "success", paths: [path], globs: GLOBS, labels: [] })).toEqual({
+      pass: true,
+      why: "The PR changes no owner path.",
+      ownerPaths: [],
+    });
   });
 
   it.each([
     // A line break or a line separator in a name: git and GitHub keep it, and most views do not show it.
-    "db/migrations/a .sql",
-    "db/migrations/a\n.sql",
-    "db/migrations/a\r.sql",
-    "db/migrations/x y/b.sql",
-    "db/migrations/\r\n",
+    "LICENCE .md",
+    "docs/COPYING\n.txt",
+    "docs/LICENCE\r",
+    "x y/LICENCE",
+    "\r\n/.protected-name-ok",
     "a\rb/COPYING",
     "x y/LICENSE",
     "packages/client/LICENSE\n.md",
@@ -91,9 +99,9 @@ describe("owner paths", () => {
     "packages/client/LıCENSE",
     "adapters/a1/.protected-name-oK",
     ".github/protected-name-allowliﬆ.txt",
-  ])("finds the owner path %j, and Owner OK fails on it without the label", (path) => {
-    expect(ownerPathsIn([path], GLOBS)).toEqual([path]);
-    expect(decideOwnerOk({ namesResult: "success", paths: [path], globs: GLOBS, labels: [] })).toEqual({
+  ])("finds the sample owner path %j, and Owner OK fails on it without the label", (path) => {
+    expect(ownerPathsIn([path], SAMPLE)).toEqual([path]);
+    expect(decideOwnerOk({ namesResult: "success", paths: [path], globs: SAMPLE, labels: [] })).toEqual({
       pass: false,
       why: "The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label.",
       ownerPaths: [path],
@@ -110,6 +118,21 @@ describe("owner paths", () => {
     }
     expect(globToRegExp("a/?.ts").test("a///.ts")).toBe(false);
     expect(globToRegExp("a/*.ts").test("a/b/c.ts")).toBe(false);
+  });
+
+  it("matches a folder glob for the folder and everything in it, in any case, and nothing beside it", () => {
+    const inside = [
+      "db/migrations/0001_start.sql",
+      "db/migrations/sub/x.sql",
+      "db/migrations",
+      "DB/Migrations/0001_start.sql",
+      "db/migrations/a .sql",
+      "db/migrations/a\n.sql",
+      "db/migrations/a\r.sql",
+      "db/migrations/x y/b.sql",
+      "db/migrations/\r\n",
+    ];
+    expect(ownerPathsIn([...inside, "db/migrationsx/a.sql", "db/seed.sql"], ["db/migrations/**"])).toEqual(inside);
   });
 
   it("matches a pattern without a slash at the root only", () => {
@@ -211,17 +234,32 @@ describe("Owner OK", () => {
   });
 
   it("fails a PR that changes an owner path, until the owner-ok label is set", () => {
-    const input = { namesResult: "success", paths: ["README.md", "db/migrations/0001_start.sql"], globs: GLOBS };
+    const input = { namesResult: "success", paths: ["README.md", "packages/client/LICENSE"], globs: SAMPLE };
     expect(decideOwnerOk({ ...input, labels: ["other"] })).toEqual({
       pass: false,
       why: "The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label.",
-      ownerPaths: ["db/migrations/0001_start.sql"],
+      ownerPaths: ["packages/client/LICENSE"],
     });
     expect(decideOwnerOk({ ...input, labels: ["owner-ok"] })).toMatchObject({ pass: true });
   });
 
+  it("passes on Names alone while the repository's list is empty, the licences and the markers too", () => {
+    const paths = ["LICENSE", "packages/client/LICENSE", "adapters/a1/.protected-name-ok", ".github/owner-paths.txt"];
+    expect(decideOwnerOk({ namesResult: "success", paths, globs: GLOBS, labels: [] })).toEqual({
+      pass: true,
+      why: "The PR changes no owner path.",
+      ownerPaths: [],
+    });
+  });
+
   it.each(["failure", "cancelled", "skipped", "missing"])("fails when the names check ended in %s", (namesResult) => {
-    expect(decideOwnerOk({ namesResult, paths: [], globs: GLOBS, labels: ["owner-ok"] })).toEqual({
+    expect(decideOwnerOk({ namesResult, paths: ["README.md"], globs: GLOBS, labels: [] })).toEqual({
+      pass: false,
+      why: `The names check did not pass (${namesResult}). Owner OK waits for it.`,
+      ownerPaths: [],
+    });
+    // A PR that changes an owner path, with the label: still no pass, and no path listed.
+    expect(decideOwnerOk({ namesResult, paths: ["LICENSE"], globs: SAMPLE, labels: ["owner-ok"] })).toEqual({
       pass: false,
       why: `The names check did not pass (${namesResult}). Owner OK waits for it.`,
       ownerPaths: [],

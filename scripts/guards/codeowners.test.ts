@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // CODEOWNERS asks the owner to review exactly the owner paths
-// (.github/owner-paths.txt): the database migrations, the licences and the
-// exceptions to the names rule, and nothing else. CODEOWNERS matches case and
-// the owner path list does not, so a name that may sit in any folder comes in
-// the three spellings people write: LICENSE, license and License.
+// (.github/owner-paths.txt), and nothing else. That list is empty, so
+// CODEOWNERS gives no path to anyone. CODEOWNERS matches case and the owner
+// path list does not, so a name that may sit in any folder comes in the three
+// spellings people write: LICENSE, license and License.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -50,6 +50,16 @@ describe("CODEOWNERS", () => {
   it("asks the owner of the approval checks for exactly the owner paths", () => {
     expect(owner).not.toBe("");
     expect(codeownersProblems(read(".github/CODEOWNERS"), globs, owner)).toEqual([]);
+  });
+
+  it("gives no path to anyone while the owner path list is empty", () => {
+    expect(globs).toEqual([]);
+    expect(codeownersProblems("# No owner paths.\n", globs, owner)).toEqual([]);
+    expect(codeownersProblems("# Owners\n\nLICENSE* @owner\n/db/migrations/ @someone\n", globs, "owner")).toEqual([
+      "CODEOWNERS lists LICENSE*, which is no owner path.",
+      "CODEOWNERS lists /db/migrations/, which is no owner path.",
+      "CODEOWNERS must give /db/migrations/ to @owner alone.",
+    ]);
   });
 
   it("stands for each kind of owner path glob", () => {

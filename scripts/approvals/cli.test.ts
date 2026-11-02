@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,12 +21,18 @@ afterEach(async () => {
   }
 });
 
-function baseCheckout(): string {
+/** The repository's own list, as the workflow reads it from the default branch. It is empty. */
+const OWN_LIST = readFileSync(new URL("../../.github/owner-paths.txt", import.meta.url), "utf8");
+
+/** A sample list, not the repository's, for the tests that need an owner path. */
+const SAMPLE_LIST = "# A sample list\n\n**/LICENSE*\n";
+
+/** A checkout of the default branch, with `ownerPaths` as its owner path list. */
+function baseCheckout(ownerPaths: string): string {
   const dir = mkdtempSync(join(tmpdir(), "nortfox-approvals-"));
   folders.push(dir);
   mkdirSync(join(dir, ".github"));
-  // The repository's own list, as the workflow reads it from the default branch.
-  copyFileSync(new URL("../../.github/owner-paths.txt", import.meta.url), join(dir, ".github/owner-paths.txt"));
+  writeFileSync(join(dir, ".github/owner-paths.txt"), ownerPaths);
   return dir;
 }
 
@@ -34,13 +40,14 @@ async function run(
   command: string[],
   routes: Routes,
   env: Record<string, string> = {},
+  ownerPaths: string = OWN_LIST,
 ): Promise<{ code: number; out: string[]; err: string[]; requests: string[] }> {
   const server = await startFakeGitHub(routes);
   servers.push(server);
   const out: string[] = [];
   const err: string[] = [];
   const io: Io = {
-    cwd: baseCheckout(),
+    cwd: baseCheckout(ownerPaths),
     env: {
       GITHUB_TOKEN: "t",
       GITHUB_REPOSITORY: "o/r",
@@ -191,6 +198,7 @@ describe("owner-ok", () => {
         ]),
       },
       env,
+      SAMPLE_LIST,
     );
     expect(result).toMatchObject({ code: 0, out: ["Owner OK: The PR changes no owner path."] });
   });
@@ -201,15 +209,55 @@ describe("owner-ok", () => {
       {
         [`GET ${p}/pulls/7`]: pr("owner"),
         [`GET ${p}/pulls/7/files?per_page=100`]: {
-          body: [{ filename: "db/0001_start.sql", previous_filename: "db/migrations/0001_start.sql" }],
+          body: [{ filename: "docs/terms.md", previous_filename: "LICENSE" }],
         },
       },
       env,
+      SAMPLE_LIST,
     );
     expect(result).toMatchObject({
       code: 1,
-      out: ["Owner path: db/migrations/0001_start.sql"],
+      out: ["Owner path: LICENSE"],
       err: ["Owner OK: The PR changes owner paths. Owner OK passes when the owner sets the owner-ok label."],
+    });
+  });
+
+  it("passes on Names alone while the repository's list is empty, also a PR that changes a licence or a marker", async () => {
+    const result = await run(
+      ["owner-ok"],
+      {
+        [`GET ${p}/pulls/7`]: pr("owner", [], "main", 5),
+        [`GET ${p}/pulls/7/files?per_page=100`]: files([
+          "LICENSE",
+          "packages/client/LICENSE",
+          "adapters/a1/.protected-name-ok",
+          ".github/owner-paths.txt",
+          "db/migrations/0001_start.sql",
+        ]),
+      },
+      env,
+    );
+    expect(result).toEqual({
+      code: 0,
+      out: ["Owner OK: The PR changes no owner path."],
+      err: [],
+      requests: [`GET ${p}/pulls/7`, `GET ${p}/pulls/7/files?per_page=100`, `GET ${p}/pulls/7`],
+    });
+  });
+
+  it("still removes an owner-ok label that does not count while the repository's list is empty", async () => {
+    const result = await run(
+      ["owner-ok"],
+      ownerPathPr({ [events]: labelled("someone", "2026-11-01T10:00:01Z"), [activity]: pushes(head, "2026-11-01T10:00:00Z") }),
+      env,
+    );
+    expect(result.requests).toContain(remove);
+    expect(result).toMatchObject({
+      code: 0,
+      out: [
+        "Owner OK: The owner-ok label was set by an account that is not the owner's. The owner-ok label is removed.",
+        "Owner OK: The PR changes no owner path.",
+      ],
     });
   });
 
@@ -218,6 +266,7 @@ describe("owner-ok", () => {
       ["owner-ok"],
       { [`GET ${p}/pulls/7`]: pr("owner"), [`GET ${p}/pulls/7/files?per_page=100`]: files(["LICENSE"]) },
       {},
+      SAMPLE_LIST,
     );
     expect(result).toMatchObject({
       code: 1,
@@ -231,6 +280,7 @@ describe("owner-ok", () => {
       ["owner-ok"],
       ownerPathPr({ [events]: labelled("owner", "2026-11-01T10:00:01Z"), [activity]: pushes(head, "2026-11-01T10:00:00Z") }),
       env,
+      SAMPLE_LIST,
     );
     expect(result.requests.some((request) => request.startsWith("DELETE"))).toBe(false);
     expect(result).toMatchObject({
@@ -246,6 +296,7 @@ describe("owner-ok", () => {
       ["owner-ok"],
       ownerPathPr({ [events]: labelled("owner", "2026-11-01T10:00:00Z"), [activity]: pushes(head, "2026-11-01T11:00:00Z") }),
       { ...env, EVENT_ACTION: "reopened" },
+      SAMPLE_LIST,
     );
     expect(result.requests).toContain(remove);
     expect(result).toMatchObject({
@@ -263,6 +314,7 @@ describe("owner-ok", () => {
       ["owner-ok"],
       ownerPathPr({ [events]: labelled("someone", "2026-11-01T10:00:01Z"), [activity]: pushes(head, "2026-11-01T10:00:00Z") }),
       env,
+      SAMPLE_LIST,
     );
     expect(result.requests).toContain(remove);
     expect(result.code).toBe(1);
@@ -276,6 +328,7 @@ describe("owner-ok", () => {
         [activity]: pushes("f".repeat(40), "2026-11-01T10:00:00Z"),
       }),
       env,
+      SAMPLE_LIST,
     );
     expect(result.requests).toContain(remove);
     expect(result.code).toBe(1);
@@ -285,7 +338,7 @@ describe("owner-ok", () => {
     ["the issue events", { [events]: { status: 502 } }],
     ["the branch history", { [events]: labelled("owner", "2026-11-01T10:00:01Z"), [activity]: { status: 503 } }],
   ])("removes the label and fails when GitHub cannot give %s", async (_what, routes) => {
-    const result = await run(["owner-ok"], ownerPathPr(routes), env);
+    const result = await run(["owner-ok"], ownerPathPr(routes), env, SAMPLE_LIST);
     expect(result.requests).toContain(remove);
     expect(result.code).toBe(1);
     expect(result.out[0]).toMatch(
@@ -329,6 +382,7 @@ describe("owner-ok", () => {
         [`GET ${p}/pulls/7/files?per_page=100`]: files(["LICENSE"]),
       },
       env,
+      SAMPLE_LIST,
     );
     expect(result).toEqual({
       code: 1,
