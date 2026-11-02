@@ -266,6 +266,7 @@ describe("owner-ok", () => {
       ["owner-ok"],
       { [`GET ${p}/pulls/7`]: pr("owner"), [`GET ${p}/pulls/7/files?per_page=100`]: files(["LICENSE"]) },
       {},
+      SAMPLE_LIST,
     );
     expect(result).toMatchObject({
       code: 1,
@@ -381,6 +382,7 @@ describe("owner-ok", () => {
         [`GET ${p}/pulls/7/files?per_page=100`]: files(["LICENSE"]),
       },
       env,
+      SAMPLE_LIST,
     );
     expect(result).toEqual({
       code: 1,

@@ -18,7 +18,7 @@ From the first commit:
 - Every guard is proven to fail: each check has a test that gives it a bad case and expects it to fail. The names check's tests use fake words, so the real names never enter the repository.
 - Every test suite runs in CI, and no suite runs with `--passWithNoTests`. One aggregator job, "CI OK", passes only when every CI job passed; a failed, cancelled or skipped job fails it.
 - The GitHub Actions workflows pass zizmor and actionlint. Every action is pinned to a full commit SHA, and a job gets a write scope only when it needs one.
-- The approval checks run from `main` on `pull_request_target` and read the PR only as data. A PR can still add a job that carries a required check's name, so a PR from an outside contributor is merged only by the owner, by hand, after reading its whole diff. A PR that Dependabot opened from a branch in this repository is merged by an agent, after the owner's review agent has read its whole diff and approved it ([plan, section 6](../plan.md#where-the-checks-come-from)).
+- The approval checks run from `main` on `pull_request_target` and read the PR only as data. A PR can still add a job that carries a required check's name, so a PR from an outside contributor is merged only by the owner, by hand, after reading its whole diff. A PR that Dependabot opened from a branch in this repository is merged by an agent, after the owner's review agent has read its whole diff and approved it. The agent writes that squash commit's message: Dependabot's title and the PR number, with an empty body, so that no release notes from other projects reach `main` ([plan, section 6](../plan.md#where-the-checks-come-from)).
 - Shell scripts start with `set -euo pipefail`.
 - Changesets record the release notes.
 

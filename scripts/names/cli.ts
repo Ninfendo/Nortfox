@@ -13,14 +13,14 @@
 // --pr runs in the approval workflow. It also reads OWNER_LOGIN, HEAD_SHA (the
 // head commit that the event which started the run names) and
 // TRIGGERING_ACTOR (who started the run, or re-ran it). It reads a PR from
-// another account with the list only in a run that the owner started, on an
-// open PR whose head commit the owner has approved, and its report then gives
-// no places: otherwise anyone could fill a PR with guesses and read from the
-// public log which of them are on the list. It reads the PR at HEAD_SHA only,
-// and gives no result when the PR changed while it read it. RUN_ACTOR
-// (github.actor) is whose rights the run has, which a re-run keeps: GitHub
-// gives a run that Dependabot started no secrets, so there the check says
-// why the list is missing.
+// another account with the list only in a run that the owner's account
+// started, on an open PR whose head commit the owner's account has approved,
+// and its report then gives no places: otherwise anyone could fill a PR with
+// guesses and read from the public log which of them are on the list. It
+// reads the PR at HEAD_SHA only, and gives no result when the PR changed while
+// it read it. RUN_ACTOR (github.actor) is whose rights the run has, which a
+// re-run keeps: GitHub gives a run that Dependabot started no secrets, so
+// there the check says why the list is missing.
 
 import { readFileSync } from "node:fs";
 import { field, stringField } from "../github/api.ts";
@@ -100,14 +100,14 @@ type Gathered =
 
 /** The one line for every run that does not read a PR from another account. */
 export const WAITING =
-  "The PR comes from outside the owner's account. The check reads it only in a run that the owner starts, on an open PR whose head commit the owner has approved. It waits for the owner.";
+  "The PR comes from outside the owner's account. The check reads it only in a run that the owner's account starts, on an open PR whose head commit the owner's account has approved. It waits for that run.";
 
 /** The account whose runs GitHub gives no secrets, also when someone else re-runs them. */
 export const DEPENDABOT = "dependabot[bot]";
 
-/** Why the list is missing in a run that Dependabot started, and what the owner does instead. */
+/** Why the list is missing in a run that Dependabot started, and which run is needed instead. */
 export const DEPENDABOT_RUN =
-  "Dependabot started this run, and GitHub gives such a run no secrets, also when someone re-runs it. So the protected names list is missing, and the check does not pass. The owner starts a new run from the owner's account instead: add a label to the PR, any but owner-ok, and remove it again.";
+  "Dependabot started this run, and GitHub gives such a run no secrets, also when someone re-runs it. So the protected names list is missing, and the check does not pass. A new run from the owner's account is needed instead: once the head commit is approved, add a label to the PR, any but owner-ok, and remove it again.";
 
 /** A PR that --pr may read, and whether its report may name places. */
 interface Admitted {
@@ -119,11 +119,11 @@ interface Admitted {
  * Decides whether --pr reads the PR at all, before the list is read. A PR
  * from the owner's account is always read: the owner opened it, from a branch
  * in this repository or in the owner's own fork. Any other PR is read only in
- * a run that the owner started, while the PR is open, and once the owner has
- * approved its head commit: the author's own pushes and edits start runs too,
- * and they must never learn anything from the list. A PR that the owner
- * opened from another account's fork is such a PR, because that account can
- * push to its branch.
+ * a run that the owner's account started, while the PR is open, and once the
+ * owner's account has approved its head commit: the author's own pushes and
+ * edits start runs too, and they must never learn anything from the list. A
+ * PR that the owner opened from another account's fork is such a PR, because
+ * that account can push to its branch.
  */
 async function admit(io: Io): Promise<Admitted | string> {
   const owner = requireEnv(io.env, "OWNER_LOGIN");

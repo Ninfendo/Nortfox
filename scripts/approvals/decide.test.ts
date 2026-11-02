@@ -258,7 +258,8 @@ describe("Owner OK", () => {
       why: `The names check did not pass (${namesResult}). Owner OK waits for it.`,
       ownerPaths: [],
     });
-    expect(decideOwnerOk({ namesResult, paths: [], globs: SAMPLE, labels: ["owner-ok"] })).toEqual({
+    // A PR that changes an owner path, with the label: still no pass, and no path listed.
+    expect(decideOwnerOk({ namesResult, paths: ["LICENSE"], globs: SAMPLE, labels: ["owner-ok"] })).toEqual({
       pass: false,
       why: `The names check did not pass (${namesResult}). Owner OK waits for it.`,
       ownerPaths: [],

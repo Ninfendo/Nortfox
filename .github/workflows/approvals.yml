@@ -27,10 +27,10 @@
 # Dependabot's PRs come from another account too, but a re-run does not work
 # there. A re-run keeps the rights of the account that started the first run
 # (github.actor), and GitHub gives a run that Dependabot started no secrets.
-# So Names has no list and fails, and says why. On such a PR an agent starts
-# a new run from the owner's account instead, after the owner's review agent
-# has approved its head commit: it adds a label, any but owner-ok, and removes
-# it again.
+# So Names has no list and fails, and says why. On such a PR, when Dependabot
+# opened it from a branch in this repository, an agent starts a new run from
+# the owner's account instead, after the owner's review agent has approved its
+# head commit: it adds a label, any but owner-ok, and removes it again.
 #
 # Each check judges the head commit that the event names (HEAD_SHA), and fails
 # when the PR's head is another commit, so a verdict lands only on the commit

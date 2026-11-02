@@ -33,7 +33,7 @@ NortFox is an open-source Swedish accounting system. Everything in it works thro
 - Commit as the identity in the repository's git config. Check `git config user.email` in your worktree before your first commit.
 - An AI agent ends every commit message with a `Co-Authored-By:` line that names the agent and its model, for example `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - An AI agent ends every PR body with the line its tool adds, for example `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-- Merges are squash only, so the PR title and body become the commit on `main`. Write them with the same care as code, and keep them free of everything in the first section.
+- Merges are squash only, so the PR title and body become the commit on `main`. Write them with the same care as code, and keep them free of everything in the first section. A PR from Dependabot is the one exception: the agent that merges it writes the commit message ([below](#pull-requests-from-dependabot)).
 
 ## The required checks
 
@@ -44,6 +44,8 @@ NortFox is an open-source Swedish accounting system. Everything in it works thro
 - **Owner OK:** Names passed, and a PR that changes an owner path (`.github/owner-paths.txt`) carries the owner-ok label on its head commit. The list is empty, so Owner OK passes whenever Names passes.
 - **Outside approval:** the PR comes from the owner's account, or the owner's account approved its head commit. A PR comes from the owner's account only when the owner opened it from a branch in this repository or in the owner's own fork.
 - **Review OK:** the owner's review agent passed the PR's head commit.
+
+When a check fails on your PR, read its log and fix the cause in your branch.
 
 Never post any of these checks yourself: not by the API, and not through a job or a commit status that carries one of their names. Only the owner's review agent posts Review OK.
 
@@ -67,8 +69,6 @@ You review and merge a PR that Dependabot opened from a branch in this repositor
 1. The owner's review agent reads its whole diff, workflows included. When it does not pass the PR, nobody approves or merges it.
 2. When it passes the PR, the review agent approves the PR's head commit and posts Review OK.
 3. An agent adds a label to the PR, any but owner-ok, and removes it again. That starts a new approval run from the owner's account, and in it Names reads the PR with the list. A re-run does not work on such a PR: it keeps Dependabot's rights, and GitHub gives it no secrets.
-4. When all five checks pass on that head commit, the agent squash-merges the PR and names that commit in the merge (`--match-head-commit`).
+4. When all five checks pass on that head commit, the agent squash-merges the PR. It names that commit in the merge, and writes the commit message itself: Dependabot's title and the PR number as the subject, and an empty body. For example: `gh pr merge <number> --squash --match-head-commit <sha> --subject "<title> (#<number>)" --body ""`. Dependabot's body holds release notes from other projects, with their issue numbers and their authors' accounts, and none of that may reach `main`. The `names-main` job in `ci.yml` checks the message after the merge.
 
-Do nothing else to such a PR. Never push to its branch, and never edit its title, body or base. When Dependabot pushes a new commit, the review starts again at step 1.
-
-When a check fails, read its log and fix the cause in your branch.
+Do nothing else to such a PR. Never push to its branch, and never edit its title, body or base: that starts a run, and the merge message is set in the merge, not in the PR. When Dependabot pushes a new commit, the review starts again at step 1. When a check still fails after step 3, leave the PR as it is: Dependabot or the owner handles it.
