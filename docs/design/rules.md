@@ -130,7 +130,7 @@ Variants: primary (`--primary`), secondary (`--secondary`), outline (`--border` 
 - **Labels** start with a verb and say what happens: `Bokför`, `Attestera`, `Lås perioden`. Never `Ja`. Where NortFox follows an established accounting workflow, that workflow's own labels and messages are kept as they are, including `OK` in the delete confirmation.
 - **Destructive colour** only on the button that confirms a destructive action, inside the dialog. On the page the same action is an outline button.
 - **Unavailable:** prefer an enabled button that explains on click. If disabled (`aria-disabled`, still focusable), the reason shows as a tooltip on hover and on focus and is the button's accessible description.
-- **Icon-only** buttons have `aria-label` and a tooltip. Shortcuts show in the tooltip, and inside the button in keyboard-heavy views (`Bokför Alt B`).
+- **Icon-only** buttons have `aria-label` and a tooltip. Shortcuts show in the tooltip. Whether a view also shows them on screen follows its screen spec; the voucher screens show none.
 
 ## 8. Dialog, side panel, page or popover
 
