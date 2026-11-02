@@ -8,6 +8,7 @@
 // and the deletion of the voucher just below it moves it back by one.
 // Anything else is refused.
 
+import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { INSUFFICIENT_PRIVILEGE, begin, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
@@ -23,6 +24,7 @@ import {
   recordVoidRange,
   someSystemUser,
   someUser,
+  writeRow,
   type VoucherSeries,
 } from "../../../test/ledger.ts";
 
@@ -284,7 +286,7 @@ describe("the voucher counters", () => {
     expect((await counterOf(app, company, other.id))?.next_number).toBe(1);
   });
 
-  it("takes no booking or deletion of an earlier transaction as proof", async () => {
+  it("takes no booking of an earlier transaction as proof, and refuses a step back with no deletion", async () => {
     const { company, year, series } = await companyWithSeries();
     await addAccount(app, company, year, { number: 1930 });
     await addAccount(app, company, year, { number: 6110 });
@@ -292,6 +294,33 @@ describe("the voucher counters", () => {
     expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
     await expectRefusal(fromATrigger(company, moveTo(series, "next_number - 1")), "counter_move", { series: "A", from: 2, to: 1 });
     await expectRefusal(fromATrigger(company, moveTo(series, "next_number + 1")), "counter_move", { series: "A", from: 2, to: 3 });
+    expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
+  });
+
+  it("takes no deletion of an earlier transaction as proof, also when a voucher with the deleted voucher's id is booked again with its number", async () => {
+    const { company, year, series } = await companyWithSeries();
+    await addAccount(app, company, year, { number: 1930 });
+    await addAccount(app, company, year, { number: 6110 });
+    const id = randomUUID();
+    const bookWithId = (): Promise<unknown> =>
+      inTransaction(app, { company, ...who }, async () => {
+        await app.query(
+          `INSERT INTO ledger.vouchers (id, company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
+           VALUES ($1, $2, $3, 'A', 'Kontorsmaterial', '2090-03-15', 'MANUAL')`,
+          [id, company, year],
+        );
+        for (const row of balanced()) {
+          await writeRow(app, company, id, row);
+        }
+      });
+    await bookWithId();
+    await inTransaction(app, { company, ...who }, () => app.query("DELETE FROM ledger.vouchers WHERE id = $1", [id]));
+    await bookWithId();
+    expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
+    // The record holds a deletion of number 1 by this id, and the vouchers a
+    // voucher with this id and number 1, but the deletion was not in this
+    // transaction.
+    await expectRefusal(fromATrigger(company, moveTo(series, "next_number - 1")), "counter_move", { series: "A", from: 2, to: 1 });
     expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
   });
 

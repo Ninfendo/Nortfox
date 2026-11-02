@@ -11,7 +11,9 @@
 #   the image skips its setup, so the migrate step never runs;
 # - on the running stack: PostgreSQL archives WAL through pgBackRest, with
 #   archive_timeout 1min; the migrate step exited 0, and the owner role
-#   applied every migration and owns every table; pgBackRest holds a full
+#   applied every migration and owns every table; our roles, a reader among
+#   them, connect to the database nortfox only, and in no database may any of
+#   them make a large object or write a WAL message; pgBackRest holds a full
 #   backup and the WAL archive in both repositories;
 # - write 1, then the time T, then write 2: a restore to T from repo1 gives
 #   write 1 and not write 2, and so does a restore to T from repo2. Each
@@ -80,10 +82,15 @@ expect() {
   echo "pitr: ok, $1 is '$3'."
 }
 
+# SQL from stdin, as the role $1, in the database $2, over the socket.
+sql_in() {
+  compose exec -T --user postgres postgres \
+    psql --no-psqlrc --quiet --set ON_ERROR_STOP=1 --tuples-only --no-align --username "$1" --dbname "$2"
+}
+
 # SQL from stdin, as the role $1, in the database nortfox, over the socket.
 sql() {
-  compose exec -T --user postgres postgres \
-    psql --no-psqlrc --quiet --set ON_ERROR_STOP=1 --tuples-only --no-align --username "$1" --dbname nortfox
+  sql_in "$1" nortfox
 }
 
 backrest() {
@@ -204,15 +211,42 @@ SELECT coalesce(string_agg(what, ', ' ORDER BY what), 'nothing') FROM (
 SQL
 )" nothing
 step "$tables tables, all owned by nortfox_owner."
-expect "what our roles may run of the functions that make a large object" "$(sql postgres << 'SQL'
+expect "what our roles may do in the cluster's databases" "$(sql postgres << 'SQL'
+SELECT coalesce(string_agg(r.who || ' ' || r.what || ' ' || r.db, ', ' ORDER BY r.who, r.db, r.what), 'nothing') FROM (
+  SELECT who, what, d.datname::text AS db
+  FROM pg_catalog.unnest(ARRAY['nortfox_owner', 'nortfox_app', 'nortfox_reader']) AS who,
+    pg_catalog.unnest(ARRAY['CONNECT', 'TEMPORARY', 'CREATE']) AS what,
+    pg_catalog.pg_database AS d
+  WHERE d.datallowconn AND pg_catalog.has_database_privilege(who, d.oid, what)
+) AS r
+SQL
+)" "nortfox_app CONNECT nortfox, nortfox_owner CONNECT nortfox, nortfox_owner CREATE nortfox, nortfox_owner TEMPORARY nortfox, nortfox_reader CONNECT nortfox"
+for database in nortfox postgres template1; do
+  expect "what our roles may run in the database $database of the functions that keep bytes outside the ledger" "$(sql_in postgres "$database" << 'SQL'
 SELECT coalesce(string_agg(r.who || ' ' || r.fn, ', ' ORDER BY r.who, r.fn), 'nothing') FROM (
   SELECT who, fn
   FROM pg_catalog.unnest(ARRAY['nortfox_owner', 'nortfox_app', 'nortfox_reader']) AS who,
-    pg_catalog.unnest(ARRAY['pg_catalog.lo_creat(integer)', 'pg_catalog.lo_create(oid)', 'pg_catalog.lo_from_bytea(oid, bytea)']) AS fn
+    pg_catalog.unnest(ARRAY['pg_catalog.lo_creat(integer)', 'pg_catalog.lo_create(oid)', 'pg_catalog.lo_from_bytea(oid, bytea)',
+      'pg_catalog.pg_logical_emit_message(boolean, text, text, boolean)',
+      'pg_catalog.pg_logical_emit_message(boolean, text, bytea, boolean)']) AS fn
   WHERE pg_catalog.has_function_privilege(who, fn, 'EXECUTE')
 ) AS r
 SQL
 )" nothing
+done
+# A reader role, made as db/README.md says. Each of our roles connects to the
+# database nortfox, and is refused postgres and template1.
+sql postgres <<< "CREATE ROLE backup_test_reader LOGIN; GRANT nortfox_reader TO backup_test_reader WITH INHERIT TRUE, SET FALSE;"
+for role in nortfox_owner nortfox_app backup_test_reader; do
+  expect "what $role gets in the database nortfox" "$(sql_in "$role" nortfox <<< 'SELECT 1')" 1
+  for database in postgres template1; do
+    if refused=$(sql_in "$role" "$database" <<< 'SELECT 1' 2>&1); then
+      fail "$role connects to the database $database."
+    fi
+    grep --quiet "permission denied for database" <<< "$refused" || fail "$role was refused the database $database for another reason: $refused"
+  done
+done
+step "ok, our roles connect to the database nortfox only, and may run none of the functions that keep bytes outside the ledger."
 
 step "a full backup to each repository."
 backrest --repo=1 --type=full backup

@@ -4,19 +4,29 @@
 -- before the first migration: the compose file's init step
 -- (deploy/postgres/initdb/10-roles.sh) and the test setup. It is safe to run
 -- again. A migration cannot do this, because it runs as nortfox_owner, and
--- these functions belong to the bootstrap superuser.
+-- these functions belong to the bootstrap superuser. The init step runs it in
+-- the cluster's other databases too, postgres and template1, so a database
+-- made from template1 later starts with these functions closed
+-- (db/other-databases.sql).
 --
--- Large objects. Any role that may connect can make a large object with these
--- three functions. A large object holds bytes that stay in the database and
--- in its backups, outside every table, its row level security and the
--- behandlingshistorik, and its maker can grant it to any other role. So no
--- role of NortFox may make one: not the app, which reads and writes rows, not
--- a reader, which only reads, and not the owner. The other large object
--- functions read or write only a large object that already exists, with the
--- privileges its maker gave.
+-- Bytes outside the ledger. Any role that may connect can run these functions
+-- by default, and each keeps bytes of its caller's choosing outside every
+-- table, its row level security and the behandlingshistorik, in the backups:
+--
+-- - lo_creat, lo_create and lo_from_bytea make a large object. It stays in
+--   the database, and its maker can grant it to any other role. The other
+--   large object functions read or write only a large object that already
+--   exists, with the privileges its maker gave.
+-- - pg_logical_emit_message writes a message of up to 1 GB into the WAL,
+--   which the archive sends to both repositories and keeps with the backups.
+--
+-- So no role of NortFox may run them: not the app, which reads and writes
+-- rows, not a reader, which only reads, and not the owner.
 
 REVOKE EXECUTE ON FUNCTION
   pg_catalog.lo_creat(integer),
   pg_catalog.lo_create(oid),
-  pg_catalog.lo_from_bytea(oid, bytea)
+  pg_catalog.lo_from_bytea(oid, bytea),
+  pg_catalog.pg_logical_emit_message(boolean, text, text, boolean),
+  pg_catalog.pg_logical_emit_message(boolean, text, bytea, boolean)
 FROM PUBLIC;

@@ -16,7 +16,16 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { INSUFFICIENT_PRIVILEGE, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import {
+  CHECK_VIOLATION,
+  INSUFFICIENT_PRIVILEGE,
+  begin,
+  expectError,
+  expectRefusal,
+  freshDatabase,
+  inTransaction,
+  type TestDatabase,
+} from "../../../test/database.ts";
 import {
   addBooks,
   balanced,
@@ -417,6 +426,28 @@ describe("Radera", () => {
         { table: "ledger.deleted_voucher_rows", field: null },
       );
       expect(await deletedVouchersOf(app, books.company)).toEqual([entry]);
+    });
+
+    it("holds a row's sides at zero or more and its quantity a decimal in checks too, as a backstop when its triggers are off (as the owner)", async () => {
+      const { books } = await withEntry();
+      await unbindReader(books.company);
+      await begin(owner, { company: books.company, ...deleter });
+      try {
+        await owner.query("ALTER TABLE ledger.deleted_voucher_rows DISABLE TRIGGER USER");
+        for (const [sql, constraint] of [
+          ["UPDATE ledger.deleted_voucher_rows SET debit = -1", "deleted_voucher_rows_debit_not_negative"],
+          ["UPDATE ledger.deleted_voucher_rows SET credit = -1", "deleted_voucher_rows_credit_not_negative"],
+          ["UPDATE ledger.deleted_voucher_rows SET quantity = 'NaN'", "deleted_voucher_rows_quantity_finite"],
+          ["UPDATE ledger.deleted_voucher_rows SET quantity = 'Infinity'", "deleted_voucher_rows_quantity_finite"],
+          ["UPDATE ledger.deleted_voucher_rows SET quantity = '-Infinity'", "deleted_voucher_rows_quantity_finite"],
+        ] as const) {
+          await owner.query("SAVEPOINT backstop");
+          await expectError(owner.query(sql), CHECK_VIOLATION, new RegExp(constraint));
+          await owner.query("ROLLBACK TO SAVEPOINT backstop");
+        }
+      } finally {
+        await owner.query("ROLLBACK");
+      }
     });
 
     it("keeps a series that holds only deleted vouchers: it cannot be removed", async () => {

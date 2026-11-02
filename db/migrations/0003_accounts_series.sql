@@ -274,7 +274,8 @@ $rules$;
 -- the counter it left. Who recorded the range and when come from the
 -- transaction's actor, never from the caller. When the series is not there,
 -- or not in the transaction's company, the foreign key or row level security
--- refuses the range. No role changes or deletes one.
+-- refuses the range. Its trigger refuses a change or a deletion of a range
+-- from every role, the owner's statements too.
 CREATE FUNCTION ledger.void_ranges_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp

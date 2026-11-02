@@ -5,11 +5,14 @@
 // - A bigint (int8) reads as a JavaScript bigint, never as a number: amounts
 //   are whole öre in bigint columns (docs/decisions/0005-money.md). A numeric
 //   stays the string the driver gives.
-// - The address carries no password. The password comes from a file, such as
-//   a compose secret, so it is in no URL that anyone writes and in no
-//   environment variable. The driver reads a connection string's fields over
-//   every other field of its config, the password among them, so the password
-//   reaches the driver inside the connection string, in memory only.
+// - The address carries no password: none before the host, and no password
+//   parameter in its query. The password comes from a file, such as a compose
+//   secret, so it is in no URL that anyone writes and in no environment
+//   variable. The driver reads a connection string's fields over every other
+//   field of its config, the password among them, so the password reaches the
+//   driver inside the connection string, in memory only. The driver takes a
+//   password parameter over the password before the host, so an address with
+//   one is refused, as one with a password before the host is.
 
 import { readFileSync } from "node:fs";
 import { types, type ClientConfig, type CustomTypesConfig } from "pg";
@@ -41,7 +44,7 @@ export function connectionConfig(url: string, password?: string): ClientConfig {
   if (!ADDRESS.test(url)) {
     throw new Error("The database address must start with postgres:// or postgresql://.");
   }
-  if (parsed.password !== "") {
+  if (parsed.password !== "" || parsed.searchParams.has("password")) {
     throw new Error("The database address holds a password. Put the password in the file that NORTFOX_DATABASE_PASSWORD_FILE names.");
   }
   if (password === undefined) {

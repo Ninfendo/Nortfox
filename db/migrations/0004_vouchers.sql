@@ -30,7 +30,11 @@
 -- transaction that makes more than one of these changes makes them in the
 -- order a voucher locks those rows: the fiscal year, the series, the lock
 -- dates, then the accounts. In another order it can deadlock with a change of
--- a voucher.
+-- a voucher. That order holds for one account only. A voucher's rows lock
+-- their accounts in the order they are written, so a transaction that changes
+-- two or more accounts, or one statement that changes several, can deadlock
+-- with a booking or a new row whatever its order. Such a caller changes one
+-- account per transaction, or tries again on a deadlock (40P01).
 
 -- Vouchers --------------------------------------------------------------------
 --
@@ -93,7 +97,8 @@ CREATE INDEX vouchers_by_date ON ledger.vouchers (company_id, fiscal_year_id, tr
 -- A row has an account of its voucher's year, a debit and a credit in öre,
 -- each zero or more and kept as they were sent, so one row can hold both
 -- (decision 5), a text of at most 100 characters, and a quantity: a decimal
--- of any scale that may be negative, 0 when none is given. Its position is
+-- of any scale that may be negative, 0 when none is given, and never NaN,
+-- Infinity or -Infinity, which numeric also takes (a check). Its position is
 -- the next in its voucher, and rows keep that order. A row is never removed
 -- from a voucher that stays: it is struck, with who struck it and when, and
 -- counts in no balance from then on. The rows go only with their voucher, by
@@ -127,6 +132,8 @@ CREATE TABLE ledger.voucher_rows (
   CONSTRAINT voucher_rows_debit_not_negative CHECK (debit >= 0),
   CONSTRAINT voucher_rows_credit_not_negative CHECK (credit >= 0),
   CONSTRAINT voucher_rows_text_length CHECK (char_length(transaction_information) <= 100),
+  -- NaN sorts above Infinity in numeric, so this also refuses NaN.
+  CONSTRAINT voucher_rows_quantity_finite CHECK (quantity > '-Infinity'::numeric AND quantity < 'Infinity'::numeric),
   CONSTRAINT voucher_rows_created_by_kind CHECK (created_by_kind IN ('user', 'system', 'integration')),
   CONSTRAINT voucher_rows_removed_stamps CHECK (
     removed = (removed_at IS NOT NULL) AND (removed_at IS NULL) = (removed_by IS NULL) AND (removed_by IS NULL) = (removed_by_kind IS NULL)
@@ -145,8 +152,8 @@ CREATE INDEX voucher_rows_by_account ON ledger.voucher_rows (company_id, fiscal_
 -- voucher's id in voucher_id and each row's id in row_id. So the deletion of
 -- a voucher whose id an earlier deleted voucher had, here or in another
 -- company, is an entry of its own too. Only the deletion writes the record,
--- and no role changes or deletes it. The series stays while the record names
--- it.
+-- and its triggers refuse a change or a deletion of it from every role, the
+-- owner's statements too. The series stays while the record names it.
 
 CREATE TABLE ledger.deleted_vouchers (
   id uuid PRIMARY KEY DEFAULT pg_catalog.gen_random_uuid(),
@@ -207,7 +214,8 @@ CREATE TABLE ledger.deleted_voucher_rows (
     REFERENCES ledger.deleted_vouchers (company_id, id) ON DELETE RESTRICT,
   CONSTRAINT deleted_voucher_rows_position_unique UNIQUE (company_id, deleted_voucher_id, position),
   CONSTRAINT deleted_voucher_rows_debit_not_negative CHECK (debit >= 0),
-  CONSTRAINT deleted_voucher_rows_credit_not_negative CHECK (credit >= 0)
+  CONSTRAINT deleted_voucher_rows_credit_not_negative CHECK (credit >= 0),
+  CONSTRAINT deleted_voucher_rows_quantity_finite CHECK (quantity > '-Infinity'::numeric AND quantity < 'Infinity'::numeric)
 );
 
 -- Helpers -------------------------------------------------------------------------
@@ -955,8 +963,8 @@ BEGIN
 END
 $delete$;
 
--- Only a deletion writes the record of deleted vouchers, and no role
--- changes or deletes it, the owner neither.
+-- Only a deletion writes the record of deleted vouchers, and this refuses a
+-- change or a deletion of it from every role, the owner's statements too.
 CREATE FUNCTION ledger.deleted_vouchers_append_only() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp

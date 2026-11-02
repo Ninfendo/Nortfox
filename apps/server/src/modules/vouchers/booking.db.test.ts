@@ -210,6 +210,26 @@ describe("booking a voucher", () => {
     expect((await rowsOf(app, books.company, voucher.id)).map((row) => row.quantity)).toEqual(["1.23456", "-1.5", "0"]);
   });
 
+  it.each([["NaN"], ["nan"], ["Infinity"], ["inf"], ["-Infinity"], ["-inf"]])(
+    "refuses the quantity %s, which is no decimal, at booking and on a row added later",
+    async (quantity) => {
+      const books = await addBooks(app);
+      await expectError(
+        book(books, { rows: [{ account: 6110, debit: 1n, quantity }, { account: 1930, credit: 1n }] }),
+        CHECK_VIOLATION,
+        /voucher_rows_quantity_finite/,
+      );
+      expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+      const voucher = await book(books);
+      await expectError(
+        inTransaction(app, { company: books.company, ...who }, () => writeRow(app, books.company, voucher.id, { account: 3001, quantity })),
+        CHECK_VIOLATION,
+        /voucher_rows_quantity_finite/,
+      );
+      expect((await rowsOf(app, books.company, voucher.id)).map((row) => row.quantity)).toEqual(["0", "0"]);
+    },
+  );
+
   it("numbers the vouchers of a statement that books several of them one after the other", async () => {
     const books = await addBooks(app);
     const numbers = await inTransaction(app, { company: books.company, ...who }, async () => {

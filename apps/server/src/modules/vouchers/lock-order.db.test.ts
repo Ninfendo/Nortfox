@@ -8,7 +8,8 @@
 // deletion back with a third transaction that books in the same series and
 // so holds the counter, which makes the order of the waits certain. The
 // second part shows the order in which a transaction that changes more than
-// one of the rows a voucher locks makes its changes.
+// one of the rows a voucher locks makes its changes, and that a transaction
+// that changes two accounts can deadlock with a booking in any order.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -115,7 +116,8 @@ describe("the lock order between a deletion and a change of a row", () => {
 // A booking locks the voucher's fiscal year, then its series, then the
 // automatic lock row. A new row locks its voucher, then those three rows, and
 // then its account (db/README.md, the lock order). A transaction that changes
-// more than one of them makes the changes in that order too.
+// more than one of them makes the changes in that order too. That order holds
+// for one account only: two accounts have no safe order.
 describe("the lock order between a voucher and a transaction that changes two of the rows it locks", () => {
   let db: TestDatabase;
   let watcher: Client;
@@ -211,5 +213,40 @@ describe("the lock order between a voucher and a transaction that changes two of
   it("deadlocks a new row with a transaction that changes the account first, which is why it sets the lock date first", async () => {
     const { setter, written } = await race(renameAccount, lock, newRow);
     expectDeadlock(setter, written);
+  });
+
+  // A voucher's rows lock their accounts in the order they are written, so
+  // no order of two accounts is safe: a transaction that changes two or more
+  // accounts can deadlock with a booking or a new row whatever its order.
+  it.each([
+    [6110, 1930],
+    [1930, 6110],
+  ])("deadlocks a booking with rows on %i, then %i, with a transaction that changes the second account, then the first: no order of two accounts is safe", async (first, second) => {
+    const books = await addBooks(watcher);
+    const [setter, writer] = await Promise.all([db.connect("app"), db.connect("app")]);
+    const setterPid = await backendPid(setter);
+    const rename = (number: number): Promise<unknown> =>
+      setter.query("UPDATE ledger.accounts SET description = 'Nytt namn' WHERE fiscal_year_id = $1 AND number = $2", [books.year.id, number]);
+    /** Runs `work` in the open transaction of `client`, commits it, and gives what it failed with, or undefined. */
+    const finish = (client: Client, work: () => Promise<unknown>): Promise<unknown> =>
+      failureOf(
+        (async () => {
+          try {
+            await work();
+            await client.query("COMMIT");
+          } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+          }
+        })(),
+      );
+    await begin(writer, { company: books.company, ...who });
+    const voucher = await writeVoucher(writer, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: [{ account: first, debit: 500n }] });
+    await begin(setter, { company: books.company, ...someUser() });
+    await rename(second);
+    const set = finish(setter, () => rename(first));
+    await untilWaitingForLock(watcher, setterPid);
+    const written = finish(writer, () => writeRow(writer, books.company, voucher.id, { account: second, credit: 500n }));
+    expectDeadlock(await set, await written);
   });
 });

@@ -78,8 +78,11 @@ export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<str
     "ledger.reader_roles",
     {
       kind: "own policies",
-      why: "It binds each reader role to its company, so a reader sees its own binding by its role's oid. The app has no access.",
-      policies: [OWNER_POLICY, { role: READER, command: "SELECT", using: "(role_oid = ledger.current_role_oid())", check: null }],
+      why: "It binds each reader role to its company, so a reader sees its own binding by its role's oid and name. The app has no access.",
+      policies: [
+        OWNER_POLICY,
+        { role: READER, command: "SELECT", using: "((role_oid = ledger.current_role_oid()) AND (role_name = CURRENT_USER))", check: null },
+      ],
     },
   ],
 ]);

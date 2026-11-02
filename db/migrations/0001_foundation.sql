@@ -120,15 +120,20 @@ CREATE TABLE ledger.companies (
 --
 -- Binds each reader role to one company. Only the owner writes it. A reader
 -- sees only its own row, which ledger.reader_company_id() reads, so a
--- reader's policies never trust a setting. A binding holds the role's oid,
--- not its name. So a role that is dropped and made again with the same name,
--- or another role renamed to it, is not the role that was bound, and reads
--- nothing until the owner binds it.
+-- reader's policies never trust a setting. A binding holds the role's oid
+-- and, next to it, the role's name, which its trigger writes from the oid. A
+-- reader's binding is the one with both its oid and its name. So a role that
+-- is dropped and made again with the same name, another role renamed to it,
+-- or the bound role renamed, is not the role that was bound, and reads
+-- nothing until the owner binds it. A dump restored into another cluster
+-- brings the bindings with the old oids, which the new cluster may give to
+-- other roles: such a role has the oid but not the name, and reads nothing.
 
 CREATE TABLE ledger.reader_roles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES ledger.companies (company_id),
   role_oid oid NOT NULL UNIQUE,
+  role_name name NOT NULL,
   UNIQUE (company_id, id)
 );
 
@@ -137,8 +142,10 @@ CREATE TABLE ledger.reader_roles (
 -- One row per inserted, updated or deleted row of every company table,
 -- written by the audit_history trigger in the same transaction: the table,
 -- the row, the operation, the whole old and new row, the actor and its kind,
--- the transaction and the time to the microsecond. No role changes or deletes
--- a history row, the owner neither.
+-- the transaction and the time to the microsecond. Its trigger refuses a
+-- change or a deletion of a history row from every role, the owner's
+-- statements too. The owner owns the table and could switch the trigger
+-- off; no runtime role can.
 
 CREATE TABLE audit.history (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -186,7 +193,7 @@ CREATE FUNCTION ledger.reader_company_id() RETURNS uuid
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
 BEGIN ATOMIC
-  SELECT r.company_id FROM ledger.reader_roles AS r WHERE r.role_oid = ledger.current_role_oid();
+  SELECT r.company_id FROM ledger.reader_roles AS r WHERE r.role_oid = ledger.current_role_oid() AND r.role_name = CURRENT_USER;
 END;
 
 -- The actor that each backend's writing transaction keeps. A rule that
@@ -360,6 +367,32 @@ BEGIN
 END
 $truncate$;
 
+-- A binding's role name comes from the role that its oid names, never from
+-- the caller: a given name is refused. An oid that names no role gives no
+-- name, and the NOT NULL refuses the binding. A binding never changes its
+-- role: the owner deletes it and binds again.
+CREATE FUNCTION ledger.reader_roles_rules() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $rules$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.role_name IS NOT NULL THEN
+      PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'role_name', 'operation', 'create'));
+    END IF;
+    NEW.role_name := (SELECT r.rolname FROM pg_catalog.pg_roles AS r WHERE r.oid = NEW.role_oid);
+    RETURN NEW;
+  END IF;
+  IF NEW.role_oid IS DISTINCT FROM OLD.role_oid THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'role_oid', 'operation', 'update'));
+  END IF;
+  IF NEW.role_name IS DISTINCT FROM OLD.role_name THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'role_name', 'operation', 'update'));
+  END IF;
+  RETURN NEW;
+END
+$rules$;
+
 -- A company's tenant id comes from the sequence, and neither it nor the
 -- company_id ever changes.
 CREATE FUNCTION ledger.companies_keys() RETURNS trigger
@@ -422,13 +455,15 @@ SELECT meta.protect_company_table('ledger.companies', 'company_id');
 GRANT INSERT, UPDATE ON ledger.companies TO nortfox_app;
 
 -- The reader roles' bindings: the owner's company policy, and a reader's own
--- row by its role's oid. The app has no access at all.
+-- row by its role's oid and name. The app has no access at all.
 ALTER TABLE ledger.reader_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ledger.reader_roles FORCE ROW LEVEL SECURITY;
 CREATE POLICY company_owner ON ledger.reader_roles TO nortfox_owner
   USING (company_id = ledger.current_company_id()) WITH CHECK (company_id = ledger.current_company_id());
 CREATE POLICY own_binding ON ledger.reader_roles FOR SELECT TO nortfox_reader
-  USING (role_oid = ledger.current_role_oid());
+  USING (role_oid = ledger.current_role_oid() AND role_name = CURRENT_USER);
+CREATE TRIGGER reader_roles_rules BEFORE INSERT OR UPDATE ON ledger.reader_roles
+  FOR EACH ROW EXECUTE FUNCTION ledger.reader_roles_rules();
 CREATE TRIGGER audit_history AFTER INSERT OR UPDATE OR DELETE ON ledger.reader_roles
   FOR EACH ROW EXECUTE FUNCTION audit.write_history('id');
 CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON ledger.reader_roles

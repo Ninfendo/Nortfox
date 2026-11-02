@@ -21,6 +21,9 @@ export const ROLES_FILE = fileURLToPath(new URL("../../../db/roles.sql", import.
 /** db/database.sql, which the setup runs as a superuser in the template, as an install's init step does in its database. */
 export const DATABASE_FILE = fileURLToPath(new URL("../../../db/database.sql", import.meta.url));
 
+/** db/other-databases.sql, which an install's init step runs in the cluster's other databases. A test runs it in a database of its own. */
+export const OTHER_DATABASES_FILE = fileURLToPath(new URL("../../../db/other-databases.sql", import.meta.url));
+
 /**
  * The reader roles of the tests. Each is a member of nortfox_reader. The
  * tests bind the first two to companies. No test binds the third: a write

@@ -63,6 +63,13 @@ describe("the period lock on vouchers", () => {
     return { year: books.year.id, series: "A", date: "2090-06-30", rows: balanced(2000n), ...changes };
   }
 
+  /**
+   * Strikes both rows of a voucher of two that balance, in one statement and
+   * with no other write: the voucher still balances, so only the strike's own
+   * check of the lock can refuse it.
+   */
+  const STRIKE_BOTH = "UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1";
+
   /** The set_at of a lock row as the refusal's JSON gives it. */
   async function setAtAsJson(company: string, id: string): Promise<string> {
     return inTransaction(app, { company }, async () => {
@@ -92,11 +99,7 @@ describe("the period lock on vouchers", () => {
       moveOut: () => as(() => app.query("UPDATE ledger.vouchers SET transaction_date = $2 WHERE id = $1", [voucher.id, open])),
       moveIn: (other: Voucher) => as(() => app.query("UPDATE ledger.vouchers SET transaction_date = $2 WHERE id = $1", [other.id, day])),
       text: () => as(() => app.query("UPDATE ledger.voucher_rows SET transaction_information = 'Ny text' WHERE voucher_id = $1 AND position = 1", [voucher.id])),
-      strike: () =>
-        as(async () => {
-          await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 1", [voucher.id]);
-          await writeRow(app, books.company, voucher.id, { account: 6110, debit: 2000n });
-        }),
+      strike: () => as(() => app.query(STRIKE_BOTH, [voucher.id])),
       add: () => as(() => writeRow(app, books.company, voucher.id, { account: 3001 })),
       remove: () => as(() => app.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id])),
     };
@@ -275,10 +278,9 @@ describe("the period lock on vouchers", () => {
       ],
       [
         "a strike",
-        async (client, books, voucher) => {
+        async (client, _books, voucher) => {
           await client.query(LOCK_VOUCHER, [voucher.id]);
-          await client.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 1", [voucher.id]);
-          await writeRow(client, books.company, voucher.id, { account: 6110, debit: 2000n });
+          await client.query(STRIKE_BOTH, [voucher.id]);
         },
       ],
       ["an added row", (client, books, voucher) => writeRow(client, books.company, voucher.id, { account: 3001 })],

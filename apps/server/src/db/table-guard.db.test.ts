@@ -343,10 +343,13 @@ describe("the table guard", () => {
 
   it("checks the exceptions too, each only for what it is excepted from", async () => {
     expect(await problemsAfter("ALTER TABLE audit.history NO FORCE ROW LEVEL SECURITY")).toEqual(["audit.history: row level security is not forced."]);
-    expect(await problemsAfter("ALTER POLICY own_binding ON ledger.reader_roles USING (true)")).toEqual([
-      "ledger.reader_roles: has no permissive policy for nortfox_reader on SELECT with USING (role_oid = ledger.current_role_oid()).",
-      "ledger.reader_roles: has the permissive policy own_binding, which the guard does not expect.",
-    ]);
+    // A reader's own binding is matched by its role's oid and its name, never by one alone.
+    for (const using of ["true", "role_oid = ledger.current_role_oid()", "role_name = CURRENT_USER"]) {
+      expect(await problemsAfter(`ALTER POLICY own_binding ON ledger.reader_roles USING (${using})`), using).toEqual([
+        "ledger.reader_roles: has no permissive policy for nortfox_reader on SELECT with USING ((role_oid = ledger.current_role_oid()) AND (role_name = CURRENT_USER)).",
+        "ledger.reader_roles: has the permissive policy own_binding, which the guard does not expect.",
+      ]);
+    }
     expect(await problemsAfter("DROP TRIGGER audit_history ON ledger.reader_roles")).toEqual([
       "ledger.reader_roles: has no audit_history trigger: AFTER INSERT OR UPDATE OR DELETE, FOR EACH ROW, enabled, with no WHEN and no column list, calling audit.write_history with the primary key column.",
     ]);

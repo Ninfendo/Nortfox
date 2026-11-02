@@ -64,6 +64,15 @@ describe("connectionConfig", () => {
     );
   });
 
+  it.each([["postgres://nortfox_app@db/nortfox?password=in-the-address"], ["postgres://nortfox_app@db/nortfox?sslmode=disable&pass%77ord=x"]])(
+    "refuses %s, whose password the driver would take over the given one",
+    (url) => {
+      const message = "The database address holds a password. Put the password in the file that NORTFOX_DATABASE_PASSWORD_FILE names.";
+      expect(() => connectionConfig(url)).toThrow(message);
+      expect(() => connectionConfig(url, "from-the-file")).toThrow(message);
+    },
+  );
+
   it("refuses what is not a PostgreSQL address", () => {
     expect(() => connectionConfig("db:5432")).toThrow("The database address must start with postgres:// or postgresql://.");
     expect(() => connectionConfig("http://db/nortfox")).toThrow("must start with postgres:// or postgresql://.");
@@ -104,6 +113,10 @@ describe("configFromEnvironment", () => {
     [{ NORTFOX_DATABASE_URL: url, NORTFOX_DATABASE_PASSWORD_FILE: "/run/secrets/empty" }, "The password file /run/secrets/empty is empty."],
     [
       { NORTFOX_DATABASE_URL: "postgres://nortfox_owner:secret@db/nortfox", NORTFOX_DATABASE_PASSWORD_FILE: "/run/secrets/db" },
+      "The database address holds a password.",
+    ],
+    [
+      { NORTFOX_DATABASE_URL: "postgres://nortfox_owner@db/nortfox?password=in-the-address", NORTFOX_DATABASE_PASSWORD_FILE: "/run/secrets/db" },
       "The database address holds a password.",
     ],
   ])("fails loudly on %j", (env, message) => {

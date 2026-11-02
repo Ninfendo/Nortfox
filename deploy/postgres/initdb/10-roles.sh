@@ -3,10 +3,13 @@
 #
 # The first start of an install only: the image's entrypoint runs this once,
 # on an empty data folder, against its own setup server, which listens on its
-# socket only. It makes the cluster roles from db/roles.sql, sets the owner's
-# and the app's passwords from the compose secrets, makes the database
-# nortfox, owned by nortfox_owner, and runs db/database.sql in it, which
-# closes the functions that make a large object. The migrate step makes
+# socket only. It makes the cluster roles from db/roles.sql. It closes the
+# cluster's other databases, postgres and template1: it runs db/database.sql
+# and db/other-databases.sql in each, so no role of ours connects to them, and
+# a database made from template1 later starts with the functions that keep
+# bytes outside the ledger closed. It sets the owner's and the app's passwords
+# from the compose secrets, makes the database nortfox, owned by
+# nortfox_owner, and runs db/database.sql in it. The migrate step makes
 # everything else in it.
 #
 # A password is read as the migrate step reads it (apps/server/src/db/connect.ts):
@@ -43,6 +46,11 @@ psql=(psql --no-psqlrc --set ON_ERROR_STOP=1 --username "${POSTGRES_USER:-postgr
 
 "${psql[@]}" --dbname postgres --file /usr/local/share/nortfox/roles.sql
 
+for database in template1 postgres; do
+  "${psql[@]}" --dbname "$database" --file /usr/local/share/nortfox/database.sql
+  "${psql[@]}" --dbname "$database" --file /usr/local/share/nortfox/other-databases.sql
+done
+
 NORTFOX_OWNER_PASSWORD=$owner_password NORTFOX_APP_PASSWORD=$app_password "${psql[@]}" --dbname postgres <<'SQL'
 \getenv owner_password NORTFOX_OWNER_PASSWORD
 \getenv app_password NORTFOX_APP_PASSWORD
@@ -53,4 +61,4 @@ SQL
 
 "${psql[@]}" --dbname nortfox --file /usr/local/share/nortfox/database.sql
 
-echo "10-roles: made the roles and the database nortfox, owned by nortfox_owner, where no role of ours can make a large object."
+echo "10-roles: made the roles and the database nortfox, owned by nortfox_owner. No role of ours connects to postgres or template1, and none can make a large object or write a WAL message."

@@ -7,9 +7,18 @@
 import { readFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DATABASE_FILE, ROLES_FILE, TEMPORARY_ROLE_PREFIX, connectAs, makeReaderRole } from "../../../test/cluster.ts";
-import { INSUFFICIENT_PRIVILEGE, expectError, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
+import {
+  DATABASE_FILE,
+  OTHER_DATABASES_FILE,
+  PREFIX,
+  ROLES_FILE,
+  TEMPORARY_ROLE_PREFIX,
+  adminClient,
+  connectAs,
+  makeReaderRole,
+} from "../../../test/cluster.ts";
+import { INSUFFICIENT_PRIVILEGE, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { guardedRelations } from "../../db/table-guard.ts";
 
 /** The app's privileges on each table: SELECT, and only the writes each table needs. */
@@ -255,43 +264,185 @@ describe("the database roles", () => {
     expect(found.rows[0]?.count).toBe(0n);
   });
 
-  it("keeps the large objects closed when db/database.sql runs again", async () => {
+  it.each([
+    ["as text", "SELECT pg_catalog.pg_logical_emit_message(false, 'nortfox', 'made-up bytes')"],
+    ["as bytes", "SELECT pg_catalog.pg_logical_emit_message(true, 'nortfox', '\\x6e6f7274666f78'::bytea, false)"],
+  ])(
+    "refuses the app, a reader and the owner a message in the WAL, which the backups would keep outside every table: %s",
+    async (_name, sql) => {
+      const reader = await db.connect("readerA");
+      for (const client of [app, reader, owner]) {
+        await expectError(client.query(sql), INSUFFICIENT_PRIVILEGE, /permission denied for function pg_logical_emit_message/);
+      }
+    },
+  );
+
+  it("keeps the large objects and the WAL messages closed when db/database.sql runs again", async () => {
     const admin = await db.admin();
     await admin.query(readFileSync(DATABASE_FILE, "utf8"));
     await expectError(app.query("SELECT pg_catalog.lo_create(0)"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
+    await expectError(app.query("SELECT pg_catalog.pg_logical_emit_message(false, 'nortfox', 'x')"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
   });
 
-  it("binds a reader role, not its name: a role made again with the name, or renamed to it, reads nothing until the owner binds it", async () => {
+  it("lets no role of ours connect to another database of the cluster once db/other-databases.sql has run in it, as an install's first start runs it in postgres and template1", async () => {
+    const admin = await adminClient();
+    // A database with PostgreSQL's own privileges, as postgres and template1 come.
+    const other = `${PREFIX}${inject("nortfoxRun")}_other_${randomBytes(4).toString("hex")}`;
+    const roles = ["nortfox_owner", "nortfox_app", "nortfox_test_reader_a"];
+    /** What each of our roles gets when it connects to the other database: "connected", or the error's code. */
+    const connections = async (): Promise<string[]> =>
+      Promise.all(
+        roles.map(async (role) => {
+          try {
+            const client = await connectAs(role, other);
+            await client.end();
+            return "connected";
+          } catch (error) {
+            return String((error as { code?: unknown }).code);
+          }
+        }),
+      );
+    try {
+      await admin.query(`CREATE DATABASE ${other}`);
+      expect(await connections()).toEqual(["connected", "connected", "connected"]);
+      const inOther = await adminClient(other);
+      try {
+        await inOther.query(readFileSync(DATABASE_FILE, "utf8"));
+        await inOther.query(readFileSync(OTHER_DATABASES_FILE, "utf8"));
+        // Safe to run again.
+        await inOther.query(readFileSync(OTHER_DATABASES_FILE, "utf8"));
+        const privileges = await inOther.query<{ who: string; may: boolean }>(
+          `SELECT who, pg_catalog.has_database_privilege(who, pg_catalog.current_database(), 'CONNECT, TEMPORARY') AS may
+           FROM pg_catalog.unnest($1::text[]) AS who ORDER BY 1`,
+          [[...roles, "nortfox_reader"]],
+        );
+        expect(privileges.rows.filter((row) => row.may)).toEqual([]);
+      } finally {
+        await inOther.end();
+      }
+      expect(await connections()).toEqual([INSUFFICIENT_PRIVILEGE, INSUFFICIENT_PRIVILEGE, INSUFFICIENT_PRIVILEGE]);
+      // The superuser still connects.
+      const again = await adminClient(other);
+      await again.end();
+    } finally {
+      await admin.query(`DROP DATABASE IF EXISTS ${other} WITH (FORCE)`);
+      await admin.end();
+    }
+  });
+
+  /** The companies that `role` reads, in a connection of its own. */
+  async function readBy(role: string): Promise<string[]> {
+    const reader = await connectAs(role, db.name);
+    try {
+      return (await reader.query<{ company_id: string }>("SELECT company_id FROM ledger.companies")).rows.map((row) => row.company_id);
+    } finally {
+      await reader.end();
+    }
+  }
+
+  const BIND = "INSERT INTO ledger.reader_roles AS t (company_id, role_oid) VALUES ($1, $2::pg_catalog.regrole) RETURNING pg_catalog.to_jsonb(t) AS row";
+
+  it("binds a reader role by its oid and its name: a role made again with the name, another role renamed to it, or the bound role renamed, reads nothing until the owner binds it", async () => {
     const admin = await db.admin();
     const name = `${TEMPORARY_ROLE_PREFIX}${randomBytes(4).toString("hex")}`;
     const renamed = `${name}_old`;
-    /** The companies that the role `name` reads, in a connection of its own. */
-    const readBy = async (): Promise<string[]> => {
-      const reader = await connectAs(name, db.name);
-      try {
-        return (await reader.query<{ company_id: string }>("SELECT company_id FROM ledger.companies")).rows.map((row) => row.company_id);
-      } finally {
-        await reader.end();
-      }
-    };
     try {
       await makeReaderRole(admin, name);
-      await inTransaction(owner, { company, actor, kind: "system" }, () =>
-        owner.query("INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, $2::pg_catalog.regrole)", [company, name]),
-      );
-      expect(await readBy()).toEqual([company]);
+      await inTransaction(owner, { company, actor, kind: "system" }, () => owner.query(BIND, [company, name]));
+      expect(await readBy(name)).toEqual([company]);
+      // The bound role, renamed, and then given its name back.
+      await admin.query(`ALTER ROLE ${name} RENAME TO ${renamed}`);
+      expect(await readBy(renamed)).toEqual([]);
+      await admin.query(`ALTER ROLE ${renamed} RENAME TO ${name}`);
+      expect(await readBy(name)).toEqual([company]);
       // Dropped and made again with the same name, as a superuser would.
       await admin.query(`DROP ROLE ${name}`);
       await makeReaderRole(admin, name);
-      expect(await readBy()).toEqual([]);
+      expect(await readBy(name)).toEqual([]);
       // Another role, renamed to the name.
       await admin.query(`DROP ROLE ${name}`);
       await makeReaderRole(admin, renamed);
       await admin.query(`ALTER ROLE ${renamed} RENAME TO ${name}`);
-      expect(await readBy()).toEqual([]);
+      expect(await readBy(name)).toEqual([]);
     } finally {
       await admin.query(`DROP ROLE IF EXISTS ${name}`);
       await admin.query(`DROP ROLE IF EXISTS ${renamed}`);
+    }
+  });
+
+  it("gives nothing to a role that gets the oid of a binding that a dump of another cluster brought, and lets the owner delete such bindings and bind again", async () => {
+    const admin = await db.admin();
+    const old = `${TEMPORARY_ROLE_PREFIX}${randomBytes(4).toString("hex")}`;
+    const landed = `${old}_new`;
+    try {
+      // In the old cluster: the role `old`, bound to the company.
+      await makeReaderRole(admin, old);
+      const bound = await inTransaction(owner, { company, actor, kind: "system" }, async () =>
+        (await owner.query<{ row: Record<string, unknown> }>(BIND, [company, old])).rows[0]?.row,
+      );
+      // The dump holds that row as it was. In the new cluster another role,
+      // `landed`, gets the oid it holds. pg_restore loads the rows before it
+      // makes the triggers, so none runs.
+      await makeReaderRole(admin, landed);
+      const oid = (await admin.query<{ oid: string }>("SELECT $1::pg_catalog.regrole::pg_catalog.oid::text AS oid", [landed])).rows[0]?.oid;
+      await admin.query("BEGIN");
+      try {
+        await admin.query("SET LOCAL session_replication_role = replica");
+        await admin.query("INSERT INTO ledger.reader_roles SELECT * FROM pg_catalog.jsonb_populate_record(NULL::ledger.reader_roles, $1)", [
+          { ...bound, id: randomUUID(), role_oid: oid },
+        ]);
+        await admin.query("COMMIT");
+      } catch (error) {
+        await admin.query("ROLLBACK");
+        throw error;
+      }
+      expect(await readBy(landed)).toEqual([]);
+      // The owner deletes the company's bindings, as db/README.md says to after
+      // such a restore, and binds the role again.
+      await inTransaction(owner, { company, actor, kind: "system" }, () => owner.query("DELETE FROM ledger.reader_roles"));
+      await inTransaction(owner, { company, actor, kind: "system" }, () => owner.query(BIND, [company, landed]));
+      expect(await readBy(landed)).toEqual([company]);
+      await inTransaction(owner, { company, actor, kind: "system" }, () => owner.query("DELETE FROM ledger.reader_roles"));
+    } finally {
+      await admin.query(`DROP ROLE IF EXISTS ${old}`);
+      await admin.query(`DROP ROLE IF EXISTS ${landed}`);
+    }
+  });
+
+  it("writes a binding's role name itself, from the role its oid names, refuses one that is given, and never lets the oid or the name change", async () => {
+    const admin = await db.admin();
+    const name = `${TEMPORARY_ROLE_PREFIX}${randomBytes(4).toString("hex")}`;
+    const settings = { company, actor, kind: "system" } as const;
+    try {
+      await makeReaderRole(admin, name);
+      await expectRefusal(
+        inTransaction(owner, settings, () =>
+          owner.query("INSERT INTO ledger.reader_roles (company_id, role_oid, role_name) VALUES ($1, $2::pg_catalog.regrole, $2)", [company, name]),
+        ),
+        "immutable_field",
+        { field: "role_name", operation: "create" },
+      );
+      const bound = await inTransaction(owner, settings, async () => (await owner.query<{ row: Record<string, unknown> }>(BIND, [company, name])).rows[0]?.row);
+      expect(bound?.["role_name"]).toBe(name);
+      for (const [set, field] of [
+        ["role_oid = 'nortfox_test_reader_c'::pg_catalog.regrole", "role_oid"],
+        ["role_name = 'nortfox_test_reader_c'", "role_name"],
+      ] as const) {
+        await expectRefusal(
+          inTransaction(owner, settings, () => owner.query(`UPDATE ledger.reader_roles SET ${set} WHERE id = $1`, [bound?.["id"]])),
+          "immutable_field",
+          { field, operation: "update" },
+        );
+      }
+      // An oid that names no role gives no name, and the NOT NULL refuses it.
+      await expectError(
+        inTransaction(owner, settings, () => owner.query("INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, 0)", [company])),
+        "23502",
+        /role_name/,
+      );
+      await inTransaction(owner, settings, () => owner.query("DELETE FROM ledger.reader_roles"));
+    } finally {
+      await admin.query(`DROP ROLE IF EXISTS ${name}`);
     }
   });
 
