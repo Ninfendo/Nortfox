@@ -78,7 +78,7 @@ docker compose up --detach
 docker compose ps --all
 ```
 
-On the first start, PostgreSQL makes the roles from `db/roles.sql`, sets their passwords, and makes the database `nortfox`, owned by `nortfox_owner`. Then it checks its archive settings, makes the pgBackRest stanza `nortfox` in both repositories, and has pgBackRest prove that a WAL segment reaches both. As its last step, it writes the file `nortfox-first-start-done` in the data folder. The service is healthy only when that file is there and PostgreSQL answers over TCP. Only then does the migrate step run. `docker compose ps --all` shows the migrate step as exited with code 0. The file is part of the data, so a full backup holds it and a restore brings it back.
+On the first start, PostgreSQL makes the roles from `db/roles.sql`, sets their passwords, makes the database `nortfox`, owned by `nortfox_owner`, and runs `db/database.sql` in it, so that no role of ours can make a large object there. Then it checks its archive settings, makes the pgBackRest stanza `nortfox` in both repositories, and has pgBackRest prove that a WAL segment reaches both. As its last step, it writes the file `nortfox-first-start-done` in the data folder. The service is healthy only when that file is there and PostgreSQL answers over TCP. Only then does the migrate step run. `docker compose ps --all` shows the migrate step as exited with code 0. The file is part of the data, so a full backup holds it and a restore brings it back.
 
 If the first start fails, `docker compose logs postgres` says why. A wrong off-site repository is the most likely cause. Docker then starts PostgreSQL again, and the image skips its setup, because the data folder is no longer empty. But the file is missing, so the service never becomes healthy, the migrate step never runs, and `docker compose up` waits and then stops with an error. Fix the cause, then remove the half-made data and start again:
 
@@ -87,7 +87,12 @@ docker compose down --volumes
 docker compose up --detach
 ```
 
-Do this only after a failed first start. `--volumes` removes the data and the local repository.
+Do this only after a failed first start. `--volumes` removes the data and the local repository. It does not touch the off-site repository. So look in the log for the line `20-stanza: made the stanza nortfox in both repositories.`:
+
+- If the log holds it, the failed start left its stanza in the off-site repository too, and the next first start would stop with pgBackRest's error `[028]`, because its new cluster does not match that stanza. Then, after `down --volumes` and before `up --detach`, empty the off-site repository's path, `NORTFOX_REPO2_PATH`: the folder, or that prefix in the bucket. It holds only the archive of the half-made cluster.
+- If the log does not hold it, the failed start made no stanza there. Leave the off-site repository as it is.
+
+Never empty a path that holds another install's backups.
 
 ## The backup settings
 
@@ -150,7 +155,7 @@ PostgreSQL replays the archived WAL up to that moment, then opens the database f
 pnpm backup:test
 ```
 
-It runs `backup-test/pitr.sh`. The test builds and starts this compose file under a project of its own, `nortfox-backup-test`, with made-up secrets and a second local volume in place of the off-site repository. It checks the archive settings, the migrate step, the owner of every table and both repositories on the running stack. Then it writes, notes the time, and writes again, and restores to that time from `repo1` and again from `repo2`, each from its own repository alone. Each restore must give the first write and not the second. The test removes its containers and volumes when it ends. It needs bash and Docker. CI runs it in the job `backup`.
+It runs `backup-test/pitr.sh`. The test builds and starts this compose file under a project of its own, `nortfox-backup-test`, with made-up secrets and a second local volume in place of the off-site repository. It checks the archive settings, the migrate step, the owner of every table, that no role of ours can make a large object, and both repositories on the running stack. Then it writes, notes the time, and writes again, and restores to that time from `repo1` and again from `repo2`, each from its own repository alone. Each restore must give the first write and not the second. The test removes its containers and volumes when it ends. It needs bash and Docker. CI runs it in the job `backup`.
 
 ## Moving a pin
 

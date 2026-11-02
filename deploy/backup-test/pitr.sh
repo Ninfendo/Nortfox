@@ -135,6 +135,12 @@ done
 expect "PostgreSQL answering after a restart that skipped the failed setup" "$answers" yes
 logs=$(compose logs --no-color postgres)
 grep --quiet "Skipping initialization" <<< "$logs" || fail "the restart did not skip the setup."
+# The off-site repository could not be written, so no stanza is there, and
+# the log must not say there is: deploy/README.md tells the operator to empty
+# that repository only when it does.
+if grep --quiet "20-stanza: made the stanza nortfox in both repositories." <<< "$logs"; then
+  fail "the failed first start says it made the stanza in both repositories."
+fi
 # Some health checks later, it is still not healthy, so nothing that waits
 # for it, such as the migrate step, starts.
 sleep 15
@@ -159,6 +165,8 @@ for _ in $(seq 300); do
 done
 expect "the migrate step's state" "$(docker inspect --format '{{.State.Status}}' "$migrate")" exited
 expect "the migrate step's exit code" "$(docker inspect --format '{{.State.ExitCode}}' "$migrate")" 0
+grep --quiet "20-stanza: made the stanza nortfox in both repositories." <<< "$(compose logs --no-color postgres)" ||
+  fail "the first start's log does not say that it made the stanza in both repositories."
 
 step "checking the running stack."
 expect "wal_level" "$(sql postgres <<< 'SHOW wal_level')" replica
@@ -196,6 +204,15 @@ SELECT coalesce(string_agg(what, ', ' ORDER BY what), 'nothing') FROM (
 SQL
 )" nothing
 step "$tables tables, all owned by nortfox_owner."
+expect "what our roles may run of the functions that make a large object" "$(sql postgres << 'SQL'
+SELECT coalesce(string_agg(r.who || ' ' || r.fn, ', ' ORDER BY r.who, r.fn), 'nothing') FROM (
+  SELECT who, fn
+  FROM pg_catalog.unnest(ARRAY['nortfox_owner', 'nortfox_app', 'nortfox_reader']) AS who,
+    pg_catalog.unnest(ARRAY['pg_catalog.lo_creat(integer)', 'pg_catalog.lo_create(oid)', 'pg_catalog.lo_from_bytea(oid, bytea)']) AS fn
+  WHERE pg_catalog.has_function_privilege(who, fn, 'EXECUTE')
+) AS r
+SQL
+)" nothing
 
 step "a full backup to each repository."
 backrest --repo=1 --type=full backup

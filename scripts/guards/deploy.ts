@@ -386,6 +386,10 @@ function aptInstalls(text: string): string[] {
 const POSTGRES_COPIES: readonly (readonly [line: string, why: string])[] = [
   ["COPY --chmod=0644 deploy/postgres/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf", "pgBackRest's config, where pgBackRest reads it."],
   ["COPY --chmod=0644 db/roles.sql /usr/local/share/nortfox/roles.sql", "the cluster roles, which 10-roles.sh reads there."],
+  [
+    "COPY --chmod=0644 db/database.sql /usr/local/share/nortfox/database.sql",
+    "what a superuser sets in the database nortfox, which 10-roles.sh reads there.",
+  ],
   ["COPY --chmod=0755 deploy/postgres/initdb/ /docker-entrypoint-initdb.d/", "the first-start scripts, where the image's entrypoint runs them."],
 ];
 

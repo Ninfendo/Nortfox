@@ -13,7 +13,10 @@
 
 -- The database. Only the app and the reader roles may connect, besides the
 -- owner. No one but the owner may create anything here, temporary tables
--- included: a temporary table could shadow a name.
+-- included: a temporary table could shadow a name. No role of ours may make
+-- a large object either. Its functions belong to the bootstrap superuser, so
+-- this migration cannot close them: db/database.sql does, run by a superuser
+-- in the database before the first migration.
 DO $database$
 BEGIN
   EXECUTE pg_catalog.format('REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC', pg_catalog.current_database());
@@ -117,12 +120,15 @@ CREATE TABLE ledger.companies (
 --
 -- Binds each reader role to one company. Only the owner writes it. A reader
 -- sees only its own row, which ledger.reader_company_id() reads, so a
--- reader's policies never trust a setting.
+-- reader's policies never trust a setting. A binding holds the role's oid,
+-- not its name. So a role that is dropped and made again with the same name,
+-- or another role renamed to it, is not the role that was bound, and reads
+-- nothing until the owner binds it.
 
 CREATE TABLE ledger.reader_roles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES ledger.companies (company_id),
-  role_name name NOT NULL UNIQUE,
+  role_oid oid NOT NULL UNIQUE,
   UNIQUE (company_id, id)
 );
 
@@ -165,13 +171,22 @@ LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
 RETURN NULLIF(current_setting('nortfox.company_id', true), '')::uuid;
 
+-- The oid of the current role, which a reader's binding holds. It reads no
+-- setting.
+CREATE FUNCTION ledger.current_role_oid() RETURNS oid
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, pg_temp
+BEGIN ATOMIC
+  SELECT r.oid FROM pg_catalog.pg_roles AS r WHERE r.rolname = CURRENT_USER;
+END;
+
 -- The company that the current reader role is bound to, or NULL. It reads no
 -- setting.
 CREATE FUNCTION ledger.reader_company_id() RETURNS uuid
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
 BEGIN ATOMIC
-  SELECT r.company_id FROM ledger.reader_roles AS r WHERE r.role_name = CURRENT_USER;
+  SELECT r.company_id FROM ledger.reader_roles AS r WHERE r.role_oid = ledger.current_role_oid();
 END;
 
 -- The actor that each backend's writing transaction keeps. A rule that
@@ -407,13 +422,13 @@ SELECT meta.protect_company_table('ledger.companies', 'company_id');
 GRANT INSERT, UPDATE ON ledger.companies TO nortfox_app;
 
 -- The reader roles' bindings: the owner's company policy, and a reader's own
--- row by its name. The app has no access at all.
+-- row by its role's oid. The app has no access at all.
 ALTER TABLE ledger.reader_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ledger.reader_roles FORCE ROW LEVEL SECURITY;
 CREATE POLICY company_owner ON ledger.reader_roles TO nortfox_owner
   USING (company_id = ledger.current_company_id()) WITH CHECK (company_id = ledger.current_company_id());
 CREATE POLICY own_binding ON ledger.reader_roles FOR SELECT TO nortfox_reader
-  USING (role_name = CURRENT_USER);
+  USING (role_oid = ledger.current_role_oid());
 CREATE TRIGGER audit_history AFTER INSERT OR UPDATE OR DELETE ON ledger.reader_roles
   FOR EACH ROW EXECUTE FUNCTION audit.write_history('id');
 CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON ledger.reader_roles
@@ -438,4 +453,4 @@ GRANT SELECT ON audit.history TO nortfox_app, nortfox_reader;
 
 -- The helpers that the policies call.
 GRANT EXECUTE ON FUNCTION ledger.current_company_id() TO nortfox_app, nortfox_reader;
-GRANT EXECUTE ON FUNCTION ledger.reader_company_id() TO nortfox_reader;
+GRANT EXECUTE ON FUNCTION ledger.current_role_oid(), ledger.reader_company_id() TO nortfox_reader;

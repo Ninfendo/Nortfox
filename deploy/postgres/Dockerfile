@@ -18,7 +18,8 @@
 #   folder (repo2 of type posix) goes;
 # - /etc/pgbackrest/conf.d, where the compose file mounts the off-site
 #   repository's other options;
-# - db/roles.sql and the first-start scripts in /docker-entrypoint-initdb.d.
+# - db/roles.sql and db/database.sql, and the first-start scripts in
+#   /docker-entrypoint-initdb.d.
 
 FROM postgres:18-bookworm@sha256:5c4783a8cc3f0074912164f94dfa1be4e043438f0f707cf968d7af9a0d31a2c8
 
@@ -32,4 +33,5 @@ RUN apt-get update \
 
 COPY --chmod=0644 deploy/postgres/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
 COPY --chmod=0644 db/roles.sql /usr/local/share/nortfox/roles.sql
+COPY --chmod=0644 db/database.sql /usr/local/share/nortfox/database.sql
 COPY --chmod=0755 deploy/postgres/initdb/ /docker-entrypoint-initdb.d/

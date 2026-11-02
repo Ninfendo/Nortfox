@@ -10,19 +10,27 @@
 --
 -- The locks. A booking, a change and a deletion of a voucher each lock what
 -- the period lock reads, FOR SHARE, in this order: the voucher's fiscal year,
--- its series, and the company's automatic lock row (ledger.assert_voucher_open).
--- A booking then locks the voucher it reverses, then the series' counter. A
--- deletion locks its voucher first, as its statement's target, then those
--- three rows, then the counter, and then its own rows, by the cascade. A
--- change of a row locks the row first, as its statement's target, then its
--- voucher, then those three rows.
+-- its series, and the company's automatic lock row
+-- (ledger.lock_voucher_period). A booking reads its series' manual flag
+-- under that lock. It then locks the voucher it reverses, then the series'
+-- counter. A new row locks its voucher, then those three rows (a row of the
+-- booking's own transaction holds them from the booking), and then its
+-- account FOR SHARE, which it reads the active flag from. A deletion locks
+-- its voucher first, as its statement's target, then those three rows, then
+-- the counter, and then its own rows, by the cascade. A change of a row locks
+-- the row first, as its statement's target, then its voucher, then those
+-- three rows.
 -- So a row change and a deletion of the same voucher take the voucher and the
 -- row in opposite orders, and can deadlock: every caller that changes a row
 -- first locks its voucher (SELECT ... FROM ledger.vouchers WHERE id = ...
--- FOR NO KEY UPDATE). A change of a fiscal year's dates or of a series'
--- closing mark locks only that row, and a change of a lock date locks its own
--- row and then the automatic lock row, so none of them waits in a circle with
--- a single change of a voucher.
+-- FOR NO KEY UPDATE). A change of a fiscal year's dates, of a series' name,
+-- manual flag or closing mark, or of an account locks only that row, and a
+-- change of a lock date locks its own row and then the automatic lock row, so
+-- none of them waits in a circle with a single change of a voucher. A
+-- transaction that makes more than one of these changes makes them in the
+-- order a voucher locks those rows: the fiscal year, the series, the lock
+-- dates, then the accounts. In another order it can deadlock with a change of
+-- a voucher.
 
 -- Vouchers --------------------------------------------------------------------
 --
@@ -204,10 +212,15 @@ CREATE TABLE ledger.deleted_voucher_rows (
 
 -- Helpers -------------------------------------------------------------------------
 
--- The triggers that run after a row is written, or at commit, read the row's
--- company through row level security. So a statement, or a transaction that
--- has written a voucher, may not change the transaction's company before
--- they run: one that does is refused. A transaction keeps one company.
+-- The triggers that run after a row is written, and the checks at commit,
+-- read the voucher's rows through row level security, as the company that is
+-- set when they run. So each of them is refused when that company is not the
+-- voucher's: in a statement that changes the company between its rows, and
+-- in a transaction that has written a voucher and has another company, or
+-- none, set at its commit. The database does not keep one company for the
+-- whole transaction, as it keeps one actor: a transaction that switches to
+-- another company and back before its checks run is not refused. The server
+-- sets the company once, at the start of each transaction.
 CREATE FUNCTION ledger.assert_company(company uuid) RETURNS void
 LANGUAGE plpgsql STABLE
 SET search_path = pg_catalog, pg_temp
@@ -216,7 +229,7 @@ BEGIN
   IF assert_company.company IS DISTINCT FROM ledger.current_company_id() THEN
     RAISE EXCEPTION USING
       ERRCODE = 'insufficient_privilege',
-      MESSAGE = 'The transaction''s company changed while its vouchers were written. A transaction keeps one company.';
+      MESSAGE = 'The transaction''s company is not the voucher''s company when its check runs.';
   END IF;
 END
 $company$;
@@ -255,35 +268,53 @@ BEGIN
 END
 $year$;
 
+-- Locks FOR SHARE, until the transaction ends, the rows that the period lock
+-- on a voucher reads, in the lock order at the top of this file: the
+-- voucher's fiscal year, its series and the company's automatic lock row.
+-- Gives the series' closing mark, read from the locked row.
+CREATE FUNCTION ledger.lock_voucher_period(company uuid, fiscal_year uuid, series_code text) RETURNS boolean
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $period$
+DECLARE
+  closing boolean;
+BEGIN
+  PERFORM 1 FROM ledger.fiscal_years AS y
+  WHERE y.company_id = lock_voucher_period.company AND y.id = lock_voucher_period.fiscal_year
+  FOR SHARE;
+  SELECT s.is_closing INTO closing
+  FROM ledger.voucher_series AS s
+  WHERE s.company_id = lock_voucher_period.company AND s.fiscal_year_id = lock_voucher_period.fiscal_year
+    AND s.code = lock_voucher_period.series_code
+  FOR SHARE;
+  PERFORM 1 FROM ledger.automatic_locks AS a WHERE a.company_id = lock_voucher_period.company FOR SHARE;
+  RETURN closing;
+END
+$period$;
+
 -- Refuses the transaction's actor a voucher whose date `day` is locked for it
 -- (ledger.assert_open), in the voucher's fiscal year and series. What the
 -- lock says depends on rows that other transactions can change: the lock
 -- dates and the automatic lock, the end of the fiscal year, which places the
 -- automatic lock at 60 days after it, and the series' closing mark. So it
--- locks the year's row and the series' row FOR SHARE until the transaction
--- ends, and reads the mark from the locked row; ledger.assert_open then locks
--- the automatic lock row. A change of the year's dates or of the mark waits
--- for an open change of a voucher, and a change of a voucher waits for an
--- open change of either, and then reads it. Of the years' ends, only the
--- voucher's own year's matters: the automatic lock reaches a date of that
--- year only once some year that ends on or after the date ended 60 days ago,
--- and every such year ends no earlier than the voucher's own.
+-- first locks the year's row, the series' row and the automatic lock row
+-- (ledger.lock_voucher_period), and reads the mark from the locked row. A
+-- change of the year's dates or of the mark waits for an open change of a
+-- voucher, and a change of a voucher waits for an open change of either, and
+-- then reads it. Of the years' ends, only the voucher's own year's matters:
+-- the automatic lock reaches a date of that year only once some year that
+-- ends on or after the date ended 60 days ago, and every such year ends no
+-- earlier than the voucher's own.
 CREATE FUNCTION ledger.assert_voucher_open(company uuid, fiscal_year uuid, series_code text, day date) RETURNS void
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $open$
-DECLARE
-  closing boolean;
 BEGIN
-  PERFORM 1 FROM ledger.fiscal_years AS y
-  WHERE y.company_id = assert_voucher_open.company AND y.id = assert_voucher_open.fiscal_year
-  FOR SHARE;
-  SELECT s.is_closing INTO closing
-  FROM ledger.voucher_series AS s
-  WHERE s.company_id = assert_voucher_open.company AND s.fiscal_year_id = assert_voucher_open.fiscal_year
-    AND s.code = assert_voucher_open.series_code
-  FOR SHARE;
-  PERFORM ledger.assert_open(assert_voucher_open.company, assert_voucher_open.day, closing);
+  PERFORM ledger.assert_open(
+    assert_voucher_open.company,
+    assert_voucher_open.day,
+    ledger.lock_voucher_period(assert_voucher_open.company, assert_voucher_open.fiscal_year, assert_voucher_open.series_code)
+  );
 END
 $open$;
 
@@ -364,9 +395,17 @@ BEGIN
   IF char_length(NEW.comments) > 1000 THEN
     PERFORM ledger.refuse('value_too_long', jsonb_build_object('field', 'comments', 'value', NEW.comments));
   END IF;
+  -- The manual flag is read from the series' row locked FOR SHARE until the
+  -- transaction ends, after the year's row, in the lock order at the top of
+  -- this file. So a change of the flag waits for this booking, and this
+  -- booking waits for a change of the flag and then reads it.
+  PERFORM 1 FROM ledger.fiscal_years AS y
+  WHERE y.company_id = NEW.company_id AND y.id = NEW.fiscal_year_id
+  FOR SHARE;
   SELECT s.manual INTO series
   FROM ledger.voucher_series AS s
-  WHERE s.company_id = NEW.company_id AND s.fiscal_year_id = NEW.fiscal_year_id AND s.code = NEW.series_code;
+  WHERE s.company_id = NEW.company_id AND s.fiscal_year_id = NEW.fiscal_year_id AND s.code = NEW.series_code
+  FOR SHARE;
   IF NOT FOUND THEN
     PERFORM ledger.refuse('series_missing', jsonb_build_object('code', NEW.series_code));
   END IF;
@@ -614,10 +653,11 @@ $alter$;
 
 -- A new row. It locks its voucher until the transaction ends, takes the
 -- voucher's fiscal year and the next position, and needs an account of that
--- year that is active, and a text of at most 100 characters. The database
--- writes its year, its position and its created stamps, and a row is never
--- made struck. A row added after the booking's own transaction is a change
--- by Ändra: the period lock applies by the voucher's date.
+-- year that is active, read under a lock on the account's row, and a text of
+-- at most 100 characters. The database writes its year, its position and its
+-- created stamps, and a row is never made struck. A row added after the
+-- booking's own transaction is a change by Ändra: the period lock applies by
+-- the voucher's date.
 CREATE FUNCTION ledger.voucher_rows_add() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -669,9 +709,19 @@ BEGIN
     RETURN NEW;
   END IF;
   NEW.fiscal_year_id := voucher.fiscal_year_id;
+  -- The active flag is read from the account's row locked FOR SHARE until
+  -- the transaction ends, after the rows that the period lock reads (the
+  -- lock order at the top of this file). So a change of the flag waits for
+  -- this row, and this row waits for a change of the flag and then reads it.
+  -- A row of the booking's own transaction holds those rows from the
+  -- booking.
+  IF voucher.created_xact <> pg_current_xact_id() THEN
+    PERFORM ledger.lock_voucher_period(NEW.company_id, voucher.fiscal_year_id, voucher.series_code);
+  END IF;
   SELECT a.active INTO account
   FROM ledger.accounts AS a
-  WHERE a.company_id = NEW.company_id AND a.fiscal_year_id = NEW.fiscal_year_id AND a.number = NEW.account_number;
+  WHERE a.company_id = NEW.company_id AND a.fiscal_year_id = NEW.fiscal_year_id AND a.number = NEW.account_number
+  FOR SHARE;
   IF NOT FOUND THEN
     PERFORM ledger.refuse('account_missing', jsonb_build_object('number', NEW.account_number));
   END IF;

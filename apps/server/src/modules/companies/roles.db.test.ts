@@ -5,10 +5,10 @@
 // security.
 
 import { readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ROLES_FILE } from "../../../test/cluster.ts";
+import { DATABASE_FILE, ROLES_FILE, TEMPORARY_ROLE_PREFIX, connectAs, makeReaderRole } from "../../../test/cluster.ts";
 import { INSUFFICIENT_PRIVILEGE, expectError, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { guardedRelations } from "../../db/table-guard.ts";
 
@@ -68,7 +68,7 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
     "ledger.locked_through",
     "ledger.today_in_sweden",
   ],
-  nortfox_test_reader_a: ["ledger.current_company_id", "ledger.reader_company_id"],
+  nortfox_test_reader_a: ["ledger.current_company_id", "ledger.current_role_oid", "ledger.reader_company_id"],
 };
 
 const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
@@ -188,6 +188,7 @@ describe("the database roles", () => {
       { name: "nortfox_reader", ...none, login: false, inherit: false },
       { name: "nortfox_test_reader_a", ...none, login: true, inherit: true },
       { name: "nortfox_test_reader_b", ...none, login: true, inherit: true },
+      { name: "nortfox_test_reader_c", ...none, login: true, inherit: true },
     ]);
   });
 
@@ -204,6 +205,7 @@ describe("the database roles", () => {
     expect(found.rows).toEqual([
       { member: "nortfox_test_reader_a", granted: "nortfox_reader", inherit: true, set: false, admin: false },
       { member: "nortfox_test_reader_b", granted: "nortfox_reader", inherit: true, set: false, admin: false },
+      { member: "nortfox_test_reader_c", granted: "nortfox_reader", inherit: true, set: false, admin: false },
     ]);
   });
 
@@ -236,6 +238,60 @@ describe("the database roles", () => {
       if (row.trigger) {
         expect(row.definer, row.name).toBe(true);
       }
+    }
+  });
+
+  it.each([
+    ["lo_creat", "SELECT pg_catalog.lo_creat(-1)"],
+    ["lo_create", "SELECT pg_catalog.lo_create(0)"],
+    ["lo_from_bytea", "SELECT pg_catalog.lo_from_bytea(0, '\\x6e6f7274666f78'::bytea)"],
+  ])("refuses the app, a reader and the owner a large object, which no table, policy or history would hold: %s", async (_name, sql) => {
+    const reader = await db.connect("readerA");
+    for (const client of [app, reader, owner]) {
+      await expectError(client.query(sql), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
+    }
+    const admin = await db.admin();
+    const found = await admin.query<{ count: bigint }>("SELECT count(*) AS count FROM pg_catalog.pg_largeobject_metadata");
+    expect(found.rows[0]?.count).toBe(0n);
+  });
+
+  it("keeps the large objects closed when db/database.sql runs again", async () => {
+    const admin = await db.admin();
+    await admin.query(readFileSync(DATABASE_FILE, "utf8"));
+    await expectError(app.query("SELECT pg_catalog.lo_create(0)"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
+  });
+
+  it("binds a reader role, not its name: a role made again with the name, or renamed to it, reads nothing until the owner binds it", async () => {
+    const admin = await db.admin();
+    const name = `${TEMPORARY_ROLE_PREFIX}${randomBytes(4).toString("hex")}`;
+    const renamed = `${name}_old`;
+    /** The companies that the role `name` reads, in a connection of its own. */
+    const readBy = async (): Promise<string[]> => {
+      const reader = await connectAs(name, db.name);
+      try {
+        return (await reader.query<{ company_id: string }>("SELECT company_id FROM ledger.companies")).rows.map((row) => row.company_id);
+      } finally {
+        await reader.end();
+      }
+    };
+    try {
+      await makeReaderRole(admin, name);
+      await inTransaction(owner, { company, actor, kind: "system" }, () =>
+        owner.query("INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, $2::pg_catalog.regrole)", [company, name]),
+      );
+      expect(await readBy()).toEqual([company]);
+      // Dropped and made again with the same name, as a superuser would.
+      await admin.query(`DROP ROLE ${name}`);
+      await makeReaderRole(admin, name);
+      expect(await readBy()).toEqual([]);
+      // Another role, renamed to the name.
+      await admin.query(`DROP ROLE ${name}`);
+      await makeReaderRole(admin, renamed);
+      await admin.query(`ALTER ROLE ${renamed} RENAME TO ${name}`);
+      expect(await readBy()).toEqual([]);
+    } finally {
+      await admin.query(`DROP ROLE IF EXISTS ${name}`);
+      await admin.query(`DROP ROLE IF EXISTS ${renamed}`);
     }
   });
 

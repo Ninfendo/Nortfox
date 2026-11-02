@@ -9,6 +9,7 @@ It holds the foundation (the roles, the companies, row level security, the refus
 | File | What it is |
 | --- | --- |
 | `roles.sql` | The cluster roles. A superuser runs it once per cluster, before the first migration. It is safe to run again: it makes what is missing and sets every attribute again. |
+| `database.sql` | What a superuser sets in the ledger database, once, after making it and before the first migration: it closes the functions that make a large object. A migration cannot, because those functions are the bootstrap superuser's. It is safe to run again. |
 | `migrations/NNNN_name.sql` | Plain SQL, applied in name order by the runner, never edited once applied. |
 
 The runner is `apps/server/src/db/migrate.ts`. The one-shot step that runs it is `apps/server/src/db/migrate-main.ts`.
@@ -17,17 +18,17 @@ The runner is `apps/server/src/db/migrate.ts`. The one-shot step that runs it is
 
 The compose file (`deploy/compose.yaml`) sets the database up in two steps:
 
-1. On the first start, PostgreSQL's image runs `deploy/postgres/initdb/10-roles.sh` as the superuser. It runs `roles.sql`, sets the passwords of `nortfox_owner` and `nortfox_app` from the compose secrets, and makes the database `nortfox`, owned by `nortfox_owner`. Then `20-stanza.sh` sets up the backups, and as its last step writes the file `nortfox-first-start-done` in the data folder. The service is healthy only once that file is there, so the migrate step never runs after a first start that failed ([deploy/README.md](../deploy/README.md)).
+1. On the first start, PostgreSQL's image runs `deploy/postgres/initdb/10-roles.sh` as the superuser. It runs `roles.sql`, sets the passwords of `nortfox_owner` and `nortfox_app` from the compose secrets, makes the database `nortfox`, owned by `nortfox_owner`, and runs `database.sql` in it. Then `20-stanza.sh` sets up the backups, and as its last step writes the file `nortfox-first-start-done` in the data folder. The service is healthy only once that file is there, so the migrate step never runs after a first start that failed ([deploy/README.md](../deploy/README.md)).
 2. The migrate step runs the runner as `nortfox_owner`, once PostgreSQL is healthy, and stops. It reads the address from `NORTFOX_DATABASE_URL`, which holds no password, and the password from the file that `NORTFOX_DATABASE_PASSWORD_FILE` names. The server's image carries the migrations of its own commit, so a deploy applies exactly those.
 
-The restore test (`pnpm backup:test`) checks both on a running stack: every migration applied by `nortfox_owner`, and every schema, table, index and sequence in `ledger`, `audit` and `meta` owned by it.
+The restore test (`pnpm backup:test`) checks both on a running stack: every migration applied by `nortfox_owner`, every schema, table, index and sequence in `ledger`, `audit` and `meta` owned by it, and no role of ours able to make a large object.
 
 ## Roles
 
 | Role | What it may do |
 | --- | --- |
 | `nortfox_owner` | Owns the database, the schemas, the tables and the functions. Runs the migrations. Alone records a void range. The server never uses it. |
-| `nortfox_app` | The server's role. Reads and writes rows, and only the writes each table needs. It cannot change the schema, disable a trigger, bypass row level security, make a temporary table, or become another role. |
+| `nortfox_app` | The server's role. Reads and writes rows, and only the writes each table needs. It cannot change the schema, disable a trigger, bypass row level security, make a temporary table or a large object, or become another role. |
 | `nortfox_reader` | A group, never a login. Each reader role is a login role that is a member of it, bound to one company in `ledger.reader_roles`. A reader only reads. |
 
 No role here is a superuser, or may make databases or roles, replicate, or bypass row level security. Passwords are not in `roles.sql`: an install's first start sets them from its secret files.
@@ -38,7 +39,18 @@ A superuser makes a reader role, and the owner binds it to one company:
 CREATE ROLE example_reader LOGIN;
 GRANT nortfox_reader TO example_reader WITH INHERIT TRUE, SET FALSE;
 -- then, as nortfox_owner, with the company and an actor set:
-INSERT INTO ledger.reader_roles (company_id, role_name) VALUES ('<company id>', 'example_reader');
+INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ('<company id>', 'example_reader'::regrole);
+```
+
+A binding holds the role's oid, not its name, and `ledger.current_role_oid()` gives the oid of the role that reads. So a role that is dropped and made again with the same name, or another role renamed to it, is not the role that was bound: it reads nothing until the owner binds it. A role keeps its oid in a restore from pgBackRest and through `pg_upgrade`. A dump restored into another cluster gives each role a new oid, so the owner binds the readers again there.
+
+To remove a reader, the owner deletes its binding, and then a superuser drops the role:
+
+```sql
+-- as nortfox_owner, with the company and an actor set:
+DELETE FROM ledger.reader_roles WHERE role_oid = 'example_reader'::regrole;
+-- then, as a superuser:
+DROP ROLE example_reader;
 ```
 
 ## Schemas
@@ -49,7 +61,7 @@ INSERT INTO ledger.reader_roles (company_id, role_name) VALUES ('<company id>', 
 | `audit` | The behandlingshistorik, `audit.history`. |
 | `meta` | `meta.schema_migrations`, which the runner makes and writes, and `meta.protect_company_table()`, which the migrations call. |
 
-The database itself: only the app and the reader roles may connect, besides the owner, and no one but the owner may make anything in it, temporary tables included.
+The database itself: only the app and the reader roles may connect, besides the owner, and no one but the owner may make anything in it, temporary tables included. No role of ours may make a large object, the owner neither: a large object holds bytes outside every table, its row level security and the behandlingshistorik, and its maker can grant it to any role. `database.sql` closes the three functions that make one (`lo_creat`, `lo_create` and `lo_from_bytea`). The other large object functions only read or write one that already exists.
 
 ## The settings the server sets
 
@@ -85,9 +97,9 @@ A row never moves to another company: the history trigger refuses an update that
 - `meta.schema_migrations` holds no company data;
 - `ledger.transaction_actors` holds no company data: it keeps each writing transaction's actor (above);
 - `audit.history` has no history trigger of its own;
-- `ledger.reader_roles` lets a reader see only its own binding, by its role name.
+- `ledger.reader_roles` lets a reader see only its own binding, by its role's oid.
 
-Three unique keys leave `company_id` out, and a test pins the list too: the history's own id (an identity column that only the trigger writes), the companies' tenant id (from one sequence, never given or changed by a caller), and a reader role's name (bound to one company, written only by the owner).
+Three unique keys leave `company_id` out, and a test pins the list too: the history's own id (an identity column that only the trigger writes), the companies' tenant id (from one sequence, never given or changed by a caller), and a reader role's oid (bound to one company, written only by the owner).
 
 ## Companies
 
@@ -122,15 +134,16 @@ The functions:
 | `ledger.lock_covering(company, kind, actor, day, today)` | The lock that makes `day` locked for the actor, or no row. Of the dates that apply and reach `day`, the latest wins; on a tie, the actor's own row, then all users, then the automatic lock. |
 | `ledger.locked_through(company, kind, actor, today)` | The one locked-through date for the actor, or NULL. |
 | `ledger.assert_open(company, day, is_closing_series)` | Refuses the transaction's actor a date that is locked for it today, with `period_locked_manual` or `period_locked_automatic`. The closing series passes every lock. Only the triggers call it. |
-| `ledger.assert_voucher_open(company, fiscal_year, series_code, day)` | The same for a voucher: it locks the voucher's fiscal year and series first, reads the series' closing mark, and calls `ledger.assert_open`. Only the voucher triggers call it. |
+| `ledger.lock_voucher_period(company, fiscal_year, series_code)` | Locks the rows that the period lock on a voucher reads, `FOR SHARE` until the transaction ends: the voucher's fiscal year, its series and the company's automatic lock row, in that order. Gives the series' closing mark, read from the locked row. Only the voucher triggers call it. |
+| `ledger.assert_voucher_open(company, fiscal_year, series_code, day)` | The same as `ledger.assert_open` for a voucher: it takes those locks first (`ledger.lock_voucher_period`), and calls `ledger.assert_open` with the series' closing mark. Only the voucher triggers call it. |
 
 The app may call the first six. Row level security keeps each one to the transaction's company. The actor's kind is `user`, `system` or `integration`, and a user needs its id; anything else is an error (`22023`), not a refusal.
 
-A change of what a lock depends on and a change of a voucher never overlap. The lock on a voucher's date depends on the lock dates, the automatic lock's settings, the end of the voucher's fiscal year (the `year_end_60` interval counts from it) and the closing mark of its series. A booking, a change or a deletion of a voucher locks, `FOR SHARE` until the transaction ends, the voucher's fiscal year, then its series, then the company's row in `ledger.automatic_locks`, and only then reads them. A change of the year's dates or of the closing mark locks that row for update, and every change of a lock date locks the automatic lock row for update, as a change of the automatic lock does. So such a change waits for an open change of a voucher, and a change of a voucher waits for such a change and then reads it. Of the years' ends, only the voucher's own year's matters: the automatic lock reaches a date of that year only once a year that ends on or after the date ended 60 days ago, and no such year ends before the voucher's own. With writes at READ COMMITTED only (below), no change goes in under a lock that it did not see. The day itself is the one exception: a transaction kept open past midnight checks only its next statement against the new day's automatic lock.
+A change of what a lock depends on and a change of a voucher never overlap. The lock on a voucher's date depends on the lock dates, the automatic lock's settings, the end of the voucher's fiscal year (the `year_end_60` interval counts from it) and the closing mark of its series. A booking, a change and a deletion of a voucher, and a new row, each lock, `FOR SHARE` until the transaction ends, the voucher's fiscal year, then its series, then the company's row in `ledger.automatic_locks` (`ledger.lock_voucher_period`), and only then read them. A change of the year's dates or of the closing mark locks that row for update, and every change of a lock date locks the automatic lock row for update, as a change of the automatic lock does. So such a change waits for an open change of a voucher, and a change of a voucher waits for such a change and then reads it. Of the years' ends, only the voucher's own year's matters: the automatic lock reaches a date of that year only once a year that ends on or after the date ended 60 days ago, and no such year ends before the voucher's own. With writes at READ COMMITTED only (below), no change goes in under a lock that it did not see. The day itself is the one exception: a transaction kept open past midnight checks only its next statement against the new day's automatic lock.
 
 ## Accounts
 
-`ledger.accounts` holds each fiscal year's accounts: the `number`, the name `description`, and `active` (true unless told otherwise). A number is unique in its year (a unique key), and an account's number, year and id never change (`immutable_field`). `modified_at` moves with every accepted change. Only the trigger writes it: one given on insert is refused (`immutable_field`), and one written by an update too (`internal_only`). A refused change moves nothing. The app may insert, change and remove accounts. An unused account can be removed, and the behandlingshistorik keeps its last state. An account that holds rows cannot be removed (`account_has_rows`, with the number of vouchers that hold a row on it, struck rows included); `ledger.account_voucher_count` counts them. A deleted voucher holds no rows: its rows are in the record of deleted vouchers, with the account's name.
+`ledger.accounts` holds each fiscal year's accounts: the `number`, the name `description`, and `active` (true unless told otherwise). A number is unique in its year (a unique key), and an account's number, year and id never change (`immutable_field`). `modified_at` moves with every accepted change. Only the trigger writes it: one given on insert is refused (`immutable_field`), and one written by an update too (`internal_only`). A refused change moves nothing. The app may insert, change and remove accounts. An unused account can be removed, and the behandlingshistorik keeps its last state. An account that holds rows cannot be removed (`account_has_rows`, with the number of vouchers that hold a row on it, struck rows included); `ledger.account_voucher_count` counts them. A deleted voucher holds no rows: its rows are in the record of deleted vouchers, with the account's name. A new row reads its account's `active` flag from the account's row locked `FOR SHARE` until the transaction ends. So a change of the account waits for an open new row on it, and a new row waits for an open change of the account and then reads it.
 
 ## Voucher series
 
@@ -139,7 +152,7 @@ A change of what a lock depends on and a change of a voucher never overlap. The 
 - The code is 1 to 10 of `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ`, written out rather than as a range, so no collation can widen the set (`series_code_invalid`). It may start with a digit.
 - The code is unique in its year (`series_code_duplicate`). The trigger locks the year's row while it checks, so two series made at once in one year are checked one after the other. It never changes (`series_code_changed`), and neither do the series' year and id (`immutable_field`).
 - The name is at most 200 characters, counted as characters, and may be empty (`value_too_long`).
-- At most one series of a year is the closing series (a partial unique index). The mark moves when the old closing series gives it up first. The period lock does not apply to the closing series. A booking, a change or a deletion of a voucher locks its series' row `FOR SHARE` before it reads the mark, so a change of the mark waits for it, and the other way round. So does a change of the series' name or manual flag.
+- At most one series of a year is the closing series (a partial unique index). The mark moves when the old closing series gives it up first. The period lock does not apply to the closing series. A booking, a change or a deletion of a voucher locks its series' row `FOR SHARE` before it reads the mark, so a change of the mark waits for it, and the other way round. So does a change of the series' name or manual flag. A booking reads the manual flag from that locked row too, so a booking that waited for a change of the flag reads the new flag.
 - `modified_at` moves with every accepted change, as for accounts. The next number is the series' too, as the compatible API shows it, and every move of it, by a booking, by the deletion of the last voucher or by a void range, moves the counter's own `modified_at` (below). The series' modified time, as `lastmodified` reads it, is the later of the two: `greatest(voucher_series.modified_at, voucher_counters.modified_at)`.
 - Check constraints and the unique key hold the code's form, the name's length and the code's uniqueness also when the trigger is off.
 - The app may insert, change and remove series. An unused series can be removed, and its counter goes with it. A series that a voucher, an entry in the record of deleted vouchers or a void range names cannot (`ON DELETE RESTRICT`, `23001`).
@@ -167,7 +180,7 @@ A change of what a lock depends on and a change of a voucher never overlap. The 
 7. the voucher it reverses, if any, is locked first; it is an earlier voucher of the company (`23503`, below); it has the same reference type (`reversing_other_module`); and no other voucher reverses it (`reversing_voucher_exists`);
 8. the series' counter row is locked `FOR UPDATE` until the transaction ends, and gives the number.
 
-A reference type outside the seven is refused by a check (`23514`). The rows are inserted next, each one a statement. A row's trigger locks its voucher, refuses a given year, position, created stamp or strike (`immutable_field`, create), and checks that the account is in the voucher's year (`account_missing`) and active (`account_inactive`) and that the text is at most 100 characters (`value_too_long`). It sets the next position and the created stamps. After the voucher is in, the counter moves past its number. A statement that books several vouchers of one series gives them the next numbers in turn.
+A reference type outside the seven is refused by a check (`23514`). The series and its manual flag are read from the series' row, locked `FOR SHARE` after the year's row. The rows are inserted next, each one a statement. A row's trigger locks its voucher, refuses a given year, position, created stamp or strike (`immutable_field`, create), and checks that the account is in the voucher's year (`account_missing`) and active (`account_inactive`), read from the account's row locked `FOR SHARE`, and that the text is at most 100 characters (`value_too_long`). It sets the next position and the created stamps. After the voucher is in, the counter moves past its number. A statement that books several vouchers of one series gives them the next numbers in turn.
 
 **At commit**, two deferred constraint triggers check each voucher that is still there: at least two rows, struck rows included (`too_few_rows`, with the count; no row of a voucher can be struck in its booking's own transaction, below, so at booking every row counts), and debit equal to credit over the rows that are not struck (`unbalanced`, with both sums): the sum of every row's `debit` against the sum of every row's `credit`. Between two statements a voucher may be out of balance. A refused or rolled-back voucher uses no number.
 
@@ -177,11 +190,13 @@ A reference type outside the seven is refused by a check (`23514`). The rows are
 
 **Radera.** A delete moves the voucher to the record of deleted vouchers. The trigger checks, in this order: the date is not locked for the actor (the closing series passes); the voucher is the last of its series, directly below the counter (`not_last_in_series`), so the voucher just below a void range never is; no voucher reverses it (`reversing_voucher_exists`); and, as it stands now, it has two rows (`too_few_rows`) and they balance (`unbalanced`). The checks at commit never see a voucher that is gone, so a deletion in the transaction that booked the voucher, or that changed its rows, makes those two checks here: the record holds no voucher that could not have been booked. Then it copies the voucher and its rows, each row with its account's name, into the record, and moves the counter back by one, so the number is given out again. The rows then go by the cascade. A row is never removed from a voucher that stays (`row_removal`); the app has no `DELETE` on rows at all.
 
-**The lock order.** A booking, a change and a deletion of a voucher lock, `FOR SHARE`, its fiscal year, its series and the company's automatic lock row, in that order (the period lock, above). A booking then locks the voucher it reverses and the series' counter. A deletion locks its voucher first, as its statement's target, then those rows, then the counter, and then its rows by the cascade. A change of a row locks the row first, as its statement's target, and only then its voucher. So a change of a row and a deletion of the same voucher take the two in opposite orders, and can deadlock (`40P01`). Every caller that changes a row therefore locks its voucher first, in the same transaction: `SELECT 1 FROM ledger.vouchers WHERE id = $1 FOR NO KEY UPDATE`. Then the change waits for the deletion and finds no row, or the deletion waits for the change. The test helpers do this, and the server's repository must too.
+**The lock order.** A booking, a change and a deletion of a voucher lock, `FOR SHARE`, its fiscal year, its series and the company's automatic lock row, in that order (the period lock, above). A booking then locks the voucher it reverses and the series' counter. A new row locks its voucher, then those three rows (a row of the booking's own transaction holds them from the booking), and then its account, `FOR SHARE`. A deletion locks its voucher first, as its statement's target, then those rows, then the counter, and then its rows by the cascade. A change of a row locks the row first, as its statement's target, and only then its voucher. So a change of a row and a deletion of the same voucher take the two in opposite orders, and can deadlock (`40P01`). Every caller that changes a row therefore locks its voucher first, in the same transaction: `SELECT 1 FROM ledger.vouchers WHERE id = $1 FOR NO KEY UPDATE`. Then the change waits for the deletion and finds no row, or the deletion waits for the change. The test helpers do this, and the server's repository must too.
+
+A change of a fiscal year's dates, of a series or of an account locks only that row, and a change of a lock date locks its own row and then the automatic lock row, so none of them waits in a circle with a single change of a voucher. A transaction that makes more than one of these changes makes them in the order a voucher locks those rows: the fiscal year, then the series, then the lock dates, then the accounts. In another order it can deadlock with a change of a voucher (`40P01`), and PostgreSQL rolls one of the two back.
 
 **The record of deleted vouchers.** `ledger.deleted_vouchers` holds each deletion as its own entry: every column the voucher had, the voucher's id in `voucher_id`, its `deletion_count` (the number's first deletion in its series and year is 1, the next 2), and `deleted_at`, `deleted_by`, `deleted_by_kind` and `deleted_xact`. An entry has an id of its own, so a voucher whose id an earlier deleted voucher had, in this company or another, is deleted as an entry of its own too. `ledger.deleted_voucher_rows` holds the entry's rows (`deleted_voucher_id` is the entry's id), each with an id of its own, the row's id in `row_id`, every column and `account_description`, the account's name at the deletion. Only a deletion writes them (`internal_only`), and no role changes or deletes them, the owner neither (`append_only`). The app and the readers only read them.
 
-**One company per transaction.** The triggers that run after a row is written, and the checks at commit, read through row level security as the voucher's company. So a statement or a transaction that changes `nortfox.company_id` after writing a voucher is refused (`42501`). A transaction keeps one actor too (the settings, above): a row added to a voucher in its booking's own transaction is part of the booking, so it is checked against the lock only with the booking.
+**The company at each check.** The triggers that run after a voucher or a row is written, and the checks at commit, read the voucher's rows through row level security, as the company that is set when they run. So each of them is refused (`42501`) when that company is not the voucher's: in a statement that changes `nortfox.company_id` between its rows, and in a transaction that has written a voucher and has another company, or none, set at its commit. The database does not keep one company for the whole transaction, as it keeps one actor: a transaction that writes in one company, switches to another and back, and then commits, is not refused, and each of its rows is the company's that was set when it was written. The server sets the company once, at the start of each transaction ([decision 9](../docs/decisions/0009-company-isolation-and-database-roles.md)). A transaction keeps one actor (the settings, above): a row added to a voucher in its booking's own transaction is part of the booking, so it is checked against the lock only with the booking.
 
 The app may insert, change and delete vouchers, and insert and change rows.
 
@@ -191,7 +206,7 @@ The app may insert, change and delete vouchers, and insert and change rows.
 
 ## The isolation level
 
-The ledger is written at READ COMMITTED only, by every role (`read_committed_only`, with the level). The rules check other rows under row locks: a booking locks its fiscal year's row `FOR SHARE` against a change of the year's dates, a booking locks its series' counter, and a booking, a change and a deletion of a voucher lock its year, its series and the company's lock settings. At READ COMMITTED each statement of a trigger then reads what is committed. At REPEATABLE READ and SERIALIZABLE every statement reads the transaction's first snapshot, and a lock that another transaction held and gave back at its commit raises no serialization failure. Such a transaction could shorten a fiscal year past a voucher booked just before, or change a voucher in a period locked just before. `audit.write_history`, the trigger that every company table has, refuses every write at those levels. READ UNCOMMITTED is READ COMMITTED in PostgreSQL, and is accepted. A read may run at any level.
+The ledger is written at READ COMMITTED only, by every role (`read_committed_only`, with the level). The rules check other rows under row locks: a booking locks its fiscal year's row `FOR SHARE` against a change of the year's dates, a booking locks its series' counter, a booking, a change and a deletion of a voucher lock its year, its series and the company's lock settings, and a new row locks its account. At READ COMMITTED each statement of a trigger then reads what is committed. At REPEATABLE READ and SERIALIZABLE every statement reads the transaction's first snapshot, and a lock that another transaction held and gave back at its commit raises no serialization failure. Such a transaction could shorten a fiscal year past a voucher booked just before, or change a voucher in a period locked just before. `audit.write_history`, the trigger that every company table has, refuses every write at those levels. READ UNCOMMITTED is READ COMMITTED in PostgreSQL, and is accepted. A read may run at any level.
 
 ## The internal-write rule
 
@@ -235,7 +250,7 @@ Migration 0001 raises `immutable_field` (a company's keys, and any row's `compan
 | NF057 | `fiscal_year_strands_rows` | `table`, `count` |
 | NF058 | `read_committed_only` | `isolation` |
 
-Where no reason is named, PostgreSQL's own error stands: a unique key, a check, a foreign key, a missing privilege (`42501`), a row that a policy refuses (`42501`), or a transaction that changed its company or its actor after it began to write (`42501`). These last two are faults of the server, not refusals of a request.
+Where no reason is named, PostgreSQL's own error stands: a unique key, a check, a foreign key, a missing privilege (`42501`), a row that a policy refuses (`42501`), a check of a voucher that runs while another company than the voucher's is set (`42501`), or a write under another actor than the transaction's first write had (`42501`). These last two are faults of the server, not refusals of a request.
 
 ## Adding a migration
 

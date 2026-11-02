@@ -133,7 +133,7 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
     params: [company],
   }),
   "ledger.reader_roles": (company) => ({
-    sql: "INSERT INTO ledger.reader_roles (company_id, role_name) VALUES ($1, 'nortfox_test_reader_c')",
+    sql: "INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, 'nortfox_test_reader_c'::pg_catalog.regrole)",
     params: [company],
   }),
   "audit.history": (company) => ({
@@ -499,7 +499,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
   const [readerA, readerB] = TEST_READERS;
   const changes: Change[] = [];
   const insertCompany = "INSERT INTO ledger.companies AS t (company_id, name, organization_number) VALUES ($1, $2, $3) RETURNING to_jsonb(t) AS row";
-  const bind = "INSERT INTO ledger.reader_roles AS t (id, company_id, role_name) VALUES ($1, $2, $3) RETURNING to_jsonb(t) AS row";
+  const bind = "INSERT INTO ledger.reader_roles AS t (id, company_id, role_oid) VALUES ($1, $2, $3::pg_catalog.regrole) RETURNING to_jsonb(t) AS row";
   /** The automatic lock row that a new company gets with it. */
   const automaticLockOf = (company: string): Made => ({
     table: "ledger.automatic_locks",

@@ -161,14 +161,14 @@ describe("the balance of a voucher", () => {
           await app.query("SELECT pg_catalog.set_config('nortfox.company_id', $1, true)", [company]);
         }),
         INSUFFICIENT_PRIVILEGE,
-        /The transaction's company changed while its vouchers were written/,
+        /The transaction's company is not the voucher's company when its check runs/,
       );
     }
     expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
   });
 
-  describe("keeps one company per transaction, so no check reads another company's rows", () => {
-    const CHANGED = /The transaction's company changed while its vouchers were written/;
+  describe("refuses a check that runs while another company is set, so no check reads another company's rows", () => {
+    const CHANGED = /The transaction's company is not the voucher's company when its check runs/;
 
     it("at commit, after a voucher with no rows, which only the row count checks", async () => {
       const books = await addBooks(app);
@@ -247,6 +247,45 @@ describe("the balance of a voucher", () => {
       );
       await expectError(withoutHistory(books.company, "ledger.voucher_rows", TWO_COMPANIES_ADDED, params), INSUFFICIENT_PRIVILEGE, CHANGED);
       expect((await rowsOf(app, books.company, ours.id)).length).toBe(2);
+    });
+
+    // The company is checked when each check runs. The database does not keep
+    // one company for the transaction, as it keeps one actor: the server sets
+    // it once, at the start (db/README.md).
+    const SWITCH = "SELECT pg_catalog.set_config('nortfox.company_id', $1, true)";
+    const INSERT_YEAR = `INSERT INTO ledger.fiscal_years (company_id, from_date, to_date, accounting_method, account_chart_type)
+      VALUES ($1, '2091-01-01', '2091-12-31', 'ACCRUAL', 'Bas 2091') RETURNING id`;
+
+    it("lets a transaction that switches its company away and back before its checks run commit, each row in the company set when it was written", async () => {
+      const books = await addBooks(app);
+      const other = await addBooks(app);
+      const { booked, year } = await inTransaction(app, { company: books.company, ...who }, async () => {
+        const written = await writeVoucher(app, books.company, voucher(books, balanced(2000n)));
+        await app.query(SWITCH, [other.company]);
+        const made = (await app.query<{ id: string }>(INSERT_YEAR, [other.company])).rows[0];
+        await app.query(SWITCH, [books.company]);
+        return { booked: written, year: made };
+      });
+      expect(booked.number).toBe(1);
+      expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(2);
+      const years = await inTransaction(app, { company: other.company }, async () => (await app.query<{ id: string }>("SELECT id FROM ledger.fiscal_years ORDER BY from_date")).rows);
+      expect(years.map((row) => row.id)).toEqual([other.year.id, year?.id]);
+    });
+
+    it("still refuses an unbalanced voucher of a transaction that switched its company away and back", async () => {
+      const books = await addBooks(app);
+      const other = await addBooks(app);
+      await expectRefusal(
+        inTransaction(app, { company: books.company, ...who }, async () => {
+          await writeVoucher(app, books.company, voucher(books, [{ account: 6110, debit: 3n }, { account: 1930, credit: 2n }]));
+          await app.query(SWITCH, [other.company]);
+          await app.query(INSERT_YEAR, [other.company]);
+          await app.query(SWITCH, [books.company]);
+        }),
+        "unbalanced",
+        { debit: "3", credit: "2" },
+      );
+      expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
     });
 
     it("in a deletion whose condition changes the company: one that reads no column hides the row, one that reads a column is refused", async () => {

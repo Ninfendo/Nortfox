@@ -13,7 +13,18 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { INSUFFICIENT_PRIVILEGE, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import {
+  INSUFFICIENT_PRIVILEGE,
+  backendPid,
+  begin,
+  expectError,
+  expectRefusal,
+  failureOf,
+  freshDatabase,
+  inTransaction,
+  untilWaitingForLock,
+  type TestDatabase,
+} from "../../../test/database.ts";
 import {
   ROW_COLUMNS,
   VOUCHER_COLUMNS,
@@ -163,6 +174,32 @@ describe("Ändra", () => {
       [5, 1930, 0n, 500n, changer.actor, "integration"],
     ]);
     await expectAlteredBy(books.company, voucher, await voucherOf(app, books.company, voucher.id));
+  });
+
+  it("holds a row added to a voucher while another is being added to it, by the row's own lock on its voucher, and gives it the next position", async () => {
+    const books = await addBooks(app);
+    const voucher = await booked(books);
+    const other = await db.connect("app");
+    const otherPid = await backendPid(other);
+    await begin(app, { company: books.company, ...changer });
+    try {
+      // Neither transaction locks the voucher itself first: the row's trigger does.
+      expect((await writeRow(app, books.company, voucher.id, { account: 3001, text: "Först" })).position).toBe(3);
+      const second = failureOf(
+        inTransaction(other, { company: books.company, ...changer }, () => writeRow(other, books.company, voucher.id, { account: 3001, text: "Sedan" })),
+      );
+      await untilWaitingForLock(app, otherPid);
+      await app.query("COMMIT");
+      expect(await second).toBeUndefined();
+    } finally {
+      await app.query("ROLLBACK");
+    }
+    expect((await rowsOf(app, books.company, voucher.id)).map((row) => [row.position, row.transaction_information])).toEqual([
+      [1, ""],
+      [2, ""],
+      [3, "Först"],
+      [4, "Sedan"],
+    ]);
   });
 
   it("refuses an added row on an account that the year does not have, or that is inactive", async () => {

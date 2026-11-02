@@ -335,13 +335,13 @@ describe("Radera", () => {
       const voucher = await bookVoucher(app, books.company, aVoucher(books), booker);
       await remove(books.company, voucher.id);
       await inTransaction(owner, { company: books.company, ...deleter }, () =>
-        owner.query("INSERT INTO ledger.reader_roles (company_id, role_name) VALUES ($1, 'nortfox_test_reader_a')", [books.company]),
+        owner.query("INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, 'nortfox_test_reader_a'::pg_catalog.regrole)", [books.company]),
       );
       return { books, voucher };
     }
 
     async function unbindReader(company: string): Promise<void> {
-      await inTransaction(owner, { company, ...deleter }, () => owner.query("DELETE FROM ledger.reader_roles WHERE role_name = 'nortfox_test_reader_a'"));
+      await inTransaction(owner, { company, ...deleter }, () => owner.query("DELETE FROM ledger.reader_roles WHERE role_oid = 'nortfox_test_reader_a'::pg_catalog.regrole"));
     }
 
     const WRITES = [

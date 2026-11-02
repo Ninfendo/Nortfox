@@ -123,7 +123,7 @@ describe("the behandlingshistorik", () => {
     // The owner's writes need an actor too.
     await expectRefusal(
       inTransaction(owner, { company: scenario.companyA }, () =>
-        owner.query("INSERT INTO ledger.reader_roles (company_id, role_name) VALUES ($1, 'nortfox_test_reader_c')", [scenario.companyA]),
+        owner.query("INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, 'nortfox_test_reader_c'::pg_catalog.regrole)", [scenario.companyA]),
       ),
       "actor_missing",
       { setting: "nortfox.actor_id" },

@@ -236,7 +236,7 @@ describe("company isolation", () => {
   it("gives a reader role that is bound to no company nothing", async () => {
     const owner = as("owner");
     await inTransaction(owner, { company: scenario.companyB, actor, kind: "system" }, async () => {
-      await owner.query("DELETE FROM ledger.reader_roles WHERE role_name = 'nortfox_test_reader_b'");
+      await owner.query("DELETE FROM ledger.reader_roles WHERE role_oid = 'nortfox_test_reader_b'::pg_catalog.regrole");
     });
     for (const table of tables) {
       expect(await rows("readerB", table, scenario.companyB), table).toEqual([]);

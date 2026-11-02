@@ -12,7 +12,17 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHECK_VIOLATION, begin, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import {
+  CHECK_VIOLATION,
+  backendPid,
+  begin,
+  expectError,
+  expectRefusal,
+  freshDatabase,
+  inTransaction,
+  untilWaitingForLock,
+  type TestDatabase,
+} from "../../../test/database.ts";
 import {
   INSERT_VOUCHER,
   REFERENCE_TYPES,
@@ -524,5 +534,95 @@ describe("booking a voucher", () => {
       "SELECT attname::text AS name FROM pg_catalog.pg_attribute WHERE attrelid = 'ledger.voucher_rows'::pg_catalog.regclass AND attnum > 0 AND NOT attisdropped ORDER BY attnum",
     );
     expect(rowColumns.rows.map((row) => row.name).join(", ")).toBe(ROW_COLUMNS.replaceAll(/::text AS \w+/g, "").replaceAll(/\s+/g, " ").trim());
+  });
+
+  // A booking reads the series' manual flag, and a new row its account's
+  // active flag, from the row locked FOR SHARE. So a change of the flag that
+  // is open holds them, and they then read it; and they hold a change of the
+  // flag until they commit.
+  describe("while its series or its account changes", () => {
+    const UNMARK_A = "UPDATE ledger.voucher_series SET manual = false WHERE fiscal_year_id = $1 AND code = 'A'";
+    const DEACTIVATE_3001 = "UPDATE ledger.accounts SET active = false WHERE fiscal_year_id = $1 AND number = 3001 RETURNING modified_at::text AS modified_at";
+
+    it("holds a MANUAL voucher until a change that makes its series not manual commits, and then refuses it", async () => {
+      const books = await addBooks(app);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...someUser() });
+      try {
+        await app.query(UNMARK_A, [books.year.id]);
+        const booked = expectRefusal(bookVoucher(other, books.company, aVoucher(books), who), "series_not_manual", { code: "A" });
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        await booked;
+      } finally {
+        await app.query("ROLLBACK");
+      }
+      expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+    });
+
+    it("holds a change that makes a series not manual until a MANUAL voucher in it commits", async () => {
+      const books = await addBooks(app);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...who });
+      let booked: Voucher | undefined;
+      try {
+        booked = await writeVoucher(app, books.company, aVoucher(books));
+        const unmarked = inTransaction(other, { company: books.company, ...someUser() }, () =>
+          other.query<{ modified_at: string }>(`${UNMARK_A} RETURNING modified_at::text AS modified_at`, [books.year.id]),
+        );
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        const series = (await unmarked).rows[0];
+        expect(await isAfter(app, series?.modified_at ?? "", booked.created_at)).toBe(true);
+      } finally {
+        await app.query("ROLLBACK");
+      }
+      expect(booked.number).toBe(1);
+    });
+
+    it("holds a new row until a change that makes its account inactive commits, and then refuses it", async () => {
+      const books = await addBooks(app);
+      const voucher = await book(books);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...someUser() });
+      try {
+        await app.query(DEACTIVATE_3001, [books.year.id]);
+        const added = expectRefusal(
+          inTransaction(other, { company: books.company, ...who }, () => writeRow(other, books.company, voucher.id, { account: 3001 })),
+          "account_inactive",
+          { number: 3001 },
+        );
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        await added;
+      } finally {
+        await app.query("ROLLBACK");
+      }
+      expect((await rowsOf(app, books.company, voucher.id)).length).toBe(2);
+    });
+
+    it("holds a change that makes an account inactive until a new row on it commits", async () => {
+      const books = await addBooks(app);
+      const voucher = await book(books);
+      const other = await db.connect("app");
+      const otherPid = await backendPid(other);
+      await begin(app, { company: books.company, ...who });
+      try {
+        const row = await writeRow(app, books.company, voucher.id, { account: 3001 });
+        const deactivated = inTransaction(other, { company: books.company, ...someUser() }, () =>
+          other.query<{ modified_at: string }>(DEACTIVATE_3001, [books.year.id]),
+        );
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        const account = (await deactivated).rows[0];
+        expect(await isAfter(app, account?.modified_at ?? "", row.created_at)).toBe(true);
+      } finally {
+        await app.query("ROLLBACK");
+      }
+      expect((await rowsOf(app, books.company, voucher.id)).map((row) => row.account_number)).toEqual([6110, 1930, 3001]);
+    });
   });
 });

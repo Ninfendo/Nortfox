@@ -4,8 +4,10 @@
 # The first start of an install only: the image's entrypoint runs this once,
 # on an empty data folder, against its own setup server, which listens on its
 # socket only. It makes the cluster roles from db/roles.sql, sets the owner's
-# and the app's passwords from the compose secrets, and makes the database
-# nortfox, owned by nortfox_owner. The migrate step makes everything in it.
+# and the app's passwords from the compose secrets, makes the database
+# nortfox, owned by nortfox_owner, and runs db/database.sql in it, which
+# closes the functions that make a large object. The migrate step makes
+# everything else in it.
 #
 # A password is read as the migrate step reads it (apps/server/src/db/connect.ts):
 # the whole file, without one line break at its end. It reaches psql through
@@ -37,11 +39,11 @@ app_password=
 read_secret owner-password owner_password
 read_secret app-password app_password
 
-psql=(psql --no-psqlrc --set ON_ERROR_STOP=1 --username "${POSTGRES_USER:-postgres}" --dbname postgres)
+psql=(psql --no-psqlrc --set ON_ERROR_STOP=1 --username "${POSTGRES_USER:-postgres}")
 
-"${psql[@]}" --file /usr/local/share/nortfox/roles.sql
+"${psql[@]}" --dbname postgres --file /usr/local/share/nortfox/roles.sql
 
-NORTFOX_OWNER_PASSWORD=$owner_password NORTFOX_APP_PASSWORD=$app_password "${psql[@]}" <<'SQL'
+NORTFOX_OWNER_PASSWORD=$owner_password NORTFOX_APP_PASSWORD=$app_password "${psql[@]}" --dbname postgres <<'SQL'
 \getenv owner_password NORTFOX_OWNER_PASSWORD
 \getenv app_password NORTFOX_APP_PASSWORD
 ALTER ROLE nortfox_owner PASSWORD :'owner_password';
@@ -49,4 +51,6 @@ ALTER ROLE nortfox_app PASSWORD :'app_password';
 CREATE DATABASE nortfox OWNER nortfox_owner;
 SQL
 
-echo "10-roles: made the roles and the database nortfox, owned by nortfox_owner."
+"${psql[@]}" --dbname nortfox --file /usr/local/share/nortfox/database.sql
+
+echo "10-roles: made the roles and the database nortfox, owned by nortfox_owner, where no role of ours can make a large object."

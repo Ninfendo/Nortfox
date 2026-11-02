@@ -78,8 +78,8 @@ export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<str
     "ledger.reader_roles",
     {
       kind: "own policies",
-      why: "It binds each reader role to its company, so a reader sees its own binding by its role's name. The app has no access.",
-      policies: [OWNER_POLICY, { role: READER, command: "SELECT", using: "(role_name = CURRENT_USER)", check: null }],
+      why: "It binds each reader role to its company, so a reader sees its own binding by its role's oid. The app has no access.",
+      policies: [OWNER_POLICY, { role: READER, command: "SELECT", using: "(role_oid = ledger.current_role_oid())", check: null }],
     },
   ],
 ]);
@@ -92,7 +92,7 @@ export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<str
 export const KEY_EXCEPTIONS: ReadonlyMap<string, string> = new Map<string, string>([
   ["audit.history_pkey", "The history's own id is an identity column that only the history trigger writes. No caller gives it."],
   ["ledger.companies_database_number_key", "The tenant id comes from one sequence for the install. No caller gives it or changes it."],
-  ["ledger.reader_roles_role_name_key", "A reader role is bound to one company. Only the owner writes the bindings, and the app has no access."],
+  ["ledger.reader_roles_role_oid_key", "A reader role, by its oid, is bound to one company. Only the owner writes the bindings, and the app has no access."],
 ]);
 
 const COMMANDS: Readonly<Record<string, string>> = { "*": "ALL", r: "SELECT", a: "INSERT", w: "UPDATE", d: "DELETE" };

@@ -6,7 +6,9 @@
 // (ledger.ts, LOCK_VOUCHER): a row change and a deletion of the same voucher
 // then wait for each other, and never wait in a circle. These tests hold the
 // deletion back with a third transaction that books in the same series and
-// so holds the counter, which makes the order of the waits certain.
+// so holds the counter, which makes the order of the waits certain. The
+// second part shows the order in which a transaction that changes more than
+// one of the rows a voucher locks makes its changes.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -17,9 +19,11 @@ import {
   balanced,
   bookVoucher,
   deletedVouchersOf,
+  nextNumberOf,
   rowsOf,
   someUser,
   voucherOf,
+  writeRow,
   writeVoucher,
   type Books,
   type Voucher,
@@ -105,5 +109,107 @@ describe("the lock order between a deletion and a change of a row", () => {
     } else {
       expect((await rowsOf(watcher, books.company, voucher.id))[0]?.transaction_information).toBe("Fel konto");
     }
+  });
+});
+
+// A booking locks the voucher's fiscal year, then its series, then the
+// automatic lock row. A new row locks its voucher, then those three rows, and
+// then its account (db/README.md, the lock order). A transaction that changes
+// more than one of them makes the changes in that order too.
+describe("the lock order between a voucher and a transaction that changes two of the rows it locks", () => {
+  let db: TestDatabase;
+  let watcher: Client;
+  const who = someUser();
+  const SHORTEN = "UPDATE ledger.fiscal_years SET to_date = '2090-11-30' WHERE id = $1";
+  const RENAME_SERIES = "UPDATE ledger.voucher_series SET description = 'Manuella' WHERE fiscal_year_id = $1 AND code = 'A'";
+  const LOCK = "INSERT INTO ledger.period_locks (company_id, scope, end_date) VALUES ($1, 'all', '2090-06-30')";
+  const RENAME_ACCOUNT = "UPDATE ledger.accounts SET description = 'Försäljning' WHERE fiscal_year_id = $1 AND number = 3001";
+
+  beforeAll(async () => {
+    db = await freshDatabase();
+    watcher = await db.connect("app");
+  });
+
+  afterAll(async () => {
+    await db.close();
+  });
+
+  type Change = (books: Books) => readonly [sql: string, params: readonly unknown[]];
+  const shorten: Change = (books) => [SHORTEN, [books.year.id]];
+  const renameSeries: Change = (books) => [RENAME_SERIES, [books.year.id]];
+  const lock: Change = (books) => [LOCK, [books.company]];
+  const renameAccount: Change = (books) => [RENAME_ACCOUNT, [books.year.id]];
+
+  /** A booking in series A, dated 2090-03-15, inside the lock that `lock` sets. */
+  const booking = (client: Client, books: Books): Promise<unknown> =>
+    writeVoucher(client, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced(500n) });
+  /** A new row on account 3001 of a voucher dated 2090-03-15. */
+  const newRow = (client: Client, books: Books, voucher: Voucher): Promise<unknown> => writeRow(client, books.company, voucher.id, { account: 3001 });
+
+  /**
+   * Books a voucher dated 2090-03-15. The setter makes the first change, the
+   * voucher's write starts in another transaction and waits, and the setter
+   * then makes the second change and commits. Gives how each ended.
+   */
+  async function race(
+    first: Change,
+    second: Change,
+    write: (client: Client, books: Books, voucher: Voucher) => Promise<unknown>,
+  ): Promise<{ books: Books; voucher: Voucher; setter: unknown; written: unknown }> {
+    const books = await addBooks(watcher);
+    const voucher = await bookVoucher(watcher, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced(2000n) }, who);
+    const [setter, writer] = await Promise.all([db.connect("app"), db.connect("app")]);
+    const writerPid = await backendPid(writer);
+    /** Runs `work` in the open transaction of `client`, commits it, and gives what it failed with, or undefined. */
+    const finish = (client: Client, work: () => Promise<unknown>): Promise<unknown> =>
+      failureOf(
+        (async () => {
+          try {
+            await work();
+            await client.query("COMMIT");
+          } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+          }
+        })(),
+      );
+    await begin(setter, { company: books.company, ...someUser() });
+    const [firstSql, firstParams] = first(books);
+    await setter.query(firstSql, [...firstParams]);
+    await begin(writer, { company: books.company, ...who });
+    const written = finish(writer, () => write(writer, books, voucher));
+    await untilWaitingForLock(watcher, writerPid);
+    const [secondSql, secondParams] = second(books);
+    const set = finish(setter, () => setter.query(secondSql, [...secondParams]));
+    return { books, voucher, setter: await set, written: await written };
+  }
+
+  /** Expects PostgreSQL to have broken a circle of waits by rolling one of the two back. */
+  function expectDeadlock(setter: unknown, written: unknown): void {
+    const codes = [setter, written].map((error) => (error as { code?: unknown } | undefined)?.code);
+    expect(codes.filter((code) => code === DEADLOCK_DETECTED)).toHaveLength(1);
+  }
+
+  it("never deadlocks a booking with a transaction that changes the fiscal year, then the series: the booking waits, then goes in", async () => {
+    const { books, setter, written } = await race(shorten, renameSeries, booking);
+    expect([setter, written]).toEqual([undefined, undefined]);
+    expect(await nextNumberOf(watcher, books.company, books.year.id, "A")).toBe(3);
+  });
+
+  it("deadlocks a booking with a transaction that changes the series first, which is why it changes the fiscal year first", async () => {
+    const { setter, written } = await race(renameSeries, shorten, booking);
+    expectDeadlock(setter, written);
+  });
+
+  it("never deadlocks a new row with a transaction that sets a lock date, then changes the account: the row waits, then reads the lock", async () => {
+    const { books, voucher, setter, written } = await race(lock, renameAccount, newRow);
+    expect(setter).toBeUndefined();
+    expect((written as { code?: unknown } | undefined)?.code).toBe("NF011");
+    expect((await rowsOf(watcher, books.company, voucher.id)).length).toBe(2);
+  });
+
+  it("deadlocks a new row with a transaction that changes the account first, which is why it sets the lock date first", async () => {
+    const { setter, written } = await race(renameAccount, lock, newRow);
+    expectDeadlock(setter, written);
   });
 });

@@ -77,7 +77,7 @@ describe("the table guard", () => {
       "ledger.transaction_actors": "not a company table",
       "meta.schema_migrations": "not a company table",
     });
-    expect([...KEY_EXCEPTIONS.keys()]).toEqual(["audit.history_pkey", "ledger.companies_database_number_key", "ledger.reader_roles_role_name_key"]);
+    expect([...KEY_EXCEPTIONS.keys()]).toEqual(["audit.history_pkey", "ledger.companies_database_number_key", "ledger.reader_roles_role_oid_key"]);
     await owner.query("BEGIN");
     try {
       await owner.query("CREATE TABLE ledger.bare (id uuid); CREATE VIEW audit.seen AS SELECT 1 AS one");
@@ -117,6 +117,23 @@ describe("the table guard", () => {
       [NO_APP_POLICY, "ledger.bare: has the permissive policy company_app, which the guard does not expect."],
     ],
     ["the owner's policy is for another role", "ALTER POLICY company_owner ON ledger.bare TO nortfox_app", [NO_OWNER_POLICY]],
+    // A reader named on the app's or the owner's policy could pick any company by the setting.
+    [
+      "the app's policy names a reader too",
+      "ALTER POLICY company_app ON ledger.bare TO nortfox_app, nortfox_reader",
+      [NO_APP_POLICY, "ledger.bare: has the permissive policy company_app, which the guard does not expect."],
+    ],
+    [
+      // PostgreSQL keeps only PUBLIC when the list names it.
+      "the app's policy is for PUBLIC",
+      "ALTER POLICY company_app ON ledger.bare TO nortfox_app, PUBLIC",
+      [NO_APP_POLICY, "ledger.bare: has the permissive policy company_app, which the guard does not expect."],
+    ],
+    [
+      "the owner's policy names a reader too",
+      "ALTER POLICY company_owner ON ledger.bare TO nortfox_owner, nortfox_reader",
+      [NO_OWNER_POLICY, "ledger.bare: has the permissive policy company_owner, which the guard does not expect."],
+    ],
     [
       "the reader's policy trusts the setting",
       "ALTER POLICY company_reader ON ledger.bare USING (company_id = ledger.current_company_id())",
@@ -327,7 +344,7 @@ describe("the table guard", () => {
   it("checks the exceptions too, each only for what it is excepted from", async () => {
     expect(await problemsAfter("ALTER TABLE audit.history NO FORCE ROW LEVEL SECURITY")).toEqual(["audit.history: row level security is not forced."]);
     expect(await problemsAfter("ALTER POLICY own_binding ON ledger.reader_roles USING (true)")).toEqual([
-      "ledger.reader_roles: has no permissive policy for nortfox_reader on SELECT with USING (role_name = CURRENT_USER).",
+      "ledger.reader_roles: has no permissive policy for nortfox_reader on SELECT with USING (role_oid = ledger.current_role_oid()).",
       "ledger.reader_roles: has the permissive policy own_binding, which the guard does not expect.",
     ]);
     expect(await problemsAfter("DROP TRIGGER audit_history ON ledger.reader_roles")).toEqual([

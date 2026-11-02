@@ -31,7 +31,14 @@ expect_setting archive_command "pgbackrest --stanza=nortfox archive-push %p"
 expect_setting archive_timeout 1min
 
 pgbackrest --stanza=nortfox stanza-create
-pgbackrest --stanza=nortfox check
+# From here on, a failed first start leaves the stanza in the off-site
+# repository, which docker compose down --volumes does not remove. This line
+# in the log tells the operator so (deploy/README.md).
+echo "20-stanza: made the stanza nortfox in both repositories."
+if ! pgbackrest --stanza=nortfox check; then
+  echo "20-stanza: pgBackRest's check failed after the stanza was made in both repositories. Before the next first start, empty the off-site repository's path too. deploy/README.md says how." >&2
+  exit 1
+fi
 
 # The mark of a finished first start. It is in the data folder, so a full
 # backup holds it and a restore brings it back.

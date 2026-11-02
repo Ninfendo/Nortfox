@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Before the database tests: the cluster roles from db/roles.sql, the test
-// reader roles, and one template database that the real runner migrates as
-// the owner. Each test file clones the template (database.ts). After the
-// tests, every database of the run is dropped.
+// reader roles, and one template database, set up by db/database.sql as an
+// install's database is, that the real runner migrates as the owner. Each
+// test file clones the template (database.ts). After the tests, every
+// database of the run is dropped.
 //
 // With no test cluster, the setup fails with one line that says how to start
 // one. It never skips the database tests.
@@ -12,7 +13,18 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { TestProject } from "vitest/node";
 import { migrate, readMigrations } from "../src/db/migrate.ts";
-import { PREFIX, ROLES_FILE, TEST_READERS, adminClient, connectAs, dropRunDatabases, makeReaderRole, refuseSharedCluster } from "./cluster.ts";
+import {
+  DATABASE_FILE,
+  PREFIX,
+  ROLES_FILE,
+  TEST_READERS,
+  adminClient,
+  connectAs,
+  dropRunDatabases,
+  dropTemporaryRoles,
+  makeReaderRole,
+  refuseSharedCluster,
+} from "./cluster.ts";
 
 declare module "vitest" {
   export interface ProvidedContext {
@@ -53,7 +65,14 @@ async function prepare(project: TestProject): Promise<() => Promise<void>> {
     for (const reader of TEST_READERS) {
       await makeReaderRole(admin, reader);
     }
+    await dropTemporaryRoles(admin);
     await admin.query(`CREATE DATABASE ${template} OWNER nortfox_owner`);
+    const inTemplate = await adminClient(template);
+    try {
+      await inTemplate.query(readFileSync(DATABASE_FILE, "utf8"));
+    } finally {
+      await inTemplate.end();
+    }
     const owner = await connectAs("nortfox_owner", template);
     try {
       await migrate(owner, readMigrations());

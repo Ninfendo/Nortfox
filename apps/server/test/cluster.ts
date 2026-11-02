@@ -18,11 +18,21 @@ export const DEFAULT_TEST_DATABASE_URL = "postgres://postgres@127.0.0.1:55433/po
 /** db/roles.sql, which the setup runs as a superuser, as an install's init step does. */
 export const ROLES_FILE = fileURLToPath(new URL("../../../db/roles.sql", import.meta.url));
 
-/** The two reader roles the tests bind to companies. Each is a member of nortfox_reader. */
-export const TEST_READERS = ["nortfox_test_reader_a", "nortfox_test_reader_b"] as const;
+/** db/database.sql, which the setup runs as a superuser in the template, as an install's init step does in its database. */
+export const DATABASE_FILE = fileURLToPath(new URL("../../../db/database.sql", import.meta.url));
+
+/**
+ * The reader roles of the tests. Each is a member of nortfox_reader. The
+ * tests bind the first two to companies. No test binds the third: a write
+ * that must be refused names it.
+ */
+export const TEST_READERS = ["nortfox_test_reader_a", "nortfox_test_reader_b", "nortfox_test_reader_c"] as const;
 
 /** The prefix of every database the tests make. */
 export const PREFIX = "nortfox_test_";
+
+/** The prefix of a role that one test makes and drops again. The setup drops any that a stopped run left behind. */
+export const TEMPORARY_ROLE_PREFIX = "nortfox_test_role_";
 
 /** The databases a cluster holds of its own. */
 const CLUSTER_DATABASES = ["postgres", "template0", "template1"];
@@ -101,6 +111,17 @@ export async function makeReaderRole(admin: Client, role: string): Promise<void>
   );
   await admin.query(`ALTER ROLE ${role} WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
   await admin.query(`GRANT nortfox_reader TO ${role} WITH INHERIT TRUE, SET FALSE`);
+}
+
+/** Drops every role that one test made and a stopped run left behind, by the prefix TEMPORARY_ROLE_PREFIX. */
+export async function dropTemporaryRoles(admin: Client): Promise<void> {
+  const found = await admin.query<{ name: string }>(
+    "SELECT rolname::text AS name FROM pg_catalog.pg_roles WHERE left(rolname, length($1)) = $1 ORDER BY 1",
+    [TEMPORARY_ROLE_PREFIX],
+  );
+  for (const { name } of found.rows) {
+    await admin.query(`DROP ROLE ${admin.escapeIdentifier(name)}`);
+  }
 }
 
 /** Drops a database the tests made, and its template mark first. */
