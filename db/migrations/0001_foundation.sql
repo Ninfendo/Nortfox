@@ -255,6 +255,22 @@ BEGIN
 END
 $actor$;
 
+-- The current transaction --------------------------------------------------------
+--
+-- Whether a row was written in the current transaction, by the id of the
+-- transaction that wrote it (xact) and the time on the clock when it did
+-- (at), both of which the triggers write. A transaction's id is unique only
+-- in the history of one cluster: a dump restored into another cluster brings
+-- the old ids, and that cluster gives the same ids out again. So the row's
+-- time must also come after the current transaction began, which the time
+-- of a row from before the restore never does. A clock set back during a
+-- transaction makes its own rows count as earlier ones, so its booking is
+-- refused (counter_move), and the next try books.
+CREATE FUNCTION ledger.in_this_transaction(xact xid8, at timestamptz) RETURNS boolean
+LANGUAGE sql STABLE
+SET search_path = pg_catalog, pg_temp
+RETURN in_this_transaction.xact = pg_current_xact_id() AND in_this_transaction.at >= transaction_timestamp();
+
 -- The isolation level ------------------------------------------------------------
 --
 -- The ledger is written at READ COMMITTED only, by every role. Its rules

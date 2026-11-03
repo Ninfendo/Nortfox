@@ -28,9 +28,15 @@
 -- date or the automatic lock, and a new series, first takes the company's
 -- turn alone, before it locks any row. So it waits for the open changes of
 -- vouchers, and a change of a voucher that comes after it waits for it at the
--- turn, before it locks any of those rows. A transaction that makes such
--- changes before it changes a voucher never waits in a circle with a change
--- of a voucher, whatever their order, two accounts included. A transaction
+-- turn, before it locks any of those rows. The turn only orders them: the
+-- row locks keep the rules, also for a statement that sets another company
+-- between its rows and changes that company's rows without its turn. A
+-- transaction that makes such changes before it changes a voucher never
+-- waits in a circle with a change of a voucher, whatever their order, two
+-- accounts included, as long as it locks such a row only by changing it. A
+-- SELECT that locks one for update runs no trigger, so it takes the row
+-- before the turn, and its later change of the row can deadlock with a
+-- booking that waits for that row (40P01). A transaction
 -- that has changed a voucher holds the turn with the others, so its later
 -- change of such a row waits for every other open change of a voucher, and
 -- can deadlock with one that waits for it, such as a booking in the same
@@ -89,7 +95,10 @@ CREATE TABLE ledger.vouchers (
     AND (altered_by_kind IS NULL OR altered_by_kind IN ('user', 'system', 'integration'))
   )
 );
-CREATE UNIQUE INDEX vouchers_one_reversing ON ledger.vouchers (company_id, reverses_voucher_id) WHERE reverses_voucher_id IS NOT NULL;
+-- One reversing voucher at a time: a voucher that reverses none holds NULL,
+-- and NULLs are distinct in a unique index. The index holds every voucher,
+-- as the default year's does in 0002.
+CREATE UNIQUE INDEX vouchers_one_reversing ON ledger.vouchers (company_id, reverses_voucher_id);
 CREATE INDEX vouchers_by_date ON ledger.vouchers (company_id, fiscal_year_id, transaction_date);
 
 -- Voucher rows ----------------------------------------------------------------
@@ -654,7 +663,7 @@ BEGIN
   IF NEW.transaction_date IS DISTINCT FROM OLD.transaction_date THEN
     PERFORM ledger.assert_voucher_open(NEW.company_id, NEW.fiscal_year_id, NEW.series_code, NEW.transaction_date);
   END IF;
-  IF pg_trigger_depth() < 2 AND OLD.created_xact <> pg_current_xact_id()
+  IF pg_trigger_depth() < 2 AND NOT ledger.in_this_transaction(OLD.created_xact, OLD.created_at)
     AND (NEW.description IS DISTINCT FROM OLD.description OR NEW.transaction_date IS DISTINCT FROM OLD.transaction_date) THEN
     SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
     stamp := clock_timestamp();
@@ -688,7 +697,7 @@ BEGIN
   IF NEW.company_id IS DISTINCT FROM ledger.current_company_id() THEN
     RETURN NEW;
   END IF;
-  SELECT v.fiscal_year_id, v.series_code, v.transaction_date, v.created_xact INTO voucher
+  SELECT v.fiscal_year_id, v.series_code, v.transaction_date, ledger.in_this_transaction(v.created_xact, v.created_at) AS booked_here INTO voucher
   FROM ledger.vouchers AS v
   WHERE v.company_id = NEW.company_id AND v.id = NEW.voucher_id
   FOR NO KEY UPDATE;
@@ -731,7 +740,7 @@ BEGIN
   -- this row, and this row waits for a change of the flag and then reads it.
   -- A row of the booking's own transaction holds those rows from the
   -- booking.
-  IF voucher.created_xact <> pg_current_xact_id() THEN
+  IF NOT voucher.booked_here THEN
     PERFORM ledger.lock_voucher_period(NEW.company_id, voucher.fiscal_year_id, voucher.series_code);
   END IF;
   SELECT a.active INTO account
@@ -752,7 +761,7 @@ BEGIN
   -- row's touch of its voucher checks the lock again, by the voucher's date
   -- (ledger.voucher_rows_touch_voucher); this check comes first, before the
   -- table's checks of the row's values.
-  IF voucher.created_xact <> pg_current_xact_id() THEN
+  IF NOT voucher.booked_here THEN
     PERFORM ledger.assert_voucher_open(NEW.company_id, voucher.fiscal_year_id, voucher.series_code, voucher.transaction_date);
   END IF;
   NEW.position := (
@@ -830,7 +839,7 @@ BEGIN
   IF char_length(NEW.transaction_information) > 100 THEN
     PERFORM ledger.refuse('value_too_long', jsonb_build_object('field', 'transaction_information', 'value', NEW.transaction_information));
   END IF;
-  SELECT v.fiscal_year_id, v.series_code, v.transaction_date, v.created_xact INTO voucher
+  SELECT v.fiscal_year_id, v.series_code, v.transaction_date, ledger.in_this_transaction(v.created_xact, v.created_at) AS booked_here INTO voucher
   FROM ledger.vouchers AS v
   WHERE v.company_id = OLD.company_id AND v.id = OLD.voucher_id
   FOR NO KEY UPDATE;
@@ -838,7 +847,7 @@ BEGIN
   -- takes a row away before it is booked, and striking is a change by Ändra.
   -- So a strike in the booking's own transaction is refused, as a row made
   -- struck is, and a booked voucher never holds fewer than two rows that count.
-  IF NEW.removed AND NOT OLD.removed AND voucher.created_xact = pg_current_xact_id() THEN
+  IF NEW.removed AND NOT OLD.removed AND voucher.booked_here THEN
     PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'removed', 'operation', 'create'));
   END IF;
   -- A change of the text or a strike touches the voucher, which checks the
@@ -863,7 +872,7 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $touch$
 DECLARE
-  booked xid8;
+  booked_here boolean;
   actor record;
   stamp timestamptz;
 BEGIN
@@ -871,8 +880,9 @@ BEGIN
   IF TG_OP = 'UPDATE' AND NEW.transaction_information IS NOT DISTINCT FROM OLD.transaction_information AND NEW.removed IS NOT DISTINCT FROM OLD.removed THEN
     RETURN NULL;
   END IF;
-  SELECT v.created_xact INTO booked FROM ledger.vouchers AS v WHERE v.company_id = NEW.company_id AND v.id = NEW.voucher_id;
-  IF booked = pg_current_xact_id() THEN
+  SELECT ledger.in_this_transaction(v.created_xact, v.created_at) INTO booked_here
+  FROM ledger.vouchers AS v WHERE v.company_id = NEW.company_id AND v.id = NEW.voucher_id;
+  IF booked_here THEN
     RETURN NULL;
   END IF;
   SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
@@ -1035,7 +1045,7 @@ BEGIN
     SELECT FROM ledger.void_ranges AS v
     WHERE v.company_id = NEW.company_id AND v.fiscal_year_id = series.fiscal_year_id AND v.series_code = series.code
       AND v.first_number = OLD.next_number AND v.last_number + 1 = NEW.next_number
-      AND v.created_xact = pg_current_xact_id()
+      AND ledger.in_this_transaction(v.created_xact, v.created_at)
   ) THEN
     NEW.modified_at := clock_timestamp();
     RETURN NEW;
@@ -1043,7 +1053,7 @@ BEGIN
   IF NEW.next_number = OLD.next_number + 1 AND EXISTS (
     SELECT FROM ledger.vouchers AS v
     WHERE v.company_id = NEW.company_id AND v.fiscal_year_id = series.fiscal_year_id AND v.series_code = series.code
-      AND v.number = OLD.next_number AND v.created_xact = pg_current_xact_id()
+      AND v.number = OLD.next_number AND ledger.in_this_transaction(v.created_xact, v.created_at)
   ) THEN
     NEW.modified_at := clock_timestamp();
     RETURN NEW;
@@ -1052,7 +1062,7 @@ BEGIN
     SELECT FROM ledger.deleted_vouchers AS d
     JOIN ledger.vouchers AS v ON v.company_id = d.company_id AND v.id = d.voucher_id
     WHERE d.company_id = NEW.company_id AND d.fiscal_year_id = series.fiscal_year_id AND d.series_code = series.code
-      AND d.number = NEW.next_number AND d.deleted_xact = pg_current_xact_id()
+      AND d.number = NEW.next_number AND ledger.in_this_transaction(d.deleted_xact, d.deleted_at)
   ) THEN
     NEW.modified_at := clock_timestamp();
     RETURN NEW;

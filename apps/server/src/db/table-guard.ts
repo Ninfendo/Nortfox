@@ -26,6 +26,10 @@
 //   under row level security, and EXPLAIN shows its estimates to every role
 //   that reads the table, so they would tell a reader another company's
 //   values. meta.hide_statistics sets the targets;
+// - no partial index: ANALYZE keeps the count of the rows that meet its
+//   condition, of every company together, in pg_class, which every role
+//   reads. A whole unique index keeps the same rule with a NULL in the rows
+//   it does not bind;
 // - nortfox_owner as its owner.
 // And every table and view: privileges only for the app (never TRUNCATE,
 // REFERENCES or TRIGGER) and for the readers (only SELECT). A view reads with
@@ -207,6 +211,14 @@ interface ExtendedStatisticsRow {
   readonly name: string;
 }
 
+interface PartialIndexRow {
+  readonly relation: string;
+  readonly name: string;
+}
+
+const COUNTS_BY_VALUE =
+  "ANALYZE keeps its row count in pg_class, which every role reads, and that count is of the rows of every company that meet its condition.";
+
 const KEEPS_VALUES = "which hold values of every company's rows: EXPLAIN shows estimates from them to every role that reads the table.";
 
 /** Every table and view the guard reads, by name. */
@@ -328,6 +340,14 @@ async function read(client: ClientBase) {
     SELECT r.relation, s.stxname AS name
     FROM (${RELATIONS}) AS r JOIN pg_catalog.pg_statistic_ext AS s ON s.stxrelid = r.oid
     ORDER BY 1, 2`);
+  // Every partial index: ANALYZE counts the rows that meet its condition.
+  const partialIndexes = await client.query<PartialIndexRow>(`
+    SELECT r.relation, i.relname AS name
+    FROM (${RELATIONS}) AS r
+    JOIN pg_catalog.pg_index AS x ON x.indrelid = r.oid
+    JOIN pg_catalog.pg_class AS i ON i.oid = x.indexrelid
+    WHERE x.indpred IS NOT NULL
+    ORDER BY 1, 2`);
   return {
     relations: relations.rows,
     policies: policies.rows,
@@ -337,6 +357,7 @@ async function read(client: ClientBase) {
     uniques: uniques.rows,
     statistics: statistics.rows,
     extendedStatistics: extendedStatistics.rows,
+    partialIndexes: partialIndexes.rows,
   };
 }
 
@@ -444,6 +465,7 @@ export async function tableGuardProblems(client: ClientBase): Promise<string[]> 
             own.push(problem);
           }
         }
+        own.push(...of(catalog.partialIndexes).map((found) => `has the partial index ${found.name}: ${COUNTS_BY_VALUE}`));
         const kept = of(catalog.statistics).map((found) => found.what);
         if (kept.length > 0) {
           own.push(`keeps planner statistics of ${kept.join(", ")}, ${KEEPS_VALUES}`);

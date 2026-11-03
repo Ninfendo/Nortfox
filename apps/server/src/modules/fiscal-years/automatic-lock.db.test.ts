@@ -6,8 +6,8 @@
 // fiscal years. No job runs for it. A period is locked on the 50th day after
 // the end of its month or quarter, and on the 60th day after the end of the
 // fiscal year; quarters are calendar quarters. The tests use days away from
-// those boundaries, which slice 3b settles. Today is the day in Sweden when
-// the statement began, in winter time and in summer time.
+// those boundaries, which slice 3b settles. Today is the day in Sweden on the
+// clock when the check runs, in winter time and in summer time.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
@@ -229,6 +229,22 @@ describe("the automatic lock", () => {
     expect(await endDate(company, "2026-01-15")).toBe("2025-10-31");
   });
 
+  // Days five from each interval's length, away from its boundary day. An
+  // interval of the month's or the quarter's 50 days in place of the year's
+  // 60, or of 40 or 60 days in place of 50, gives another date on one of them.
+  it.each([
+    { interval: "month_end_50", today: "2026-10-15", through: "2026-07-31", day: "day 45 after 2026-08-31" },
+    { interval: "month_end_50", today: "2026-10-25", through: "2026-08-31", day: "day 55 after 2026-08-31" },
+    { interval: "quarter_end_50", today: "2026-11-14", through: "2026-06-30", day: "day 45 after 2026-09-30" },
+    { interval: "quarter_end_50", today: "2026-11-24", through: "2026-09-30", day: "day 55 after 2026-09-30" },
+    { interval: "year_end_60", today: "2027-02-24", through: "2025-12-31", day: "day 55 after 2026-12-31" },
+    { interval: "year_end_60", today: "2027-03-06", through: "2026-12-31", day: "day 65 after 2026-12-31" },
+  ] as const)("with $interval, reaches $through on $today, $day", async ({ interval, today, through }) => {
+    const company = await companyWithYears();
+    await setAutomaticLock(app, company, interval);
+    expect(await endDate(company, today)).toBe(through);
+  });
+
   it("with the fiscal year interval, reads the company's own years, and gives none before its first year has ended", async () => {
     const company = await addCompany(app);
     await setAutomaticLock(app, company, "year_end_60");
@@ -252,7 +268,7 @@ describe("the automatic lock", () => {
         await app.query("SELECT pg_catalog.set_config('nortfox.today', '2001-01-01', true)");
         const row = await app.query<{ sweden: string; local: string; millis: bigint }>(
           `SELECT ledger.today_in_sweden()::text AS sweden, CURRENT_DATE::text AS local,
-             (extract(epoch FROM pg_catalog.statement_timestamp()) * 1000)::bigint AS millis`,
+             (extract(epoch FROM pg_catalog.clock_timestamp()) * 1000)::bigint AS millis`,
         );
         const [day] = row.rows;
         if (day !== undefined) {
@@ -302,15 +318,17 @@ describe("the automatic lock", () => {
     }
   });
 
-  it("takes today from the instant the statement began, not the transaction, so a transaction kept open past midnight reads the new day", async () => {
-    const found = await owner.query<{ body: string }>("SELECT pg_catalog.pg_get_functiondef('ledger.today_in_sweden()'::pg_catalog.regprocedure) AS body");
-    expect(found.rows[0]?.body).toMatch(/\nRETURN ledger\.day_in_sweden\(statement_timestamp\(\)\)\n$/);
-    expect(found.rows[0]?.body).not.toMatch(/transaction_timestamp|now\(\)|current_/);
-    const same = await inTransaction(app, {}, async () => {
-      await app.query("SELECT pg_catalog.pg_sleep(0.01)");
-      const row = await app.query<{ same: boolean }>("SELECT ledger.today_in_sweden() = ledger.day_in_sweden(pg_catalog.statement_timestamp()) AS same");
-      return row.rows[0]?.same;
-    });
-    expect(same).toBe(true);
+  // A DO block keeps one statement_timestamp() through every COMMIT in it,
+  // and a long statement keeps it too. So today comes from the clock when the
+  // check runs, and the function is volatile: no check in a transaction, a
+  // statement or a DO block that began before midnight reads the day before.
+  it("takes today from the clock when the check runs, not from when its statement or its transaction began", async () => {
+    const found = await owner.query<{ body: string; volatility: string }>(
+      `SELECT pg_catalog.pg_get_functiondef(p.oid) AS body, p.provolatile AS volatility
+       FROM pg_catalog.pg_proc AS p WHERE p.oid = 'ledger.today_in_sweden()'::pg_catalog.regprocedure`,
+    );
+    expect(found.rows[0]?.body).toMatch(/\nRETURN ledger\.day_in_sweden\(clock_timestamp\(\)\)\n$/);
+    expect(found.rows[0]?.body).not.toMatch(/statement_timestamp|transaction_timestamp|now\(\)|current_/);
+    expect(found.rows[0]?.volatility).toBe("v");
   });
 });

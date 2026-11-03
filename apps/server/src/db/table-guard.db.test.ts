@@ -18,6 +18,8 @@ const NO_HISTORY =
 const NO_TRUNCATE = "ledger.bare: has no refuse_truncate trigger: BEFORE TRUNCATE, FOR EACH STATEMENT, enabled, calling ledger.refuse_truncate().";
 const keeps = (what: string, table = "ledger.bare"): string =>
   `${table}: keeps planner statistics of ${what}, which hold values of every company's rows: EXPLAIN shows estimates from them to every role that reads the table.`;
+const partial = (name: string): string =>
+  `ledger.bare: has the partial index ${name}: ANALYZE keeps its row count in pg_class, which every role reads, and that count is of the rows of every company that meet its condition.`;
 const extended = (name: string): string =>
   `ledger.bare: has the extended statistics ${name}, which hold values of every company's rows: EXPLAIN shows estimates from them to every role that reads the table.`;
 
@@ -273,7 +275,10 @@ describe("the table guard", () => {
     expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ADD CONSTRAINT bare_apart EXCLUDE USING gist (note WITH =);`)).toEqual([exclusion("bare_apart")]);
     // company_id must be a key column: in INCLUDE, in the WHERE or inside an expression it is not.
     expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare (note) INCLUDE (company_id);`)).toEqual([unique("bare_note")]);
-    expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare (note) WHERE company_id IS NOT NULL;`)).toEqual([unique("bare_note")]);
+    expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare (note) WHERE company_id IS NOT NULL;`)).toEqual([
+      unique("bare_note"),
+      partial("bare_note"),
+    ]);
     expect(
       await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare ((company_id::text), note); ALTER INDEX ledger.bare_note ALTER COLUMN 1 SET STATISTICS 0;`),
     ).toEqual([unique("bare_note")]);
@@ -287,12 +292,29 @@ describe("the table guard", () => {
         `${GUARDED} ALTER TABLE ledger.bare ADD COLUMN number bigint; ALTER TABLE ledger.bare ALTER COLUMN number SET STATISTICS 0; CREATE UNIQUE INDEX bare_number ON ledger.bare (number);`,
       ),
     ).toEqual([unique("bare_number")]);
-    // With company_id as a key column, or compared with =, each passes, a partial one too.
+    // With company_id as a key column, or compared with =, each passes.
     expect(
       await problemsAfter(`${GUARDED}
-        CREATE UNIQUE INDEX bare_note ON ledger.bare (note, company_id) WHERE note IS NOT NULL;
+        CREATE UNIQUE INDEX bare_note ON ledger.bare (note, company_id);
         ALTER TABLE ledger.bare ADD CONSTRAINT bare_apart EXCLUDE USING gist (company_id WITH =, note WITH =);`),
     ).toEqual([]);
+  });
+
+  // ANALYZE counts the rows of a partial index that meet its condition, of
+  // every company together, and keeps the count in pg_class, which every
+  // role reads. A whole index counts every row of its table, which pg_class
+  // shows anyway. NULLs are distinct in a unique index, so a whole one keeps
+  // a rule for some rows only by a NULL in the others.
+  it("fails a partial index of a company table, unique or not, and passes the whole index that keeps the same rule", async () => {
+    expect(await problemsAfter(`${GUARDED} CREATE INDEX bare_noted ON ledger.bare (company_id) WHERE note IS NOT NULL;`)).toEqual([partial("bare_noted")]);
+    expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_one_note ON ledger.bare (company_id) WHERE note IS NOT NULL;`)).toEqual([
+      partial("bare_one_note"),
+    ]);
+    expect(
+      await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_one_note ON ledger.bare (company_id, (note IS NOT NULL OR NULL)); SELECT meta.hide_statistics('ledger.bare');`),
+    ).toEqual([]);
+    // A table that holds no company data may have one.
+    expect(await problemsAfter("CREATE INDEX schema_migrations_hashed ON meta.schema_migrations (name) WHERE sha256 <> ''")).toEqual([]);
   });
 
   it("fails a company table that keeps planner statistics of a column or of an index's expression, or has extended statistics", async () => {

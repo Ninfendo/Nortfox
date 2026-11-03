@@ -58,7 +58,10 @@ CREATE TABLE ledger.voucher_series (
   CONSTRAINT voucher_series_code_form CHECK (code ~ '^[0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ]{1,10}$'),
   CONSTRAINT voucher_series_description_length CHECK (char_length(description) <= 200)
 );
-CREATE UNIQUE INDEX voucher_series_one_closing ON ledger.voucher_series (company_id, fiscal_year_id) WHERE is_closing;
+-- One closing series in a year: only the closing series holds a value in the
+-- index's last column. The index holds every series, as the default year's
+-- does in 0002.
+CREATE UNIQUE INDEX voucher_series_one_closing ON ledger.voucher_series (company_id, fiscal_year_id, (NULLIF(is_closing, false)));
 
 -- Counters ----------------------------------------------------------------------
 --
@@ -259,7 +262,7 @@ BEGIN
     SELECT FROM ledger.void_ranges AS v
     WHERE v.company_id = NEW.company_id AND v.fiscal_year_id = series.fiscal_year_id AND v.series_code = series.code
       AND v.first_number = OLD.next_number AND v.last_number + 1 = NEW.next_number
-      AND v.created_xact = pg_current_xact_id()
+      AND ledger.in_this_transaction(v.created_xact, v.created_at)
   ) THEN
     NEW.modified_at := clock_timestamp();
     RETURN NEW;

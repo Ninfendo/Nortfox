@@ -13,8 +13,9 @@
 #   archive_timeout 1min; the migrate step exited 0, and the owner role
 #   applied every migration and owns every table; our roles, a reader among
 #   them, connect to the database nortfox only, and in no database may any of
-#   them make a large object or write a WAL message; pgBackRest holds a full
-#   backup and the WAL archive in both repositories;
+#   them make a large object or write a WAL message; the first start took a
+#   full backup to each repository; pgBackRest holds a full backup and the
+#   WAL archive in both repositories;
 # - write 1, then the time T, then write 2: a restore to T from repo1 gives
 #   write 1 and not write 2, and so does a restore to T from repo2. Each
 #   restore reads its backup and its WAL from its own repository only. T
@@ -247,6 +248,13 @@ for role in nortfox_owner nortfox_app backup_test_reader; do
   done
 done
 step "ok, our roles connect to the database nortfox only, and may run none of the functions that keep bytes outside the ledger."
+
+step "the first start's full backup in each repository."
+info=$(backrest --log-level-console=warn info)
+for repo in 1 2; do
+  grep --quiet "repo$repo: backup" <<< "$info" || fail "pgbackrest info shows no backup in repo$repo after the first start."
+done
+step "ok, the first start took a full backup to repo1 and to repo2."
 
 step "a full backup to each repository."
 backrest --repo=1 --type=full backup

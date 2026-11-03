@@ -10,7 +10,8 @@
 // second part shows that a transaction that changes more than one of the
 // rows a voucher locks never deadlocks with a change of a voucher, in any
 // order, once the company's turn keeps them apart, and that it can when it
-// changed a voucher first.
+// changed a voucher first, or locked such a row with a SELECT for update
+// first.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -120,7 +121,8 @@ describe("the lock order between a deletion and a change of a row", () => {
 // (db/README.md, the lock order). So a transaction that makes such changes
 // before it changes a voucher waits for the open changes of vouchers, and the
 // later ones wait for it at the turn, before they lock any of those rows: no
-// order of its changes waits in a circle with them, two accounts included. A
+// order of its changes waits in a circle with them, two accounts included, as
+// long as it locks such a row only by changing it. A
 // transaction that has changed a voucher first holds its turn with the others,
 // and can deadlock with another change of a voucher.
 describe("the lock order between a voucher and a transaction that changes the rows it locks", () => {
@@ -252,6 +254,38 @@ describe("the lock order between a voucher and a transaction that changes the ro
     const written = finish(writer, () => booking(writer, books));
     await untilWaitingForLock(watcher, writerPid);
     const set = finish(setter, () => setter.query(RENAME_SERIES, [books.year.id]));
+    const codes = [await set, await written].map((error) => (error as { code?: unknown } | undefined)?.code);
+    expect(codes.filter((code) => code === DEADLOCK_DETECTED)).toHaveLength(1);
+    expect(codes.filter((code) => code === undefined)).toHaveLength(1);
+  });
+
+  // A SELECT that locks a row for update runs no trigger, so it locks the
+  // row before its transaction has the company's turn. A booking then takes
+  // the turn with the others and waits for that row, and the later change of
+  // the row waits for the booking at the turn: the two wait in a circle. So
+  // a caller changes such a row with UPDATE ... RETURNING, and never locks it
+  // for update with a SELECT first.
+  it.each([
+    [
+      "the series",
+      "SELECT 1 FROM ledger.voucher_series WHERE fiscal_year_id = $1 AND code = 'A' FOR UPDATE",
+      RENAME_SERIES,
+    ],
+    [
+      "an account of the booking",
+      "SELECT 1 FROM ledger.accounts WHERE fiscal_year_id = $1 AND number = 6110 FOR NO KEY UPDATE",
+      "UPDATE ledger.accounts SET description = 'Kontorsmaterial' WHERE fiscal_year_id = $1 AND number = 6110",
+    ],
+  ])("deadlocks a booking with a transaction that locks %s with a SELECT for update, and then changes it", async (_case, select, change) => {
+    const books = await addBooks(watcher);
+    const [setter, writer] = await Promise.all([db.connect("app"), db.connect("app")]);
+    const writerPid = await backendPid(writer);
+    await begin(setter, { company: books.company, ...someUser() });
+    await setter.query(select, [books.year.id]);
+    await begin(writer, { company: books.company, ...who });
+    const written = finish(writer, () => booking(writer, books));
+    await untilWaitingForLock(watcher, writerPid);
+    const set = finish(setter, () => setter.query(change, [books.year.id]));
     const codes = [await set, await written].map((error) => (error as { code?: unknown } | undefined)?.code);
     expect(codes.filter((code) => code === DEADLOCK_DETECTED)).toHaveLength(1);
     expect(codes.filter((code) => code === undefined)).toHaveLength(1);

@@ -2,7 +2,8 @@
 
 // Keeps the backup settings and the migrate step of an install
 // (docs/decisions/0007-self-hosting-and-backups.md) in the files that set
-// them: the compose file, pgBackRest's config and the two images. The
+// them: the compose file, pgBackRest's config, the two images and the first
+// start's script that takes the first full backups. The
 // point-in-time restore test, deploy/backup-test/pitr.sh, checks the same
 // settings on a running stack. This guard makes a changed copy of a file fail
 // without one. It also keeps the restore test's own compose file from changing
@@ -20,6 +21,7 @@ export const PGBACKREST_CONF = "deploy/postgres/pgbackrest.conf";
 export const POSTGRES_IMAGE = "deploy/postgres/Dockerfile";
 export const SERVER_IMAGE = "deploy/server/Dockerfile";
 export const DOCKERIGNORE = ".dockerignore";
+export const STANZA_SCRIPT = "deploy/postgres/initdb/20-stanza.sh";
 
 /** The postgres service's command: WAL archiving through pgBackRest, and a closed segment after at most 60 seconds. */
 export const POSTGRES_COMMAND = [
@@ -477,9 +479,50 @@ export function dockerignoreProblems(text: string): string[] {
   return problems;
 }
 
+const FIRST_START_MARK = '"$PGDATA/nortfox-first-start-done"';
+
+/**
+ * What is wrong with deploy/postgres/initdb/20-stanza.sh; empty when nothing
+ * is. The first start writes the mark of a finished first start, and then
+ * takes a full backup to each repository, so that the WAL archive has a
+ * backup to replay onto from the start, and the backup holds the mark. When
+ * a backup fails, the mark goes again, so the first start never becomes
+ * healthy. A line that is a comment counts for nothing.
+ */
+export function stanzaScriptProblems(text: string): string[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+  const problems: string[] = [];
+  const markLine = `touch -- ${FIRST_START_MARK}`;
+  const marks = lines.flatMap((line, index) => (line === markLine ? [index] : []));
+  const mark = marks.length === 1 ? marks[0] : undefined;
+  if (mark === undefined) {
+    problems.push(`${STANZA_SCRIPT} must write the mark of a finished first start, once, before the first full backups: ${markLine}.`);
+  }
+  let last = mark ?? lines.length;
+  for (const repo of [1, 2]) {
+    const command = `pgbackrest --stanza=nortfox --repo=${String(repo)} --type=full backup`;
+    const at = lines.findIndex((line, index) => mark !== undefined && index > mark && line.includes(command));
+    if (at === -1) {
+      problems.push(
+        `${STANZA_SCRIPT} must take a full backup to repo${String(repo)} after it writes the mark of a finished first start: ${command}. ` +
+          "The WAL archive is of use only with a full backup to replay it onto, and the backup then holds the mark.",
+      );
+    }
+    last = Math.max(last, at);
+  }
+  const unmarkLine = `rm -f -- ${FIRST_START_MARK}`;
+  if (!lines.some((line, index) => index > last && line === unmarkLine)) {
+    problems.push(`${STANZA_SCRIPT} must remove the mark again, after the backups, when one of them fails: ${unmarkLine}. A failed first start never becomes healthy.`);
+  }
+  return problems;
+}
+
 /** What is wrong with the files of an install; empty when nothing is. */
 export function deployProblems(read: (path: string) => string | undefined): string[] {
-  const files = [COMPOSE, BACKUP_TEST_COMPOSE, PGBACKREST_CONF, POSTGRES_IMAGE, SERVER_IMAGE, DOCKERIGNORE, "package.json"].map(
+  const files = [COMPOSE, BACKUP_TEST_COMPOSE, PGBACKREST_CONF, POSTGRES_IMAGE, SERVER_IMAGE, DOCKERIGNORE, STANZA_SCRIPT, "package.json"].map(
     (path) => [path, read(path)] as const,
   );
   const missing = files.filter(([, text]) => text === undefined).map(([path]) => `${path} is missing.`);
@@ -494,5 +537,6 @@ export function deployProblems(read: (path: string) => string | undefined): stri
     ...postgresImageProblems(text(POSTGRES_IMAGE)),
     ...serverImageProblems(text(SERVER_IMAGE), text("package.json")),
     ...dockerignoreProblems(text(DOCKERIGNORE)),
+    ...stanzaScriptProblems(text(STANZA_SCRIPT)),
   ];
 }

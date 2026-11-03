@@ -14,6 +14,7 @@ import {
   POSTGRES_HEALTHCHECK,
   POSTGRES_IMAGE,
   SERVER_IMAGE,
+  STANZA_SCRIPT,
   backupTestProblems,
   composeProblems,
   deployProblems,
@@ -21,6 +22,7 @@ import {
   pgbackrestProblems,
   postgresImageProblems,
   serverImageProblems,
+  stanzaScriptProblems,
 } from "./deploy.ts";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -48,6 +50,7 @@ const postgresImage = file(POSTGRES_IMAGE);
 const serverImage = file(SERVER_IMAGE);
 const packageJson = file("package.json");
 const dockerignore = file(DOCKERIGNORE);
+const stanzaScript = file(STANZA_SCRIPT);
 
 /** The text with one part replaced; the part must be there exactly once. */
 function changed(text: string, from: string, to: string): string {
@@ -468,5 +471,41 @@ describe("the images' build context", () => {
 
   it("reports a .dockerignore that is missing", () => {
     expect(deployProblems((path) => (path === DOCKERIGNORE ? undefined : read(path)))).toEqual([".dockerignore is missing."]);
+  });
+});
+
+describe("the first start's script for the backups", () => {
+  const MARK = 'touch -- "$PGDATA/nortfox-first-start-done"';
+  const UNMARK = 'rm -f -- "$PGDATA/nortfox-first-start-done"';
+  const backupOf = (repo: number): string => `pgbackrest --stanza=nortfox --repo=${String(repo)} --type=full backup`;
+  const noBackup = (repo: number): string =>
+    `${STANZA_SCRIPT} must take a full backup to repo${String(repo)} after it writes the mark of a finished first start: ${backupOf(repo)}. ` +
+    "The WAL archive is of use only with a full backup to replay it onto, and the backup then holds the mark.";
+  const noMark = `${STANZA_SCRIPT} must write the mark of a finished first start, once, before the first full backups: ${MARK}.`;
+  const keepsMark = `${STANZA_SCRIPT} must remove the mark again, after the backups, when one of them fails: ${UNMARK}. A failed first start never becomes healthy.`;
+
+  it("passes as it is, also with Windows line ends", () => {
+    expect(stanzaScriptProblems(stanzaScript)).toEqual([]);
+    expect(stanzaScriptProblems(stanzaScript.replaceAll("\n", "\r\n"))).toEqual([]);
+  });
+
+  it.each([1, 2])("fails a script that takes no full backup to repo%i", (repo) => {
+    expect(stanzaScriptProblems(changed(stanzaScript, backupOf(repo), "true"))).toEqual([noBackup(repo)]);
+    // A backup named only in a comment is none.
+    const line = stanzaScript.split("\n").find((found) => found.includes(backupOf(repo))) ?? "";
+    expect(stanzaScriptProblems(changed(stanzaScript, line, `# ${line}`))).toContain(noBackup(repo));
+  });
+
+  it("fails a script that takes the backups before it writes the mark, so that a restore would not bring the mark back", () => {
+    expect(stanzaScriptProblems(`${changed(stanzaScript, `${MARK}\n`, "")}${MARK}\n`)).toEqual([noBackup(1), noBackup(2), keepsMark]);
+  });
+
+  it("fails a script that writes no mark, or keeps it when a backup fails", () => {
+    expect(stanzaScriptProblems(changed(stanzaScript, `${MARK}\n`, ""))).toContain(noMark);
+    expect(stanzaScriptProblems(changed(stanzaScript, UNMARK, "true"))).toEqual([keepsMark]);
+  });
+
+  it("reports a script that is missing", () => {
+    expect(deployProblems((path) => (path === STANZA_SCRIPT ? undefined : read(path)))).toEqual([`${STANZA_SCRIPT} is missing.`]);
   });
 });

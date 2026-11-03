@@ -30,7 +30,12 @@ CREATE TABLE ledger.fiscal_years (
   CONSTRAINT fiscal_years_dates_in_order CHECK (from_date <= to_date),
   CONSTRAINT fiscal_years_no_overlap EXCLUDE USING gist (company_id WITH =, daterange(from_date, to_date, '[]') WITH &&)
 );
-CREATE UNIQUE INDEX fiscal_years_one_default ON ledger.fiscal_years (company_id) WHERE is_default;
+-- One default year: only the default year holds a value in the index's
+-- second column, and NULLs are distinct in a unique index. The index holds
+-- every year, not only the default ones, because ANALYZE keeps an index's row
+-- count where every role reads it, and a partial index would count the
+-- default years of every company together.
+CREATE UNIQUE INDEX fiscal_years_one_default ON ledger.fiscal_years (company_id, (NULLIF(is_default, false)));
 
 -- Periods -----------------------------------------------------------------------
 --
@@ -112,7 +117,8 @@ CREATE TABLE ledger.automatic_locks (
 -- new period with the others, and a change of one of those rows alone. Such a
 -- change then waits only for the changes of vouchers that were open when it
 -- came, and a change of a voucher that comes after it waits for it. The turn
--- only orders them: the row locks still keep the rules. Its key is the hash
+-- only orders them: the row locks still keep the rules, also for a change
+-- that comes without the company's turn (below). Its key is the hash
 -- of the company's id, in a class of keys of its own. Two companies whose ids
 -- hash alike share a turn, which costs only a wait. No role but the owner may
 -- take an advisory lock in the ledger database (db/database.sql), so no other
@@ -136,9 +142,12 @@ $turn$;
 -- A statement that changes one of the rows that a change of a voucher locks
 -- FOR SHARE, or locks one of them for update, takes the turn of the
 -- transaction's company alone, before it locks any row: an UPDATE locks its
--- row before the row's own trigger runs. Row level security keeps the
--- statement to that company's rows. With no company set, it changes no row
--- and takes no turn.
+-- row before the row's own trigger runs. It takes the turn of the company
+-- that is set when the statement starts, and takes none when no company is
+-- set. A statement can set another company between its rows, and row level
+-- security then lets it change that company's rows, without that company's
+-- turn. That costs a wait, or a deadlock that PostgreSQL breaks: the row
+-- locks keep the rules without the turn.
 CREATE FUNCTION ledger.take_turn_alone() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -363,13 +372,15 @@ LANGUAGE sql IMMUTABLE
 SET search_path = pg_catalog, pg_temp
 RETURN (day_in_sweden.instant AT TIME ZONE 'Europe/Stockholm')::date;
 
--- The day in Sweden now: the day of the instant the current statement
--- began, not the transaction. So a transaction kept open past midnight
--- checks its next statement against the new day's automatic lock.
+-- The day in Sweden now: the day on the clock when the check runs, not when
+-- its statement or its transaction began. A DO block keeps the moment its
+-- statement began through every COMMIT in it, and so does a long statement.
+-- So a check after midnight reads the new day's automatic lock, also in a
+-- transaction, a statement or a DO block that began the day before.
 CREATE FUNCTION ledger.today_in_sweden() RETURNS date
-LANGUAGE sql STABLE
+LANGUAGE sql VOLATILE
 SET search_path = pg_catalog, pg_temp
-RETURN ledger.day_in_sweden(statement_timestamp());
+RETURN ledger.day_in_sweden(clock_timestamp());
 
 -- The date the automatic lock reaches on `today`, or NULL when it is off or
 -- reaches nothing. A period that ends on day E is locked from day E + 50 on
@@ -464,19 +475,20 @@ END;
 -- The closing series is exempt from every lock. The voucher triggers call it
 -- through ledger.assert_voucher_open (0004).
 --
--- It first locks the company's automatic lock row FOR SHARE until the
--- transaction ends. Every change of a lock date or of the automatic lock
--- locks that row FOR NO KEY UPDATE. So a change of a voucher and a change of
--- a lock never overlap: a lock set while the voucher's change is open waits
--- for it, and a change of a voucher while a new lock is open waits, and then
--- reads that lock. Each takes the company's turn first (ledger.take_turn),
--- so a lock that is set while bookings overlap waits only for the changes
--- of vouchers that were open when it came. Writes run at READ COMMITTED
--- (ledger.assert_read_committed), so the read after the lock sees what is
--- committed. The answer also depends on the end of the voucher's fiscal year,
--- for the automatic lock at 60 days after it, and on the closing mark of its
--- series. ledger.assert_voucher_open locks those two rows FOR SHARE, and
--- reads the mark, before it calls this.
+-- Its caller first locks the company's automatic lock row FOR SHARE until the
+-- transaction ends (ledger.lock_voucher_period, 0004). Every change of a lock
+-- date or of the automatic lock locks that row FOR NO KEY UPDATE. So a change
+-- of a voucher and a change of a lock never overlap: a lock set while the
+-- voucher's change is open waits for it, and a change of a voucher while a
+-- new lock is open waits, and then reads that lock. Each takes the company's
+-- turn first (ledger.take_turn), so a lock that is set while bookings overlap
+-- waits only for the changes of vouchers that were open when it came. Writes
+-- run at READ COMMITTED (ledger.assert_read_committed), so the read after the
+-- lock sees what is committed. The answer also depends on the end of the
+-- voucher's fiscal year, for the automatic lock at 60 days after it, and on
+-- the closing mark of its series. ledger.assert_voucher_open locks those two
+-- rows FOR SHARE too, and reads the mark, before it calls this. Today is the
+-- day on the clock when this check runs (ledger.today_in_sweden).
 CREATE FUNCTION ledger.assert_open(company uuid, day date, is_closing_series boolean) RETURNS void
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -488,7 +500,6 @@ BEGIN
   IF assert_open.is_closing_series THEN
     RETURN;
   END IF;
-  PERFORM 1 FROM ledger.automatic_locks AS a WHERE a.company_id = assert_open.company FOR SHARE;
   SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;
   SELECT c.source, c.end_date, c.user_id, c.set_by, c.set_by_kind, c.set_at, c.interval INTO covering
   FROM ledger.lock_covering(assert_open.company, actor.actor_kind, actor.actor_id, assert_open.day, ledger.today_in_sweden()) AS c;

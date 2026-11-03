@@ -74,6 +74,30 @@ describe("the planner's statistics", () => {
     expect(migrations.rows[0]?.count).toBeGreaterThan(0n);
   });
 
+  // ANALYZE counts the rows of each index too, and keeps the count in
+  // pg_class, which every role reads. A partial index would count the rows of
+  // every company that meet its condition, such as the reversing vouchers.
+  // So each index of a company table holds every row of its table.
+  it("counts every row of its table in each index of a company table, so no index tells a reader how many rows of every company hold a value", async () => {
+    const found = await reader.query<{ index: string }>(`
+      SELECT i.oid::pg_catalog.regclass::text AS index
+      FROM pg_catalog.pg_index AS x
+      JOIN pg_catalog.pg_class AS i ON i.oid = x.indexrelid
+      JOIN pg_catalog.pg_class AS t ON t.oid = x.indrelid
+      JOIN pg_catalog.pg_namespace AS n ON n.oid = t.relnamespace
+      WHERE n.nspname IN ('ledger', 'audit')
+        AND EXISTS (
+          SELECT FROM pg_catalog.pg_attribute AS a
+          WHERE a.attrelid = t.oid AND a.attname = 'company_id' AND a.attnum > 0 AND NOT a.attisdropped
+        )
+        AND (t.reltuples < 0 OR i.reltuples < t.reltuples)
+      ORDER BY 1`);
+    expect(found.rows.map((row) => row.index)).toEqual([]);
+    // The reversing vouchers, one of A's: the table holds more vouchers than that.
+    const vouchers = await reader.query<{ rows: number }>("SELECT reltuples::integer AS rows FROM pg_catalog.pg_class WHERE oid = 'ledger.vouchers'::pg_catalog.regclass");
+    expect(vouchers.rows[0]?.rows).toBeGreaterThan(1);
+  });
+
   /** The planner's row estimate for `sql`, as the reader's EXPLAIN shows it. */
   async function estimate(sql: string): Promise<number> {
     const found = await reader.query<Explained>(`EXPLAIN (FORMAT JSON) ${sql}`);

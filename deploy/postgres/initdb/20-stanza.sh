@@ -5,12 +5,14 @@
 # server runs with the compose file's command, so it already archives WAL
 # through pgBackRest. This script checks that it does, makes the stanza in
 # both repositories, and then has pgBackRest prove that a WAL segment reaches
-# both. Its last step writes the file nortfox-first-start-done in the data
-# folder, which the compose file's health check needs. Any failure stops the
-# first start before that, and the image skips its setup on a restart, so a
-# failed first start never becomes healthy and the migrations never run: an
-# install never runs without its archive. deploy/README.md says what to do
-# then.
+# both. Then it writes the file nortfox-first-start-done in the data folder,
+# which the compose file's health check needs, and takes the first full
+# backup to each repository, so that the WAL archive has a backup to replay
+# onto from the first start on. Any failure stops the first start without
+# that file, and the image skips its setup on a restart, so a failed first
+# start never becomes healthy and the migrations never run: an install never
+# runs without its archive and its first backups. deploy/README.md says what
+# to do then.
 set -euo pipefail
 
 psql=(psql --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align --username "${POSTGRES_USER:-postgres}" --dbname postgres)
@@ -40,8 +42,19 @@ if ! pgbackrest --stanza=nortfox check; then
   exit 1
 fi
 
-# The mark of a finished first start. It is in the data folder, so a full
-# backup holds it and a restore brings it back.
+# The mark of a finished first start. It is in the data folder, so the first
+# full backups below hold it, and a restore from them brings it back.
 touch -- "$PGDATA/nortfox-first-start-done"
 
-echo "20-stanza: the stanza nortfox is made, and WAL reaches both repositories."
+# The first full backup to each repository, while the database is still
+# empty, so it is quick. Every later write is in the WAL archive, and a
+# restore replays it onto this backup. When a backup fails, the mark goes
+# again, so the failed first start never becomes healthy.
+if ! pgbackrest --stanza=nortfox --repo=1 --type=full backup ||
+  ! pgbackrest --stanza=nortfox --repo=2 --type=full backup; then
+  rm -f -- "$PGDATA/nortfox-first-start-done"
+  echo "20-stanza: the first full backup failed after the stanza was made in both repositories. Before the next first start, empty the off-site repository's path too. deploy/README.md says how." >&2
+  exit 1
+fi
+
+echo "20-stanza: the stanza nortfox is made, WAL reaches both repositories, and each holds a full backup."

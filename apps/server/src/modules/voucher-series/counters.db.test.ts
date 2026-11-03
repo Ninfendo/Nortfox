@@ -390,6 +390,64 @@ describe("the voucher counters", () => {
     // transaction.
     await expectRefusal(fromATrigger(company, moveTo(series, "next_number - 1")), "counter_move", { series: "A", from: 2, to: 1 });
     expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
+    // The same when the deletion carries the transaction's id but was made before it.
+    await expectRefusal(
+      fromATrigger(company, moveTo(series, "next_number - 1"), { before: withTheTransactionsId("ledger.deleted_vouchers", "deleted_vouchers_append_only", "deleted_xact") }),
+      "counter_move",
+      { series: "A", from: 2, to: 1 },
+    );
+    expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
+  });
+
+  /**
+   * Statements that give every row of `table` the transaction's id in
+   * `column`, with the trigger that keeps it off, as a dump restored into
+   * another cluster can leave a row: that cluster gives the old ids out again.
+   */
+  function withTheTransactionsId(table: string, trigger: string, column: string): string[] {
+    return [
+      `ALTER TABLE ${table} DISABLE TRIGGER ${trigger}`,
+      `UPDATE ${table} SET ${column} = pg_catalog.pg_current_xact_id()`,
+      `ALTER TABLE ${table} ENABLE TRIGGER ${trigger}`,
+    ];
+  }
+
+  /** Statements that put the counter of `series` back to `next`, with the counter's rules off. */
+  function counterBackTo(series: VoucherSeries, next: number): string[] {
+    return [
+      "ALTER TABLE ledger.voucher_counters DISABLE TRIGGER voucher_counters_rules",
+      moveTo(series, next),
+      "ALTER TABLE ledger.voucher_counters ENABLE TRIGGER voucher_counters_rules",
+    ];
+  }
+
+  // A proof must also be made after the transaction began: an id alone
+  // could be one that a dump restored into another cluster brought along.
+  it("takes no booking or void range that carries the transaction's id but was made before the transaction began as proof", async () => {
+    const booked = await companyWithSeries();
+    await addAccount(app, booked.company, booked.year, { number: 1930 });
+    await addAccount(app, booked.company, booked.year, { number: 6110 });
+    await bookVoucher(app, booked.company, { year: booked.year, series: "A", date: "2090-03-15", rows: balanced() }, who);
+    // Voucher 1, booked earlier, with the counter put back to 1.
+    await expectRefusal(
+      fromATrigger(booked.company, moveTo(booked.series, "next_number + 1"), {
+        before: [...counterBackTo(booked.series, 1), ...withTheTransactionsId("ledger.vouchers", "vouchers_alter", "created_xact")],
+      }),
+      "counter_move",
+      { series: "A", from: 1, to: 2 },
+    );
+    expect((await counterOf(app, booked.company, booked.series.id))?.next_number).toBe(2);
+    // A void range from 1 to 3, recorded earlier, with the counter put back to 1.
+    const voided = await companyWithSeries();
+    await recordVoidRange(owner, voided.company, { year: voided.year, code: "A", first: 1, last: 3 });
+    await expectRefusal(
+      fromATrigger(voided.company, moveTo(voided.series, 4), {
+        before: [...counterBackTo(voided.series, 1), ...withTheTransactionsId("ledger.void_ranges", "void_ranges_rules", "created_xact")],
+      }),
+      "counter_move",
+      { series: "A", from: 1, to: 4 },
+    );
+    expect((await counterOf(app, voided.company, voided.series.id))?.next_number).toBe(4);
   });
 
   it("removes a counter only with its series: never from inside a trigger while the series is there", async () => {
