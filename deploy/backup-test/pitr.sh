@@ -16,9 +16,9 @@
 #   archive_timeout 1min; the migrate step exited 0, and the owner role
 #   applied every migration and owns every table; our roles, a reader among
 #   them, connect to the database nortfox only, and in no database may any of
-#   them make a large object or write a WAL message; the first start took a
-#   full backup to each repository; pgBackRest holds a full backup and the
-#   WAL archive in both repositories;
+#   them make a large object, write a WAL message or read pg_locks; the
+#   first start took a full backup to each repository; pgBackRest holds a
+#   full backup and the WAL archive in both repositories;
 # - write 1, then the time T, then write 2: a restore to T from repo1 gives
 #   write 1 and not write 2, and so does a restore to T from repo2. Each
 #   restore reads its backup and its WAL from its own repository only. T
@@ -292,6 +292,18 @@ SELECT coalesce(string_agg(r.who || ' ' || r.fn, ', ' ORDER BY r.who, r.fn), 'no
 ) AS r
 SQL
 )" nothing
+  expect "what our roles may read in the database $database of the locks that show each company's turn" "$(sql_in postgres "$database" << 'SQL'
+SELECT coalesce(string_agg(r.who || ' ' || r.what, ', ' ORDER BY r.who, r.what), 'nothing') FROM (
+  SELECT who, 'pg_catalog.pg_locks' AS what
+  FROM pg_catalog.unnest(ARRAY['nortfox_owner', 'nortfox_app', 'nortfox_reader']) AS who
+  WHERE pg_catalog.has_table_privilege(who, 'pg_catalog.pg_locks', 'SELECT')
+  UNION ALL
+  SELECT who, 'pg_catalog.pg_lock_status()'
+  FROM pg_catalog.unnest(ARRAY['nortfox_owner', 'nortfox_app', 'nortfox_reader']) AS who
+  WHERE pg_catalog.has_function_privilege(who, 'pg_catalog.pg_lock_status()', 'EXECUTE')
+) AS r
+SQL
+)" nothing
 done
 # A reader role, made as db/README.md says. Each of our roles connects to the
 # database nortfox, and is refused postgres and template1.
@@ -305,7 +317,7 @@ for role in nortfox_owner nortfox_app backup_test_reader; do
     grep --quiet "permission denied for database" <<< "$refused" || fail "$role was refused the database $database for another reason: $refused"
   done
 done
-step "ok, our roles connect to the database nortfox only, and may run none of the functions that keep bytes outside the ledger."
+step "ok, our roles connect to the database nortfox only, may run none of the functions that keep bytes outside the ledger, and read no locks."
 
 step "the first start's full backup in each repository."
 info=$(backrest --log-level-console=warn info)

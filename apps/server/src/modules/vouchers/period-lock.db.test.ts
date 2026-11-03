@@ -20,6 +20,7 @@ import { backendPid, begin, expectRefusal, freshDatabase, inTransaction, untilWa
 import {
   LOCK_VOUCHER,
   addBooks,
+  addBooksYear,
   balanced,
   bookVoucher,
   isAfter,
@@ -96,6 +97,15 @@ describe("the period lock on vouchers", () => {
       set_by_kind: lock.set_by_kind,
       set_at: await setAtAsJson(company, lock.id),
     };
+  }
+
+  /** The facts of a refusal by the automatic lock, on month_end_50. */
+  async function automaticFacts(company: string): Promise<Record<string, unknown>> {
+    const through = await inTransaction(app, { company }, async () => {
+      const found = await app.query<{ through: string }>("SELECT ledger.automatic_lock_end_date($1, ledger.today_in_sweden())::text AS through", [company]);
+      return found.rows[0]?.through;
+    });
+    return { end_date: through, interval: "month_end_50" };
   }
 
   /** The acts that a lock refuses, each in its own transaction as `who`, on `voucher`, dated `day`. */
@@ -449,14 +459,6 @@ describe("the period lock on vouchers", () => {
       return addBooks(app, someUser(), "2020-01-01", "2020-12-31");
     }
 
-    async function automaticFacts(company: string): Promise<Record<string, unknown>> {
-      const through = await inTransaction(app, { company }, async () => {
-        const found = await app.query<{ through: string }>("SELECT ledger.automatic_lock_end_date($1, ledger.today_in_sweden())::text AS through", [company]);
-        return found.rows[0]?.through;
-      });
-      return { end_date: through, interval: "month_end_50" };
-    }
-
     it("refuses a user, the internal system user and an integration every act on a voucher dated on or before its date", async () => {
       for (const who of Object.values(ACTORS)) {
         const books = await books2020();
@@ -524,6 +526,38 @@ describe("the period lock on vouchers", () => {
           await expectRefusal(bookVoucher(app, books.company, aVoucher(books, { date: day }), who), lockIt === "manual" ? "period_locked_manual" : "period_locked_automatic");
         }
         await expectAllAccepted(books, voucher, open, userOne, day);
+      }
+    });
+
+    // The closing mark is set per fiscal year. A series with the code of
+    // another year's closing series is not the closing series of its own
+    // year, so the lock holds it.
+    it("passes the lock only in the closing series of the voucher's own fiscal year, not in a series of another year with that year's closing code", async () => {
+      for (const lockIt of ["manual", "automatic"] as const) {
+        const [first, second] = lockIt === "manual" ? ["2090", "2091"] : ["2020", "2021"];
+        const books = await addBooks(app, someUser(), `${first}-01-01`, `${first}-12-31`);
+        const next: Books = { company: books.company, year: await addBooksYear(app, books.company, `${second}-01-01`, `${second}-12-31`) };
+        // Series I is the closing series of the first year only.
+        const unmarked = await inTransaction(app, { company: books.company, ...setter }, () =>
+          app.query("UPDATE ledger.voucher_series SET is_closing = false WHERE fiscal_year_id = $1 AND code = 'I' AND is_closing", [next.year.id]),
+        );
+        expect(unmarked.rowCount).toBe(1);
+        const closing = await twoVouchers(books, `${first}-06-30`, `${first}-01-15`, "I");
+        const day = `${second}-03-15`;
+        const inSecond = await twoVouchers(next, day, `${second}-09-15`, "I");
+        let reason: "period_locked_manual" | "period_locked_automatic";
+        let facts: Record<string, unknown>;
+        if (lockIt === "manual") {
+          const lock = await setLock(app, books.company, "all", `${second}-06-30`, { who: setter });
+          reason = "period_locked_manual";
+          facts = await manualFacts(books.company, lock);
+        } else {
+          await setAutomaticLock(app, books.company, "month_end_50", setter);
+          reason = "period_locked_automatic";
+          facts = await automaticFacts(books.company);
+        }
+        await expectAllRefused(next, inSecond.voucher, inSecond.open, userOne, day, reason, facts);
+        await expectAllAccepted(books, closing.voucher, closing.open, userOne, `${first}-06-30`);
       }
     });
   });

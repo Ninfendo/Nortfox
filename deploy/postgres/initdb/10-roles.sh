@@ -61,4 +61,4 @@ SQL
 
 "${psql[@]}" --dbname nortfox --file /usr/local/share/nortfox/database.sql
 
-echo "10-roles: made the roles and the database nortfox, owned by nortfox_owner. No role of ours connects to postgres or template1, and none can make a large object or write a WAL message."
+echo "10-roles: made the roles and the database nortfox, owned by nortfox_owner. No role of ours connects to postgres or template1, and none can make a large object, write a WAL message or read pg_locks."

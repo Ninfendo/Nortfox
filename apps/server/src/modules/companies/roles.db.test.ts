@@ -19,7 +19,8 @@ import {
   connectAs,
   makeReaderRole,
 } from "../../../test/cluster.ts";
-import { INSUFFICIENT_PRIVILEGE, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import { INSUFFICIENT_PRIVILEGE, begin, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import { addCompany } from "../../../test/ledger.ts";
 import { guardedRelations } from "../../db/table-guard.ts";
 
 /** The app's privileges on each table: SELECT, and only the writes each table needs. */
@@ -311,6 +312,42 @@ describe("the database roles", () => {
     }
   });
 
+  // The company's turn is an advisory lock on the hash of the company's id.
+  // pg_locks, and pg_lock_status() under it, would show it to every role
+  // while it is held, with its mode and its transaction: when each other
+  // company books, and when it changes a lock. So db/database.sql closes both.
+  it("refuses the app, a reader and the owner pg_locks, which would show another company's turn while it changes", async () => {
+    const changer = await db.connect("app");
+    const reader = await db.connect("readerA");
+    const admin = await db.admin();
+    const other = await addCompany(changer);
+    await begin(changer, { company: other, actor, kind: "user" });
+    try {
+      // A change of the automatic lock takes the company's turn alone.
+      await changer.query("UPDATE ledger.automatic_locks SET notice_days = notice_days");
+      for (const client of [app, reader, owner]) {
+        await expectError(client.query("SELECT classid, objid, mode FROM pg_catalog.pg_locks WHERE locktype = 'advisory'"), INSUFFICIENT_PRIVILEGE, /permission denied for view pg_locks/);
+        await expectError(client.query("SELECT classid, objid, mode FROM pg_catalog.pg_lock_status()"), INSUFFICIENT_PRIVILEGE, /permission denied for function pg_lock_status/);
+      }
+      // The superuser still sees the turn.
+      const turns = await admin.query<{ mode: string }>(
+        `SELECT mode FROM pg_catalog.pg_locks
+         WHERE locktype = 'advisory' AND classid = 4646210 AND database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = $1)`,
+        [db.name],
+      );
+      expect(turns.rows).toEqual([{ mode: "ExclusiveLock" }]);
+    } finally {
+      await changer.query("ROLLBACK");
+    }
+    const privileges = await admin.query<{ who: string; view: boolean; fn: boolean }>(
+      `SELECT who, pg_catalog.has_table_privilege(who, 'pg_catalog.pg_locks', 'SELECT') AS view,
+         pg_catalog.has_function_privilege(who, 'pg_catalog.pg_lock_status()', 'EXECUTE') AS fn
+       FROM pg_catalog.unnest($1::text[]) AS who ORDER BY 1`,
+      [["nortfox_app", "nortfox_owner", "nortfox_reader", "nortfox_test_reader_a"]],
+    );
+    expect(privileges.rows.filter((row) => row.view || row.fn)).toEqual([]);
+  });
+
   // A limit that db/README.md states. PostgreSQL lets every role set its own
   // defaults, and has no privilege to take that away. So a reader can keep
   // some text of its own in the cluster's catalog, outside the ledger. Only
@@ -399,12 +436,14 @@ describe("the database roles", () => {
     }
   });
 
-  it("keeps the large objects, the WAL messages and the advisory locks closed when db/database.sql runs again", async () => {
+  it("keeps the large objects, the WAL messages, the advisory locks and pg_locks closed when db/database.sql runs again", async () => {
     const admin = await db.admin();
     await admin.query(readFileSync(DATABASE_FILE, "utf8"));
     await expectError(app.query("SELECT pg_catalog.lo_create(0)"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
     await expectError(app.query("SELECT pg_catalog.pg_logical_emit_message(false, 'nortfox', 'x')"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
     await expectError(app.query("SELECT pg_catalog.pg_advisory_lock(1)"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
+    await expectError(app.query("SELECT FROM pg_catalog.pg_locks"), INSUFFICIENT_PRIVILEGE, /permission denied for view pg_locks/);
+    await expectError(app.query("SELECT FROM pg_catalog.pg_lock_status()"), INSUFFICIENT_PRIVILEGE, /permission denied for function pg_lock_status/);
   });
 
   it("lets no role of ours connect to another database of the cluster once db/other-databases.sql has run in it, as an install's first start runs it in postgres and template1", async () => {

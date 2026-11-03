@@ -7,7 +7,10 @@
 // With one worker to a core, a 16-core machine runs 15 files at once, and a
 // file now and then finds no connection left. So the database project runs at
 // most three files at once, as CI's 4-core runner does: 34 + 28 + 19 is 81,
-// under the 97 that the tests' roles may use, with room for the setup's own.
+// under the 97 that the tests' roles may use, with room for the setup's own
+// and the one that holds the cluster for the run. A second run on the same
+// cluster waits for the first (apps/server/test/cluster.ts), so the two never
+// need the connections at once.
 
 import { describe, expect, it } from "vitest";
 import config from "../../vitest.config.ts";

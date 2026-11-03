@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Before the database tests: the cluster roles from db/roles.sql, the test
-// reader roles, and one template database, set up by db/database.sql as an
-// install's database is, that the real runner migrates as the owner. Each
+// Before the database tests: the run holds the test cluster, so that a second
+// run on it waits (cluster.ts). Then the cluster roles from db/roles.sql, the
+// test reader roles, and one template database, set up by db/database.sql as
+// an install's database is, that the real runner migrates as the owner. Each
 // test file clones the template (database.ts). After the tests, every
-// database of the run is dropped.
+// database of the run is dropped, and the run lets the cluster go.
 //
 // With no test cluster, the setup fails with one line that says how to start
 // one. It never skips the database tests.
@@ -22,6 +23,7 @@ import {
   connectAs,
   dropRunDatabases,
   dropTemporaryRoles,
+  holdCluster,
   makeReaderRole,
   refuseSharedCluster,
 } from "./cluster.ts";
@@ -58,6 +60,28 @@ export default async function setup(project: TestProject): Promise<() => Promise
 async function prepare(project: TestProject): Promise<() => Promise<void>> {
   const run = randomBytes(5).toString("hex");
   const template = `${PREFIX}${run}_template`;
+  const hold = await holdCluster((line) => {
+    console.error(line);
+  });
+  try {
+    await setUp(run, template);
+  } catch (error) {
+    await hold.end();
+    throw error;
+  }
+  project.provide("nortfoxRun", run);
+  project.provide("nortfoxTemplate", template);
+  return async () => {
+    try {
+      await dropRunDatabases(run);
+    } finally {
+      await hold.end();
+    }
+  };
+}
+
+/** The roles, and the migrated template, for the run. On a failure, it drops the run's databases again. */
+async function setUp(run: string, template: string): Promise<void> {
   const admin = await adminClient();
   try {
     await refuseSharedCluster(admin);
@@ -86,7 +110,4 @@ async function prepare(project: TestProject): Promise<() => Promise<void>> {
     throw error;
   }
   await admin.end();
-  project.provide("nortfoxRun", run);
-  project.provide("nortfoxTemplate", template);
-  return () => dropRunDatabases(run);
 }

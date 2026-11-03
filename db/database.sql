@@ -4,7 +4,7 @@
 -- before the first migration: the compose file's init step
 -- (deploy/postgres/initdb/10-roles.sh) and the test setup. It is safe to run
 -- again. A migration cannot do this, because it runs as nortfox_owner, and
--- these functions belong to the bootstrap superuser. The init step runs it in
+-- these functions and views belong to the bootstrap superuser. The init step runs it in
 -- the cluster's other databases too, postgres and template1, so a database
 -- made from template1 later starts with these functions closed
 -- (db/other-databases.sql).
@@ -73,3 +73,16 @@ GRANT EXECUTE ON FUNCTION
   pg_catalog.pg_advisory_xact_lock(integer, integer),
   pg_catalog.pg_advisory_xact_lock_shared(integer, integer)
 TO nortfox_owner;
+
+-- The locks that every backend holds. Any role may read them by default, in
+-- the view pg_locks or the function pg_lock_status() under it. While a
+-- company's transaction holds its turn, they show it to every role: the key,
+-- which is the same for the company each time, whether the turn is shared,
+-- for a change of a voucher, or alone, for a change of a lock, a year, a
+-- series or an account, and the id of the transaction, whose end
+-- pg_xact_status() then tells. So a reader would see when each other company
+-- books and changes its locks, and whether each change committed. No role of
+-- NortFox reads them, the owner neither, so none may.
+
+REVOKE SELECT ON pg_catalog.pg_locks FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION pg_catalog.pg_lock_status() FROM PUBLIC;

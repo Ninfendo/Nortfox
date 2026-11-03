@@ -28,6 +28,7 @@ import {
 } from "../../../test/database.ts";
 import {
   addBooks,
+  addBooksYear,
   balanced,
   bookVoucher,
   deletedRowsOf,
@@ -177,6 +178,18 @@ describe("Radera", () => {
     const closing = await bookVoucher(app, books.company, aVoucher(books, { series: "I" }), booker);
     await remove(books.company, closing.id);
     expect((await deletedVouchersOf(app, books.company)).at(-1)).toMatchObject({ series_code: "I", number: 1, deletion_count: 1 });
+    const next: Books = { company: books.company, year: await addBooksYear(app, books.company, "2091-01-01", "2091-12-31", booker) };
+    for (const count of [1, 2]) {
+      const inNext = await bookVoucher(app, books.company, aVoucher(next, { date: "2091-03-15" }), booker);
+      expect(inNext.number).toBe(1);
+      await remove(books.company, inNext.id);
+      expect((await deletedVouchersOf(app, books.company)).at(-1)).toMatchObject({
+        fiscal_year_id: next.year.id,
+        series_code: "A",
+        number: 1,
+        deletion_count: count,
+      });
+    }
   });
 
   it("deletes a voucher booked with the id of a deleted voucher, and rows with the ids of deleted rows, each deletion as an entry of its own", async () => {

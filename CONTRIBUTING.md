@@ -35,6 +35,7 @@ The ledger law lives in PostgreSQL ([decision 2](docs/decisions/0002-ledger-law-
 
 - `pnpm db:test` starts a test cluster that holds nothing else, with trust authentication on 127.0.0.1 only. CI runs the same PostgreSQL, by the same digest, as a service of the build job.
 - `NORTFOX_TEST_DATABASE_URL` points the tests at another cluster: a superuser on a cluster of its own, with trust authentication. The tests make roles, which belong to the whole cluster, so they refuse a cluster that holds any database they did not make.
+- One run of the database tests holds the cluster at a time. A second run on the same cluster, from another worktree for example, says that it waits, and starts when the first ends.
 - Without a test cluster, the tests fail with a line that says how to start one. They never skip.
 
 ## The names check

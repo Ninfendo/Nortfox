@@ -7,7 +7,9 @@
 //
 // Roles belong to the whole cluster, so the tests run only on a cluster that
 // holds nothing but the databases they make. They drop only those, by the
-// prefix nortfox_test_.
+// prefix nortfox_test_. The roles and the limit of connections serve one run
+// at a time, so each run holds the cluster from its setup to its teardown,
+// and a second run on the same cluster waits for it (holdCluster).
 
 import { fileURLToPath } from "node:url";
 import { Client } from "pg";
@@ -86,9 +88,45 @@ export async function connectAs(role: string, database: string): Promise<Client>
   return client;
 }
 
+/** The advisory lock that a run of the database tests holds on the test cluster, in the database postgres (holdCluster). */
+export const RUN_LOCK = 4_646_213;
+
+/**
+ * Holds the test cluster for one run: the advisory lock `key` for the
+ * session, as the superuser, in the database postgres, until the connection
+ * it gives ends. The roles and the limit of connections belong to the whole
+ * cluster, so a second run on it waits here until the first ends. It says so
+ * first, through `say`, with the backend of the run it waits for.
+ */
+export async function holdCluster(say: (line: string) => void, key = RUN_LOCK): Promise<Client> {
+  const client = await adminClient("postgres");
+  try {
+    const got = await client.query<{ got: boolean }>("SELECT pg_catalog.pg_try_advisory_lock($1) AS got", [key]);
+    if (got.rows[0]?.got !== true) {
+      const holder = await client.query<{ pid: number; since: string | null }>(
+        `SELECT l.pid, a.backend_start::text AS since
+         FROM pg_catalog.pg_locks AS l LEFT JOIN pg_catalog.pg_stat_activity AS a ON a.pid = l.pid
+         WHERE l.locktype = 'advisory' AND l.granted AND l.classid = 0 AND l.objid = $1 AND l.objsubid = 1
+           AND l.database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())`,
+        [key],
+      );
+      const [found] = holder.rows;
+      const which = found === undefined ? "" : ` (backend ${String(found.pid)}, connected at ${found.since ?? "an unknown time"})`;
+      say(`Another run of the database tests holds the test cluster at ${adminUrl()}${which}. This run waits for it to end.`);
+      await client.query("SELECT pg_catalog.pg_advisory_lock($1)", [key]);
+    }
+  } catch (error) {
+    await client.end();
+    throw error;
+  }
+  return client;
+}
+
 /**
  * Refuses a cluster that is not the tests' own: a role that is not a
  * superuser, or a cluster that holds a database the tests did not make.
+ * Another run's databases have the tests' prefix too, so a run holds the
+ * cluster first (holdCluster).
  *
  * The cluster keeps PostgreSQL's limit of 100 connections, 3 of them for a
  * superuser only. The busiest test file holds 34 at once, so vitest.config.ts
