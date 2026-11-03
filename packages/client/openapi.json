@@ -121,6 +121,39 @@
         ],
         "additionalProperties": false,
         "description": "What is wrong with one field of a request."
+      },
+      "Company": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The company's id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The company's name."
+          },
+          "organizationNumber": {
+            "type": "string",
+            "pattern": "^[0-9]{6}-[0-9]{4}$",
+            "description": "The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number."
+          },
+          "databaseNumber": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "The company's number for programs, its tenant id. It never changes."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "organizationNumber",
+          "databaseNumber"
+        ],
+        "additionalProperties": false,
+        "description": "The company the request works in. Every data request works in exactly one company."
       }
     },
     "parameters": {}
@@ -154,6 +187,83 @@
           },
           "400": {
             "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/company": {
+      "get": {
+        "operationId": "getCompany",
+        "tags": [
+          "companies"
+        ],
+        "summary": "Read the company",
+        "description": "Gives the company the request works in: its id, name, organisation number and tenant id. The company comes from the request's credential.",
+        "x-nortfox": {
+          "permission": "company:read",
+          "tool": "Gives the company you work in: its id, name, organisation number and database number. Every other tool works in this company too.",
+          "assistant": true,
+          "writes": false,
+          "list": false
+        },
+        "responses": {
+          "200": {
+            "description": "The company the request works in. Every data request works in exactly one company.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Company"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Bearer.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor lacks the permission the operation needs.",
             "content": {
               "application/problem+json": {
                 "schema": {

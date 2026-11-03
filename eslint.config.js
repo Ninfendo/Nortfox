@@ -248,6 +248,18 @@ export default defineConfig(
     ),
   },
   {
+    // The server's tests call the API through the generated client too, with
+    // a fetch of their own that calls the app. The server's code may not.
+    files: ["apps/server/**/*.test.ts", "apps/server/test/**"],
+    rules: guards(
+      callsNoServer,
+      onlyImports(
+        ["@nortfox/client", "@nortfox/contract", "@nortfox/engine"],
+        "The server's tests may import the engine, the contract, i18n and the client.",
+      ),
+    ),
+  },
+  {
     files: ["apps/web/**"],
     rules: guards(
       callsNoServer,

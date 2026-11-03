@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import type { OpenAPIHono } from "@hono/zod-openapi";
-import { getHealth, type Health } from "@nortfox/contract";
+import { getHealth } from "@nortfox/contract";
+import { handlePublic, ok, type Handler } from "../../api/operation.ts";
 
-/** Serves the registry's getHealth entry. */
-export function registerHealth(app: OpenAPIHono, version: string): void {
-  app.openapi(getHealth, (c) => c.json({ status: "ok", version } satisfies Health, 200));
+/** Serves the registry's getHealth entry: the server is up, with its version. */
+export function healthHandler(version: string): Handler {
+  return handlePublic(getHealth, () => Promise.resolve(ok({ status: "ok", version })));
 }

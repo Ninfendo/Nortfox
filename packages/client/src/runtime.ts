@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 
+import type { Problem } from "./generated.ts";
+
 /** The fetch the client calls. The global fetch fits. */
 export type FetchFunction = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -30,11 +32,41 @@ export type Send = (call: OperationCall, options: CallOptions | undefined) => Pr
 export class ApiError extends Error {
   override readonly name = "ApiError";
   readonly status: number;
+  /** The problem details the server answered with, when it answered with them. */
+  readonly problem: Problem | undefined;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, problem?: Problem) {
     super(message);
     this.status = status;
+    this.problem = problem;
   }
+}
+
+/** The media type of problem details (RFC 9457), which every /v1 error has. */
+const PROBLEM_MEDIA_TYPE = "application/problem+json";
+
+function isProblem(value: unknown): value is Problem {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { readonly code?: unknown }).code === "string" &&
+    typeof (value as { readonly status?: unknown }).status === "number"
+  );
+}
+
+/** The problem details of a refusal, or undefined when it holds none. */
+async function problemOf(response: Response): Promise<Problem | undefined> {
+  const mediaType = (response.headers.get("content-type") ?? "").replace(/;.*$/s, "").trim().toLowerCase();
+  if (mediaType !== PROBLEM_MEDIA_TYPE) {
+    return undefined;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    return undefined;
+  }
+  return isProblem(body) ? body : undefined;
 }
 
 export function createSend(options: ClientOptions): Send {
@@ -50,10 +82,12 @@ export function createSend(options: ClientOptions): Send {
     }
     const response = await callFetch(`${baseUrl}${call.path}`, init);
     if (!response.ok) {
-      throw new ApiError(
-        response.status,
-        `${call.method} ${call.path} answered ${String(response.status)}.`,
-      );
+      const problem = await problemOf(response);
+      const answered = `${call.method} ${call.path} answered ${String(response.status)}`;
+      if (problem === undefined) {
+        throw new ApiError(response.status, `${answered}.`);
+      }
+      throw new ApiError(response.status, `${answered} ${problem.code}.`, problem);
     }
     const body: unknown = await response.json();
     return body;

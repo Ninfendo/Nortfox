@@ -21,6 +21,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@nortfox/client": "workspace:*",
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
     "fast-check": "catalog:",

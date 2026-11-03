@@ -244,3 +244,42 @@ describe("who may import whom, also by a path inside a package, import() or requ
     expect(await hits(path, code)).toEqual([]);
   });
 });
+
+describe("the server's tests may import the client, and its code may not", () => {
+  const serverTests = ["apps/server/src/probe.test.ts", "apps/server/src/api/probe.db.test.ts", "apps/server/test/probe.ts"];
+
+  it.each(
+    serverTests.flatMap((path) =>
+      [
+        'import { createClient } from "@nortfox/client";\nexport const x = createClient;',
+        'export const x = await import("@nortfox/client");',
+        'import { x } from "@nortfox/contract";\nexport const y = x;',
+        'import { x } from "@nortfox/engine";\nexport const y = x;',
+      ].map((code) => [path, code] as const),
+    ),
+  )("lets %s: %s through", async (path, code) => {
+    expect(await hits(path, code)).toEqual([]);
+  });
+
+  it.each([
+    ["apps/server/src/probe.ts", 'import { createClient } from "@nortfox/client";\nexport const x = createClient;', "no-restricted-imports"],
+    ["apps/server/src/api/probe.ts", 'export const x = await import("@nortfox/client");', "no-restricted-syntax"],
+    ["apps/server/scripts/probe.ts", 'import { createClient } from "@nortfox/client";\nexport const x = createClient;', "no-restricted-imports"],
+    ...serverTests.flatMap((path) => [
+      [path, 'import { x } from "@nortfox/web";\nexport const y = x;', "no-restricted-imports"],
+      [path, 'export const x = await import("@nortfox/web");', "no-restricted-syntax"],
+      [path, 'import { x } from "../../../packages/client/src/index.ts";\nexport const y = x;', "no-restricted-imports"],
+    ]),
+  ])("refuses %s: %s", async (path, code, rule) => {
+    const found = await hits(path, code);
+    expect(found.map((hit) => hit.rule)).toContain(rule);
+  });
+
+  it.each(serverTests.flatMap((path) => networkCalls.map((code) => [path, code] as const)))(
+    "keeps the network ban in %s: %s",
+    async (path, code) => {
+      const found = await hits(path, code);
+      expect(found.some((hit) => hit.message.includes(CALL_SERVER)), JSON.stringify(found)).toBe(true);
+    },
+  );
+});

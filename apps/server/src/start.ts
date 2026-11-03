@@ -2,7 +2,8 @@
 
 import { serve } from "@hono/node-server";
 import type { AddressInfo } from "node:net";
-import { createApp } from "./app.ts";
+import { assertV1Routes } from "./api/route-guard.ts";
+import type { ServerApp } from "./app.ts";
 
 export const DEFAULT_PORT = 4100;
 
@@ -22,14 +23,17 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
-/** Starts the server. Port 0 picks a free port. */
-export function startServer(options: {
-  readonly port: number;
-  readonly version: string;
-}): Promise<RunningServer> {
-  const app = createApp({ version: options.version });
+/**
+ * Serves a built app. Port 0 picks a free port. It first checks the app's
+ * routes: a route under /v1 that is not in the registry, added anywhere after
+ * createApp, stops the server before it listens.
+ */
+export function startServer(options: { readonly app: ServerApp; readonly port: number }): Promise<RunningServer> {
   return new Promise((resolve) => {
-    const server = serve({ fetch: app.fetch, port: options.port }, (info: AddressInfo) => {
+    // A throw here rejects the promise, before anything listens.
+    assertV1Routes(options.app);
+    const { hono } = options.app;
+    const server = serve({ fetch: hono.fetch, port: options.port }, (info: AddressInfo) => {
       resolve({
         port: info.port,
         close: () =>

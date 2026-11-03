@@ -19,7 +19,7 @@ Other commands:
 
 | Command | What it does |
 | --- | --- |
-| `pnpm --filter @nortfox/server dev` | Runs the server on port 4100 (`PORT` changes it). |
+| `pnpm --filter @nortfox/server dev` | Runs the server on port 4100 (`PORT` changes it). It reads the database from `NORTFOX_DATABASE_URL` and `NORTFOX_DATABASE_PASSWORD_FILE`, as the migrate step does ([db/README.md](db/README.md)), and connects at the first request. Until login comes, every data operation answers 401. |
 | `pnpm --filter @nortfox/web dev` | Runs the web app. It passes `/v1` to the server on port 4100. |
 | `pnpm test` | Runs every test suite once, the database tests too. `pnpm test:coverage` also checks the coverage floors. |
 | `pnpm db:test` | Starts the test database: PostgreSQL in Docker, on 127.0.0.1:55433, with its data in memory. `pnpm db:test:stop` stops it. |

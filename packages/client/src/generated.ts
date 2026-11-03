@@ -6,6 +6,28 @@
 import type { CallOptions, Send } from "./runtime.ts";
 
 /**
+ * The company the request works in. Every data request works in exactly one company.
+ */
+export interface Company {
+  /**
+   * The company's id.
+   */
+  readonly id: string;
+  /**
+   * The company's name.
+   */
+  readonly name: string;
+  /**
+   * The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number.
+   */
+  readonly organizationNumber: string;
+  /**
+   * The company's number for programs, its tenant id. It never changes.
+   */
+  readonly databaseNumber: number;
+}
+
+/**
  * What is wrong with one field of a request.
  */
 export interface FieldProblem {
@@ -85,6 +107,17 @@ export interface Problem {
 
 export interface Operations {
   /**
+   * Read the company
+   *
+   * Gives the company the request works in: its id, name, organisation number and tenant id. The company comes from the request's credential.
+   *
+   * `GET /v1/company`
+   *
+   * Needs the permission `company:read`.
+   */
+  getCompany(options?: CallOptions): Promise<Company>;
+
+  /**
    * Check that the server is up
    *
    * Answers as soon as the server runs. It reads no data.
@@ -98,6 +131,7 @@ export interface Operations {
 
 export function createOperations(send: Send): Operations {
   return {
+    getCompany: async (options) => (await send({ method: "GET", path: "/v1/company" }, options)) as Company,
     getHealth: async (options) => (await send({ method: "GET", path: "/v1/health" }, options)) as Health,
   };
 }
