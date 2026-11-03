@@ -124,10 +124,11 @@ export interface Settings {
   readonly company?: string;
   readonly actor?: string;
   readonly kind?: string;
+  readonly channel?: string;
   readonly isolation?: IsolationLevel;
 }
 
-const SETTING_NAMES = { company: "nortfox.company_id", actor: "nortfox.actor_id", kind: "nortfox.actor_kind" } as const;
+const SETTING_NAMES = { company: "nortfox.company_id", actor: "nortfox.actor_id", kind: "nortfox.actor_kind", channel: "nortfox.channel" } as const;
 
 /**
  * Starts a transaction with the settings, as the server does:
@@ -135,7 +136,7 @@ const SETTING_NAMES = { company: "nortfox.company_id", actor: "nortfox.actor_id"
  */
 export async function begin(client: Client, settings: Settings): Promise<void> {
   await client.query(settings.isolation === undefined ? "BEGIN" : `BEGIN ISOLATION LEVEL ${settings.isolation.toUpperCase()}`);
-  for (const key of ["company", "actor", "kind"] as const) {
+  for (const key of ["company", "actor", "kind", "channel"] as const) {
     const value = settings[key];
     if (value !== undefined) {
       await client.query("SELECT pg_catalog.set_config($1, $2, true)", [SETTING_NAMES[key], value]);

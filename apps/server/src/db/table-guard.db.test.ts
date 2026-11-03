@@ -68,6 +68,7 @@ describe("the table guard", () => {
       "ledger.deleted_voucher_rows",
       "ledger.deleted_vouchers",
       "ledger.fiscal_years",
+      "ledger.idempotency_keys",
       "ledger.period_locks",
       "ledger.periods",
       "ledger.reader_roles",

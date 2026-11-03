@@ -32,6 +32,7 @@ const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "ledger.deleted_voucher_rows": ["SELECT"],
   "ledger.deleted_vouchers": ["SELECT"],
   "ledger.fiscal_years": ["INSERT", "SELECT", "UPDATE"],
+  "ledger.idempotency_keys": ["INSERT", "SELECT"],
   "ledger.period_locks": ["INSERT", "SELECT", "UPDATE"],
   "ledger.periods": ["INSERT", "SELECT", "UPDATE"],
   "ledger.reader_roles": [],
@@ -53,6 +54,7 @@ const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "ledger.deleted_voucher_rows": ["SELECT"],
   "ledger.deleted_vouchers": ["SELECT"],
   "ledger.fiscal_years": ["SELECT"],
+  "ledger.idempotency_keys": ["SELECT"],
   "ledger.period_locks": ["SELECT"],
   "ledger.periods": ["SELECT"],
   "ledger.reader_roles": ["SELECT"],
@@ -141,6 +143,10 @@ describe("the database roles", () => {
     ["read the actor through the trigger's helper", "SELECT * FROM ledger.current_actor()"],
     ["read the actor that a transaction keeps", "SELECT * FROM ledger.transaction_actors"],
     ["change the actor that a transaction keeps", "DELETE FROM ledger.transaction_actors"],
+    ["change the channel that a transaction keeps", "UPDATE ledger.transaction_actors SET channel = 'mcp'"],
+    ["change a stored idempotency key", "UPDATE ledger.idempotency_keys SET response_status = 200"],
+    ["delete a stored idempotency key", "DELETE FROM ledger.idempotency_keys"],
+    ["call the trigger that stamps an idempotency key", "SELECT ledger.idempotency_keys_rules()"],
     ["give out the next tenant id", "SELECT nextval('ledger.database_number_seq')"],
   ])("refuses the app to %s", async (_case, sql) => {
     await expectError(app.query(sql), INSUFFICIENT_PRIVILEGE);
