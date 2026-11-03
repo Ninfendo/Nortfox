@@ -218,10 +218,10 @@ describe("the voucher counters", () => {
     expect((await counterOf(app, company, series.id))?.next_number).toBe(4);
   });
 
-  /** A booking in series `code` of `year`, as the owner writes it from inside fromATrigger's transaction. It needs no rows: the transaction is rolled back. */
-  function booking(company: string, year: string, code: string): string {
+  /** A booking in series `code` of `year`, dated `date`, as the owner writes it from inside fromATrigger's transaction. It needs no rows: the transaction is rolled back. */
+  function booking(company: string, year: string, code: string, date = "2090-03-15"): string {
     return `INSERT INTO ledger.vouchers (company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
-            VALUES ('${company}', '${year}', '${code}', 'Kontorsmaterial', '2090-03-15', 'MANUAL')`;
+            VALUES ('${company}', '${year}', '${code}', 'Kontorsmaterial', '${date}', 'MANUAL')`;
   }
 
   /**
@@ -293,8 +293,76 @@ describe("the voucher counters", () => {
     await bookVoucher(app, company, { year, series: "A", date: "2090-03-15", rows: balanced() }, who);
     expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
     await expectRefusal(fromATrigger(company, moveTo(series, "next_number - 1")), "counter_move", { series: "A", from: 2, to: 1 });
-    await expectRefusal(fromATrigger(company, moveTo(series, "next_number + 1")), "counter_move", { series: "A", from: 2, to: 3 });
+    // Voucher 1 was booked in an earlier transaction. The owner puts the
+    // counter back to 1, with the counter's rules off, so that voucher would
+    // prove the step to 2 if a booking of another transaction counted.
+    const backToOne = [
+      "ALTER TABLE ledger.voucher_counters DISABLE TRIGGER voucher_counters_rules",
+      moveTo(series, 1),
+      "ALTER TABLE ledger.voucher_counters ENABLE TRIGGER voucher_counters_rules",
+    ];
+    await expectRefusal(fromATrigger(company, moveTo(series, "next_number + 1"), { before: backToOne }), "counter_move", { series: "A", from: 1, to: 2 });
     expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
+  });
+
+  // Each fiscal year has its own series, and a series of another year may
+  // have the same code. Its booking, its deletion or its void range proves
+  // nothing for this year's counter, also in the same transaction.
+  it("takes no booking, deletion or void range of the series with the same code in another fiscal year as proof", async () => {
+    const { company, year, series } = await companyWithSeries();
+    const next = await addFiscalYear(app, company, { from: "2091-01-01", to: "2091-12-31" });
+    const nextSeries = await addSeries(app, company, next.id, { code: "A" }, who);
+    for (const books of [year, next.id]) {
+      await addAccount(app, company, books, { number: 1930 });
+      await addAccount(app, company, books, { number: 6110 });
+    }
+    const facts = (from: number, to: number): Record<string, unknown> => ({ series: "A", from, to });
+    // A void range from 1 to 3 in 2091's series A, recorded in the
+    // transaction, which here does not move that series' own counter.
+    await expectRefusal(
+      fromATrigger(company, moveTo(series, 4), {
+        before: [
+          "ALTER TABLE ledger.void_ranges DISABLE TRIGGER void_ranges_move_counter",
+          `INSERT INTO ledger.void_ranges (company_id, fiscal_year_id, series_code, first_number, last_number, reason)
+           VALUES ('${company}', '${next.id}', 'A', 1, 3, 'Återläsning av säkerhetskopia')`,
+          "ALTER TABLE ledger.void_ranges ENABLE TRIGGER void_ranges_move_counter",
+        ],
+      }),
+      "counter_move",
+      facts(1, 4),
+    );
+    // Voucher 1 of 2091's series A, booked in the transaction.
+    await expectRefusal(
+      fromATrigger(company, moveTo(series, "next_number + 1"), { before: [booking(company, next.id, "A", "2091-03-15")] }),
+      "counter_move",
+      facts(1, 2),
+    );
+    // Voucher 1 of 2091's series A, while it is being deleted in the
+    // transaction: a trigger of the test on the record moves this year's
+    // counter back from 2 then.
+    await bookVoucher(app, company, { year, series: "A", date: "2090-03-15", rows: balanced() }, who);
+    const whileDeleting = [
+      `CREATE FUNCTION ledger.poke_deletion() RETURNS trigger LANGUAGE plpgsql AS $poke$ BEGIN ${moveTo(series, "next_number - 1")}; RETURN NULL; END $poke$`,
+      "CREATE TRIGGER poke_deletion AFTER INSERT ON ledger.deleted_vouchers FOR EACH ROW EXECUTE FUNCTION ledger.poke_deletion()",
+    ];
+    await expectRefusal(
+      fromATrigger(company, "SELECT 1", { before: [...whileDeleting, booking(company, next.id, "A", "2091-03-15"), ...deletion(company, next.id, "A", 1)] }),
+      "counter_move",
+      facts(2, 1),
+    );
+    // Without the trigger of the test, the same deletion moves only its own year's counter.
+    expect(
+      await fromATrigger(company, "SELECT 1", {
+        before: [booking(company, next.id, "A", "2091-03-15"), ...deletion(company, next.id, "A", 1)],
+        after: `SELECT s.fiscal_year_id::text = '${year}' AS this_year, c.next_number FROM ledger.voucher_counters AS c
+                JOIN ledger.voucher_series AS s ON s.id = c.series_id WHERE s.code = 'A' ORDER BY 1 DESC`,
+      }),
+    ).toEqual([
+      { this_year: true, next_number: 2 },
+      { this_year: false, next_number: 1 },
+    ]);
+    expect((await counterOf(app, company, series.id))?.next_number).toBe(2);
+    expect((await counterOf(app, company, nextSeries.id))?.next_number).toBe(1);
   });
 
   it("takes no deletion of an earlier transaction as proof, also when a voucher with the deleted voucher's id is booked again with its number", async () => {

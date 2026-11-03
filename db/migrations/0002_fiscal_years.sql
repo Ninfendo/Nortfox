@@ -98,6 +98,57 @@ CREATE TABLE ledger.automatic_locks (
   CONSTRAINT automatic_locks_interval_when_on CHECK (NOT enabled OR interval IS NOT NULL)
 );
 
+-- The company's turn ----------------------------------------------------------------
+--
+-- A change of a voucher locks, FOR SHARE until its transaction ends, the rows
+-- that its checks read: its fiscal year, its series, the company's automatic
+-- lock row and its rows' accounts (0004), and a new period locks its year's
+-- row so too. A change of one of those rows waits for those locks. But
+-- PostgreSQL gives a new share lock at once to a row that only share locks
+-- hold, ahead of a change that waits for the row. So while the company's
+-- bookings overlap, such a change would wait until they pause, without end
+-- under a steady load. So each of them first takes the company's turn, an
+-- advisory lock that PostgreSQL queues in order: a change of a voucher and a
+-- new period with the others, and a change of one of those rows alone. Such a
+-- change then waits only for the changes of vouchers that were open when it
+-- came, and a change of a voucher that comes after it waits for it. The turn
+-- only orders them: the row locks still keep the rules. Its key is the hash
+-- of the company's id, in a class of keys of its own. Two companies whose ids
+-- hash alike share a turn, which costs only a wait. No role but the owner may
+-- take an advisory lock in the ledger database (db/database.sql), so no other
+-- role can hold a company's turn.
+CREATE FUNCTION ledger.take_turn(company uuid, alone boolean) RETURNS void
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $turn$
+BEGIN
+  IF take_turn.company IS NULL THEN
+    RETURN;
+  END IF;
+  IF take_turn.alone THEN
+    PERFORM pg_advisory_xact_lock(4646210, hashtext(take_turn.company::text));
+  ELSE
+    PERFORM pg_advisory_xact_lock_shared(4646210, hashtext(take_turn.company::text));
+  END IF;
+END
+$turn$;
+
+-- A statement that changes one of the rows that a change of a voucher locks
+-- FOR SHARE, or locks one of them for update, takes the turn of the
+-- transaction's company alone, before it locks any row: an UPDATE locks its
+-- row before the row's own trigger runs. Row level security keeps the
+-- statement to that company's rows. With no company set, it changes no row
+-- and takes no turn.
+CREATE FUNCTION ledger.take_turn_alone() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $turn$
+BEGIN
+  PERFORM ledger.take_turn(ledger.current_company_id(), true);
+  RETURN NULL;
+END
+$turn$;
+
 -- Triggers ------------------------------------------------------------------------
 
 -- A fiscal year's number: the company's highest plus one, under a lock on the
@@ -144,8 +195,9 @@ END
 $rules$;
 
 -- A period lies inside its year. It locks the year's row FOR SHARE until the
--- transaction ends, so the year's dates cannot change under it. When the year
--- is not there, the foreign key or row level security refuses the period.
+-- transaction ends, so the year's dates cannot change under it, after it has
+-- taken the company's turn with the changes of vouchers. When the year is not
+-- there, the foreign key or row level security refuses the period.
 CREATE FUNCTION ledger.periods_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -156,6 +208,7 @@ BEGIN
   IF TG_OP = 'UPDATE' AND NEW.id IS DISTINCT FROM OLD.id THEN
     PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'id', 'operation', 'update'));
   END IF;
+  PERFORM ledger.take_turn(NEW.company_id, false);
   SELECT y.from_date, y.to_date INTO fiscal
   FROM ledger.fiscal_years AS y
   WHERE y.company_id = NEW.company_id AND y.id = NEW.fiscal_year_id
@@ -286,6 +339,12 @@ CREATE TRIGGER automatic_locks_rules BEFORE INSERT OR UPDATE OR DELETE ON ledger
   FOR EACH ROW EXECUTE FUNCTION ledger.automatic_locks_rules();
 CREATE TRIGGER make_automatic_lock AFTER INSERT ON ledger.companies
   FOR EACH ROW EXECUTE FUNCTION ledger.companies_automatic_lock();
+CREATE TRIGGER take_turn_alone BEFORE UPDATE ON ledger.fiscal_years
+  FOR EACH STATEMENT EXECUTE FUNCTION ledger.take_turn_alone();
+CREATE TRIGGER take_turn_alone BEFORE INSERT OR UPDATE ON ledger.period_locks
+  FOR EACH STATEMENT EXECUTE FUNCTION ledger.take_turn_alone();
+CREATE TRIGGER take_turn_alone BEFORE UPDATE ON ledger.automatic_locks
+  FOR EACH STATEMENT EXECUTE FUNCTION ledger.take_turn_alone();
 
 SELECT meta.protect_company_table('ledger.fiscal_years', 'id');
 SELECT meta.protect_company_table('ledger.periods', 'id');
@@ -410,11 +469,14 @@ END;
 -- locks that row FOR NO KEY UPDATE. So a change of a voucher and a change of
 -- a lock never overlap: a lock set while the voucher's change is open waits
 -- for it, and a change of a voucher while a new lock is open waits, and then
--- reads that lock. Writes run at READ COMMITTED (ledger.assert_read_committed),
--- so the read after the lock sees what is committed. The answer also depends
--- on the end of the voucher's fiscal year, for the automatic lock at 60 days
--- after it, and on the closing mark of its series. ledger.assert_voucher_open
--- locks those two rows FOR SHARE, and reads the mark, before it calls this.
+-- reads that lock. Each takes the company's turn first (ledger.take_turn),
+-- so a lock that is set while bookings overlap waits only for the changes
+-- of vouchers that were open when it came. Writes run at READ COMMITTED
+-- (ledger.assert_read_committed), so the read after the lock sees what is
+-- committed. The answer also depends on the end of the voucher's fiscal year,
+-- for the automatic lock at 60 days after it, and on the closing mark of its
+-- series. ledger.assert_voucher_open locks those two rows FOR SHARE, and
+-- reads the mark, before it calls this.
 CREATE FUNCTION ledger.assert_open(company uuid, day date, is_closing_series boolean) RETURNS void
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp

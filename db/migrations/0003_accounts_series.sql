@@ -343,6 +343,14 @@ CREATE TRIGGER void_ranges_rules BEFORE INSERT OR UPDATE OR DELETE ON ledger.voi
   FOR EACH ROW EXECUTE FUNCTION ledger.void_ranges_rules();
 CREATE TRIGGER void_ranges_move_counter AFTER INSERT ON ledger.void_ranges
   FOR EACH ROW EXECUTE FUNCTION ledger.void_ranges_move_counter();
+-- A change of a voucher's row locks its account FOR SHARE, and a booking its
+-- series' row and its year's row (0004). So a change or a deletion of an
+-- account or a series, and a new series, which locks its year's row for
+-- update, first take the company's turn alone (0002).
+CREATE TRIGGER take_turn_alone BEFORE UPDATE OR DELETE ON ledger.accounts
+  FOR EACH STATEMENT EXECUTE FUNCTION ledger.take_turn_alone();
+CREATE TRIGGER take_turn_alone BEFORE INSERT OR UPDATE OR DELETE ON ledger.voucher_series
+  FOR EACH STATEMENT EXECUTE FUNCTION ledger.take_turn_alone();
 
 SELECT meta.protect_company_table('ledger.accounts', 'id');
 SELECT meta.protect_company_table('ledger.voucher_series', 'id');

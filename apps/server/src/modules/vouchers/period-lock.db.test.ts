@@ -47,7 +47,12 @@ describe("the period lock on vouchers", () => {
   const userTwo: Actor = someUser();
   const system: Actor = { actor: randomUUID(), kind: "system" };
   const integration: Actor = { actor: randomUUID(), kind: "integration" };
-  const ACTORS = { userOne, userTwo, system, integration } as const;
+  // The database takes an actor as its id and its kind (ledger.current_actor).
+  // So the internal system user or an integration with userOne's id is not
+  // userOne, and userOne's own date never locks it.
+  const systemWithOnesId: Actor = { actor: userOne.actor, kind: "system" };
+  const integrationWithOnesId: Actor = { actor: userOne.actor, kind: "integration" };
+  const ACTORS = { userOne, userTwo, system, integration, systemWithOnesId, integrationWithOnesId } as const;
   type ActorName = keyof typeof ACTORS;
 
   beforeAll(async () => {
@@ -65,8 +70,11 @@ describe("the period lock on vouchers", () => {
 
   /**
    * Strikes both rows of a voucher of two that balance, in one statement and
-   * with no other write: the voucher still balances, so only the strike's own
-   * check of the lock can refuse it.
+   * with no other write: the voucher still balances, so only the lock can
+   * refuse it. Two checks of the lock see the strike: the row's own, and the
+   * voucher's, when the strike moves the voucher's altered stamps. A write
+   * that changes nothing in the row moves no stamps, so only the row's own
+   * check sees it (below).
    */
   const STRIKE_BOTH = "UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1";
 
@@ -161,12 +169,12 @@ describe("the period lock on vouchers", () => {
     const END = "2090-06-30";
     const cases: readonly { scope: LockScope; user?: ActorName; locks: readonly ActorName[] }[] = [
       { scope: "user", user: "userOne", locks: ["userOne"] },
-      { scope: "system", locks: ["system"] },
-      { scope: "integration", locks: ["integration"] },
-      { scope: "all", locks: ["userOne", "userTwo", "system", "integration"] },
+      { scope: "system", locks: ["system", "systemWithOnesId"] },
+      { scope: "integration", locks: ["integration", "integrationWithOnesId"] },
+      { scope: "all", locks: ["userOne", "userTwo", "system", "integration", "systemWithOnesId", "integrationWithOnesId"] },
     ];
 
-    it.each(cases)("set only for $scope $user refuses those it applies to, the date itself included, and no one else", async ({ scope, user, locks }) => {
+    it.each(cases)("set only for $scope $user refuses those it applies to, the date itself included, and no one else, not the system user or an integration with the user's id", async ({ scope, user, locks }) => {
       for (const name of Object.keys(ACTORS) as ActorName[]) {
         const who = ACTORS[name];
         const books = await addBooks(app);
@@ -213,6 +221,51 @@ describe("the period lock on vouchers", () => {
       await expectRefusal(act.text(), "period_locked_manual", facts);
       await expectRefusal(act.add(), "period_locked_manual", facts);
       await expectRefusal(act.strike(), "period_locked_manual", facts);
+    });
+
+    // A write that changes nothing in a row moves no stamps of its voucher,
+    // so the voucher's own check of the lock never runs for it. The row's
+    // check refuses it, and the behandlingshistorik gets no row of it.
+    it("refuses a strike of a struck row and a row's text set to itself by the lock, and writes no history", async () => {
+      const books = await addBooks(app);
+      const voucher = await bookVoucher(app, books.company, aVoucher(books, { date: "2090-03-10", rows: [...balanced(2000n), { account: 3001 }] }), booker);
+      const rows = await rowsOf(app, books.company, voucher.id);
+      const zero = rows[2]?.id;
+      await inTransaction(app, { company: books.company, ...userOne }, () => app.query("UPDATE ledger.voucher_rows SET removed = true WHERE id = $1", [zero]));
+      const struck = await rowsOf(app, books.company, voucher.id);
+      const lock = await setLock(app, books.company, "all", END, { who: setter });
+      const facts = await manualFacts(books.company, lock);
+      const historyCount = async (): Promise<bigint | undefined> =>
+        inTransaction(app, { company: books.company }, async () => {
+          const found = await app.query<{ count: bigint }>(
+            "SELECT count(*) AS count FROM audit.history WHERE table_name IN ('ledger.vouchers', 'ledger.voucher_rows')",
+          );
+          return found.rows[0]?.count;
+        });
+      const before = await historyCount();
+      const as = <T>(work: () => Promise<T>): Promise<T> => inTransaction(app, { company: books.company, ...userOne }, work);
+      await expectRefusal(as(() => app.query("UPDATE ledger.voucher_rows SET removed = true WHERE id = $1", [zero])), "period_locked_manual", facts);
+      await expectRefusal(
+        as(() => app.query("UPDATE ledger.voucher_rows SET transaction_information = transaction_information WHERE id = $1", [rows[0]?.id])),
+        "period_locked_manual",
+        facts,
+      );
+      expect(await historyCount()).toBe(before);
+      expect(await rowsOf(app, books.company, voucher.id)).toEqual(struck);
+    });
+
+    // The row's own check of the lock comes before the table's checks of its
+    // values, as each check of a booking comes in its order. So a row that a
+    // check would refuse too is refused by the lock.
+    it("refuses an added row by the lock before the table's checks of its values", async () => {
+      const books = await addBooks(app);
+      const { voucher } = await twoVouchers(books, "2090-03-10", "2090-07-01");
+      const lock = await setLock(app, books.company, "all", END, { who: setter });
+      const facts = await manualFacts(books.company, lock);
+      for (const row of [{ account: 3001, debit: -1n }, { account: 3001, credit: -1n }, { account: 3001, quantity: "NaN" }]) {
+        await expectRefusal(inTransaction(app, { company: books.company, ...userOne }, () => writeRow(app, books.company, voucher.id, row)), "period_locked_manual", facts);
+      }
+      expect((await rowsOf(app, books.company, voucher.id)).length).toBe(2);
     });
   });
 

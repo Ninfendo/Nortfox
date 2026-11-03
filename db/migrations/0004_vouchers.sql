@@ -8,33 +8,33 @@
 -- As in 0001: every name of ours is written in full, every function pins its
 -- search path, and every trigger function runs with the owner's rights.
 --
--- The locks. A booking, a change and a deletion of a voucher each lock what
+-- The locks. A booking, a change and a deletion of a voucher each take the
+-- company's turn with the others (ledger.take_turn, 0002), and then lock what
 -- the period lock reads, FOR SHARE, in this order: the voucher's fiscal year,
 -- its series, and the company's automatic lock row
 -- (ledger.lock_voucher_period). A booking reads its series' manual flag
 -- under that lock. It then locks the voucher it reverses, then the series'
--- counter. A new row locks its voucher, then those three rows (a row of the
--- booking's own transaction holds them from the booking), and then its
--- account FOR SHARE, which it reads the active flag from. A deletion locks
--- its voucher first, as its statement's target, then those three rows, then
--- the counter, and then its own rows, by the cascade. A change of a row locks
--- the row first, as its statement's target, then its voucher, then those
--- three rows.
+-- counter. A new row locks its voucher, then takes the turn and those three
+-- rows (a row of the booking's own transaction holds them from the booking),
+-- and then its account FOR SHARE, which it reads the active flag from. A
+-- deletion locks its voucher first, as its statement's target, then the turn
+-- and those three rows, then the counter, and then its own rows, by the
+-- cascade. A change of a row locks the row first, as its statement's target,
+-- then its voucher, then the turn and those three rows.
 -- So a row change and a deletion of the same voucher take the voucher and the
 -- row in opposite orders, and can deadlock: every caller that changes a row
 -- first locks its voucher (SELECT ... FROM ledger.vouchers WHERE id = ...
--- FOR NO KEY UPDATE). A change of a fiscal year's dates, of a series' name,
--- manual flag or closing mark, or of an account locks only that row, and a
--- change of a lock date locks its own row and then the automatic lock row, so
--- none of them waits in a circle with a single change of a voucher. A
--- transaction that makes more than one of these changes makes them in the
--- order a voucher locks those rows: the fiscal year, the series, the lock
--- dates, then the accounts. In another order it can deadlock with a change of
--- a voucher. That order holds for one account only. A voucher's rows lock
--- their accounts in the order they are written, so a transaction that changes
--- two or more accounts, or one statement that changes several, can deadlock
--- with a booking or a new row whatever its order. Such a caller changes one
--- account per transaction, or tries again on a deadlock (40P01).
+-- FOR NO KEY UPDATE). A change of a fiscal year, a series, an account, a lock
+-- date or the automatic lock, and a new series, first takes the company's
+-- turn alone, before it locks any row. So it waits for the open changes of
+-- vouchers, and a change of a voucher that comes after it waits for it at the
+-- turn, before it locks any of those rows. A transaction that makes such
+-- changes before it changes a voucher never waits in a circle with a change
+-- of a voucher, whatever their order, two accounts included. A transaction
+-- that has changed a voucher holds the turn with the others, so its later
+-- change of such a row waits for every other open change of a voucher, and
+-- can deadlock with one that waits for it, such as a booking in the same
+-- series (40P01).
 
 -- Vouchers --------------------------------------------------------------------
 --
@@ -279,7 +279,9 @@ $year$;
 -- Locks FOR SHARE, until the transaction ends, the rows that the period lock
 -- on a voucher reads, in the lock order at the top of this file: the
 -- voucher's fiscal year, its series and the company's automatic lock row.
--- Gives the series' closing mark, read from the locked row.
+-- It first takes the company's turn with the other changes of vouchers
+-- (ledger.take_turn, 0002). Gives the series' closing mark, read from the
+-- locked row.
 CREATE FUNCTION ledger.lock_voucher_period(company uuid, fiscal_year uuid, series_code text) RETURNS boolean
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -287,6 +289,7 @@ AS $period$
 DECLARE
   closing boolean;
 BEGIN
+  PERFORM ledger.take_turn(lock_voucher_period.company, false);
   PERFORM 1 FROM ledger.fiscal_years AS y
   WHERE y.company_id = lock_voucher_period.company AND y.id = lock_voucher_period.fiscal_year
   FOR SHARE;
@@ -404,9 +407,11 @@ BEGIN
     PERFORM ledger.refuse('value_too_long', jsonb_build_object('field', 'comments', 'value', NEW.comments));
   END IF;
   -- The manual flag is read from the series' row locked FOR SHARE until the
-  -- transaction ends, after the year's row, in the lock order at the top of
-  -- this file. So a change of the flag waits for this booking, and this
-  -- booking waits for a change of the flag and then reads it.
+  -- transaction ends, after the company's turn and the year's row, in the
+  -- lock order at the top of this file. So a change of the flag waits for
+  -- this booking, and this booking waits for a change of the flag and then
+  -- reads it.
+  PERFORM ledger.take_turn(NEW.company_id, false);
   PERFORM 1 FROM ledger.fiscal_years AS y
   WHERE y.company_id = NEW.company_id AND y.id = NEW.fiscal_year_id
   FOR SHARE;
@@ -639,6 +644,9 @@ BEGIN
   IF char_length(NEW.description) > 200 THEN
     PERFORM ledger.refuse('value_too_long', jsonb_build_object('field', 'description', 'value', NEW.description));
   END IF;
+  -- The company's turn comes before the first lock of the change, on the
+  -- year's row (the lock order at the top of this file).
+  PERFORM ledger.take_turn(OLD.company_id, false);
   IF NEW.transaction_date IS DISTINCT FROM OLD.transaction_date THEN
     PERFORM ledger.assert_in_own_year(NEW.company_id, NEW.fiscal_year_id, NEW.transaction_date);
   END IF;
@@ -740,7 +748,10 @@ BEGIN
     PERFORM ledger.refuse('value_too_long', jsonb_build_object('field', 'transaction_information', 'value', NEW.transaction_information));
   END IF;
   -- A row of the booking's own transaction is part of the booking, which was
-  -- checked for the transaction's one actor (ledger.current_actor).
+  -- checked for the transaction's one actor (ledger.current_actor). The new
+  -- row's touch of its voucher checks the lock again, by the voucher's date
+  -- (ledger.voucher_rows_touch_voucher); this check comes first, before the
+  -- table's checks of the row's values.
   IF voucher.created_xact <> pg_current_xact_id() THEN
     PERFORM ledger.assert_voucher_open(NEW.company_id, voucher.fiscal_year_id, voucher.series_code, voucher.transaction_date);
   END IF;
@@ -830,6 +841,9 @@ BEGIN
   IF NEW.removed AND NOT OLD.removed AND voucher.created_xact = pg_current_xact_id() THEN
     PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'removed', 'operation', 'create'));
   END IF;
+  -- A change of the text or a strike touches the voucher, which checks the
+  -- lock again (ledger.voucher_rows_touch_voucher). A write that changes
+  -- nothing in the row touches nothing, so this check alone refuses it.
   PERFORM ledger.assert_voucher_open(OLD.company_id, voucher.fiscal_year_id, voucher.series_code, voucher.transaction_date);
   IF NEW.removed AND NOT OLD.removed THEN
     SELECT a.actor_id, a.actor_kind INTO actor FROM ledger.current_actor() AS a;

@@ -6,6 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import {
@@ -81,6 +82,12 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
 };
 
 const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
+
+/** db/README.md, whose steps to remove a reader a test runs. */
+const README_FILE = fileURLToPath(new URL("../../../../../db/README.md", import.meta.url));
+
+/** PostgreSQL's SQLSTATE for a role that objects or entries still depend on. */
+const DEPENDENT_OBJECTS_STILL_EXIST = "2BP01";
 
 describe("the database roles", () => {
   let db: TestDatabase;
@@ -277,6 +284,33 @@ describe("the database roles", () => {
     },
   );
 
+  // The ledger's triggers take an advisory lock for each company, its turn
+  // (ledger.take_turn). A role that held a company's key could stop its
+  // bookings, so db/database.sql leaves advisory locks to the owner alone.
+  it("lets no role of ours but the owner take an advisory lock, which could hold a company's turn, and the owner only the ones it takes", async () => {
+    const found = await owner.query<{ name: string; app: boolean; reader: boolean; owner: boolean }>(`
+      SELECT p.oid::pg_catalog.regprocedure::text AS name,
+        pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE') AS app,
+        pg_catalog.has_function_privilege('nortfox_test_reader_a', p.oid, 'EXECUTE') AS reader,
+        pg_catalog.has_function_privilege('nortfox_owner', p.oid, 'EXECUTE') AS owner
+      FROM pg_catalog.pg_proc AS p
+      WHERE p.pronamespace = 'pg_catalog'::pg_catalog.regnamespace AND p.proname LIKE '%advisory%'`);
+    expect(found.rows.length).toBe(21);
+    expect(found.rows.filter((row) => row.app || row.reader)).toEqual([]);
+    expect(
+      found.rows
+        .filter((row) => row.owner)
+        .map((row) => row.name)
+        .sort(),
+    ).toEqual(["pg_advisory_lock(bigint)", "pg_advisory_unlock(bigint)", "pg_advisory_xact_lock(integer,integer)", "pg_advisory_xact_lock_shared(integer,integer)"]);
+    const reader = await db.connect("readerA");
+    for (const client of [app, reader]) {
+      for (const sql of ["SELECT pg_catalog.pg_advisory_lock(4646210, 1)", "SELECT pg_catalog.pg_try_advisory_lock_shared(1)", "SELECT pg_catalog.pg_advisory_xact_lock(1)"]) {
+        await expectError(client.query(sql), INSUFFICIENT_PRIVILEGE, /permission denied for function pg_(try_)?advisory/);
+      }
+    }
+  });
+
   // A limit that db/README.md states. PostgreSQL lets every role set its own
   // defaults, and has no privilege to take that away. So a reader can keep
   // some text of its own in the cluster's catalog, outside the ledger. Only
@@ -304,11 +338,73 @@ describe("the database roles", () => {
     expect(await settingsOf()).toEqual([]);
   });
 
-  it("keeps the large objects and the WAL messages closed when db/database.sql runs again", async () => {
+  // A second limit that db/README.md states. Every role may set default
+  // privileges for the objects it would make, with any roles as grantees,
+  // and PostgreSQL has no privilege to take that away. No role but the owner
+  // can make an object, so such an entry changes no rule. But it stays in the
+  // ledger database's own catalog, and it holds the roles it names: DROP
+  // ROLE refuses them until a superuser runs DROP OWNED BY, as the removal
+  // steps in db/README.md do.
+  it("lets a reader keep default privileges of its own, which hold it and the roles they name until the removal steps of db/README.md run", async () => {
+    const admin = await db.admin();
+    const reader = `${TEMPORARY_ROLE_PREFIX}${randomBytes(4).toString("hex")}`;
+    const named = `${reader}_named`;
+    const entries = async (): Promise<string[]> => {
+      const found = await admin.query<{ entry: string }>(
+        `SELECT pg_catalog.pg_get_userbyid(d.defaclrole) || ' ' || d.defaclobjtype::text || ' ' || COALESCE(n.nspname, '*') || ' ' || d.defaclacl::text COLLATE "C" AS entry
+         FROM pg_catalog.pg_default_acl AS d LEFT JOIN pg_catalog.pg_namespace AS n ON n.oid = d.defaclnamespace
+         WHERE pg_catalog.pg_get_userbyid(d.defaclrole) IN ($1, $2) ORDER BY 1`,
+        [reader, named],
+      );
+      return found.rows.map((row) => row.entry);
+    };
+    try {
+      await makeReaderRole(admin, reader);
+      await makeReaderRole(admin, named);
+      await inTransaction(owner, { company, actor, kind: "system" }, () => owner.query(BIND, [company, reader]));
+      const client = await connectAs(reader, db.name);
+      try {
+        await client.query(`ALTER DEFAULT PRIVILEGES GRANT SELECT, INSERT ON TABLES TO ${named}, nortfox_app`);
+        await client.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA audit GRANT USAGE ON TYPES TO ${named}`);
+        // Never for another role.
+        await expectError(client.query(`ALTER DEFAULT PRIVILEGES FOR ROLE nortfox_owner GRANT SELECT ON TABLES TO ${named}`), INSUFFICIENT_PRIVILEGE);
+      } finally {
+        await client.end();
+      }
+      // The entries for every schema also keep the reader's own privileges on what it would make.
+      expect(await entries()).toEqual([
+        `${reader} T audit {${named}=U/${reader}}`,
+        `${reader} r * {nortfox_app=ar/${reader},${reader}=arwdDxtm/${reader},${named}=ar/${reader}}`,
+      ]);
+      // A reader's entries hold the reader, and an entry that names another
+      // reader holds that one too.
+      await expectError(admin.query(`DROP ROLE ${named}`), DEPENDENT_OBJECTS_STILL_EXIST);
+      await expectError(admin.query(`DROP ROLE ${reader}`), DEPENDENT_OBJECTS_STILL_EXIST);
+      await removeReader(admin, named);
+      expect(await entries()).toEqual([`${reader} r * {nortfox_app=ar/${reader},${reader}=arwdDxtm/${reader}}`]);
+      await removeReader(admin, reader);
+      expect(await entries()).toEqual([]);
+      const left = await admin.query("SELECT FROM pg_catalog.pg_roles WHERE rolname IN ($1, $2)", [reader, named]);
+      expect(left.rows).toEqual([]);
+      expect(await readBindings()).toEqual([]);
+    } finally {
+      for (const role of [named, reader]) {
+        const exists = await admin.query("SELECT FROM pg_catalog.pg_roles WHERE rolname = $1", [role]);
+        if (exists.rows.length > 0) {
+          await admin.query(`DROP OWNED BY ${role}`);
+          await admin.query(`DROP ROLE ${role}`);
+        }
+      }
+      await inTransaction(owner, { company, actor, kind: "system" }, () => owner.query("DELETE FROM ledger.reader_roles"));
+    }
+  });
+
+  it("keeps the large objects, the WAL messages and the advisory locks closed when db/database.sql runs again", async () => {
     const admin = await db.admin();
     await admin.query(readFileSync(DATABASE_FILE, "utf8"));
     await expectError(app.query("SELECT pg_catalog.lo_create(0)"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
     await expectError(app.query("SELECT pg_catalog.pg_logical_emit_message(false, 'nortfox', 'x')"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
+    await expectError(app.query("SELECT pg_catalog.pg_advisory_lock(1)"), INSUFFICIENT_PRIVILEGE, /permission denied for function/);
   });
 
   it("lets no role of ours connect to another database of the cluster once db/other-databases.sql has run in it, as an install's first start runs it in postgres and template1", async () => {
@@ -368,6 +464,45 @@ describe("the database roles", () => {
   }
 
   const BIND = "INSERT INTO ledger.reader_roles AS t (company_id, role_oid) VALUES ($1, $2::pg_catalog.regrole) RETURNING pg_catalog.to_jsonb(t) AS row";
+
+  /** The names of the company's reader bindings, read as the owner. */
+  async function readBindings(): Promise<string[]> {
+    return inTransaction(owner, { company }, async () =>
+      (await owner.query<{ name: string }>("SELECT role_name AS name FROM ledger.reader_roles ORDER BY 1")).rows.map((row) => row.name),
+    );
+  }
+
+  /**
+   * Removes the reader `role` by the steps that db/README.md gives: the
+   * owner's statements, with the company and an actor set, then the
+   * superuser's, as `admin` in the ledger database.
+   */
+  async function removeReader(admin: Client, role: string): Promise<void> {
+    const readme = readFileSync(README_FILE, "utf8").replaceAll("\r\n", "\n");
+    const steps = /^To remove a reader,.*\n\n```sql\n([\s\S]*?)```/m.exec(readme)?.[1];
+    if (steps === undefined) {
+      throw new Error("db/README.md gives no steps to remove a reader.");
+    }
+    const [asOwner = "", asSuperuser = ""] = steps.replaceAll("example_reader", role).split(/^-- then, as a superuser.*$/m);
+    const statements = (sql: string): string[] =>
+      sql
+        .split("\n")
+        .filter((line) => !line.startsWith("--"))
+        .join("\n")
+        .split(";")
+        .map((statement) => statement.trim())
+        .filter((statement) => statement !== "");
+    expect(statements(asOwner).length).toBeGreaterThan(0);
+    expect(statements(asSuperuser).length).toBeGreaterThan(0);
+    await inTransaction(owner, { company, actor, kind: "system" }, async () => {
+      for (const statement of statements(asOwner)) {
+        await owner.query(statement);
+      }
+    });
+    for (const statement of statements(asSuperuser)) {
+      await admin.query(statement);
+    }
+  }
 
   it("binds a reader role by its oid and its name: a role made again with the name, another role renamed to it, or the bound role renamed, reads nothing until the owner binds it", async () => {
     const admin = await db.admin();

@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   BACKUP_TEST_COMPOSE,
   COMPOSE,
+  DOCKERIGNORE,
   PGBACKREST_CONF,
   POSTGRES_HEALTHCHECK,
   POSTGRES_IMAGE,
@@ -16,6 +17,7 @@ import {
   backupTestProblems,
   composeProblems,
   deployProblems,
+  dockerignoreProblems,
   pgbackrestProblems,
   postgresImageProblems,
   serverImageProblems,
@@ -45,6 +47,7 @@ const conf = file(PGBACKREST_CONF);
 const postgresImage = file(POSTGRES_IMAGE);
 const serverImage = file(SERVER_IMAGE);
 const packageJson = file("package.json");
+const dockerignore = file(DOCKERIGNORE);
 
 /** The text with one part replaced; the part must be there exactly once. */
 function changed(text: string, from: string, to: string): string {
@@ -439,5 +442,31 @@ describe("the server image", () => {
     expect(serverImageProblems(changed(serverImage, "COPY db/migrations db/migrations\n", ""), packageJson)).toEqual([
       'deploy/server/Dockerfile must hold the line "COPY db/migrations db/migrations": the migrate step applies the migrations of the same commit.',
     ]);
+  });
+});
+
+describe("the images' build context", () => {
+  it("passes as it is, also with Windows line ends", () => {
+    expect(dockerignoreProblems(dockerignore)).toEqual([]);
+    expect(dockerignoreProblems(dockerignore.replaceAll("\n", "\r\n"))).toEqual([]);
+  });
+
+  it.each([
+    [".env at the root only", "**/.env\n", ".env\n", "**/.env", "an env file in any folder, such as deploy/.env, which the install's compose file reads."],
+    [".env.* at the root only", "**/.env.*\n", ".env.*\n", "**/.env.*", "an env file in any folder, such as deploy/.env.local."],
+    ["no deploy/secrets", "deploy/secrets\n", "", "deploy/secrets", "the install's secret files."],
+  ])("fails %s", (_case, from, to, line, why) => {
+    expect(dockerignoreProblems(changed(dockerignore, from, to))).toEqual([`.dockerignore must hold the line "${line}": ${why}`]);
+  });
+
+  it("fails a line that takes a file back in", () => {
+    const text = `${dockerignore}!deploy/.env\n`;
+    expect(dockerignoreProblems(text)).toEqual([
+      `.dockerignore:${String(text.split("\n").indexOf("!deploy/.env") + 1)} takes files back into the build context with "!". The file only leaves files out.`,
+    ]);
+  });
+
+  it("reports a .dockerignore that is missing", () => {
+    expect(deployProblems((path) => (path === DOCKERIGNORE ? undefined : read(path)))).toEqual([".dockerignore is missing."]);
   });
 });

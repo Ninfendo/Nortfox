@@ -56,7 +56,12 @@ describe("the period lock", () => {
   const userTwo: Actor = someUser();
   const system: Actor = { actor: randomUUID(), kind: "system" };
   const integration: Actor = { actor: randomUUID(), kind: "integration" };
-  const ACTORS = { userOne, userTwo, system, integration } as const;
+  // The database takes an actor as its id and its kind (ledger.current_actor).
+  // So the internal system user or an integration with userOne's id is not
+  // userOne, and userOne's own date never locks it.
+  const systemWithOnesId: Actor = { actor: userOne.actor, kind: "system" };
+  const integrationWithOnesId: Actor = { actor: userOne.actor, kind: "integration" };
+  const ACTORS = { userOne, userTwo, system, integration, systemWithOnesId, integrationWithOnesId } as const;
   type ActorName = keyof typeof ACTORS;
 
   beforeAll(async () => {
@@ -287,12 +292,12 @@ describe("the period lock", () => {
     const END = "2090-06-30";
     const cases: readonly { scope: LockScope; user?: ActorName; locks: readonly ActorName[] }[] = [
       { scope: "user", user: "userOne", locks: ["userOne"] },
-      { scope: "system", locks: ["system"] },
-      { scope: "integration", locks: ["integration"] },
-      { scope: "all", locks: ["userOne", "userTwo", "system", "integration"] },
+      { scope: "system", locks: ["system", "systemWithOnesId"] },
+      { scope: "integration", locks: ["integration", "integrationWithOnesId"] },
+      { scope: "all", locks: ["userOne", "userTwo", "system", "integration", "systemWithOnesId", "integrationWithOnesId"] },
     ];
 
-    it.each(cases)("locks a date set only for $scope $user for those it applies to, the date itself included, and no one else", async ({ scope, user, locks }) => {
+    it.each(cases)("locks a date set only for $scope $user for those it applies to, the date itself included, and no one else, not the system user or an integration with the user's id", async ({ scope, user, locks }) => {
       const company = await addCompany(app);
       const lock = await setLock(app, company, scope, END, user === undefined ? { who: setter } : { user: ACTORS[user].actor, who: setter });
       for (const name of Object.keys(ACTORS) as ActorName[]) {

@@ -6,7 +6,8 @@
 // point-in-time restore test, deploy/backup-test/pitr.sh, checks the same
 // settings on a running stack. This guard makes a changed copy of a file fail
 // without one. It also keeps the restore test's own compose file from changing
-// a setting, so the test runs the install's own settings.
+// a setting, so the test runs the install's own settings, and keeps the
+// install's secrets and env files out of the images' build context.
 //
 // The guard reads the compose files line by line. So they keep to plain block
 // YAML: one key to a line, and no anchor, alias or merge key.
@@ -18,6 +19,7 @@ export const BACKUP_TEST_COMPOSE = "deploy/backup-test/compose.yaml";
 export const PGBACKREST_CONF = "deploy/postgres/pgbackrest.conf";
 export const POSTGRES_IMAGE = "deploy/postgres/Dockerfile";
 export const SERVER_IMAGE = "deploy/server/Dockerfile";
+export const DOCKERIGNORE = ".dockerignore";
 
 /** The postgres service's command: WAL archiving through pgBackRest, and a closed segment after at most 60 seconds. */
 export const POSTGRES_COMMAND = [
@@ -449,9 +451,35 @@ export function serverImageProblems(text: string, packageJson: string): string[]
   return problems;
 }
 
+/**
+ * The lines of .dockerignore that keep an install's own files out of the
+ * images' build context, the repository root. Docker matches each line from
+ * the root of the context, not in every folder as git does, so a line for a
+ * file in any folder starts with **.
+ */
+const DOCKERIGNORE_LINES: readonly (readonly [line: string, why: string])[] = [
+  ["deploy/secrets", "the install's secret files."],
+  ["**/.env", "an env file in any folder, such as deploy/.env, which the install's compose file reads."],
+  ["**/.env.*", "an env file in any folder, such as deploy/.env.local."],
+];
+
+/** What is wrong with .dockerignore; empty when nothing is. */
+export function dockerignoreProblems(text: string): string[] {
+  const lines = text.split(/\r?\n/).map((line) => line.trim());
+  const problems = DOCKERIGNORE_LINES.filter(([line]) => !lines.includes(line)).map(
+    ([line, why]) => `${DOCKERIGNORE} must hold the line "${line}": ${why}`,
+  );
+  for (const [index, line] of lines.entries()) {
+    if (line.startsWith("!")) {
+      problems.push(`${DOCKERIGNORE}:${String(index + 1)} takes files back into the build context with "!". The file only leaves files out.`);
+    }
+  }
+  return problems;
+}
+
 /** What is wrong with the files of an install; empty when nothing is. */
 export function deployProblems(read: (path: string) => string | undefined): string[] {
-  const files = [COMPOSE, BACKUP_TEST_COMPOSE, PGBACKREST_CONF, POSTGRES_IMAGE, SERVER_IMAGE, "package.json"].map(
+  const files = [COMPOSE, BACKUP_TEST_COMPOSE, PGBACKREST_CONF, POSTGRES_IMAGE, SERVER_IMAGE, DOCKERIGNORE, "package.json"].map(
     (path) => [path, read(path)] as const,
   );
   const missing = files.filter(([, text]) => text === undefined).map(([path]) => `${path} is missing.`);
@@ -465,5 +493,6 @@ export function deployProblems(read: (path: string) => string | undefined): stri
     ...pgbackrestProblems(text(PGBACKREST_CONF)),
     ...postgresImageProblems(text(POSTGRES_IMAGE)),
     ...serverImageProblems(text(SERVER_IMAGE), text("package.json")),
+    ...dockerignoreProblems(text(DOCKERIGNORE)),
   ];
 }

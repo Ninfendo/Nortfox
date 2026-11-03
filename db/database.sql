@@ -22,8 +22,9 @@
 --
 -- So no role of NortFox may run them: not the app, which reads and writes
 -- rows, not a reader, which writes nothing in the ledger, and not the owner.
--- No privilege closes one more way out: every role may set its own role
--- settings, which the cluster's catalog keeps (db/README.md).
+-- No privilege closes two more ways out: every role may set its own role
+-- settings, which the cluster's catalog keeps, and its own default
+-- privileges, which this database's catalog keeps (db/README.md).
 
 REVOKE EXECUTE ON FUNCTION
   pg_catalog.lo_creat(integer),
@@ -32,3 +33,43 @@ REVOKE EXECUTE ON FUNCTION
   pg_catalog.pg_logical_emit_message(boolean, text, text, boolean),
   pg_catalog.pg_logical_emit_message(boolean, text, bytea, boolean)
 FROM PUBLIC;
+
+-- Advisory locks. Any role that may connect can take any advisory lock by
+-- default, by its key, and hold it as long as its session lasts. The ledger's
+-- own triggers take one for each company, the company's turn
+-- (ledger.take_turn, db/migrations/0002_fiscal_years.sql): a role that held
+-- a company's key could stop that company's bookings, or its lock changes,
+-- for as long as it liked. So only the owner may take one in the ledger
+-- database: its triggers take the turn, and the migration runner its own
+-- lock (apps/server/src/db/migrate.ts).
+
+REVOKE EXECUTE ON FUNCTION
+  pg_catalog.pg_advisory_lock(bigint),
+  pg_catalog.pg_advisory_lock(integer, integer),
+  pg_catalog.pg_advisory_lock_shared(bigint),
+  pg_catalog.pg_advisory_lock_shared(integer, integer),
+  pg_catalog.pg_advisory_unlock(bigint),
+  pg_catalog.pg_advisory_unlock(integer, integer),
+  pg_catalog.pg_advisory_unlock_shared(bigint),
+  pg_catalog.pg_advisory_unlock_shared(integer, integer),
+  pg_catalog.pg_advisory_unlock_all(),
+  pg_catalog.pg_advisory_xact_lock(bigint),
+  pg_catalog.pg_advisory_xact_lock(integer, integer),
+  pg_catalog.pg_advisory_xact_lock_shared(bigint),
+  pg_catalog.pg_advisory_xact_lock_shared(integer, integer),
+  pg_catalog.pg_try_advisory_lock(bigint),
+  pg_catalog.pg_try_advisory_lock(integer, integer),
+  pg_catalog.pg_try_advisory_lock_shared(bigint),
+  pg_catalog.pg_try_advisory_lock_shared(integer, integer),
+  pg_catalog.pg_try_advisory_xact_lock(bigint),
+  pg_catalog.pg_try_advisory_xact_lock(integer, integer),
+  pg_catalog.pg_try_advisory_xact_lock_shared(bigint),
+  pg_catalog.pg_try_advisory_xact_lock_shared(integer, integer)
+FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION
+  pg_catalog.pg_advisory_lock(bigint),
+  pg_catalog.pg_advisory_unlock(bigint),
+  pg_catalog.pg_advisory_xact_lock(integer, integer),
+  pg_catalog.pg_advisory_xact_lock_shared(integer, integer)
+TO nortfox_owner;
