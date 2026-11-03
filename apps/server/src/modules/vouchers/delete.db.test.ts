@@ -1,0 +1,478 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// Radera (rules 31 to 33 of the slice). Only the last voucher of its series
+// in its fiscal year can be deleted: the one directly below the counter. A
+// void range counts as used numbers, so the voucher just below one is never
+// last. The voucher moves, with everything it held, to the record of deleted
+// vouchers, with who deleted it and when, and the counter goes back by one,
+// so the number is given out again. Each deletion is its own entry, counted
+// per number. The record holds only a voucher that could have been booked:
+// a deletion in the transaction that booked the voucher, or that changed its
+// rows, checks its two rows and its balance first, since the checks at
+// commit never see a voucher that is gone. Nothing in the record changes or
+// goes, and no row is removed from a voucher that stays. The locks come in
+// period-lock.db.test.ts.
+
+import { randomUUID } from "node:crypto";
+import type { Client } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  CHECK_VIOLATION,
+  INSUFFICIENT_PRIVILEGE,
+  begin,
+  expectError,
+  expectRefusal,
+  freshDatabase,
+  inTransaction,
+  type TestDatabase,
+} from "../../../test/database.ts";
+import {
+  addBooks,
+  addBooksYear,
+  balanced,
+  bookVoucher,
+  deletedRowsOf,
+  deletedVouchersOf,
+  isAfter,
+  nextNumberOf,
+  recordVoidRange,
+  rowsOf,
+  someUser,
+  voucherOf,
+  writeRow,
+  writeVoucher,
+  type Actor,
+  type Books,
+  type NewVoucher,
+  type Voucher,
+} from "../../../test/ledger.ts";
+
+describe("Radera", () => {
+  let db: TestDatabase;
+  let app: Client;
+  let owner: Client;
+  let reader: Client;
+  const booker = someUser();
+  const deleter: Actor = { actor: randomUUID(), kind: "system" };
+
+  beforeAll(async () => {
+    db = await freshDatabase();
+    app = await db.connect("app");
+    owner = await db.connect("owner");
+    reader = await db.connect("readerA");
+  });
+
+  afterAll(async () => {
+    await db.close();
+  });
+
+  function aVoucher(books: Books, changes: Partial<NewVoucher> = {}): NewVoucher {
+    return { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced(2000n), ...changes };
+  }
+
+  async function remove(company: string, id: string, who: Actor = deleter): Promise<number | null> {
+    return inTransaction(app, { company, ...who }, async () => (await app.query("DELETE FROM ledger.vouchers WHERE id = $1", [id])).rowCount);
+  }
+
+  it("moves the last voucher to the record with who and when, its rows and their accounts' names, and gives its number out again", async () => {
+    const books = await addBooks(app);
+    await bookVoucher(app, books.company, aVoucher(books), booker);
+    const voucher = await bookVoucher(
+      app,
+      books.company,
+      aVoucher(books, {
+        description: "Fel konto",
+        comments: "Bokades två gånger",
+        rows: [
+          { account: 6110, debit: 2500n, credit: 500n, text: "Pennor", quantity: "2.5" },
+          { account: 1930, credit: 2000n },
+        ],
+      }),
+      booker,
+    );
+    // Strike the first row and put a new one in its place, so the record shows a struck row.
+    await inTransaction(app, { company: books.company, ...booker }, async () => {
+      await app.query("UPDATE ledger.voucher_rows SET removed = true WHERE voucher_id = $1 AND position = 1", [voucher.id]);
+      await writeRow(app, books.company, voucher.id, { account: 3001, debit: 2000n });
+    });
+    const changed = await voucherOf(app, books.company, voucher.id);
+    const rows = await rowsOf(app, books.company, voucher.id);
+    // The account's name is the one it has when the voucher is deleted.
+    await inTransaction(app, { company: books.company, ...booker }, () =>
+      app.query("UPDATE ledger.accounts SET description = 'Kontorsmaterial' WHERE fiscal_year_id = $1 AND number = 6110", [books.year.id]),
+    );
+    expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(3);
+    const { started, ended, transaction } = await inTransaction(app, { company: books.company, ...deleter }, async () => {
+      const deleted = await app.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id]);
+      expect(deleted.rowCount).toBe(1);
+      const stamps = await app.query<{ started: string; ended: string; transaction: string }>(
+        "SELECT pg_catalog.transaction_timestamp()::text AS started, pg_catalog.clock_timestamp()::text AS ended, pg_catalog.pg_current_xact_id()::text AS transaction",
+      );
+      return stamps.rows[0] ?? { started: "", ended: "", transaction: "" };
+    });
+    expect(await voucherOf(app, books.company, voucher.id)).toBeUndefined();
+    expect(await rowsOf(app, books.company, voucher.id)).toEqual([]);
+    const [entry] = await deletedVouchersOf(app, books.company);
+    expect(entry).toEqual({
+      ...changed,
+      deletion_count: 1,
+      deleted_at: entry?.deleted_at,
+      deleted_by: deleter.actor,
+      deleted_by_kind: "system",
+      deleted_xact: transaction,
+      entry_id: entry?.entry_id,
+    });
+    expect(entry?.entry_id).not.toBe(voucher.id);
+    expect(await isAfter(app, entry?.deleted_at ?? "", started)).toBe(true);
+    expect(await isAfter(app, entry?.deleted_at ?? "", ended)).toBe(false);
+    const names: Record<number, string> = { 1930: "Företagskonto", 3001: "Försäljning inom Sverige", 6110: "Kontorsmaterial" };
+    expect(await deletedRowsOf(app, books.company, entry?.entry_id ?? "")).toEqual(
+      rows.map((row) => {
+        const { voucher_id: voucherId, ...kept } = row;
+        expect(voucherId).toBe(voucher.id);
+        return { ...kept, deleted_voucher_id: entry?.entry_id, account_description: names[row.account_number] };
+      }),
+    );
+    expect(
+      (await deletedRowsOf(app, books.company, entry?.entry_id ?? "")).map((row) => [row.position, row.account_number, row.debit, row.credit, row.removed]),
+    ).toEqual([
+      [1, 6110, 2500n, 500n, true],
+      [2, 1930, 0n, 2000n, false],
+      [3, 3001, 2000n, 0n, false],
+    ]);
+    // The counter went back by one, and the next voucher gets the same number.
+    expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(2);
+    expect((await bookVoucher(app, books.company, aVoucher(books), booker)).number).toBe(2);
+  });
+
+  it("refuses to delete any voucher but the last of its series, with its series and number", async () => {
+    const books = await addBooks(app);
+    const first = await bookVoucher(app, books.company, aVoucher(books), booker);
+    const second = await bookVoucher(app, books.company, aVoucher(books), booker);
+    await bookVoucher(app, books.company, aVoucher(books, { series: "I" }), booker);
+    await expectRefusal(remove(books.company, first.id), "not_last_in_series", { series: "A", number: 1 });
+    expect(await voucherOf(app, books.company, first.id)).toEqual(first);
+    await remove(books.company, second.id);
+    // Now the first is the last.
+    await remove(books.company, first.id);
+    expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+    expect((await deletedVouchersOf(app, books.company)).map((entry) => [entry.number, entry.deletion_count])).toEqual([
+      [2, 1],
+      [1, 1],
+    ]);
+  });
+
+  it("keeps each deletion of a number as its own entry, counted (1) and (2)", async () => {
+    const books = await addBooks(app);
+    const first = await bookVoucher(app, books.company, aVoucher(books, { description: "Första" }), booker);
+    await remove(books.company, first.id);
+    const second = await bookVoucher(app, books.company, aVoucher(books, { description: "Andra" }), booker);
+    expect(second.number).toBe(1);
+    await remove(books.company, second.id);
+    const entries = await deletedVouchersOf(app, books.company);
+    expect(entries.map((entry) => [entry.id, entry.number, entry.deletion_count, entry.description])).toEqual([
+      [first.id, 1, 1, "Första"],
+      [second.id, 1, 2, "Andra"],
+    ]);
+    // Another series and another year count on their own.
+    const closing = await bookVoucher(app, books.company, aVoucher(books, { series: "I" }), booker);
+    await remove(books.company, closing.id);
+    expect((await deletedVouchersOf(app, books.company)).at(-1)).toMatchObject({ series_code: "I", number: 1, deletion_count: 1 });
+    const next: Books = { company: books.company, year: await addBooksYear(app, books.company, "2091-01-01", "2091-12-31", booker) };
+    for (const count of [1, 2]) {
+      const inNext = await bookVoucher(app, books.company, aVoucher(next, { date: "2091-03-15" }), booker);
+      expect(inNext.number).toBe(1);
+      await remove(books.company, inNext.id);
+      expect((await deletedVouchersOf(app, books.company)).at(-1)).toMatchObject({
+        fiscal_year_id: next.year.id,
+        series_code: "A",
+        number: 1,
+        deletion_count: count,
+      });
+    }
+  });
+
+  it("deletes a voucher booked with the id of a deleted voucher, and rows with the ids of deleted rows, each deletion as an entry of its own", async () => {
+    const books = await addBooks(app);
+    const id = randomUUID();
+    const rowIds = [randomUUID(), randomUUID()];
+    const bookWithIds = (company: string, year: string, description: string): Promise<void> =>
+      inTransaction(app, { company, ...booker }, async () => {
+        await app.query(
+          `INSERT INTO ledger.vouchers (id, company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
+           VALUES ($1, $2, $3, 'A', $4, '2090-03-15', 'MANUAL')`,
+          [id, company, year, description],
+        );
+        for (const [index, row] of balanced(2000n).entries()) {
+          await app.query("INSERT INTO ledger.voucher_rows (id, company_id, voucher_id, account_number, debit, credit) VALUES ($1, $2, $3, $4, $5, $6)", [
+            rowIds[index],
+            company,
+            id,
+            row.account,
+            row.debit ?? 0n,
+            row.credit ?? 0n,
+          ]);
+        }
+      });
+    await bookWithIds(books.company, books.year.id, "Första");
+    expect(await remove(books.company, id)).toBe(1);
+    await bookWithIds(books.company, books.year.id, "Andra");
+    expect(await remove(books.company, id)).toBe(1);
+    const entries = await deletedVouchersOf(app, books.company);
+    expect(entries.map((entry) => [entry.id, entry.number, entry.deletion_count, entry.description])).toEqual([
+      [id, 1, 1, "Första"],
+      [id, 1, 2, "Andra"],
+    ]);
+    expect(new Set(entries.map((entry) => entry.entry_id)).size).toBe(2);
+    for (const entry of entries) {
+      expect((await deletedRowsOf(app, books.company, entry.entry_id)).map((row) => row.id)).toEqual(rowIds);
+    }
+    // An id deleted in another company stands in the way of no deletion either.
+    const other = await addBooks(app);
+    await bookWithIds(other.company, other.year.id, "Tredje");
+    expect(await remove(other.company, id)).toBe(1);
+    expect((await deletedVouchersOf(app, other.company)).map((entry) => [entry.id, entry.deletion_count])).toEqual([[id, 1]]);
+  });
+
+  it("refuses to delete the voucher just below a void range, and books the next voucher above the range", async () => {
+    const books = await addBooks(app);
+    const below = await bookVoucher(app, books.company, aVoucher(books), booker);
+    await recordVoidRange(owner, books.company, { year: books.year.id, code: "A", first: 2, last: 4 });
+    await expectRefusal(remove(books.company, below.id), "not_last_in_series", { series: "A", number: 1 });
+    const above = await bookVoucher(app, books.company, aVoucher(books), booker);
+    expect(above.number).toBe(5);
+    await remove(books.company, above.id);
+    // The counter goes back to the end of the range, never below it.
+    expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(5);
+    await expectRefusal(remove(books.company, below.id), "not_last_in_series", { series: "A", number: 1 });
+  });
+
+  it("moves the counter back only with the deletion, and writes every row of the move to the history", async () => {
+    const books = await addBooks(app);
+    const voucher = await bookVoucher(app, books.company, aVoucher(books), booker);
+    const transaction = await inTransaction(app, { company: books.company, ...deleter }, async () => {
+      await app.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id]);
+      return (await app.query<{ id: string }>("SELECT pg_catalog.pg_current_xact_id()::text AS id")).rows[0]?.id;
+    });
+    const history = await inTransaction(app, { company: books.company }, async () =>
+      app.query<{ table_name: string; operation: string; actor_id: string; actor_kind: string }>(
+        "SELECT table_name, operation, actor_id, actor_kind FROM audit.history WHERE transaction_id = $1::xid8 ORDER BY table_name, operation",
+        [transaction],
+      ),
+    );
+    const by = { actor_id: deleter.actor, actor_kind: "system" };
+    expect(history.rows).toEqual([
+      { table_name: "ledger.deleted_voucher_rows", operation: "INSERT", ...by },
+      { table_name: "ledger.deleted_voucher_rows", operation: "INSERT", ...by },
+      { table_name: "ledger.deleted_vouchers", operation: "INSERT", ...by },
+      { table_name: "ledger.voucher_counters", operation: "UPDATE", ...by },
+      { table_name: "ledger.voucher_rows", operation: "DELETE", ...by },
+      { table_name: "ledger.voucher_rows", operation: "DELETE", ...by },
+      { table_name: "ledger.vouchers", operation: "DELETE", ...by },
+    ]);
+  });
+
+  describe("in the transaction that booked the voucher, or that changed its rows", () => {
+    /** Runs `work`, then deletes the voucher, in one transaction as the deleter. */
+    async function andDelete(company: string, work: () => Promise<Voucher>): Promise<void> {
+      await inTransaction(app, { company, ...deleter }, async () => {
+        const voucher = await work();
+        await app.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id]);
+      });
+    }
+
+    it("refuses a voucher of one row, with the count, and writes no entry", async () => {
+      const books = await addBooks(app);
+      await expectRefusal(
+        andDelete(books.company, () => writeVoucher(app, books.company, aVoucher(books, { rows: [{ account: 6110, debit: 999n }] }))),
+        "too_few_rows",
+        { count: 1 },
+      );
+      expect(await deletedVouchersOf(app, books.company)).toEqual([]);
+      expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(1);
+    });
+
+    it("refuses a voucher that does not balance, with both sums, and writes no entry", async () => {
+      const books = await addBooks(app);
+      await expectRefusal(
+        andDelete(books.company, () =>
+          writeVoucher(app, books.company, aVoucher(books, { rows: [{ account: 6110, debit: 999n }, { account: 1930, credit: 998n }] })),
+        ),
+        "unbalanced",
+        { debit: "999", credit: "998" },
+      );
+      expect(await deletedVouchersOf(app, books.company)).toEqual([]);
+    });
+
+    it("refuses a booked voucher with a row added that puts it out of balance, and leaves the voucher as it was", async () => {
+      const books = await addBooks(app);
+      const voucher = await bookVoucher(app, books.company, aVoucher(books), booker);
+      const rows = await rowsOf(app, books.company, voucher.id);
+      await expectRefusal(
+        andDelete(books.company, async () => {
+          await writeRow(app, books.company, voucher.id, { account: 6110, debit: 999n });
+          return voucher;
+        }),
+        "unbalanced",
+        { debit: "2999", credit: "2000" },
+      );
+      expect(await voucherOf(app, books.company, voucher.id)).toEqual(voucher);
+      expect(await rowsOf(app, books.company, voucher.id)).toEqual(rows);
+      expect(await deletedVouchersOf(app, books.company)).toEqual([]);
+    });
+
+    it("deletes a voucher of two rows that balance as its number's next deletion, and gives the number out again", async () => {
+      const books = await addBooks(app);
+      await andDelete(books.company, () => writeVoucher(app, books.company, aVoucher(books, { description: "Första" })));
+      const second = await bookVoucher(app, books.company, aVoucher(books, { description: "Andra" }), booker);
+      expect(second.number).toBe(1);
+      await remove(books.company, second.id);
+      const entries = await deletedVouchersOf(app, books.company);
+      expect(entries.map((entry) => [entry.number, entry.deletion_count, entry.description])).toEqual([
+        [1, 1, "Första"],
+        [1, 2, "Andra"],
+      ]);
+      expect((await deletedRowsOf(app, books.company, entries[0]?.entry_id ?? "")).map((row) => [row.debit, row.credit])).toEqual([
+        [2000n, 0n],
+        [0n, 2000n],
+      ]);
+    });
+  });
+
+  it("refuses a deletion with no actor, and leaves the voucher and the counter", async () => {
+    const books = await addBooks(app);
+    const voucher = await bookVoucher(app, books.company, aVoucher(books), booker);
+    await expectRefusal(
+      inTransaction(app, { company: books.company }, () => app.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id])),
+      "actor_missing",
+      { setting: "nortfox.actor_id" },
+    );
+    expect(await voucherOf(app, books.company, voucher.id)).toEqual(voucher);
+    expect(await nextNumberOf(app, books.company, books.year.id, "A")).toBe(2);
+  });
+
+  describe("the record of deleted vouchers", () => {
+    async function withEntry(): Promise<{ books: Books; voucher: Voucher }> {
+      const books = await addBooks(app);
+      const voucher = await bookVoucher(app, books.company, aVoucher(books), booker);
+      await remove(books.company, voucher.id);
+      await inTransaction(owner, { company: books.company, ...deleter }, () =>
+        owner.query("INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, 'nortfox_test_reader_a'::pg_catalog.regrole)", [books.company]),
+      );
+      return { books, voucher };
+    }
+
+    async function unbindReader(company: string): Promise<void> {
+      await inTransaction(owner, { company, ...deleter }, () => owner.query("DELETE FROM ledger.reader_roles WHERE role_oid = 'nortfox_test_reader_a'::pg_catalog.regrole"));
+    }
+
+    const WRITES = [
+      "UPDATE ledger.deleted_vouchers SET description = 'Ändrad'",
+      "DELETE FROM ledger.deleted_vouchers",
+      "UPDATE ledger.deleted_voucher_rows SET debit = 0",
+      "DELETE FROM ledger.deleted_voucher_rows",
+    ];
+
+    it("lets the app and a reader read it, and refuses them every change and deletion: they have no privilege", async () => {
+      const { books, voucher } = await withEntry();
+      try {
+        for (const client of [app, reader]) {
+          const seen = await inTransaction(client, { company: books.company }, async () =>
+            (await client.query<{ id: string }>("SELECT voucher_id AS id FROM ledger.deleted_vouchers")).rows.map((row) => row.id),
+          );
+          expect(seen).toEqual([voucher.id]);
+          for (const sql of [...WRITES, "TRUNCATE ledger.deleted_vouchers CASCADE"]) {
+            await expectError(
+              inTransaction(client, { company: books.company, ...deleter }, () => client.query(sql)),
+              INSUFFICIENT_PRIVILEGE,
+              /permission denied/,
+            );
+          }
+        }
+      } finally {
+        await unbindReader(books.company);
+      }
+      expect((await deletedVouchersOf(app, books.company)).map((entry) => entry.id)).toEqual([voucher.id]);
+    });
+
+    it("refuses the owner too: an entry is only written by the deletion, and stays as written", async () => {
+      const { books, voucher } = await withEntry();
+      await unbindReader(books.company);
+      const settings = { company: books.company, ...deleter };
+      for (const [sql, table, operation] of [
+        [WRITES[0], "ledger.deleted_vouchers", "UPDATE"],
+        [WRITES[1], "ledger.deleted_vouchers", "DELETE"],
+        [WRITES[2], "ledger.deleted_voucher_rows", "UPDATE"],
+        [WRITES[3], "ledger.deleted_voucher_rows", "DELETE"],
+        ["TRUNCATE ledger.deleted_voucher_rows", "ledger.deleted_voucher_rows", "TRUNCATE"],
+      ] as const) {
+        await expectRefusal(inTransaction(owner, settings, () => owner.query(sql ?? "")), "append_only", { table, operation });
+      }
+      const entry = (await deletedVouchersOf(app, books.company))[0];
+      await expectRefusal(
+        inTransaction(owner, settings, () =>
+          owner.query(
+            `INSERT INTO ledger.deleted_vouchers (voucher_id, company_id, fiscal_year_id, series_code, number, deletion_count, description, comments,
+               transaction_date, reference_type, reference_number, created_at, created_by, created_by_kind, created_xact, modified_at,
+               deleted_at, deleted_by, deleted_by_kind, deleted_xact)
+             SELECT voucher_id, company_id, fiscal_year_id, series_code, number, 2, description, comments, transaction_date, reference_type,
+               reference_number, created_at, created_by, created_by_kind, created_xact, modified_at, deleted_at, deleted_by, deleted_by_kind, deleted_xact
+             FROM ledger.deleted_vouchers WHERE voucher_id = $1`,
+            [voucher.id],
+          ),
+        ),
+        "internal_only",
+        { table: "ledger.deleted_vouchers", field: null },
+      );
+      await expectRefusal(
+        inTransaction(owner, settings, () =>
+          owner.query(
+            `INSERT INTO ledger.deleted_voucher_rows (row_id, company_id, deleted_voucher_id, fiscal_year_id, position, account_number, debit, credit,
+               transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description)
+             SELECT gen_random_uuid(), company_id, deleted_voucher_id, fiscal_year_id, position + 10, account_number, debit, credit,
+               transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description
+             FROM ledger.deleted_voucher_rows WHERE deleted_voucher_id = $1`,
+            [entry?.entry_id],
+          ),
+        ),
+        "internal_only",
+        { table: "ledger.deleted_voucher_rows", field: null },
+      );
+      expect(await deletedVouchersOf(app, books.company)).toEqual([entry]);
+    });
+
+    it("holds a row's sides at zero or more and its quantity a decimal in checks too, as a backstop when its triggers are off (as the owner)", async () => {
+      const { books } = await withEntry();
+      await unbindReader(books.company);
+      await begin(owner, { company: books.company, ...deleter });
+      try {
+        await owner.query("ALTER TABLE ledger.deleted_voucher_rows DISABLE TRIGGER USER");
+        for (const [sql, constraint] of [
+          ["UPDATE ledger.deleted_voucher_rows SET debit = -1", "deleted_voucher_rows_debit_not_negative"],
+          ["UPDATE ledger.deleted_voucher_rows SET credit = -1", "deleted_voucher_rows_credit_not_negative"],
+          ["UPDATE ledger.deleted_voucher_rows SET quantity = 'NaN'", "deleted_voucher_rows_quantity_finite"],
+          ["UPDATE ledger.deleted_voucher_rows SET quantity = 'Infinity'", "deleted_voucher_rows_quantity_finite"],
+          ["UPDATE ledger.deleted_voucher_rows SET quantity = '-Infinity'", "deleted_voucher_rows_quantity_finite"],
+        ] as const) {
+          await owner.query("SAVEPOINT backstop");
+          await expectError(owner.query(sql), CHECK_VIOLATION, new RegExp(constraint));
+          await owner.query("ROLLBACK TO SAVEPOINT backstop");
+        }
+      } finally {
+        await owner.query("ROLLBACK");
+      }
+    });
+
+    it("keeps a series that holds only deleted vouchers: it cannot be removed", async () => {
+      const { books } = await withEntry();
+      await unbindReader(books.company);
+      await expectError(
+        inTransaction(app, { company: books.company, ...deleter }, () =>
+          app.query("DELETE FROM ledger.voucher_series WHERE fiscal_year_id = $1 AND code = 'A'", [books.year.id]),
+        ),
+        "23001",
+        /deleted_vouchers_series/,
+      );
+    });
+  });
+});

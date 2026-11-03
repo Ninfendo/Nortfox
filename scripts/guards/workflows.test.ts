@@ -485,6 +485,55 @@ describe("the CI workflow", () => {
     }
   }
 
+  it("runs the database tests in the build job, against PostgreSQL as a service of the job, with no more permissions", () => {
+    const lines = ci.split(/\r?\n/);
+    const build = linesUnder(lines, lines.indexOf("  build:"));
+    const text = build.join("\n");
+    expect(text).toMatch(/^ {4}services:\n {6}postgres:\n {8}image: postgres:18-bookworm@sha256:[0-9a-f]{64}$/m);
+    expect(text).toContain("\n        env:\n          POSTGRES_HOST_AUTH_METHOD: trust\n");
+    expect(text).toContain('--health-cmd "pg_isready --username postgres --dbname postgres"');
+    expect(step(ci, "Test with coverage").map((line) => line.trim())).toEqual([
+      "- name: Test with coverage",
+      "run: pnpm test:coverage",
+      "env:",
+      "NORTFOX_TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres",
+    ]);
+    const permissions = linesUnder(build, build.indexOf("    permissions:")).map((line) => line.trim());
+    expect(permissions).toEqual(["permissions:", "contents: read # check out the code"]);
+  });
+
+  it("runs the point-in-time restore test in a job of its own, with the checkout alone and no more permissions", () => {
+    const lines = ci.split(/\r?\n/);
+    const backup = linesUnder(lines, lines.indexOf("  backup:"))
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    expect(backup).toEqual([
+      "backup:",
+      "name: backup",
+      "runs-on: ubuntu-24.04",
+      "timeout-minutes: 20",
+      "permissions:",
+      "contents: read # check out the code",
+      "steps:",
+      "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+      "with:",
+      "persist-credentials: false",
+      "- name: Point-in-time restore from both repositories",
+      "run: bash deploy/backup-test/pitr.sh",
+    ]);
+  });
+
+  it("makes CI OK need every other job that runs on a PR", () => {
+    const lines = ci.split(/\r?\n/);
+    const jobs = linesUnder(lines, lines.indexOf("jobs:"))
+      .filter((line) => /^ {2}[a-z-]+:$/.test(line))
+      .map((line) => line.trim().slice(0, -1));
+    expect(jobs).toEqual(["build", "workflows", "backup", "ci-ok", "names-main"]);
+    const ciOk = linesUnder(lines, lines.indexOf("  ci-ok:")).map((line) => line.trim());
+    expect(ciOk).toContain("needs: [build, workflows, backup]");
+    expect(ciOk).toContain("if: always()");
+  });
+
   it("never cancels a run on main, and cancels an older run of the same PR", () => {
     expect(/^concurrency:\n((?: {2}.*\n)*)/m.exec(ci)?.[1]).toBe(
       "  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}\n" +

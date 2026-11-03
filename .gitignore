@@ -7,3 +7,6 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# The secrets of an install (deploy/README.md).
+deploy/secrets/

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# What the image builds leave out of their context, the repository root
+# (deploy/server/Dockerfile and deploy/postgres/Dockerfile). Each build
+# installs its own dependencies, so no node_modules, build output, secret or
+# env file goes in. Docker matches each line from the root of the context,
+# not in every folder as git does, so a line for a file in any folder starts
+# with **. The deploy guard (scripts/guards/deploy.ts) checks the lines for
+# the secrets and the env files.
+
+.git
+**/node_modules
+**/dist
+**/coverage
+**/.turbo
+**/*.tsbuildinfo
+deploy/secrets
+**/.env
+**/.env.*

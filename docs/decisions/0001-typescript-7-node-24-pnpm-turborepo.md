@@ -1,6 +1,6 @@
 # 1. TypeScript 7 on Node 24, with pnpm and Turborepo
 
-Status: accepted, 2026-11-01
+Status: accepted, 2026-11-01. Amended 2026-11-02: the database tests need PostgreSQL.
 
 ## Context
 
@@ -20,4 +20,4 @@ NortFox is one repository with a server, a web app and several packages. Type ch
 
 - Type checks are fast enough for every save and every CI job.
 - Two compiler packages are installed for now. When the lint tools work with TypeScript 7 directly, the alias goes.
-- A contributor needs Node 24 and pnpm, nothing else.
+- A contributor needs Node 24 and pnpm, and PostgreSQL 18 for the database tests. Docker is the easy way to run it: `pnpm db:test` starts a test cluster.
