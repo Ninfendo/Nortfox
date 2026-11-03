@@ -6,7 +6,9 @@ import { freshDatabase, type TestDatabase } from "../../test/database.ts";
 import { GUARD_EXCEPTIONS, KEY_EXCEPTIONS, guardedRelations, tableGuardProblems } from "./table-guard.ts";
 
 const COMPANY = "(company_id = ledger.current_company_id())";
-const READER = "(company_id = ledger.reader_company_id())";
+const READER_COMPANY = "(company_id = ( SELECT ledger.reader_company_id() AS reader_company_id))";
+const READER = `(${READER_COMPANY} AND ${READER_COMPANY})`;
+const READER_ROLE = "(role_oid = ( SELECT ledger.current_role_oid() AS current_role_oid))";
 
 const NO_RLS = "ledger.bare: row level security is not enabled.";
 const NOT_FORCED = "ledger.bare: row level security is not forced.";
@@ -144,6 +146,16 @@ describe("the table guard", () => {
     [
       "the reader's policy trusts the setting",
       "ALTER POLICY company_reader ON ledger.bare USING (company_id = ledger.current_company_id())",
+      [NO_READER_POLICY, "ledger.bare: has the permissive policy company_reader, which the guard does not expect."],
+    ],
+    [
+      "the reader's policy reads its company for each row, which EXPLAIN ANALYZE counts",
+      "ALTER POLICY company_reader ON ledger.bare USING (company_id = ledger.reader_company_id())",
+      [NO_READER_POLICY, "ledger.bare: has the permissive policy company_reader, which the guard does not expect."],
+    ],
+    [
+      "the reader's policy reads its company once, but only when a row passes the reader's own condition",
+      `ALTER POLICY company_reader ON ledger.bare USING ${READER_COMPANY}`,
       [NO_READER_POLICY, "ledger.bare: has the permissive policy company_reader, which the guard does not expect."],
     ],
     [
@@ -395,9 +407,16 @@ describe("the table guard", () => {
   it("checks the exceptions too, each only for what it is excepted from", async () => {
     expect(await problemsAfter("ALTER TABLE audit.history NO FORCE ROW LEVEL SECURITY")).toEqual(["audit.history: row level security is not forced."]);
     // A reader's own binding is matched by its role's oid and its name, never by one alone.
-    for (const using of ["true", "role_oid = ledger.current_role_oid()", "role_name = CURRENT_USER"]) {
+    // Its oid is read once for the query, before any row, never for each row.
+    for (const using of [
+      "true",
+      "role_oid = ledger.current_role_oid()",
+      "role_name = CURRENT_USER",
+      "role_oid = ledger.current_role_oid() AND role_name = CURRENT_USER",
+      `${READER_ROLE} AND role_name = CURRENT_USER`,
+    ]) {
       expect(await problemsAfter(`ALTER POLICY own_binding ON ledger.reader_roles USING (${using})`), using).toEqual([
-        "ledger.reader_roles: has no permissive policy for nortfox_reader on SELECT with USING ((role_oid = ledger.current_role_oid()) AND (role_name = CURRENT_USER)).",
+        `ledger.reader_roles: has no permissive policy for nortfox_reader on SELECT with USING (${READER_ROLE} AND ${READER_ROLE} AND (role_name = CURRENT_USER)).`,
         "ledger.reader_roles: has the permissive policy own_binding, which the guard does not expect.",
       ]);
     }

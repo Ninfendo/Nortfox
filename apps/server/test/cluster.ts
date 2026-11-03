@@ -89,6 +89,12 @@ export async function connectAs(role: string, database: string): Promise<Client>
 /**
  * Refuses a cluster that is not the tests' own: a role that is not a
  * superuser, or a cluster that holds a database the tests did not make.
+ *
+ * The cluster keeps PostgreSQL's limit of 100 connections, 3 of them for a
+ * superuser only. The busiest test file holds 34 at once, so vitest.config.ts
+ * runs at most three database test files at once
+ * (scripts/guards/database-workers.test.ts). A file that holds more, or a
+ * higher limit of workers, can run out of connections.
  */
 export async function refuseSharedCluster(admin: Client): Promise<void> {
   const superuser = await admin.query<{ super: boolean }>("SELECT rolsuper AS super FROM pg_catalog.pg_roles WHERE rolname = current_user");

@@ -6,9 +6,12 @@
 # top: a project of its own, made-up test secrets in a temporary folder, and
 # a second local volume as the off-site repository. Then it checks:
 #
-# - a first start that fails, here because the off-site repository cannot be
-#   written, never makes PostgreSQL healthy, also after Docker restarts it and
-#   the image skips its setup, so the migrate step never runs;
+# - a first start that does not finish never makes PostgreSQL healthy, also
+#   after Docker starts it again and the image skips its setup, so the migrate
+#   step never runs: one whose off-site repository is a mount that cannot be
+#   written, one whose off-site repository of type posix is a folder of the
+#   container's own and no mount, and one that is killed during its first
+#   full backups;
 # - on the running stack: PostgreSQL archives WAL through pgBackRest, with
 #   archive_timeout 1min; the migrate step exited 0, and the owner role
 #   applied every migration and owns every table; our roles, a reader among
@@ -117,46 +120,101 @@ NORTFOX_REPO2_TYPE=posix
 NORTFOX_REPO2_PATH=/var/lib/pgbackrest-offsite
 EOF
 
-# The same, with an off-site repository that the user postgres cannot make.
+# The same, with an off-site repository that is a mount the user postgres
+# cannot write: /dev, which Docker mounts in every container, owned by root.
 cat > "$work/broken.env" << EOF
 NORTFOX_TEST_SECRETS=$(native "$work/secrets")
 NORTFOX_REPO2_TYPE=posix
-NORTFOX_REPO2_PATH=/srv/offsite-not-writable
+NORTFOX_REPO2_PATH=/dev
 EOF
 
-step "a first start that fails: the off-site repository cannot be written."
+# The same, with an off-site repository of type posix in a folder that the
+# user postgres can write, but that is the container's own and no mount, as
+# when compose.override.yaml is forgotten.
+cat > "$work/unmounted.env" << EOF
+NORTFOX_TEST_SECRETS=$(native "$work/secrets")
+NORTFOX_REPO2_TYPE=posix
+NORTFOX_REPO2_PATH=/tmp/nortfox-offsite
+EOF
+
+# The line that 20-stanza.sh writes once the stanza is in both repositories.
+made_stanza="20-stanza: made the stanza nortfox in both repositories."
+
+# Fails unless the PostgreSQL of a first start that did not finish, in the
+# container $1, never becomes healthy; $2 says what the first start was. Once
+# the container runs again, the image skips its setup and PostgreSQL answers
+# over TCP. Some health checks later, it is still not healthy, so nothing
+# that waits for it, such as the migrate step, starts.
+expect_never_healthy() {
+  local container=$1 what=$2 answers=no health
+  for _ in $(seq 180); do
+    if [[ "$(docker inspect --format '{{.State.Running}}' "$container")" == true ]] &&
+      compose exec -T postgres pg_isready --quiet --host 127.0.0.1 --username postgres --dbname nortfox 2> /dev/null; then
+      answers=yes
+      break
+    fi
+    sleep 1
+  done
+  expect "PostgreSQL answering over TCP after $what" "$answers" yes
+  sleep 15
+  health=$(docker inspect --format '{{.State.Health.Status}}' "$container")
+  if [[ "$health" == healthy ]]; then
+    fail "PostgreSQL is healthy after $what."
+  fi
+  grep --quiet "Skipping initialization" <<< "$(compose logs --no-color postgres)" || fail "the start after $what did not skip the setup."
+  step "ok, after $what PostgreSQL is $health, not healthy."
+}
+
+step "a first start that fails: the off-site repository is a mount that cannot be written."
 env_file=$work/broken.env
 compose down --volumes --remove-orphans > /dev/null 2>&1 || true
 compose up --detach --build postgres
-broken=$(compose ps --all --quiet postgres)
-# 20-stanza.sh fails, the container stops, and Docker starts it again. The
-# image then skips its setup, and PostgreSQL answers over TCP.
-answers=no
-for _ in $(seq 180); do
-  if (($(docker inspect --format '{{.RestartCount}}' "$broken") >= 1)) &&
-    compose exec -T postgres pg_isready --quiet --host 127.0.0.1 --username postgres --dbname nortfox 2> /dev/null; then
-    answers=yes
-    break
-  fi
-  sleep 1
-done
-expect "PostgreSQL answering after a restart that skipped the failed setup" "$answers" yes
-logs=$(compose logs --no-color postgres)
-grep --quiet "Skipping initialization" <<< "$logs" || fail "the restart did not skip the setup."
+# 20-stanza.sh fails, the container stops, and Docker starts it again.
+expect_never_healthy "$(compose ps --all --quiet postgres)" "a failed first start"
 # The off-site repository could not be written, so no stanza is there, and
 # the log must not say there is: deploy/README.md tells the operator to empty
 # that repository only when it does.
-if grep --quiet "20-stanza: made the stanza nortfox in both repositories." <<< "$logs"; then
+if grep --quiet "$made_stanza" <<< "$(compose logs --no-color postgres)"; then
   fail "the failed first start says it made the stanza in both repositories."
 fi
-# Some health checks later, it is still not healthy, so nothing that waits
-# for it, such as the migrate step, starts.
-sleep 15
-health=$(docker inspect --format '{{.State.Health.Status}}' "$broken")
-if [[ "$health" == healthy ]]; then
-  fail "PostgreSQL is healthy after a failed first start."
+compose down --volumes --remove-orphans > /dev/null 2>&1
+
+step "a first start that fails: the off-site repository of type posix is no mount."
+env_file=$work/unmounted.env
+compose up --detach postgres
+expect_never_healthy "$(compose ps --all --quiet postgres)" "a first start with an off-site folder that is no mount"
+logs=$(compose logs --no-color postgres)
+grep --quiet "nothing is mounted at its path, /tmp/nortfox-offsite" <<< "$logs" ||
+  fail "the first start does not say that nothing is mounted at the off-site path."
+if grep --quiet "$made_stanza" <<< "$logs"; then
+  fail "the first start with an off-site folder that is no mount made the stanza."
 fi
-step "ok, after a failed first start PostgreSQL is $health, not healthy."
+compose down --volumes --remove-orphans > /dev/null 2>&1
+
+step "a first start killed during its first full backups."
+env_file=$work/test.env
+compose up --detach postgres
+killed=$(compose ps --all --quiet postgres)
+# 20-stanza.sh writes the mark of a finished first start just before the
+# first full backups. The kill comes as soon as the mark is there, as a power
+# loss or the OOM killer would.
+marked=no
+for _ in $(seq 1200); do
+  if docker exec "$killed" test -f /var/lib/postgresql/18/docker/nortfox-first-start-done 2> /dev/null; then
+    marked=yes
+    break
+  fi
+  sleep 0.1
+done
+expect "the mark of a finished first start, before the first full backups" "$marked" yes
+docker kill "$killed" > /dev/null
+if grep --quiet "each holds a full backup" <<< "$(compose logs --no-color postgres)"; then
+  fail "the first full backups were done before the kill, so the test did not stop the first start during them."
+fi
+# Docker does not start a killed container again by itself. The host does,
+# after a power loss.
+docker start "$killed" > /dev/null
+expect_never_healthy "$killed" "a first start killed during its first full backups"
 compose down --volumes --remove-orphans > /dev/null 2>&1
 env_file=$work/test.env
 

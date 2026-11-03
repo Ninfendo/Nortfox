@@ -31,16 +31,19 @@
 -- turn, before it locks any of those rows. The turn only orders them: the
 -- row locks keep the rules, also for a statement that sets another company
 -- between its rows and changes that company's rows without its turn. A
--- transaction that makes such changes before it changes a voucher never
--- waits in a circle with a change of a voucher, whatever their order, two
--- accounts included, as long as it locks such a row only by changing it. A
--- SELECT that locks one for update runs no trigger, so it takes the row
--- before the turn, and its later change of the row can deadlock with a
--- booking that waits for that row (40P01). A transaction
--- that has changed a voucher holds the turn with the others, so its later
--- change of such a row waits for every other open change of a voucher, and
--- can deadlock with one that waits for it, such as a booking in the same
--- series (40P01).
+-- transaction that makes only such changes never waits in a circle with a
+-- change of a voucher, whatever their order, two accounts included, as long
+-- as it locks such a row only by changing it. A SELECT that locks one for
+-- update runs no trigger, so it takes the row before the turn, and its later
+-- change of the row can deadlock with a booking that waits for that row
+-- (40P01). A transaction that makes such changes and also writes a voucher
+-- can deadlock with another change of a voucher (40P01), in either order.
+-- When it has changed a voucher first, it holds the turn with the others, so
+-- its later change of such a row waits for every other open change of a
+-- voucher, such as a booking in the same series. When it makes such a change
+-- first, it holds the turn alone, and another change of a voucher that is
+-- there may already hold the voucher's row, which it locks before the turn
+-- (above), and wait at the turn. So the caller tries again on 40P01.
 
 -- Vouchers --------------------------------------------------------------------
 --

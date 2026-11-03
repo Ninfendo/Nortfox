@@ -87,8 +87,9 @@ describe("the compose file", () => {
     "deploy/compose.yaml: services.postgres.environment.PGBACKREST_REPO2_PATH must be the required variable ${NORTFOX_REPO2_PATH:?...}, " +
     "so the stack does not start without the off-site repository.";
   const HEALTHCHECK =
-    `deploy/compose.yaml: services.postgres.healthcheck.test must be ${POSTGRES_HEALTHCHECK}: the mark that the first start finished, then pg_isready over TCP, on 127.0.0.1. ` +
-    "A failed first start is then never healthy, and the first start's setup server listens on its socket only, so the migrations wait until the setup is done.";
+    `deploy/compose.yaml: services.postgres.healthcheck.test must be ${POSTGRES_HEALTHCHECK}: the mark that the first start finished, no mark that its first backups are still to come, ` +
+    "then pg_isready over TCP, on 127.0.0.1. A first start that failed, or stopped during its first backups, is then never healthy, " +
+    "and the first start's setup server listens on its socket only, so the migrations wait until the setup is done.";
   const VOLUMES =
     "deploy/compose.yaml: services.postgres.volumes must mount the volume data at /var/lib/postgresql, and the volume backups, " +
     "the local repository, at /var/lib/pgbackrest.";
@@ -188,8 +189,20 @@ describe("the compose file", () => {
     ],
     [
       "a health check that passes without the mark",
-      "nortfox-first-start-done && pg_isready",
-      "nortfox-first-start-done || pg_isready",
+      "nortfox-first-start-done && test",
+      "nortfox-first-start-done || test",
+      HEALTHCHECK,
+    ],
+    [
+      "a health check that a first start killed during its first backups passes",
+      "test ! -e /var/lib/postgresql/nortfox-first-backups-pending && ",
+      "",
+      HEALTHCHECK,
+    ],
+    [
+      "a health check that reads the mark of the first backups in the data folder, where a restore would bring it back",
+      "test ! -e /var/lib/postgresql/nortfox-first-backups-pending",
+      "test ! -e /var/lib/postgresql/18/docker/nortfox-first-backups-pending",
       HEALTHCHECK,
     ],
     [
@@ -477,6 +490,17 @@ describe("the images' build context", () => {
 describe("the first start's script for the backups", () => {
   const MARK = 'touch -- "$PGDATA/nortfox-first-start-done"';
   const UNMARK = 'rm -f -- "$PGDATA/nortfox-first-start-done"';
+  const PENDING = "touch -- /var/lib/postgresql/nortfox-first-backups-pending";
+  const DONE = "rm -f -- /var/lib/postgresql/nortfox-first-backups-pending";
+  const MOUNTED = 'if ! mountpoint -q -- "${PGBACKREST_REPO2_PATH:-}"; then';
+  const STANZA = "pgbackrest --stanza=nortfox stanza-create";
+  const noPending =
+    `${STANZA_SCRIPT} must write the mark that the first backups are still to come, once, before the mark of a finished first start: ${PENDING}. ` +
+    "It is outside the data folder, so no backup holds it, and a first start killed during its first backups never becomes healthy.";
+  const keepsPending = `${STANZA_SCRIPT} must remove the mark that the first backups are still to come, once, only after both backups: ${DONE}.`;
+  const noMountCheck =
+    `${STANZA_SCRIPT} must refuse an off-site repository of type posix or cifs whose path is no mount of its own, before it makes the stanza: ` +
+    `posix | cifs) and ${MOUNTED} Its backups would otherwise stay in the container, on the same disk as the data.`;
   const backupOf = (repo: number): string => `pgbackrest --stanza=nortfox --repo=${String(repo)} --type=full backup`;
   const noBackup = (repo: number): string =>
     `${STANZA_SCRIPT} must take a full backup to repo${String(repo)} after it writes the mark of a finished first start: ${backupOf(repo)}. ` +
@@ -497,12 +521,32 @@ describe("the first start's script for the backups", () => {
   });
 
   it("fails a script that takes the backups before it writes the mark, so that a restore would not bring the mark back", () => {
-    expect(stanzaScriptProblems(`${changed(stanzaScript, `${MARK}\n`, "")}${MARK}\n`)).toEqual([noBackup(1), noBackup(2), keepsMark]);
+    expect(stanzaScriptProblems(`${changed(stanzaScript, `${MARK}\n`, "")}${MARK}\n`)).toEqual([noBackup(1), noBackup(2), keepsMark, keepsPending]);
   });
 
   it("fails a script that writes no mark, or keeps it when a backup fails", () => {
     expect(stanzaScriptProblems(changed(stanzaScript, `${MARK}\n`, ""))).toContain(noMark);
     expect(stanzaScriptProblems(changed(stanzaScript, UNMARK, "true"))).toEqual([keepsMark]);
+  });
+
+  it("fails a script that does not mark the first backups as still to come before the mark of a finished first start", () => {
+    expect(stanzaScriptProblems(changed(stanzaScript, `${PENDING}\n`, ""))).toEqual([noPending]);
+    expect(stanzaScriptProblems(changed(changed(stanzaScript, `${PENDING}\n`, ""), `${MARK}\n`, `${MARK}\n${PENDING}\n`))).toEqual([noPending]);
+  });
+
+  it("fails a script that removes the mark of the first backups before both are taken, or never", () => {
+    expect(stanzaScriptProblems(changed(stanzaScript, DONE, "true"))).toEqual([keepsPending]);
+    // Removed before the backups, as if they had been taken.
+    const moved = changed(changed(stanzaScript, `${DONE}\n`, ""), `${MARK}\n`, `${MARK}\n${DONE}\n`);
+    expect(stanzaScriptProblems(moved)).toEqual([keepsPending]);
+  });
+
+  it("fails a script that makes the stanza in an off-site folder that is no mount", () => {
+    expect(stanzaScriptProblems(changed(stanzaScript, MOUNTED, "if false; then"))).toEqual([noMountCheck]);
+    expect(stanzaScriptProblems(changed(stanzaScript, "  posix | cifs)", "  s3)"))).toEqual([noMountCheck]);
+    // The check after the stanza is made: the stanza is then in the container already.
+    const late = changed(changed(stanzaScript, `${STANZA}\n`, ""), "case ", `${STANZA}\ncase `);
+    expect(stanzaScriptProblems(late)).toEqual([noMountCheck]);
   });
 
   it("reports a script that is missing", () => {

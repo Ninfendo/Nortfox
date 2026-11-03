@@ -9,7 +9,9 @@ import { configDefaults, defineConfig } from "vitest/config";
 // The database tests (*.db.test.ts) run against real PostgreSQL, as their own
 // project. Its global setup needs a test cluster: `pnpm db:test` starts one,
 // and NORTFOX_TEST_DATABASE_URL points elsewhere (apps/server/test/cluster.ts).
-// Without one it fails; it never skips.
+// Without one it fails; it never skips. They run at most three files at once,
+// after the other projects, so their connections fit the test cluster's
+// (scripts/guards/database-workers.test.ts).
 
 export default defineConfig({
   resolve: {
@@ -46,6 +48,8 @@ export default defineConfig({
           globalSetup: ["apps/server/test/global-setup.ts"],
           testTimeout: 60_000,
           hookTimeout: 120_000,
+          maxWorkers: 3,
+          sequence: { groupOrder: 1 },
         },
       },
       {

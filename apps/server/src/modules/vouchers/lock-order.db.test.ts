@@ -10,8 +10,8 @@
 // second part shows that a transaction that changes more than one of the
 // rows a voucher locks never deadlocks with a change of a voucher, in any
 // order, once the company's turn keeps them apart, and that it can when it
-// changed a voucher first, or locked such a row with a SELECT for update
-// first.
+// also changes a voucher, before or after, or locked such a row with a
+// SELECT for update first.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -118,13 +118,12 @@ describe("the lock order between a deletion and a change of a row", () => {
 // A change of the rows that a voucher locks FOR SHARE (its fiscal year, its
 // series, the company's lock settings and its rows' accounts) first takes the
 // company's turn alone, and a change of a voucher takes it with the others
-// (db/README.md, the lock order). So a transaction that makes such changes
-// before it changes a voucher waits for the open changes of vouchers, and the
-// later ones wait for it at the turn, before they lock any of those rows: no
-// order of its changes waits in a circle with them, two accounts included, as
-// long as it locks such a row only by changing it. A
-// transaction that has changed a voucher first holds its turn with the others,
-// and can deadlock with another change of a voucher.
+// (db/README.md, the lock order). So a transaction that makes only such
+// changes waits for the open changes of vouchers, and the later ones wait for
+// it at the turn, before they lock any of those rows: no order of its changes
+// waits in a circle with them, two accounts included, as long as it locks
+// such a row only by changing it. A transaction that also changes a voucher,
+// before or after, can deadlock with another change of a voucher.
 describe("the lock order between a voucher and a transaction that changes the rows it locks", () => {
   let db: TestDatabase;
   let watcher: Client;
@@ -242,8 +241,8 @@ describe("the lock order between a voucher and a transaction that changes the ro
   // turn with the others, and its change of the series then waits for every
   // other open change of a voucher. A booking in the same series waits for
   // the first booking's counter, so the two wait in a circle, and PostgreSQL
-  // rolls one of them back. So a caller makes such changes before it changes
-  // a voucher in the same transaction.
+  // rolls one of them back. So a caller that makes such a change and changes
+  // a voucher in the same transaction tries again on 40P01.
   it("deadlocks a booking with a transaction that books in the same series and then changes the series", async () => {
     const books = await addBooks(watcher);
     const [setter, writer] = await Promise.all([db.connect("app"), db.connect("app")]);
@@ -254,6 +253,72 @@ describe("the lock order between a voucher and a transaction that changes the ro
     const written = finish(writer, () => booking(writer, books));
     await untilWaitingForLock(watcher, writerPid);
     const set = finish(setter, () => setter.query(RENAME_SERIES, [books.year.id]));
+    const codes = [await set, await written].map((error) => (error as { code?: unknown } | undefined)?.code);
+    expect(codes.filter((code) => code === DEADLOCK_DETECTED)).toHaveLength(1);
+    expect(codes.filter((code) => code === undefined)).toHaveLength(1);
+  });
+
+  // A change of a voucher that is there locks the voucher's row before it
+  // takes the company's turn: an UPDATE or a DELETE as its statement's
+  // target, a new or changed row through its trigger, and the caller's lock
+  // of the voucher (LOCK_VOUCHER). So a transaction that holds the turn alone
+  // from a change of a year, a series, an account or a lock, and then changes
+  // that voucher, waits for the voucher's row, while the other change of the
+  // voucher holds the row and waits for it at the turn: the two wait in a
+  // circle, and PostgreSQL rolls one of them back. So a caller that makes
+  // such a change and then changes a voucher in the same transaction tries
+  // again on 40P01.
+  const NEW_TEXT = "UPDATE ledger.vouchers SET description = 'Ny text' WHERE id = $1";
+  const OTHER_TEXT = "UPDATE ledger.vouchers SET description = 'Annan text' WHERE id = $1";
+  const EARLY_LOCK = "INSERT INTO ledger.period_locks (company_id, scope, end_date) VALUES ($1, 'all', '2090-01-31')";
+  type Step = (client: Client, books: Books, voucher: Voucher) => Promise<unknown>;
+  const lockedFirst =
+    (step: Step): Step =>
+    async (client, books, voucher) => {
+      await client.query(LOCK_VOUCHER, [voucher.id]);
+      return step(client, books, voucher);
+    };
+  const rowText: Step = (client, _books, voucher) => client.query(TEXT, [voucher.id]);
+  const twoRows: Step = async (client, books, voucher) => {
+    await writeRow(client, books.company, voucher.id, { account: 6110, debit: 100n });
+    await writeRow(client, books.company, voucher.id, { account: 1930, credit: 100n });
+  };
+  it.each<[string, Step, Step, Step]>([
+    [
+      "sets a lock date, then changes the voucher's text, with a change of the same text",
+      (client, books) => client.query(EARLY_LOCK, [books.company]),
+      (client, _books, voucher) => client.query(NEW_TEXT, [voucher.id]),
+      (client, _books, voucher) => client.query(OTHER_TEXT, [voucher.id]),
+    ],
+    [
+      "changes an account, then a row's text, with a change of the row's text",
+      (client, books) => client.query(RENAME_ACCOUNT, [books.year.id]),
+      lockedFirst(rowText),
+      lockedFirst(rowText),
+    ],
+    [
+      "makes the fiscal year the default, then adds two rows, with two new rows",
+      (client, books) => client.query("UPDATE ledger.fiscal_years SET is_default = true WHERE id = $1", [books.year.id]),
+      lockedFirst(twoRows),
+      lockedFirst(twoRows),
+    ],
+    [
+      "changes the series, then deletes the voucher, with a change of a row's text",
+      (client, books) => client.query(RENAME_SERIES, [books.year.id]),
+      lockedFirst(rowText),
+      (client, _books, voucher) => client.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id]),
+    ],
+  ])("deadlocks a change of a voucher with a transaction that %s", async (_case, first, write, second) => {
+    const books = await addBooks(watcher);
+    const voucher = await bookVoucher(watcher, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced(2000n) }, who);
+    const [setter, writer] = await Promise.all([db.connect("app"), db.connect("app")]);
+    const writerPid = await backendPid(writer);
+    await begin(setter, { company: books.company, ...someUser() });
+    await first(setter, books, voucher);
+    await begin(writer, { company: books.company, ...who });
+    const written = finish(writer, () => write(writer, books, voucher));
+    await untilWaitingForLock(watcher, writerPid);
+    const set = finish(setter, () => second(setter, books, voucher));
     const codes = [await set, await written].map((error) => (error as { code?: unknown } | undefined)?.code);
     expect(codes.filter((code) => code === DEADLOCK_DETECTED)).toHaveLength(1);
     expect(codes.filter((code) => code === undefined)).toHaveLength(1);

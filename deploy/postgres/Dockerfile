@@ -15,7 +15,8 @@
 # - pgBackRest and its config, /etc/pgbackrest/pgbackrest.conf;
 # - /var/lib/pgbackrest, the local repository (repo1), for the backups volume;
 # - /var/lib/pgbackrest-offsite, where an off-site repository that is a mounted
-#   folder (repo2 of type posix) goes;
+#   folder (repo2 of type posix) goes. The first start refuses it when nothing
+#   is mounted there (initdb/20-stanza.sh);
 # - /etc/pgbackrest/conf.d, where the compose file mounts the off-site
 #   repository's other options;
 # - db/roles.sql, db/database.sql and db/other-databases.sql, and the

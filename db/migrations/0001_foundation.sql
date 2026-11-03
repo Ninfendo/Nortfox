@@ -189,6 +189,18 @@ END;
 
 -- The company that the current reader role is bound to, or NULL. It reads no
 -- setting.
+--
+-- A reader's policy reads it, and the role's oid, once for the whole query,
+-- before the query reads a row, and never for each row. Under row level
+-- security the planner checks a cheap leakproof condition of the reader's
+-- own, such as number < 5150, before a costly policy. A policy that ran a
+-- query for each row would run it only for the rows that pass the reader's
+-- condition, other companies' rows among them, and EXPLAIN ANALYZE counts the
+-- pages that query reads. A scalar subquery is read once, but only when the
+-- first row passes the reader's condition, and EXPLAIN ANALYZE shows whether
+-- it ran. So each reader policy compares with the subquery twice: the planner
+-- then checks the two subqueries against each other once, before the scan,
+-- and so reads both before any row.
 CREATE FUNCTION ledger.reader_company_id() RETURNS uuid
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
@@ -472,11 +484,14 @@ BEGIN
 END
 $hide$;
 
--- What every company table gets, and what the table guard checks: row level
--- security, enabled and forced; the three policies; the history trigger with
--- the table's key column; the truncate trigger; no planner statistics of its
--- values; SELECT for the app and the readers. Each table then grants the app
--- only the writes it needs.
+-- What every company table gets: row level security, enabled and forced;
+-- the three policies; the history trigger with the table's key column; the
+-- truncate trigger; no planner statistics of its values; SELECT for the app
+-- and the readers. Each table then grants the app only the writes it needs.
+-- The table guard checks all of it but the grants that must be there: it
+-- never reports a missing SELECT, nor which writes the app has.
+-- apps/server/src/modules/companies/roles.db.test.ts pins each role's
+-- privileges on each table.
 CREATE FUNCTION meta.protect_company_table(target regclass, key_column name) RETURNS void
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -493,7 +508,7 @@ BEGIN
     ' USING (company_id = ledger.current_company_id()) WITH CHECK (company_id = ledger.current_company_id())',
     target);
   EXECUTE format(
-    'CREATE POLICY company_reader ON %s FOR SELECT TO nortfox_reader USING (company_id = ledger.reader_company_id())',
+    'CREATE POLICY company_reader ON %s FOR SELECT TO nortfox_reader USING (company_id = (SELECT ledger.reader_company_id()) AND company_id = (SELECT ledger.reader_company_id()))',
     target);
   EXECUTE format(
     'CREATE TRIGGER audit_history AFTER INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE FUNCTION audit.write_history(%L)',
@@ -516,7 +531,7 @@ ALTER TABLE ledger.reader_roles FORCE ROW LEVEL SECURITY;
 CREATE POLICY company_owner ON ledger.reader_roles TO nortfox_owner
   USING (company_id = ledger.current_company_id()) WITH CHECK (company_id = ledger.current_company_id());
 CREATE POLICY own_binding ON ledger.reader_roles FOR SELECT TO nortfox_reader
-  USING (role_oid = ledger.current_role_oid() AND role_name = CURRENT_USER);
+  USING (role_oid = (SELECT ledger.current_role_oid()) AND role_oid = (SELECT ledger.current_role_oid()) AND role_name = CURRENT_USER);
 CREATE TRIGGER reader_roles_rules BEFORE INSERT OR UPDATE ON ledger.reader_roles
   FOR EACH ROW EXECUTE FUNCTION ledger.reader_roles_rules();
 CREATE TRIGGER audit_history AFTER INSERT OR UPDATE OR DELETE ON ledger.reader_roles
@@ -535,7 +550,7 @@ CREATE POLICY company_app ON audit.history TO nortfox_app
 CREATE POLICY company_owner ON audit.history TO nortfox_owner
   USING (company_id = ledger.current_company_id()) WITH CHECK (company_id = ledger.current_company_id());
 CREATE POLICY company_reader ON audit.history FOR SELECT TO nortfox_reader
-  USING (company_id = ledger.reader_company_id());
+  USING (company_id = (SELECT ledger.reader_company_id()) AND company_id = (SELECT ledger.reader_company_id()));
 CREATE TRIGGER history_append_only BEFORE INSERT OR UPDATE OR DELETE ON audit.history
   FOR EACH ROW EXECUTE FUNCTION audit.history_append_only();
 CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON audit.history

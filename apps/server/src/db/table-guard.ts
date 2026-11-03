@@ -48,6 +48,13 @@ const READER = "nortfox_reader";
 
 const COMPANY_CHECK = "(company_id = ledger.current_company_id())";
 
+// A reader's policy reads its company, and its role's oid, once for the
+// query, before any row (db/migrations/0001_foundation.sql says how).
+const READER_COMPANY = "(company_id = ( SELECT ledger.reader_company_id() AS reader_company_id))";
+const READER_CHECK = `(${READER_COMPANY} AND ${READER_COMPANY})`;
+const READER_ROLE = "(role_oid = ( SELECT ledger.current_role_oid() AS current_role_oid))";
+const OWN_BINDING = `(${READER_ROLE} AND ${READER_ROLE} AND (role_name = CURRENT_USER))`;
+
 interface Policy {
   readonly role: string;
   readonly command: string;
@@ -61,7 +68,7 @@ const OWNER_POLICY: Policy = { role: OWNER, command: "ALL", using: COMPANY_CHECK
 const COMPANY_POLICIES: readonly Policy[] = [
   { role: APP, command: "ALL", using: COMPANY_CHECK, check: COMPANY_CHECK },
   OWNER_POLICY,
-  { role: READER, command: "SELECT", using: "(company_id = ledger.reader_company_id())", check: null },
+  { role: READER, command: "SELECT", using: READER_CHECK, check: null },
 ];
 
 /** How the guard holds a table that is an exception, and why. */
@@ -91,7 +98,7 @@ export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<str
       why: "It binds each reader role to its company, so a reader sees its own binding by its role's oid and name. The app has no access.",
       policies: [
         OWNER_POLICY,
-        { role: READER, command: "SELECT", using: "((role_oid = ledger.current_role_oid()) AND (role_name = CURRENT_USER))", check: null },
+        { role: READER, command: "SELECT", using: OWN_BINDING, check: null },
       ],
     },
   ],

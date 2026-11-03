@@ -38,11 +38,12 @@ export const POSTGRES_COMMAND = [
 
 /**
  * The postgres service's health check: the file that the first start writes
- * as its last step (deploy/postgres/initdb/20-stanza.sh), in the data folder,
- * and then pg_isready over TCP.
+ * in the data folder before its first full backups
+ * (deploy/postgres/initdb/20-stanza.sh), no file on the data volume that says
+ * those backups are still to come, and then pg_isready over TCP.
  */
 export const POSTGRES_HEALTHCHECK =
-  '["CMD-SHELL", "test -f /var/lib/postgresql/18/docker/nortfox-first-start-done && pg_isready --host 127.0.0.1 --username postgres --dbname nortfox"]';
+  '["CMD-SHELL", "test -f /var/lib/postgresql/18/docker/nortfox-first-start-done && test ! -e /var/lib/postgresql/nortfox-first-backups-pending && pg_isready --host 127.0.0.1 --username postgres --dbname nortfox"]';
 
 /** The settings that only the postgres service's command sets. */
 const ARCHIVE_SETTING = /\b(wal_level|archive_mode|archive_command|archive_timeout)\b/;
@@ -215,8 +216,9 @@ export function composeProblems(text: string): string[] {
   );
   need(
     at("services", "postgres", "healthcheck", "test")?.value === POSTGRES_HEALTHCHECK,
-    `services.postgres.healthcheck.test must be ${POSTGRES_HEALTHCHECK}: the mark that the first start finished, then pg_isready over TCP, on 127.0.0.1. ` +
-      "A failed first start is then never healthy, and the first start's setup server listens on its socket only, so the migrations wait until the setup is done.",
+    `services.postgres.healthcheck.test must be ${POSTGRES_HEALTHCHECK}: the mark that the first start finished, no mark that its first backups are still to come, ` +
+      "then pg_isready over TCP, on 127.0.0.1. A first start that failed, or stopped during its first backups, is then never healthy, " +
+      "and the first start's setup server listens on its socket only, so the migrations wait until the setup is done.",
   );
 
   need(
@@ -480,14 +482,27 @@ export function dockerignoreProblems(text: string): string[] {
 }
 
 const FIRST_START_MARK = '"$PGDATA/nortfox-first-start-done"';
+const FIRST_BACKUPS_PENDING = "/var/lib/postgresql/nortfox-first-backups-pending";
+const MOUNT_CASE = "posix | cifs)";
+const MOUNT_CHECK = 'if ! mountpoint -q -- "${PGBACKREST_REPO2_PATH:-}"; then';
+
+/** The indexes of the lines that are `line`. */
+function indexesOf(lines: readonly string[], line: string): number[] {
+  return lines.flatMap((found, index) => (found === line ? [index] : []));
+}
 
 /**
  * What is wrong with deploy/postgres/initdb/20-stanza.sh; empty when nothing
- * is. The first start writes the mark of a finished first start, and then
- * takes a full backup to each repository, so that the WAL archive has a
- * backup to replay onto from the start, and the backup holds the mark. When
- * a backup fails, the mark goes again, so the first start never becomes
- * healthy. A line that is a comment counts for nothing.
+ * is. Before it makes the stanza, the first start refuses an off-site
+ * repository of type posix or cifs whose path is no mount of its own. It
+ * writes the mark that the first backups are still to come, outside the data
+ * folder, then the mark of a finished first start, in it, and then takes a
+ * full backup to each repository, so that the WAL archive has a backup to
+ * replay onto from the start, and the backup holds the mark. When a backup
+ * fails, the mark goes again, and only when both are taken does the mark of
+ * the backups to come go. So a first start that fails, or is killed during
+ * the backups, never becomes healthy. A line that is a comment counts for
+ * nothing.
  */
 export function stanzaScriptProblems(text: string): string[] {
   const lines = text
@@ -495,11 +510,28 @@ export function stanzaScriptProblems(text: string): string[] {
     .map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("#"));
   const problems: string[] = [];
+  const stanza = lines.indexOf("pgbackrest --stanza=nortfox stanza-create");
+  const mountCase = lines.indexOf(MOUNT_CASE);
+  const mountCheck = lines.indexOf(MOUNT_CHECK);
+  if (mountCase === -1 || mountCheck <= mountCase || stanza === -1 || mountCheck > stanza) {
+    problems.push(
+      `${STANZA_SCRIPT} must refuse an off-site repository of type posix or cifs whose path is no mount of its own, before it makes the stanza: ` +
+        `${MOUNT_CASE} and ${MOUNT_CHECK} Its backups would otherwise stay in the container, on the same disk as the data.`,
+    );
+  }
   const markLine = `touch -- ${FIRST_START_MARK}`;
-  const marks = lines.flatMap((line, index) => (line === markLine ? [index] : []));
+  const marks = indexesOf(lines, markLine);
   const mark = marks.length === 1 ? marks[0] : undefined;
   if (mark === undefined) {
     problems.push(`${STANZA_SCRIPT} must write the mark of a finished first start, once, before the first full backups: ${markLine}.`);
+  }
+  const pendingLine = `touch -- ${FIRST_BACKUPS_PENDING}`;
+  const pendings = indexesOf(lines, pendingLine);
+  if (pendings.length !== 1 || mark === undefined || (pendings[0] ?? lines.length) > mark) {
+    problems.push(
+      `${STANZA_SCRIPT} must write the mark that the first backups are still to come, once, before the mark of a finished first start: ${pendingLine}. ` +
+        "It is outside the data folder, so no backup holds it, and a first start killed during its first backups never becomes healthy.",
+    );
   }
   let last = mark ?? lines.length;
   for (const repo of [1, 2]) {
@@ -514,8 +546,15 @@ export function stanzaScriptProblems(text: string): string[] {
     last = Math.max(last, at);
   }
   const unmarkLine = `rm -f -- ${FIRST_START_MARK}`;
-  if (!lines.some((line, index) => index > last && line === unmarkLine)) {
+  const unmark = lines.findIndex((line, index) => index > last && line === unmarkLine);
+  if (unmark === -1) {
     problems.push(`${STANZA_SCRIPT} must remove the mark again, after the backups, when one of them fails: ${unmarkLine}. A failed first start never becomes healthy.`);
+  }
+  // After the branch for a failed backup, which removes the mark and stops.
+  const doneLine = `rm -f -- ${FIRST_BACKUPS_PENDING}`;
+  const dones = indexesOf(lines, doneLine);
+  if (dones.length !== 1 || (dones[0] ?? -1) <= Math.max(last, unmark)) {
+    problems.push(`${STANZA_SCRIPT} must remove the mark that the first backups are still to come, once, only after both backups: ${doneLine}.`);
   }
   return problems;
 }
