@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { INSUFFICIENT_PRIVILEGE, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
+import { INSUFFICIENT_PRIVILEGE, begin, expectError, expectRefusal, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import {
   addBooks,
   balanced,
@@ -191,5 +191,56 @@ describe("the transaction's actor", () => {
       await app.query("UPDATE ledger.accounts SET description = 'Kassa och bank' WHERE fiscal_year_id = $1 AND number = 1930", [books.year.id]);
     });
     expect((await historyOf(books.company)).slice(before.length)).toEqual([{ table_name: "ledger.accounts", operation: "UPDATE", actor_id: other.actor }]);
+  });
+
+  // A transaction's id is unique only in the history of one cluster. A dump
+  // restored into another cluster brings the rows of ledger.transaction_actors
+  // with the old ids, and that cluster gives the same ids out again. Here the
+  // superuser gives the backend's row, kept by an earlier transaction of
+  // another actor, the id of the app's open transaction, as such a restore
+  // could leave it. The row was kept before that transaction began, so it is
+  // not that transaction's actor.
+  it("takes the actor of a transaction's first write when its backend's row carries the transaction's id but was kept before it", async () => {
+    const books = await addBooks(app);
+    const admin = await db.admin();
+    const earlier = { actor: randomUUID(), kind: "integration" } as const;
+    const RENAME = "UPDATE ledger.accounts SET description = $2 WHERE fiscal_year_id = $1 AND number = 1930";
+    /**
+     * Keeps `earlier` as the actor of the backend's row, in a transaction of
+     * its own. Then opens a transaction for `booker` and gives the row that
+     * transaction's id.
+     */
+    const openOverRestoredRow = async (): Promise<void> => {
+      await inTransaction(app, { company: books.company, ...earlier }, () => app.query(RENAME, [books.year.id, "Bank"]));
+      await begin(app, { company: books.company, ...booker });
+      const found = await app.query<{ pid: number; xact: string }>("SELECT pg_catalog.pg_backend_pid() AS pid, pg_catalog.pg_current_xact_id()::text AS xact");
+      const given = await admin.query("UPDATE ledger.transaction_actors SET transaction_id = $1::xid8 WHERE backend_pid = $2 AND actor_id = $3", [
+        found.rows[0]?.xact,
+        found.rows[0]?.pid,
+        earlier.actor,
+      ]);
+      expect(given.rowCount).toBe(1);
+    };
+    const before = await historyOf(books.company);
+    await openOverRestoredRow();
+    try {
+      await app.query(RENAME, [books.year.id, "Kassa och bank"]);
+      await app.query("COMMIT");
+    } finally {
+      await app.query("ROLLBACK");
+    }
+    expect((await historyOf(books.company)).slice(before.length)).toEqual([
+      { table_name: "ledger.accounts", operation: "UPDATE", actor_id: earlier.actor },
+      { table_name: "ledger.accounts", operation: "UPDATE", actor_id: booker.actor },
+    ]);
+    // The transaction then keeps its own actor.
+    await openOverRestoredRow();
+    try {
+      await app.query(RENAME, [books.year.id, "Kassa"]);
+      await switchTo(earlier);
+      await expectError(app.query(RENAME, [books.year.id, "Bank"]), INSUFFICIENT_PRIVILEGE, ANOTHER_ACTOR);
+    } finally {
+      await app.query("ROLLBACK");
+    }
   });
 });

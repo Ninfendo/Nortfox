@@ -1,6 +1,6 @@
 # 9. Company isolation and database roles
 
-Status: accepted, 2026-11-01
+Status: accepted, 2026-11-01. Amended 2026-11-03, in slice 2a: no company table keeps planner statistics or has a partial index, a key of one column holds only random ids or ids that order the changes, and a reader can still set its own role settings, its password and its default privileges.
 
 ## Context
 

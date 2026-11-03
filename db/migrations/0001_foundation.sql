@@ -219,53 +219,20 @@ END;
 -- such transaction writes over it. It is not ledger data, and is unlogged, so
 -- a crash, which ends every transaction, empties it. Only the owner writes it,
 -- through ledger.current_actor(), and no other role may read it.
+--
+-- A row names its transaction by the transaction's id and the time the
+-- transaction began. pg_dump dumps the rows of an unlogged table too, and a
+-- dump restored into another cluster brings the old ids, which that cluster
+-- gives out again (ledger.in_this_transaction, below). A row from before such
+-- a restore is no transaction's, and the next write on its backend writes
+-- over it.
 CREATE UNLOGGED TABLE ledger.transaction_actors (
   backend_pid integer PRIMARY KEY,
   transaction_id xid8 NOT NULL,
+  transaction_began timestamptz NOT NULL,
   actor_id uuid NOT NULL,
   actor_kind text NOT NULL
 );
-
--- The transaction's actor and its kind. A write with no actor is refused,
--- and so is a write under another actor or kind than the transaction's
--- first write had (insufficient privilege, 42501). The writes of a savepoint
--- that rolled back keep no actor.
-CREATE FUNCTION ledger.current_actor(OUT actor_id uuid, OUT actor_kind text)
-LANGUAGE plpgsql
-SET search_path = pg_catalog, pg_temp
-AS $actor$
-DECLARE
-  id_setting text := NULLIF(current_setting('nortfox.actor_id', true), '');
-  kind_setting text := NULLIF(current_setting('nortfox.actor_kind', true), '');
-  kept_transaction xid8;
-  kept_id uuid;
-  kept_kind text;
-BEGIN
-  IF id_setting IS NULL THEN
-    PERFORM ledger.refuse('actor_missing', jsonb_build_object('setting', 'nortfox.actor_id'));
-  END IF;
-  IF kind_setting IS NULL OR kind_setting NOT IN ('user', 'system', 'integration') THEN
-    PERFORM ledger.refuse('actor_missing', jsonb_build_object('setting', 'nortfox.actor_kind'));
-  END IF;
-  actor_id := id_setting::uuid;
-  actor_kind := kind_setting;
-  SELECT t.transaction_id, t.actor_id, t.actor_kind INTO kept_transaction, kept_id, kept_kind
-  FROM ledger.transaction_actors AS t
-  WHERE t.backend_pid = pg_backend_pid();
-  IF kept_transaction = pg_current_xact_id() THEN
-    IF kept_id IS DISTINCT FROM current_actor.actor_id OR kept_kind IS DISTINCT FROM current_actor.actor_kind THEN
-      RAISE EXCEPTION USING
-        ERRCODE = 'insufficient_privilege',
-        MESSAGE = 'The transaction''s actor changed after its first write. A transaction keeps one actor.';
-    END IF;
-    RETURN;
-  END IF;
-  INSERT INTO ledger.transaction_actors AS t (backend_pid, transaction_id, actor_id, actor_kind)
-  VALUES (pg_backend_pid(), pg_current_xact_id(), current_actor.actor_id, current_actor.actor_kind)
-  ON CONFLICT (backend_pid) DO UPDATE
-  SET transaction_id = excluded.transaction_id, actor_id = excluded.actor_id, actor_kind = excluded.actor_kind;
-END
-$actor$;
 
 -- The current transaction --------------------------------------------------------
 --
@@ -282,6 +249,52 @@ CREATE FUNCTION ledger.in_this_transaction(xact xid8, at timestamptz) RETURNS bo
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
 RETURN in_this_transaction.xact = pg_current_xact_id() AND in_this_transaction.at >= transaction_timestamp();
+
+-- The transaction's actor and its kind. A write with no actor is refused,
+-- and so is a write under another actor or kind than the transaction's
+-- first write had (insufficient privilege, 42501). The writes of a savepoint
+-- that rolled back keep no actor. The row keeps the time the transaction
+-- began, which does not move while it runs. So a clock set back during the
+-- transaction never makes its own row look like an earlier one, which would
+-- let another actor in.
+CREATE FUNCTION ledger.current_actor(OUT actor_id uuid, OUT actor_kind text)
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $actor$
+DECLARE
+  id_setting text := NULLIF(current_setting('nortfox.actor_id', true), '');
+  kind_setting text := NULLIF(current_setting('nortfox.actor_kind', true), '');
+  kept_transaction xid8;
+  kept_began timestamptz;
+  kept_id uuid;
+  kept_kind text;
+BEGIN
+  IF id_setting IS NULL THEN
+    PERFORM ledger.refuse('actor_missing', jsonb_build_object('setting', 'nortfox.actor_id'));
+  END IF;
+  IF kind_setting IS NULL OR kind_setting NOT IN ('user', 'system', 'integration') THEN
+    PERFORM ledger.refuse('actor_missing', jsonb_build_object('setting', 'nortfox.actor_kind'));
+  END IF;
+  actor_id := id_setting::uuid;
+  actor_kind := kind_setting;
+  SELECT t.transaction_id, t.transaction_began, t.actor_id, t.actor_kind INTO kept_transaction, kept_began, kept_id, kept_kind
+  FROM ledger.transaction_actors AS t
+  WHERE t.backend_pid = pg_backend_pid();
+  IF ledger.in_this_transaction(kept_transaction, kept_began) THEN
+    IF kept_id IS DISTINCT FROM current_actor.actor_id OR kept_kind IS DISTINCT FROM current_actor.actor_kind THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'insufficient_privilege',
+        MESSAGE = 'The transaction''s actor changed after its first write. A transaction keeps one actor.';
+    END IF;
+    RETURN;
+  END IF;
+  INSERT INTO ledger.transaction_actors AS t (backend_pid, transaction_id, transaction_began, actor_id, actor_kind)
+  VALUES (pg_backend_pid(), pg_current_xact_id(), transaction_timestamp(), current_actor.actor_id, current_actor.actor_kind)
+  ON CONFLICT (backend_pid) DO UPDATE
+  SET transaction_id = excluded.transaction_id, transaction_began = excluded.transaction_began,
+    actor_id = excluded.actor_id, actor_kind = excluded.actor_kind;
+END
+$actor$;
 
 -- The isolation level ------------------------------------------------------------
 --

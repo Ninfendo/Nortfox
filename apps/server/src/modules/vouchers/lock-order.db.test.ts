@@ -15,6 +15,7 @@
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { codeOf } from "../../db/refusals.ts";
 import { backendPid, begin, failureOf, freshDatabase, untilWaitingForLock, type TestDatabase } from "../../../test/database.ts";
 import {
   LOCK_VOUCHER,
@@ -122,7 +123,9 @@ describe("the lock order between a deletion and a change of a row", () => {
 // changes waits for the open changes of vouchers, and the later ones wait for
 // it at the turn, before they lock any of those rows: no order of its changes
 // waits in a circle with them, two accounts included, as long as it locks
-// such a row only by changing it. A transaction that also changes a voucher,
+// such a row only by changing it. Its removal of a series or an account that
+// rows still name is refused at once, before a foreign key would lock those
+// rows. A transaction that also changes a voucher,
 // before or after, can deadlock with another change of a voucher.
 describe("the lock order between a voucher and a transaction that changes the rows it locks", () => {
   let db: TestDatabase;
@@ -210,6 +213,37 @@ describe("the lock order between a voucher and a transaction that changes the ro
     expect(setter).toBeUndefined();
     expect((written as { code?: unknown } | undefined)?.code).toBe("NF011");
     expect((await rowsOf(watcher, books.company, voucher.id)).length).toBe(2);
+  });
+
+  // A deletion of a voucher locks the voucher as its statement's target, and
+  // then waits at the turn. A removal of the voucher's series holds the turn
+  // alone, and a foreign key that keeps the series would lock its vouchers
+  // FOR KEY SHARE and so wait for the deletion: the two would wait in a
+  // circle. So the removal's trigger refuses a series that a voucher names
+  // by a plain read, which waits for no row, before the foreign keys run.
+  const REMOVE_SERIES = "DELETE FROM ledger.voucher_series WHERE fiscal_year_id = $1 AND code = 'A'";
+  const removeSeries: Change = (books) => [REMOVE_SERIES, [books.year.id]];
+  const deletion = (client: Client, _books: Books, voucher: Voucher): Promise<unknown> =>
+    client.query("DELETE FROM ledger.vouchers WHERE id = $1", [voucher.id]);
+  it.each([
+    ["changes an account, then removes the voucher's series", renameAccount],
+    ["changes the voucher's series, then removes it", renameSeries],
+  ])("never deadlocks a deletion of the last voucher of a series with a transaction that %s: the removal is refused at once", async (_case, first) => {
+    const { books, voucher, setter, written } = await race(first, removeSeries, deletion);
+    expect((setter as { code?: unknown } | undefined)?.code, String(setter)).toBe("23001");
+    expect(String(setter)).toMatch(/constraint "vouchers_series" on table "vouchers"/);
+    expect(written).toBeUndefined();
+    expect(await voucherOf(watcher, books.company, voucher.id)).toBeUndefined();
+    expect((await deletedVouchersOf(watcher, books.company)).map((entry) => entry.id)).toEqual([voucher.id]);
+  });
+
+  // The same for an account: its trigger counts the rows that name it by a plain read.
+  it("never deadlocks a deletion of a voucher with a transaction that changes the series, then removes an account of the voucher: the removal is refused at once", async () => {
+    const removeAccount: Change = (books) => ["DELETE FROM ledger.accounts WHERE fiscal_year_id = $1 AND number = 6110", [books.year.id]];
+    const { books, voucher, setter, written } = await race(renameSeries, removeAccount, deletion);
+    expect((setter as { code?: unknown } | undefined)?.code, String(setter)).toBe(codeOf("account_has_rows"));
+    expect(written).toBeUndefined();
+    expect(await voucherOf(watcher, books.company, voucher.id)).toBeUndefined();
   });
 
   // A voucher's rows lock their accounts in the order they are written. A

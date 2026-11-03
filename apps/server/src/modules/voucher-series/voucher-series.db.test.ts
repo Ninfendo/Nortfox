@@ -18,6 +18,7 @@ import {
   begin,
   expectError,
   expectRefusal,
+  failureOf,
   freshDatabase,
   inTransaction,
   untilWaitingForLock,
@@ -33,6 +34,7 @@ import {
   bookVoucher,
   counterOf,
   isAfter,
+  recordVoidRange,
   someUser,
   type VoucherSeries,
 } from "../../../test/ledger.ts";
@@ -347,5 +349,55 @@ describe("voucher series", () => {
     await remove("K");
     const left = await asApp(books.company, `SELECT ${SERIES_COLUMNS} FROM ledger.voucher_series ORDER BY code`);
     expect(left.map((series) => series.code)).toEqual(["A", "I"]);
+  });
+
+  // The removal's trigger refuses a series that a row names before the
+  // foreign keys lock those rows (db/README.md, the lock order). It gives the
+  // foreign key's own error, in the foreign keys' order, and the foreign keys
+  // keep the rule when the trigger is off.
+  it("refuses the removal of a series that a row names with the error that the foreign key gives with the trigger off", async () => {
+    const books = await addBooks(app, who);
+    await addSeries(app, books.company, books.year.id, { code: "B" }, who);
+    const voucher = { year: books.year.id, date: "2090-03-15", rows: balanced() };
+    // A: a voucher, and an entry in the record. B: a void range, and a voucher. I: only an entry in the record.
+    await bookVoucher(app, books.company, { ...voucher, series: "A" }, who);
+    const deleted = [
+      await bookVoucher(app, books.company, { ...voucher, series: "A" }, who),
+      await bookVoucher(app, books.company, { ...voucher, series: "I" }, who),
+    ];
+    for (const { id } of deleted) {
+      await asApp(books.company, "DELETE FROM ledger.vouchers WHERE id = $1", [id]);
+    }
+    await recordVoidRange(owner, books.company, { year: books.year.id, code: "B", first: 1, last: 1 });
+    await bookVoucher(app, books.company, { ...voucher, series: "B" }, who);
+    const REMOVE = "DELETE FROM ledger.voucher_series WHERE fiscal_year_id = $1 AND code = $2";
+    const fields = (error: unknown): Record<string, unknown> => {
+      const { code, message, detail, schema, table, constraint } = error as Record<string, unknown>;
+      return { code, message, detail, schema, table, constraint };
+    };
+    for (const [code, table] of [
+      ["A", "vouchers"],
+      ["B", "void_ranges"],
+      ["I", "deleted_vouchers"],
+    ] as const) {
+      const refused = fields(await failureOf(asApp(books.company, REMOVE, [books.year.id, code])));
+      expect(refused, code).toEqual({
+        code: RESTRICT_VIOLATION,
+        message: `update or delete on table "voucher_series" violates RESTRICT setting of foreign key constraint "${table}_series" on table "${table}"`,
+        detail: `Key is referenced from table "${table}".`,
+        schema: "ledger",
+        table,
+        constraint: `${table}_series`,
+      });
+      await begin(owner, { company: books.company, ...who });
+      try {
+        await owner.query("ALTER TABLE ledger.voucher_series DISABLE TRIGGER voucher_series_keep_named");
+        expect(fields(await failureOf(owner.query(REMOVE, [books.year.id, code]))), code).toEqual(refused);
+      } finally {
+        await owner.query("ROLLBACK");
+      }
+    }
+    const left = await asApp(books.company, `SELECT ${SERIES_COLUMNS} FROM ledger.voucher_series ORDER BY code`);
+    expect(left.map((series) => series.code)).toEqual(["A", "B", "I", "K"]);
   });
 });

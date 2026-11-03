@@ -11,9 +11,10 @@
 // of 0. The table guard checks it. EXPLAIN ANALYZE shows real counts too, so
 // a reader's policy reads its company once, before any row.
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { TEMPORARY_ROLE_PREFIX } from "../../../test/cluster.ts";
 import { freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { companyTables, fillEveryTable, type Scenario } from "../../../test/every-table.ts";
 
@@ -129,20 +130,38 @@ describe("the planner's statistics", () => {
    * What the reader's EXPLAIN ANALYZE counts for `sql`, run twice so that the
    * first run's work (pruning, hint bits, caches) is done: each plan node's
    * type and every number it shows but a time.
+   *
+   * A node's pages count its children's too, so each node gives only its
+   * own: its pages less its children's. The pages of the policy's subqueries
+   * (the InitPlans and what runs under them) are left out. They read the
+   * reader's binding and the catalog, never a row of the table, and how many
+   * pages they read depends on what the reader's caches of roles hold, which
+   * a change of any role in the cluster resets. Their rows and loops stay in.
    */
   async function counts(sql: string): Promise<unknown[]> {
     const run = async (): Promise<unknown[]> => {
       const found = await reader.query<{ "QUERY PLAN": unknown }>(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`);
       const nodes: unknown[] = [];
-      const walk = (node: Record<string, unknown>): void => {
-        nodes.push(
-          Object.fromEntries(Object.entries(node).filter(([key, value]) => key === "Node Type" || (typeof value === "number" && !key.includes("Time")))),
-        );
-        for (const child of (node["Plans"] as Record<string, unknown>[] | undefined) ?? []) {
-          walk(child);
+      const walk = (node: Record<string, unknown>, underPolicy: boolean): void => {
+        const children = (node["Plans"] as Record<string, unknown>[] | undefined) ?? [];
+        const kept: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(node)) {
+          if (key === "Node Type") {
+            kept[key] = value;
+          } else if (typeof value === "number" && !key.includes("Time")) {
+            if (!key.endsWith(" Blocks")) {
+              kept[key] = value;
+            } else if (!underPolicy) {
+              kept[key] = children.reduce((own, child) => own - ((child[key] as number | undefined) ?? 0), value);
+            }
+          }
+        }
+        nodes.push(kept);
+        for (const child of children) {
+          walk(child, underPolicy || child["Parent Relationship"] === "InitPlan");
         }
       };
-      walk((found.rows[0]?.["QUERY PLAN"] as { Plan: Record<string, unknown> }[])[0]?.Plan ?? {});
+      walk((found.rows[0]?.["QUERY PLAN"] as { Plan: Record<string, unknown> }[])[0]?.Plan ?? {}, false);
       return nodes;
     };
     await run();
@@ -203,6 +222,40 @@ describe("the planner's statistics", () => {
     const pairs = tables.map((table) => [of(table, scenario.companyB), of(table, nobody)] as const);
     expect(await scanningEveryRow(() => differing(pairs))).toEqual([]);
     expect(await differing(pairs)).toEqual([]);
+  });
+
+  // A role made, changed or dropped anywhere in the cluster resets every
+  // backend's caches of roles, and the reader's next query reads pg_roles
+  // again, in its policy's subqueries. So the counts above must not depend on
+  // what the reader's caches hold, or the comparison fails now and then, on a
+  // correct database, whenever another connection changes a role.
+  it("gives a reader the same counts in EXPLAIN ANALYZE while another connection makes and drops roles", async () => {
+    const tables = await companyTables(admin);
+    const nobody = randomUUID();
+    const of = (table: string, company: string): string => `SELECT * FROM ${table} WHERE company_id BETWEEN '${company}' AND '${company}'`;
+    const pairs = [
+      [`SELECT * FROM ledger.accounts WHERE description = '${SECRET}'`, "SELECT * FROM ledger.accounts WHERE description = 'Hemlig affär Eta'"] as const,
+      ...tables.map((table) => [of(table, scenario.companyB), of(table, nobody)] as const),
+    ];
+    const maker = await db.admin();
+    const stop = new AbortController();
+    let made = 0;
+    const changing = (async () => {
+      while (!stop.signal.aborted) {
+        const role = `${TEMPORARY_ROLE_PREFIX}${randomBytes(4).toString("hex")}`;
+        await maker.query(`CREATE ROLE ${role}`);
+        await maker.query(`DROP ROLE ${role}`);
+        made += 1;
+      }
+    })();
+    try {
+      expect(await scanningEveryRow(() => differing(pairs))).toEqual([]);
+      expect(await differing(pairs)).toEqual([]);
+    } finally {
+      stop.abort();
+      await changing;
+    }
+    expect(made).toBeGreaterThan(pairs.length);
   });
 
   /** The rows that the filters of the reader's EXPLAIN ANALYZE of `sql` removed, over every plan node. */

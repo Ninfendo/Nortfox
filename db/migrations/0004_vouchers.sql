@@ -33,7 +33,10 @@
 -- between its rows and changes that company's rows without its turn. A
 -- transaction that makes only such changes never waits in a circle with a
 -- change of a voucher, whatever their order, two accounts included, as long
--- as it locks such a row only by changing it. A SELECT that locks one for
+-- as it locks such a row only by changing it. A removal of an account or a
+-- series that rows still name is refused by a plain read, before a foreign
+-- key would lock those rows (ledger.voucher_series_keep_named), so it never
+-- waits for a voucher that a deletion locked. A SELECT that locks one for
 -- update runs no trigger, so it takes the row before the turn, and its later
 -- change of the row can deadlock with a booking that waits for that row
 -- (40P01). A transaction that makes such changes and also writes a voucher
@@ -1008,6 +1011,56 @@ BEGIN
 END
 $append$;
 
+-- The series ----------------------------------------------------------------------
+
+-- A series that a void range, a voucher or an entry in the record of deleted
+-- vouchers names cannot be removed (ON DELETE RESTRICT, 23001). A foreign
+-- key checks that by locking the rows that name the series, FOR KEY SHARE.
+-- A deletion of a voucher locks the voucher as its statement's target before
+-- it takes the company's turn, and a removal of a series holds the turn
+-- alone (0003). So the foreign key would make the removal wait for that
+-- deletion while the deletion waits for the removal at the turn, and
+-- PostgreSQL would roll one of them back (40P01). So this trigger first looks
+-- for such a row by a plain read, which waits for no lock, and refuses the
+-- removal with the error that the foreign key gives. A voucher that is being
+-- deleted is still there for the read. The foreign keys stay, and hold the
+-- rule if the trigger is ever off.
+CREATE FUNCTION ledger.voucher_series_keep_named() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $named$
+DECLARE
+  naming text;
+BEGIN
+  IF EXISTS (
+    SELECT FROM ledger.void_ranges AS r
+    WHERE r.company_id = OLD.company_id AND r.fiscal_year_id = OLD.fiscal_year_id AND r.series_code = OLD.code
+  ) THEN
+    naming := 'void_ranges';
+  ELSIF EXISTS (
+    SELECT FROM ledger.vouchers AS v
+    WHERE v.company_id = OLD.company_id AND v.fiscal_year_id = OLD.fiscal_year_id AND v.series_code = OLD.code
+  ) THEN
+    naming := 'vouchers';
+  ELSIF EXISTS (
+    SELECT FROM ledger.deleted_vouchers AS d
+    WHERE d.company_id = OLD.company_id AND d.fiscal_year_id = OLD.fiscal_year_id AND d.series_code = OLD.code
+  ) THEN
+    naming := 'deleted_vouchers';
+  END IF;
+  IF naming IS NOT NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = 'restrict_violation',
+      MESSAGE = format('update or delete on table "voucher_series" violates RESTRICT setting of foreign key constraint "%s_series" on table "%s"', naming, naming),
+      DETAIL = format('Key is referenced from table "%s".', naming),
+      SCHEMA = 'ledger',
+      TABLE = naming,
+      CONSTRAINT = naming || '_series';
+  END IF;
+  RETURN OLD;
+END
+$named$;
+
 -- The counters, the fiscal years ---------------------------------------------------
 
 -- The counters' rules from 0003, with the two proofs that the vouchers bring:
@@ -1155,6 +1208,9 @@ CREATE TRIGGER deleted_vouchers_append_only BEFORE INSERT OR UPDATE OR DELETE ON
   FOR EACH ROW EXECUTE FUNCTION ledger.deleted_vouchers_append_only();
 CREATE TRIGGER deleted_voucher_rows_append_only BEFORE INSERT OR UPDATE OR DELETE ON ledger.deleted_voucher_rows
   FOR EACH ROW EXECUTE FUNCTION ledger.deleted_vouchers_append_only();
+
+CREATE TRIGGER voucher_series_keep_named BEFORE DELETE ON ledger.voucher_series
+  FOR EACH ROW EXECUTE FUNCTION ledger.voucher_series_keep_named();
 
 SELECT meta.protect_company_table('ledger.vouchers', 'id');
 SELECT meta.protect_company_table('ledger.voucher_rows', 'id');
