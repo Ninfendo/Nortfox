@@ -89,7 +89,7 @@ The owner merges a pull request from an outside contributor by hand, after readi
 
 NortFox is under the GNU Affero General Public License v3.0 only, and so are contributions to it. Each source file starts with one `SPDX-License-Identifier` line: exactly `AGPL-3.0-only`, or exactly `MIT` in `packages/client`.
 
-The API client in `packages/client` and the API description `packages/client/openapi.json` are under the MIT licence, so that any program can use them ([decision 4](docs/decisions/0004-licences.md)). They are generated from the server's routes. A contribution to the routes is therefore also offered under the MIT licence for those generated files.
+The API client in `packages/client` and the API description `packages/client/openapi.json` are under the MIT licence, so that any program can use them ([decision 4](docs/decisions/0004-licences.md)). They are generated from the operation registry in `packages/contract`. A contribution to `packages/contract` is therefore also offered under the MIT licence for those generated files.
 
 ## Security
 

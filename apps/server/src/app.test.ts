@@ -25,6 +25,26 @@ describe("GET /openapi.json", () => {
     expect(await response.json()).toEqual(openApiDocument({ version: "1.2.3" }));
   });
 
+  it("describes the health operation as the registry's entry: its x-nortfox and its problem answers", () => {
+    const document = openApiDocument({ version: "1.2.3" }) as {
+      paths: Record<string, { get?: { "x-nortfox"?: unknown; responses?: Record<string, { content?: object }> } }>;
+      components: { schemas: Record<string, unknown> };
+    };
+    const health = document.paths["/v1/health"]?.get;
+    expect(health?.["x-nortfox"]).toEqual({
+      permission: "public",
+      tool: "Checks that the NortFox server is up, and gives its version. It reads no data.",
+      assistant: false,
+      writes: false,
+      list: false,
+    });
+    expect(Object.keys(health?.responses ?? {})).toEqual(["200", "400", "500"]);
+    expect(health?.responses?.["400"]?.content).toEqual({
+      "application/problem+json": { schema: { $ref: "#/components/schemas/Problem" } },
+    });
+    expect(Object.keys(document.components.schemas).sort()).toEqual(["FieldProblem", "Health", "Problem"]);
+  });
+
   it("describes the health operation under /v1, under the MIT licence", () => {
     expect(openApiDocument({ version: "1.2.3" })).toMatchObject({
       openapi: "3.1.0",

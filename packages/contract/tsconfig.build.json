@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // Read the engine's built types, not its source, so the build emits only
+    // this package's own files. Turbo builds the engine first.
+    "customConditions": []
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

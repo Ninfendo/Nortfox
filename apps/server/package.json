@@ -8,13 +8,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "dev": "node --watch src/main.ts",
+    "dev": "node --conditions=@nortfox/source --watch src/main.ts",
     "start": "node dist/main.js",
-    "openapi": "node scripts/write-openapi.ts"
+    "openapi": "node --conditions=@nortfox/source scripts/write-openapi.ts"
   },
   "dependencies": {
     "@hono/node-server": "catalog:",
     "@hono/zod-openapi": "catalog:",
+    "@nortfox/contract": "workspace:*",
     "hono": "catalog:",
     "pg": "catalog:",
     "zod": "catalog:"

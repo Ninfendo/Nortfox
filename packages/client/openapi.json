@@ -24,14 +24,103 @@
           "version": {
             "type": "string",
             "description": "The version of the server that answered.",
-            "example": "0.0.0"
+            "examples": [
+              "0.0.0"
+            ]
           }
         },
         "required": [
           "status",
           "version"
         ],
+        "additionalProperties": false,
         "description": "Whether the server is up."
+      },
+      "Problem": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "A URI for the kind of problem. NortFox sends about:blank, and the code says what went wrong."
+          },
+          "title": {
+            "type": "string",
+            "description": "The status in words, such as Bad Request."
+          },
+          "status": {
+            "type": "integer",
+            "description": "The HTTP status."
+          },
+          "detail": {
+            "type": "string",
+            "description": "What went wrong, in an English sentence."
+          },
+          "code": {
+            "type": "string",
+            "description": "What went wrong, as a stable kebab-case code. Clients rely on this."
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldProblem"
+            },
+            "description": "For invalid-request: what is wrong with each field."
+          },
+          "permission": {
+            "type": "string",
+            "description": "For permission-missing: the permission the operation needs."
+          },
+          "pointer": {
+            "type": "string",
+            "description": "For a rule's refusal that concerns one field: that field's JSON Pointer."
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "For a rule's refusal: the facts behind it."
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
+        "additionalProperties": false,
+        "description": "Problem details (RFC 9457) with a stable code."
+      },
+      "FieldProblem": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "What is wrong with the field, as a stable kebab-case code."
+          },
+          "detail": {
+            "type": "string",
+            "description": "The same in an English sentence."
+          },
+          "pointer": {
+            "type": "string",
+            "description": "A JSON Pointer to the field in the operation's input: the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.",
+            "examples": [
+              "/amount/amount"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "The facts behind the code, such as expected, minimum, maximum or allowed. Absent when there are none."
+          }
+        },
+        "required": [
+          "code",
+          "detail",
+          "pointer"
+        ],
+        "additionalProperties": false,
+        "description": "What is wrong with one field of a request."
       }
     },
     "parameters": {}
@@ -45,13 +134,40 @@
         ],
         "summary": "Check that the server is up",
         "description": "Answers as soon as the server runs. It reads no data.",
+        "x-nortfox": {
+          "permission": "public",
+          "tool": "Checks that the NortFox server is up, and gives its version. It reads no data.",
+          "assistant": false,
+          "writes": false,
+          "list": false
+        },
         "responses": {
           "200": {
-            "description": "The server is up.",
+            "description": "Whether the server is up.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
