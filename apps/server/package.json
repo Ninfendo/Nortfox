@@ -2,24 +2,28 @@
   "name": "@nortfox/server",
   "version": "0.0.0",
   "private": true,
-  "description": "The NortFox server: the API under /v1.",
+  "description": "The NortFox server: the API under /v1 and MCP at /mcp.",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "dev": "node --watch src/main.ts",
+    "dev": "node --conditions=@nortfox/source --watch src/main.ts",
     "start": "node dist/main.js",
-    "openapi": "node scripts/write-openapi.ts"
+    "openapi": "node --conditions=@nortfox/source scripts/write-openapi.ts"
   },
   "dependencies": {
     "@hono/node-server": "catalog:",
     "@hono/zod-openapi": "catalog:",
+    "@modelcontextprotocol/server": "catalog:",
+    "@nortfox/contract": "workspace:*",
     "hono": "catalog:",
     "pg": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "catalog:",
+    "@nortfox/client": "workspace:*",
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
     "fast-check": "catalog:",

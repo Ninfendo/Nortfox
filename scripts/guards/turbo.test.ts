@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const PACKAGES = ["apps/server", "apps/web", "packages/client", "packages/engine"];
+const PACKAGES = ["apps/server", "apps/web", "packages/client", "packages/contract", "packages/engine"];
 
 /**
  * Root files every task depends on that no tsconfig names: CI runs every task

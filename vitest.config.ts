@@ -30,6 +30,10 @@ export default defineConfig({
       },
       {
         extends: true,
+        test: { name: "contract", include: ["packages/contract/src/**/*.test.ts"] },
+      },
+      {
+        extends: true,
         test: { name: "client", include: ["packages/client/{src,scripts}/**/*.test.ts"] },
       },
       {
@@ -84,6 +88,7 @@ export default defineConfig({
       reporter: ["text", "html", "json-summary"],
       thresholds: {
         "packages/engine/src/**": { 100: true },
+        "packages/contract/src/**": { 100: true },
         "packages/client/**": { statements: 100, branches: 100, functions: 100, lines: 100 },
         "apps/server/src/**": { statements: 100, branches: 100, functions: 100, lines: 100 },
         "apps/web/src/**": { statements: 95, branches: 100, functions: 85, lines: 100 },

@@ -93,7 +93,7 @@ secrets:
   # nortfox_owner: the migrations, and later the restore tool.
   owner-password:
     file: ./secrets/owner-password
-  # nortfox_app: the server, from slice 2b on.
+  # nortfox_app: the server, which this file runs from slice 2c on.
   app-password:
     file: ./secrets/app-password
   # The off-site repository's other options, in pgBackRest's own form.

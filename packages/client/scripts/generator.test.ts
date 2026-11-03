@@ -134,6 +134,66 @@ describe("generateClient", () => {
     expect(source).toContain("  getX(options?: CallOptions): Promise<string>;");
   });
 
+  it("writes the permission from x-nortfox into the method's doc comment", () => {
+    const source = generateClient(
+      documentWith(
+        {},
+        {
+          "/v1/company": getOperation(
+            { type: "string" },
+            {
+              operationId: "getCompany",
+              summary: "Read the company",
+              "x-nortfox": { permission: "company:read", tool: "Gives the company.", assistant: true, writes: false, list: false },
+            },
+          ),
+          "/v1/health": getOperation({ type: "string" }, { operationId: "getHealth", "x-nortfox": { permission: "public" } }),
+        },
+      ),
+    );
+    expect(source).toContain(
+      "  /**\n   * Read the company\n   *\n   * `GET /v1/company`\n   *\n   * Needs the permission `company:read`.\n   */\n  getCompany(",
+    );
+    expect(source).toContain("   * `GET /v1/health`\n   *\n   * Needs no permission: it reads no data.\n   */\n  getHealth(");
+  });
+
+  it("passes over the problem answers beside the success", () => {
+    const source = generateClient(
+      documentWith(
+        { Problem: { type: "object", properties: { code: { type: "string" } }, required: ["code"] } },
+        {
+          "/v1/x": getOperation(
+            { type: "boolean" },
+            {
+              responses: {
+                "200": { content: { "application/json": { schema: { type: "boolean" } } } },
+                "400": { content: { "application/problem+json": { schema: { $ref: "#/components/schemas/Problem" } } } },
+                "401": {
+                  headers: { "WWW-Authenticate": { schema: { type: "string" } } },
+                  content: { "application/problem+json": { schema: { $ref: "#/components/schemas/Problem" } } },
+                },
+              },
+            },
+          ),
+        },
+      ),
+    );
+    expect(source).toContain("  getThing(options?: CallOptions): Promise<boolean>;");
+    expect(source).toContain("export interface Problem {\n  readonly code: string;\n}");
+  });
+
+  it("writes an object of any facts as a record", () => {
+    const source = generateClient(
+      documentWith({
+        Facts: {
+          type: "object",
+          properties: { data: { type: "object", additionalProperties: {}, description: "The facts." } },
+        },
+      }),
+    );
+    expect(source).toContain("  readonly data?: Readonly<Record<string, unknown>>;");
+  });
+
   it("writes nothing for a path item without an operation", () => {
     expect(generateClient(documentWith({}, { "/v1/x": { summary: "Not yet" } }))).toContain(
       "export interface Operations {\n}",
@@ -148,6 +208,30 @@ describe("generateClient", () => {
     [
       documentWith({ Bad: { type: "object", additionalProperties: true } }),
       'components.schemas.Bad uses "additionalProperties", which the generator does not support yet.',
+    ],
+    [
+      documentWith({ Bad: { type: "object", additionalProperties: { type: "string" } } }),
+      'components.schemas.Bad uses "additionalProperties", which the generator does not support yet.',
+    ],
+    [
+      documentWith({ Bad: { type: "object", additionalProperties: {}, properties: { a: { type: "string" } } } }),
+      'components.schemas.Bad uses "additionalProperties", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": "company:read" }) }),
+      'paths["/v1/x"].get.x-nortfox must be an object.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { tool: "Reads x." } }) }),
+      'paths["/v1/x"].get.x-nortfox.permission must be a string.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", zorbex: true } }) }),
+      'paths["/v1/x"].get.x-nortfox uses "zorbex", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-kilvant": true }) }),
+      'paths["/v1/x"].get uses "x-kilvant", which the generator does not support yet.',
     ],
     [documentWith({ Bad: { $ref: "#/definitions/X" } }), "components.schemas.Bad.$ref must point into #/components/schemas/."],
     [documentWith({ Bad: { $ref: "#/components/schemas/no-good" } }), 'components.schemas.Bad.$ref "no-good" is not a TypeScript identifier.'],

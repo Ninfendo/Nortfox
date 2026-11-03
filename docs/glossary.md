@@ -27,10 +27,25 @@ Pinned by slice 2a, the ledger core in PostgreSQL.
 | Automatlåsning av period / automatic lock | As above. Its intervals follow the booking deadlines of BFNAR 2013:2 punkt 3.6-3.8. | automatic lock | Locks by an interval after the end of a month, a quarter or the fiscal year. It applies to every actor. |
 | Bokslutsserie / closing series | The law has no such series. Bokslutstransaktioner are booked when the löpande bokföring is closed (BFL 5 kap. 3 §; punkt 2.19). | closing series | The period lock does not apply to it. |
 | Manuell kontering / manual | None. | `Manual` | A series open for vouchers made by hand. |
-| Behandlingshistorik / processing history | BFL 5 kap. 11 §; punkt 9.16-9.17. It is räkenskapsinformation. | behandlingshistorik (module `audit`) | Written by triggers. |
+| Behandlingshistorik / processing history | BFL 5 kap. 11 §; punkt 9.16-9.17. It is räkenskapsinformation. | behandlingshistorik (module `audit`) | Written by triggers, with the actor, its kind and the channel of each change. |
 | Skapad / created | The registreringsdatum (punkt 9.16). | `created` at and by | On every voucher and every row. |
 | Ändrad / altered | None. | `altered` at and by | Set by every change. |
 | Konto / account | The kontoplan's account. | `Account` | Per fiscal year. |
-| Företag / company | A bokföringsskyldig business. It keeps one bookkeeping for all its business (BFL 4 kap. 4 §). | `Company` | |
+| Företag / company | A bokföringsskyldig business. It keeps one bookkeeping for all its business (BFL 4 kap. 4 §). | `Company`; operation `getCompany` | Every data request works in exactly one company, which its credential names. |
 
 Where the established API has no name for a term, the code name here is proposed: `book`, `alter`, the links `reverses` and `reversedBy`, `DeletedVoucher`, `VoidRange`, the automatic lock, `created` and `altered`. The owner may change them.
+
+## Platform
+
+Pinned by slice 2b, the API and MCP spine. [docs/api.md](api.md) gives the API's rules.
+
+| Term (sv / en) | What the law means | Name in /v1 and the code | Note |
+|---|---|---|---|
+| Organisationsnummer / organisation number | The company's number in the register. For a sole trader it is the owner's personal identity number, so it is personal data. | `organizationNumber` | Ten digits with a hyphen after the sixth. |
+| (no screen word) / tenant id | None. | `databaseNumber` | The company's number for programs ([decision 8](decisions/0008-authentication.md)). It never changes. |
+| Användare / user | The law asks when each entry was registered (punkt 9.16), and who made each correction, and when (BFL 5 kap. 5 §). | actor, with its kind: `user`, `system` or `integration` | On the screen, Användare names every kind of actor, not only a person. So the code says actor, and user is one of its kinds. |
+| (no screen word) / channel | None. | `channel`: `rest` or `mcp` | The client a change came through. The behandlingshistorik records it. Later slices add others. |
+| Belopp / amount | The books are presented in one redovisningsvaluta: SEK, or EUR for some company forms (BFL 4 kap. 6 §). | `Money`: `{"amount": "1234.50", "currency": "SEK"}` | Never a JSON number on `/v1` ([decision 5](decisions/0005-money.md)). |
+| Behörighet / permission | Instruktioner om behörighet are räkenskapsinformation (BFN's commentary to BFL 1 kap. 2 § första stycket 9 c). | `permission`, such as `company:read` | Declared once for each operation, in the registry. Slice 2c grants them. |
+| (no screen word) / operation | None. | one entry in the registry in `packages/contract` | The REST route, the client method and the MCP tool come from it. |
+| (no screen word) / idempotency key | None. | the `Idempotency-Key` header; the `idempotencyKey` argument on MCP | A write takes one. The same key and request give the first answer again. |

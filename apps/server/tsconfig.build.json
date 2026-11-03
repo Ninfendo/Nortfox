@@ -3,7 +3,10 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "types": ["node"]
+    "types": ["node"],
+    // Read the workspace packages' built types, not their source, so the
+    // build emits only the server's own files. Turbo builds them first.
+    "customConditions": []
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"]

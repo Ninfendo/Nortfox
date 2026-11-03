@@ -8,13 +8,17 @@
 // The companies and the people are made up. The organisation numbers are on
 // the fixture guard's list of test values.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { TEST_READERS } from "./cluster.ts";
 import { inTransaction, type TestDatabase } from "./database.ts";
 
 export const ACTOR_KINDS = ["user", "system", "integration"] as const;
 export type ActorKind = (typeof ACTOR_KINDS)[number];
+
+/** The channels a request comes through, which the behandlingshistorik records. */
+export const CHANNELS = ["rest", "mcp"] as const;
+export type Channel = (typeof CHANNELS)[number];
 
 export type Row = Record<string, unknown>;
 
@@ -34,6 +38,8 @@ export interface Change {
   readonly newValues: Row | null;
   readonly actor: string;
   readonly kind: ActorKind;
+  /** The channel its transaction set, or null when it set none. */
+  readonly channel: Channel | null;
   /** pg_current_xact_id() of its transaction, as text. */
   readonly transaction: string;
   /** transaction_timestamp() of its transaction, as text. */
@@ -85,7 +91,15 @@ export const KEYS: Readonly<Record<string, string>> = {
   "ledger.voucher_rows": "id",
   "ledger.deleted_vouchers": "id",
   "ledger.deleted_voucher_rows": "id",
+  "ledger.idempotency_keys": "id",
 };
+
+/** A made-up fingerprint of a request, as the server stores it with an idempotency key. */
+export const REQUEST_HASH = createHash("sha256").update("a made-up request").digest("hex");
+
+/** Stores an idempotency key and its answer, as a write through /v1 or MCP does. */
+const INSERT_KEY = `INSERT INTO ledger.idempotency_keys AS t (id, company_id, idempotency_key, operation_id, request_hash, response_status, response_body)
+                    VALUES ($1, $2, $3, 'testBookVoucher', $4, 201, $5) RETURNING pg_catalog.to_jsonb(t) AS row`;
 
 /** Every company table, from the catalog: each table with a company_id column. */
 export async function companyTables(client: Client): Promise<string[]> {
@@ -205,6 +219,11 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
             transaction_information, quantity, removed, created_at, created_by, created_by_kind, account_description)
           VALUES (pg_catalog.gen_random_uuid(), $1, $2, $3, 9, 1930, 0, 0, '', 0, false, pg_catalog.now(), $1, 'user', 'Företagskonto')`,
     params: [company, vouchersOf(scenario, company).deleted, yearOf(scenario, company)],
+  }),
+  "ledger.idempotency_keys": (company) => ({
+    sql: `INSERT INTO ledger.idempotency_keys (company_id, idempotency_key, operation_id, request_hash, response_status, response_body)
+          VALUES ($1, 'isolation-key', 'testBookVoucher', $2, 201, '{}')`,
+    params: [company, REQUEST_HASH],
   }),
 };
 
@@ -356,12 +375,22 @@ export const APP_WRITES: Readonly<Record<string, Readonly<Partial<Record<"INSERT
       params: [vouchersOf(scenario, scenario.companyA).kept],
     }),
   },
+  // A new key each time, so that no write here meets a key that is stored.
+  "ledger.idempotency_keys": {
+    INSERT: (scenario) => ({
+      company: scenario.companyA,
+      sql: `INSERT INTO ledger.idempotency_keys (company_id, idempotency_key, operation_id, request_hash, response_status, response_body)
+            VALUES ($1, $2, 'testBookVoucher', $3, 201, '{}')`,
+      params: [scenario.companyA, randomUUID(), REQUEST_HASH],
+    }),
+  },
 };
 
 interface Actor {
   readonly company: string;
   readonly actor: string;
   readonly kind: ActorKind;
+  readonly channel?: Channel;
 }
 
 /**
@@ -463,6 +492,7 @@ async function changeOfSteps(client: Client, who: Actor, steps: readonly Step[],
       company: who.company,
       actor: who.actor,
       kind: who.kind,
+      channel: who.channel ?? null,
       transaction: stamp.transaction,
       startedAt: stamp.started,
       changedBy: stamp.changed,
@@ -506,12 +536,12 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     find: { sql: "SELECT t.id, pg_catalog.to_jsonb(t) AS row FROM ledger.automatic_locks AS t WHERE t.company_id = $1", params: [company] },
   });
 
-  // The companies, by the app: a user makes one, an integration the other.
-  // Each comes with its automatic lock row.
+  // The companies, by the app: a user makes one through REST, an integration
+  // the other through MCP. Each comes with its automatic lock row.
   changes.push(
     ...(await change(
       app,
-      { company: companyA, actor: user, kind: "user" },
+      { company: companyA, actor: user, kind: "user", channel: "rest" },
       "ledger.companies",
       "INSERT",
       companyA,
@@ -520,7 +550,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     )),
     ...(await change(
       app,
-      { company: companyB, actor: integration, kind: "integration" },
+      { company: companyB, actor: integration, kind: "integration", channel: "mcp" },
       "ledger.companies",
       "INSERT",
       companyB,
@@ -794,10 +824,11 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
   );
 
   // Vouchers, by the app, in each company's series A, after its void range.
-  // A books A4, changes it in every way Ändra allows, reverses it with A5,
-  // then books A6 and deletes it. B books A2, deletes it, and books A2 again.
+  // A books A4 through REST, changes it in every way Ändra allows, reverses
+  // it with A5, then books A6 and deletes it. B books A2, deletes it, and
+  // books A2 again through MCP.
   const vouchers = new Vouchers(app, changes);
-  const keptA = await vouchers.book({ company: companyA, actor: user, kind: "user" }, yearA, seriesA, [
+  const keptA = await vouchers.book({ company: companyA, actor: user, kind: "user", channel: "rest" }, yearA, seriesA, [
     [1930, 12_500, 0],
     [3001, 0, 12_500],
   ]);
@@ -831,10 +862,47 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     [3001, 0, 5000],
   ]);
   await vouchers.remove({ company: companyB, actor: system, kind: "system" }, seriesB, deletedB);
-  const keptB = await vouchers.book({ company: companyB, actor: user, kind: "user" }, yearB, seriesB, [
+  const keptB = await vouchers.book({ company: companyB, actor: user, kind: "user", channel: "mcp" }, yearB, seriesB, [
     [1930, 7000, 0],
     [3001, 0, 7000],
   ]);
+
+  // Idempotency keys, by the app, each with its answer, as a write through
+  // /v1 or MCP stores them: in A a user's through REST, and an integration's
+  // through MCP with the same key; in B an integration's with that key too.
+  const keyOf = (id: string, company: string, voucher: string): Write => ({
+    sql: INSERT_KEY,
+    params: [id, company, "scenario-key-1", REQUEST_HASH, { id: voucher, number: 4, amount: { amount: "125.00", currency: "SEK" } }],
+  });
+  const userKeyA = randomUUID();
+  const integrationKeyA = randomUUID();
+  const integrationKeyB = randomUUID();
+  changes.push(
+    ...(await change(
+      app,
+      { company: companyA, actor: user, kind: "user", channel: "rest" },
+      "ledger.idempotency_keys",
+      "INSERT",
+      userKeyA,
+      keyOf(userKeyA, companyA, keptA.id),
+    )),
+    ...(await change(
+      app,
+      { company: companyA, actor: integration, kind: "integration", channel: "mcp" },
+      "ledger.idempotency_keys",
+      "INSERT",
+      integrationKeyA,
+      keyOf(integrationKeyA, companyA, keptA.id),
+    )),
+    ...(await change(
+      app,
+      { company: companyB, actor: integration, kind: "integration", channel: "mcp" },
+      "ledger.idempotency_keys",
+      "INSERT",
+      integrationKeyB,
+      keyOf(integrationKeyB, companyB, keptB.id),
+    )),
+  );
 
   return {
     companyA,

@@ -3,7 +3,7 @@
 import { createOperations, type Operations } from "./generated.ts";
 import { createSend, type ClientOptions } from "./runtime.ts";
 
-export type { Health, Operations } from "./generated.ts";
+export type { Company, FieldProblem, Health, Operations, Problem } from "./generated.ts";
 export { ApiError } from "./runtime.ts";
 export type { CallOptions, ClientOptions, FetchFunction } from "./runtime.ts";
 

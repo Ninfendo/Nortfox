@@ -29,7 +29,17 @@ const OPERATION_KEYS = new Set([
   "parameters",
   "requestBody",
   "responses",
+  "x-nortfox",
 ]);
+
+/**
+ * The keys of x-nortfox, NortFox's own parts of an operation. The generator
+ * reads the permission; the others only document, for the server and MCP.
+ */
+const NORTFOX_KEYS = new Set(["permission", "tool", "assistant", "writes", "list"]);
+
+/** The permission of an operation that reads no data. */
+const PUBLIC = "public";
 
 /** Keys that would change a type, which the generator cannot express yet. */
 const UNSUPPORTED_KEYS = [
@@ -115,7 +125,7 @@ function typeOf(value: unknown, where: string, indent: string): string {
       throw new GeneratorError(`${where} uses "${key}", which the generator does not support yet.`);
     }
   }
-  if (schema["additionalProperties"] !== undefined && schema["additionalProperties"] !== false) {
+  if (schema["additionalProperties"] !== undefined && schema["additionalProperties"] !== false && !isFacts(schema)) {
     throw new GeneratorError(
       `${where} uses "additionalProperties", which the generator does not support yet.`,
     );
@@ -144,6 +154,15 @@ function typeOf(value: unknown, where: string, indent: string): string {
   return union(types.map((name) => namedType(name, schema, where, indent)));
 }
 
+/**
+ * An object of any facts, such as a refusal's data: no properties of its
+ * own, and any value under any name. Its type is a record of unknown values.
+ */
+function isFacts(schema: Json): boolean {
+  const extra = schema["additionalProperties"];
+  return isJson(extra) && Object.keys(extra).length === 0 && schema["properties"] === undefined;
+}
+
 function namedType(name: unknown, schema: Json, where: string, indent: string): string {
   switch (name) {
     case "string":
@@ -160,7 +179,7 @@ function namedType(name: unknown, schema: Json, where: string, indent: string): 
       return item.includes(" ") ? `ReadonlyArray<${item}>` : `readonly ${item}[]`;
     }
     case "object":
-      return objectType(schema, where, indent);
+      return isFacts(schema) ? "Readonly<Record<string, unknown>>" : objectType(schema, where, indent);
     default:
       throw new GeneratorError(`${where} needs a type, a $ref, a const or an enum.`);
   }
@@ -212,7 +231,18 @@ interface Operation {
   readonly path: string;
   readonly summary: string | undefined;
   readonly description: string | undefined;
+  readonly permission: string | undefined;
   readonly result: string;
+}
+
+/** The permission in an operation's x-nortfox, or undefined when it has none. */
+function permissionOf(value: unknown, where: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const meta = record(value, where);
+  refuseOtherKeys(meta, NORTFOX_KEYS, where);
+  return text(meta["permission"], `${where}.permission`);
 }
 
 function resultType(responses: Json, where: string): string {
@@ -246,6 +276,7 @@ function operation(path: string, value: unknown): Operation {
     path,
     summary: optionalText(entry["summary"], `${where}.summary`),
     description: optionalText(entry["description"], `${where}.description`),
+    permission: permissionOf(entry["x-nortfox"], `${where}.x-nortfox`),
     result: resultType(record(entry["responses"], `${where}.responses`), `${where}.responses`),
   };
 }
@@ -274,7 +305,15 @@ function operationDocs(operation: Operation): string[] {
   const parts = [operation.summary, operation.description].filter(
     (part): part is string => part !== undefined,
   );
-  return [...parts.flatMap((part) => [part, ""]), `\`${operation.method} ${operation.path}\``];
+  const lines = [...parts.flatMap((part) => [part, ""]), `\`${operation.method} ${operation.path}\``];
+  if (operation.permission === undefined) {
+    return lines;
+  }
+  const permission =
+    operation.permission === PUBLIC
+      ? "Needs no permission: it reads no data."
+      : `Needs the permission \`${operation.permission}\`.`;
+  return [...lines, "", permission];
 }
 
 /** Writes the TypeScript source of src/generated.ts for an API description. */

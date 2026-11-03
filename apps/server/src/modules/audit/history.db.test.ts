@@ -57,14 +57,14 @@ describe("the behandlingshistorik", () => {
     }
   });
 
-  it("holds each insert, update and delete with the operation, the old and new row, the actor, its kind, the transaction and the time", async () => {
+  it("holds each insert, update and delete with the operation, the old and new row, the actor, its kind, the channel, the transaction and the time", async () => {
     for (const change of scenario.changes) {
       const found = await inTransaction(app, { company: change.company }, async () =>
         app.query<{ count: bigint }>(
           `SELECT count(*) AS count FROM audit.history
            WHERE company_id = $1 AND table_name = $2 AND row_id = $3 AND operation = $4
              AND old_values IS NOT DISTINCT FROM $5::jsonb AND new_values IS NOT DISTINCT FROM $6::jsonb
-             AND actor_id = $7 AND actor_kind = $8 AND transaction_id = $9::xid8
+             AND actor_id = $7 AND actor_kind = $8 AND channel IS NOT DISTINCT FROM $12 AND transaction_id = $9::xid8
              AND at >= $10::timestamptz AND at <= $11::timestamptz`,
           [
             change.company,
@@ -78,6 +78,7 @@ describe("the behandlingshistorik", () => {
             change.transaction,
             change.startedAt,
             change.changedBy,
+            change.channel,
           ],
         ),
       );
@@ -85,6 +86,7 @@ describe("the behandlingshistorik", () => {
     }
     expect(scenario.changes.map((change) => change.operation)).toContain("DELETE");
     expect(new Set(scenario.changes.map((change) => change.kind))).toEqual(new Set(["user", "system", "integration"]));
+    expect(new Set(scenario.changes.map((change) => change.channel))).toEqual(new Set(["rest", "mcp", null]));
     // No row more than the changes: each change wrote exactly one.
     for (const company of [scenario.companyA, scenario.companyB]) {
       expect(await historyCount(company)).toBe(scenario.changes.filter((change) => change.company === company).length);

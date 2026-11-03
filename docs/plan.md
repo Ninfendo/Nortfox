@@ -65,7 +65,7 @@ Who may import whom (checked in CI):
 - `engine` imports nothing from the repository. It does no I/O; the time and the reference data are passed in.
 - `i18n` imports nothing from the repository. It formats plain values: an amount as a `bigint` with its currency code, a date, a number. Until `i18n` exists (slice 2d), the Swedish form of an amount sits in `engine`. The slice that adds `i18n` moves it there.
 - `contract` may import `engine`.
-- `server` may import `engine`, `contract` and `i18n`. It needs `i18n` for what it writes in Swedish or English: PDF reports, the archive, invitations and the texts in problem details. Only `server` talks to the database.
+- `server` may import `engine`, `contract` and `i18n`. It needs `i18n` for what it writes in Swedish or English: PDF reports, the archive, invitations and the texts in problem details. Only `server` talks to the database. Its tests may also import `client`, to call the API as a program does.
 - `ui` may import `i18n` and `engine`. It never calls the server; `web` passes the data in.
 - `web` may import `client`, `ui`, `i18n` and `engine`. Never `server` or `contract`.
 - `client` is generated from `openapi.json` and imports nothing from the repository.

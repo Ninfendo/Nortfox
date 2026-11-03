@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// Idempotency keys, as /v1 and MCP take them for every write (the IETF draft
+// for the Idempotency-Key header). The key is a rule of those two surfaces,
+// not of the operation: the runner gets the key policy from the surface, and
+// the compatible surface (slice 2e) passes "none".
+//
+// - On REST the key is the Idempotency-Key header. The draft writes it as a
+//   Structured Field string, "key"; a bare key is taken too. On MCP it is the
+//   tool argument idempotencyKey.
+// - A key is 1 to 255 characters of visible ASCII without " and \. No key is
+//   idempotency-key-missing, and any other value idempotency-key-invalid,
+//   both at /idempotencyKey, in the one 400 with the input's own problems.
+// - The request's fingerprint is the SHA-256 of the canonical JSON of the
+//   operation's id, the query and the body as the operation's schemas parsed
+//   them. So the same input by REST and by MCP is the same request, and "1.5"
+//   and "1.50" are two.
+// - Keys are kept per company and actor. While a request runs, its key is in
+//   flight in this process, and a second request with it gets 409 before it
+//   asks the pool for a connection. NortFox runs one server process
+//   (decision 3); across processes the database's unique key decides.
+// - The key and the first answer are stored in ledger.idempotency_keys in the
+//   write's own transaction, after the output passed its check. A refused or
+//   failed write stores nothing, so a retry with the key runs again.
+
+import { createHash } from "node:crypto";
+import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_MAX_LENGTH, IDEMPOTENCY_KEY_PATTERN, jsonPointer, type FieldIssue, type JsonValue } from "@nortfox/contract";
+import type { Queryable } from "../db/database.ts";
+
+/** A key after its check: the key, or its one problem. */
+export type KeyCheck = { readonly ok: true; readonly value: string } | { readonly ok: false; readonly problems: readonly FieldIssue[] };
+
+const POINTER = jsonPointer([IDEMPOTENCY_KEY_ARGUMENT]);
+const ALPHABET = new RegExp(IDEMPOTENCY_KEY_PATTERN);
+
+/**
+ * The key in an Idempotency-Key header: the draft's quoted form loses its one
+ * pair of quotes, and anything else is passed on as it is, for checkKey to
+ * refuse. A broken or escaped quoted form keeps a quote or a backslash, so it
+ * is refused.
+ */
+export function readKeyHeader(header: string | null): string | undefined {
+  if (header === null) {
+    return undefined;
+  }
+  return header.length >= 2 && header.startsWith('"') && header.endsWith('"') ? header.slice(1, -1) : header;
+}
+
+/** A value as a field issue keeps it: a JSON scalar, or nothing. */
+function scalar(value: unknown): { value?: JsonValue } {
+  const kept = value === null || typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value));
+  return kept ? { value } : {};
+}
+
+/** The key a surface read, after its check. The texts name no surface, so REST and MCP give the same problem. */
+export function checkKey(key: unknown): KeyCheck {
+  if (key === undefined) {
+    return {
+      ok: false,
+      problems: [
+        {
+          code: "idempotency-key-missing",
+          detail: `The field ${POINTER} is missing. A write takes an idempotency key.`,
+          pointer: POINTER,
+          data: { expected: "string" },
+        },
+      ],
+    };
+  }
+  if (typeof key === "string" && key.length <= IDEMPOTENCY_KEY_MAX_LENGTH && ALPHABET.test(key)) {
+    return { ok: true, value: key };
+  }
+  return {
+    ok: false,
+    problems: [
+      {
+        code: "idempotency-key-invalid",
+        detail: `The field ${POINTER} must be 1 to ${String(IDEMPOTENCY_KEY_MAX_LENGTH)} characters of visible ASCII without " and \\.`,
+        pointer: POINTER,
+        data: { expected: "string", ...scalar(key) },
+      },
+    ],
+  };
+}
+
+/**
+ * JSON with the keys of every object sorted, so the same value always gives
+ * the same text. A property whose value is undefined is left out, as JSON
+ * leaves it out. A value JSON cannot hold throws.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : 1));
+    return `{${entries.map(([name, item]) => `${JSON.stringify(name)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  throw new Error(`JSON cannot hold this ${typeof value}, so it has no canonical form.`);
+}
+
+/** The request's fingerprint: the SHA-256 of the canonical JSON of the operation, the query and the body, as 64 lower-case hexadecimal digits. */
+export function requestHash(operationId: string, query: unknown, body: unknown): string {
+  return createHash("sha256").update(canonicalJson({ operation: operationId, query, body })).digest("hex");
+}
+
+/**
+ * The keys of the writes that run now in this process, each for its company
+ * and actor. A request claims its key before it asks the pool for a
+ * connection, and lets it go when it ends.
+ */
+export class KeysInFlight {
+  readonly #held = new Set<string>();
+
+  /** Holds the key, and gives the function that lets it go; undefined when a running request holds it. */
+  claim(companyId: string, actorId: string, key: string): (() => void) | undefined {
+    const slot = JSON.stringify([companyId, actorId, key]);
+    if (this.#held.has(slot)) {
+      return undefined;
+    }
+    this.#held.add(slot);
+    let held = true;
+    return () => {
+      if (held) {
+        held = false;
+        this.#held.delete(slot);
+      }
+    };
+  }
+}
+
+/** A stored key's request and first answer. */
+export interface StoredAnswer {
+  readonly hash: string;
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/**
+ * The key as the actor stored it, in the transaction's company, or undefined.
+ * The query has no company condition: row level security keeps it to the
+ * transaction's company (decision 9).
+ */
+export async function findKey(tx: Queryable, actorId: string, key: string): Promise<StoredAnswer | undefined> {
+  const found = await tx.query<{ request_hash: string; response_status: number; response_body: unknown }>(
+    "SELECT request_hash, response_status, response_body FROM ledger.idempotency_keys WHERE actor_id = $1 AND idempotency_key = $2",
+    [actorId, key],
+  );
+  const [row] = found.rows;
+  return row === undefined ? undefined : { hash: row.request_hash, status: row.response_status, body: row.response_body };
+}
+
+/** What a write stores with its key. */
+export interface NewKey {
+  readonly companyId: string;
+  readonly key: string;
+  readonly operationId: string;
+  readonly hash: string;
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/**
+ * Stores the key with the write's answer, in the write's transaction. The
+ * database writes the actor, its kind and the time. It gives false when
+ * another transaction stored the same key first, and stores nothing then.
+ */
+export async function storeKey(tx: Queryable, stored: NewKey): Promise<boolean> {
+  const found = await tx.query(
+    `INSERT INTO ledger.idempotency_keys (company_id, idempotency_key, operation_id, request_hash, response_status, response_body)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+     ON CONFLICT (company_id, actor_id, idempotency_key) DO NOTHING RETURNING id`,
+    [stored.companyId, stored.key, stored.operationId, stored.hash, stored.status, JSON.stringify(stored.body)],
+  );
+  return found.rows.length > 0;
+}

@@ -75,7 +75,7 @@ const fixedModuleNames = [
 ];
 
 /** Who may import whom (docs/plan.md, section 3). */
-const workspacePackages = ["@nortfox/client", "@nortfox/engine", "@nortfox/server", "@nortfox/web"];
+const workspacePackages = ["@nortfox/client", "@nortfox/contract", "@nortfox/engine", "@nortfox/server", "@nortfox/web"];
 
 function onlyImports(allowed, why) {
   const forbidden = workspacePackages.filter((name) => !allowed.includes(name)).map((name) => name.slice("@nortfox/".length));
@@ -237,8 +237,27 @@ export default defineConfig(
     rules: guards(callsNoServer, engineImports, engineIsPure),
   },
   {
+    files: ["packages/contract/**"],
+    rules: guards(callsNoServer, onlyImports(["@nortfox/engine"], "The contract may import the engine and nothing else from the repository.")),
+  },
+  {
     files: ["apps/server/**"],
-    rules: guards(callsNoServer, onlyImports(["@nortfox/engine"], "The server may import the engine, the contract and i18n.")),
+    rules: guards(
+      callsNoServer,
+      onlyImports(["@nortfox/contract", "@nortfox/engine"], "The server may import the engine, the contract and i18n."),
+    ),
+  },
+  {
+    // The server's tests call the API through the generated client too, with
+    // a fetch of their own that calls the app. The server's code may not.
+    files: ["apps/server/**/*.test.ts", "apps/server/test/**"],
+    rules: guards(
+      callsNoServer,
+      onlyImports(
+        ["@nortfox/client", "@nortfox/contract", "@nortfox/engine"],
+        "The server's tests may import the engine, the contract, i18n and the client.",
+      ),
+    ),
   },
   {
     files: ["apps/web/**"],
@@ -249,7 +268,10 @@ export default defineConfig(
   },
   {
     files: ["scripts/**"],
-    rules: guards(callsNoServer, onlyImports(["@nortfox/engine"], "The repository's own checks may import the engine and the contract.")),
+    rules: guards(
+      callsNoServer,
+      onlyImports(["@nortfox/contract", "@nortfox/engine"], "The repository's own checks may import the engine and the contract."),
+    ),
   },
 
   {

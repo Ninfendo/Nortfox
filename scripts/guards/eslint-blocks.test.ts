@@ -61,6 +61,8 @@ const networkCalls = [
 ];
 
 const outsideTheClient = [
+  "packages/contract/src/probe.ts",
+  "packages/contract/src/probe.test.ts",
   "packages/engine/src/probe.ts",
   "packages/engine/src/probe.test.ts",
   "packages/engine/scripts/probe.ts",
@@ -188,6 +190,16 @@ describe("who may import whom, also by a path inside a package, import() or requ
     ["scripts/probe.ts", 'import { x } from "@nortfox/server/src/app.ts";\nexport const y = x;'],
     ["packages/engine/src/probe.ts", 'import x from "@nortfox/client/openapi.json" with { type: "json" };\nexport const y = x;'],
     ["packages/client/src/probe.ts", 'import { x } from "@nortfox/engine/money";\nexport const y = x;'],
+    // The contract may import the engine only, and only the server and the scripts may import it.
+    ["packages/contract/src/probe.ts", 'import { x } from "@nortfox/server";\nexport const y = x;'],
+    ["packages/contract/src/probe.ts", 'import { x } from "@nortfox/client";\nexport const y = x;'],
+    ["packages/contract/src/probe.ts", 'import { x } from "@nortfox/web";\nexport const y = x;'],
+    ["packages/contract/src/probe.test.ts", 'import { x } from "@nortfox/server/src/app.ts";\nexport const y = x;'],
+    ["apps/web/src/probe.ts", 'import { x } from "@nortfox/contract";\nexport const y = x;'],
+    ["apps/web/src/probe.ts", 'export * from "@nortfox/contract/src/money.ts";'],
+    ["packages/client/src/probe.ts", 'import { x } from "@nortfox/contract";\nexport const y = x;'],
+    ["packages/client/scripts/probe.ts", 'import { x } from "@nortfox/contract";\nexport const y = x;'],
+    ["packages/engine/src/probe.ts", 'import { x } from "@nortfox/contract";\nexport const y = x;'],
   ])("refuses %s: %s", async (path, code) => {
     const found = await hits(path, code);
     expect(found.map((hit) => hit.rule)).toContain("no-restricted-imports");
@@ -208,6 +220,8 @@ describe("who may import whom, also by a path inside a package, import() or requ
     ["packages/engine/src/probe.test.ts", 'export const x = import("@nortfox/client");'],
     ["packages/client/src/probe.ts", 'export const x = import("@nortfox/engine");'],
     ["scripts/probe.ts", 'export const x = import("@nortfox/server/src/app.ts");'],
+    ["apps/web/src/probe.ts", 'export const x = import("@nortfox/contract");'],
+    ["packages/contract/src/probe.ts", 'export const x = import("@nortfox/server");'],
   ])("refuses %s: %s", async (path, code) => {
     const found = await hits(path, code);
     expect(found.map((hit) => hit.rule)).toContain("no-restricted-syntax");
@@ -220,7 +234,52 @@ describe("who may import whom, also by a path inside a package, import() or requ
     ["apps/server/src/probe.ts", 'export const x = await import("@nortfox/engine");'],
     ["apps/server/src/probe.ts", 'import { x } from "@nortfox/clientele";\nexport const y = x;'],
     ["apps/server/src/probe.ts", 'export const x = await import("node:fs");'],
+    ["apps/server/src/probe.ts", 'import { x } from "@nortfox/contract";\nexport const y = x;'],
+    ["apps/server/scripts/probe.ts", 'import { x } from "@nortfox/contract";\nexport const y = x;'],
+    ["scripts/probe.ts", 'import { x } from "@nortfox/contract";\nexport const y = x;'],
+    ["scripts/probe.ts", 'import { x } from "@nortfox/engine";\nexport const y = x;'],
+    ["packages/contract/src/probe.ts", 'import { x } from "@nortfox/engine";\nexport const y = x;'],
+    ["packages/contract/src/probe.ts", 'import { z } from "zod";\nexport const y = z;'],
   ])("lets %s: %s through", async (path, code) => {
     expect(await hits(path, code)).toEqual([]);
   });
+});
+
+describe("the server's tests may import the client, and its code may not", () => {
+  const serverTests = ["apps/server/src/probe.test.ts", "apps/server/src/api/probe.db.test.ts", "apps/server/test/probe.ts"];
+
+  it.each(
+    serverTests.flatMap((path) =>
+      [
+        'import { createClient } from "@nortfox/client";\nexport const x = createClient;',
+        'export const x = await import("@nortfox/client");',
+        'import { x } from "@nortfox/contract";\nexport const y = x;',
+        'import { x } from "@nortfox/engine";\nexport const y = x;',
+      ].map((code) => [path, code] as const),
+    ),
+  )("lets %s: %s through", async (path, code) => {
+    expect(await hits(path, code)).toEqual([]);
+  });
+
+  it.each([
+    ["apps/server/src/probe.ts", 'import { createClient } from "@nortfox/client";\nexport const x = createClient;', "no-restricted-imports"],
+    ["apps/server/src/api/probe.ts", 'export const x = await import("@nortfox/client");', "no-restricted-syntax"],
+    ["apps/server/scripts/probe.ts", 'import { createClient } from "@nortfox/client";\nexport const x = createClient;', "no-restricted-imports"],
+    ...serverTests.flatMap((path) => [
+      [path, 'import { x } from "@nortfox/web";\nexport const y = x;', "no-restricted-imports"],
+      [path, 'export const x = await import("@nortfox/web");', "no-restricted-syntax"],
+      [path, 'import { x } from "../../../packages/client/src/index.ts";\nexport const y = x;', "no-restricted-imports"],
+    ]),
+  ])("refuses %s: %s", async (path, code, rule) => {
+    const found = await hits(path, code);
+    expect(found.map((hit) => hit.rule)).toContain(rule);
+  });
+
+  it.each(serverTests.flatMap((path) => networkCalls.map((code) => [path, code] as const)))(
+    "keeps the network ban in %s: %s",
+    async (path, code) => {
+      const found = await hits(path, code);
+      expect(found.some((hit) => hit.message.includes(CALL_SERVER)), JSON.stringify(found)).toBe(true);
+    },
+  );
 });

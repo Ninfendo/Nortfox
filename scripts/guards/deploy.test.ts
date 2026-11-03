@@ -450,7 +450,7 @@ describe("the server image", () => {
       "deploy/server/Dockerfile runs pnpm install without --frozen-lockfile and --ignore-scripts. Each install keeps to pnpm-lock.yaml and runs no install script.";
     const offTheLockfile = changed(serverImage, "RUN pnpm install --frozen-lockfile --ignore-scripts --prod", "RUN pnpm install --ignore-scripts --prod");
     expect(serverImageProblems(offTheLockfile, packageJson)).toEqual([problem]);
-    const withScripts = changed(serverImage, "--ignore-scripts --filter @nortfox/server \\", "--filter @nortfox/server \\");
+    const withScripts = changed(serverImage, '--ignore-scripts --filter-prod "@nortfox/server..." \\', '--filter-prod "@nortfox/server..." \\');
     expect(serverImageProblems(withScripts, packageJson)).toEqual([problem]);
   });
 
