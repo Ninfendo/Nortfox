@@ -143,6 +143,11 @@ describe("moneyToOre and oreToMoney", () => {
     expect(oreToMoney(ore(ORE_MIN), "SEK")).toEqual({ amount: "-92233720368547758.08", currency: "SEK" });
   });
 
+  it("takes a plain bigint of öre, such as one the database gives", () => {
+    expect(oreToMoney(12550n, "SEK")).toEqual({ amount: "125.50", currency: "SEK" });
+    expect(oreToMoney(ORE_MAX * 10n, "SEK")).toEqual({ amount: "922337203685477580.70", currency: "SEK" });
+  });
+
   it("refuses an amount the schema would refuse, since the handler gets only checked input", () => {
     expect(() => moneyToOre({ amount: "1.00", currency: "EUR" })).toThrow("EUR is not a currency this install knows.");
     expect(() => moneyToOre({ amount: "1.234", currency: "SEK" })).toThrow("An amount has at most two decimals");

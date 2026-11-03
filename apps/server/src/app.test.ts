@@ -8,6 +8,7 @@ import {
   CURSOR_KEY,
   TEST_REGISTRY,
   bearer,
+  bookingControls,
   principalOf,
   testHandlers,
   testListAccounts,
@@ -49,7 +50,7 @@ describe("GET /openapi.json", () => {
 
   it("describes the operations the app serves", async () => {
     const { hono } = createApp(
-      defaults({ registry: TEST_REGISTRY, handlers: testHandlers("1.2.3"), permissions: ALL_PERMISSIONS }),
+      defaults({ registry: TEST_REGISTRY, handlers: testHandlers(bookingControls(), "1.2.3"), permissions: ALL_PERMISSIONS }),
     );
     expect(await (await hono.request("/openapi.json")).json()).toEqual(openApiDocument(TEST_REGISTRY, "1.2.3"));
   });
@@ -110,8 +111,8 @@ describe("createApp", () => {
   });
 
   it("refuses a handler whose operation is not in the registry, and two handlers for one operation", () => {
-    expect(() => createApp(defaults({ handlers: [...testHandlers("1.2.3")] }))).toThrow(
-      "The app cannot serve its registry:\n- The handler of testListAccounts serves an operation that is not in the registry.",
+    expect(() => createApp(defaults({ handlers: [...testHandlers(bookingControls(), "1.2.3")] }))).toThrow(
+      "The app cannot serve its registry:\n- The handler of testBookVoucher serves an operation that is not in the registry.\n- The handler of testListAccounts serves an operation that is not in the registry.",
     );
     expect(() => createApp(defaults({ handlers: [healthHandler("1.2.3"), getCompanyHandler, getCompanyHandler] }))).toThrow(
       "The app cannot serve its registry:\n- getCompany has more than one handler.",
@@ -154,7 +155,7 @@ describe("createApp", () => {
   });
 
   it("refuses a test permission unless it is on the list it is given", () => {
-    expect(() => createApp(defaults({ registry: [...REGISTRY, testListAccounts], handlers: testHandlers("1.2.3") }))).toThrow(
+    expect(() => createApp(defaults({ registry: [...REGISTRY, testListAccounts], handlers: testHandlers(bookingControls(), "1.2.3") }))).toThrow(
       'testListAccounts needs the permission "test:read", which is not on the list.',
     );
   });

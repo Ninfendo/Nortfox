@@ -9,6 +9,7 @@
 import { PERMISSIONS, REGISTRY, registryProblems, type Operation } from "@nortfox/contract";
 import { Hono } from "hono";
 import type { ContextResolver } from "./api/context.ts";
+import { KeysInFlight } from "./api/idempotency.ts";
 import type { Handler } from "./api/operation.ts";
 import { internalError, notFound } from "./api/problem.ts";
 import { mountV1, problemResponse, type V1Env } from "./api/v1.ts";
@@ -88,7 +89,7 @@ export function createApp(options: AppOptions): ServerApp {
   }
 
   const hono = new Hono<V1Env>();
-  mountV1(hono, handlers, { resolve: options.resolve, database: options.database, cursorKey: options.cursorKey, report });
+  mountV1(hono, handlers, { resolve: options.resolve, database: options.database, cursorKey: options.cursorKey, keysInFlight: new KeysInFlight(), report });
   // The description is rendered once, at start.
   const description = JSON.stringify(openApiDocument(registry, options.version));
   hono.get("/openapi.json", () => new Response(description, { headers: { "Content-Type": "application/json" } }));

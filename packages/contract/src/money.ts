@@ -116,7 +116,10 @@ export function moneyToOre(money: Money): Ore {
   return value;
 }
 
-/** An amount for the wire, always with all its currency's decimals: "1234.50". */
-export function oreToMoney(value: Ore, currency: Currency): Money {
-  return { amount: formatWire(value), currency };
+/**
+ * An amount for the wire, always with all its currency's decimals: "1234.50".
+ * It takes any bigint of öre, such as one the database gives.
+ */
+export function oreToMoney(value: bigint, currency: Currency): Money {
+  return { amount: formatWire(ore(value)), currency };
 }

@@ -7,7 +7,18 @@
 // 1. authorize: the resolver reads the credential from the request's headers,
 //    and the runner's authorize answers 401 (with the Bearer challenge) or
 //    403 at once. No query parameter and no byte of the body is read first.
-// 2. serve: the query reader, then the runner, then the JSON writer.
+// 2. the body limit, for an operation that takes a body: a body over 1 MiB
+//    gets 413. A Content-Length over the limit is refused before a byte is
+//    read; a body without one is counted as it comes, and refused once it
+//    passes the limit.
+// 3. serve: the body reader, the query reader and the idempotency key, then
+//    the runner, then the JSON writer.
+//
+// The body reader takes application/json only, with any parameters (415
+// otherwise), and JSON in UTF-8 (400 malformed-json otherwise). It gives the
+// runner the parsed value, so a body that is not an object is a field
+// problem at the root pointer. Slice 2e's compatible surface brings a reader
+// of its own, which takes each amount from its own text.
 //
 // The query reader takes only the parameters the operation declares, by
 // their exact names: an unknown name is unknown-parameter and a name given
@@ -16,14 +27,20 @@
 // decimal number is read as JSON would read it, so limit=501 reaches the
 // paging rule and limit=1.5 is not-an-integer; any other text stays a string
 // for the schema to refuse. A known path with another method gets 405 with
-// Allow. Bodies, and the idempotency key, come with the writes.
+// Allow.
+//
+// A write's idempotency key is the Idempotency-Key header, in the draft's
+// quoted form or bare. The surface passes it to the runner for every write,
+// so a write without one is 400 (idempotency.ts).
 
-import { PUBLIC, jsonPointer, jsonSchemaOf, querySchema, type FieldIssue, type Operation } from "@nortfox/contract";
+import { IDEMPOTENCY_KEY_HEADER, PUBLIC, bodySchema, jsonPointer, jsonSchemaOf, querySchema, type FieldIssue, type Operation } from "@nortfox/contract";
 import type { Hono, Handler as RouteHandler, MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { z } from "zod";
 import type { ContextResolver, Principal, RequestContext } from "./context.ts";
-import { authorize, runOperation, type Handler, type Outcome, type RunnerDeps } from "./operation.ts";
-import { internalError, methodNotAllowed, problemOf, type ProblemAnswer } from "./problem.ts";
+import { readKeyHeader } from "./idempotency.ts";
+import { authorize, runOperation, type Handler, type OperationCall, type Outcome, type RunnerDeps } from "./operation.ts";
+import { internalError, malformedJson, methodNotAllowed, payloadTooLarge, problemOf, unsupportedMediaType, type ProblemAnswer } from "./problem.ts";
 
 /** What a /v1 request carries from one step of its chain to the next. */
 export interface V1Env {
@@ -83,6 +100,30 @@ export function readQuery(url: string, fields: QueryFields): QueryRead {
   return { values, problems };
 }
 
+/** The largest body /v1 reads: 1 MiB. */
+export const BODY_LIMIT = 1024 * 1024;
+
+/** A body as /v1 reads it: the parsed JSON, or the answer that refuses it. */
+export type BodyRead = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly answer: ProblemAnswer };
+
+/** application/json, with any parameters, in any case (RFC 9110: the type and subtype are case-insensitive). */
+const JSON_MEDIA_TYPE = /^application\/json[ \t]*(;|$)/i;
+
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/** Reads a request's body as JSON: application/json in UTF-8, and nothing else. */
+export async function readBody(request: Request): Promise<BodyRead> {
+  if (!JSON_MEDIA_TYPE.test(request.headers.get("content-type") ?? "")) {
+    return { ok: false, answer: unsupportedMediaType() };
+  }
+  const bytes = await request.arrayBuffer();
+  try {
+    return { ok: true, value: JSON.parse(UTF8.decode(bytes)) as unknown };
+  } catch {
+    return { ok: false, answer: malformedJson() };
+  }
+}
+
 /** Problem details as an HTTP answer. */
 export function problemResponse(answer: ProblemAnswer): Response {
   return new Response(JSON.stringify(answer.body), { status: answer.status, headers: answer.headers });
@@ -108,19 +149,27 @@ function authorizeRequest(operation: Operation, deps: V1Deps): MiddlewareHandler
   };
 }
 
-/** The chain's last step: the query, the runner and the answer. */
+/** The chain's last step: the body, the query and the key, the runner and the answer. */
 function serve(handler: Handler, fields: QueryFields, deps: V1Deps): RouteHandler<V1Env> {
+  const { operation } = handler;
+  const takesBody = bodySchema(operation) !== undefined;
+  const writes = operation["x-nortfox"].writes;
   return async (c) => {
+    let body: unknown;
+    if (takesBody) {
+      const read = await readBody(c.req.raw);
+      if (!read.ok) {
+        return problemResponse(read.answer);
+      }
+      body = read.value;
+    }
     const query = readQuery(c.req.url, fields);
+    const idempotency: OperationCall["idempotency"] = writes ? { key: readKeyHeader(c.req.raw.headers.get(IDEMPOTENCY_KEY_HEADER)) } : "none";
     const principal = c.get("principal");
     const context: RequestContext | undefined = principal === undefined ? undefined : { ...principal, channel: "rest" };
     let outcome: Outcome;
     try {
-      outcome = await runOperation(
-        handler,
-        { context, input: { query: query.values, body: undefined, problems: query.problems }, idempotency: "none" },
-        deps,
-      );
+      outcome = await runOperation(handler, { context, input: { query: query.values, body, problems: query.problems }, idempotency }, deps);
     } catch (error) {
       deps.report(error);
       return problemResponse(internalError());
@@ -132,13 +181,22 @@ function serve(handler: Handler, fields: QueryFields, deps: V1Deps): RouteHandle
 /** The methods in the order Allow names them. Hono answers HEAD from a GET route. */
 const METHOD_ORDER = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
 
+/** The chain's step between authorize and serve for an operation that takes a body: 413 for a body over the limit. */
+const limitBody = bodyLimit({ maxSize: BODY_LIMIT, onError: () => problemResponse(payloadTooLarge()) });
+
 /** Mounts each handler's operation at its method and path, then the 405 answer at each of their paths. */
 export function mountV1(app: Hono<V1Env>, handlers: readonly Handler[], deps: V1Deps): void {
   const allowed = new Map<string, Set<string>>();
   for (const handler of handlers) {
     const { operation } = handler;
     const method = operation.method.toUpperCase();
-    app.on(method, operation.path, authorizeRequest(operation, deps), serve(handler, queryFields(operation), deps));
+    const first = authorizeRequest(operation, deps);
+    const last = serve(handler, queryFields(operation), deps);
+    if (bodySchema(operation) === undefined) {
+      app.on(method, operation.path, first, last);
+    } else {
+      app.on(method, operation.path, first, limitBody, last);
+    }
     const methods = allowed.get(operation.path) ?? new Set<string>();
     methods.add(method);
     if (method === "GET") {

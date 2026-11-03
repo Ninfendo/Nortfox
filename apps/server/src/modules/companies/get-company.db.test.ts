@@ -9,7 +9,7 @@ import { ApiError, createClient, type FetchFunction } from "@nortfox/client";
 import type { Company } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CURSOR_KEY, appPool, bearer, buildTestApp, principalOf, problemIn, testResolver, type AppPool } from "../../../test/api.ts";
+import { appPool, bearer, buildTestApp, principalOf, problemIn, runnerDeps, testResolver, type AppPool } from "../../../test/api.ts";
 import { failureOf, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { addCompany } from "../../../test/ledger.ts";
 import type { RequestContext } from "../../api/context.ts";
@@ -79,7 +79,7 @@ describe("getCompany", () => {
     const outcome = await runOperation(
       getCompanyHandler,
       { context, input: { query: {}, body: undefined }, idempotency: "none" },
-      { database: pool.database, cursorKey: CURSOR_KEY },
+      runnerDeps(pool.database),
     );
     expect(outcome).toEqual({ ok: true, status: 200, output: expected });
   });
@@ -89,7 +89,7 @@ describe("getCompany", () => {
     const outcome = await runOperation(
       getCompanyHandler,
       { context, input: { query: {}, body: undefined }, idempotency: "none" },
-      { database: pool.database, cursorKey: CURSOR_KEY },
+      runnerDeps(pool.database),
     );
     expect(outcome).toEqual({ ok: false, refusal: { kind: "permission-missing", permission: "company:read" } });
   });

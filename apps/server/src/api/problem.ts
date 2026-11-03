@@ -21,7 +21,7 @@ export interface ProblemAnswer {
 }
 
 /** The statuses of the problems the surfaces answer with. */
-type Status = 400 | 401 | 403 | 404 | 405 | 422 | 500;
+type Status = 400 | 401 | 403 | 404 | 405 | 409 | 413 | 415 | 422 | 500;
 
 /** The phrase of each status, from RFC 9110. */
 const TITLES: Readonly<Record<Status, string>> = {
@@ -30,6 +30,9 @@ const TITLES: Readonly<Record<Status, string>> = {
   403: "Forbidden",
   404: "Not Found",
   405: "Method Not Allowed",
+  409: "Conflict",
+  413: "Content Too Large",
+  415: "Unsupported Media Type",
   422: "Unprocessable Content",
   500: "Internal Server Error",
 };
@@ -57,10 +60,15 @@ export function fieldProblemOf(issue: FieldIssue): FieldProblem {
 
 const CODES = {
   invalid: "invalid-request",
+  malformed: "malformed-json",
   authentication: "authentication-required",
   permission: "permission-missing",
   notFound: "not-found",
   method: "method-not-allowed",
+  keyInUse: "idempotency-key-in-use",
+  tooLarge: "payload-too-large",
+  mediaType: "unsupported-media-type",
+  keyReused: "idempotency-key-reused",
   internal: "internal-error",
 } as const satisfies Record<string, ProblemCode>;
 
@@ -87,7 +95,26 @@ export function problemOf(refusal: Refusal): ProblemAnswer {
       const { code, detail, pointer, data } = refusal.refusal;
       return answer(422, code, detail, { ...(pointer === undefined ? {} : { pointer }), ...facts(data) });
     }
+    case "idempotency-key-in-use":
+      return answer(409, CODES.keyInUse, "Another request with this idempotency key is still running. Send the request again when it has ended.");
+    case "idempotency-key-reused":
+      return answer(422, CODES.keyReused, "This idempotency key belongs to another request. A new request takes a new key.");
   }
+}
+
+/** The answer to a body that is not JSON, or not in UTF-8. */
+export function malformedJson(): ProblemAnswer {
+  return answer(400, CODES.malformed, "The body is not valid JSON in UTF-8.");
+}
+
+/** The answer to a body over the limit of 1 MiB. */
+export function payloadTooLarge(): ProblemAnswer {
+  return answer(413, CODES.tooLarge, "The body is larger than 1 MiB.");
+}
+
+/** The answer to a body that is not application/json. */
+export function unsupportedMediaType(): ProblemAnswer {
+  return answer(415, CODES.mediaType, "The body must be application/json.");
 }
 
 /** The answer to a path that no operation has. */

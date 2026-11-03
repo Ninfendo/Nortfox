@@ -6,10 +6,13 @@
 // one channel, as it keeps one actor: its first write keeps it, and a write
 // under another channel is refused, in a later statement or later in the
 // same statement. A write that sets no channel, such as one of the owner's
-// tools, records NULL.
+// tools, records NULL. A write through the API records its request's actor,
+// kind and channel.
 
+import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { appPool, buildTestApp, postVoucher, principalOf, testResolver } from "../../../test/api.ts";
 import { CHECK_VIOLATION, INSUFFICIENT_PRIVILEGE, expectError, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { CHANNELS } from "../../../test/every-table.ts";
 import { addBooks, balanced, bookVoucher, someUser, writeVoucher, type Actor, type Books, type NewVoucher } from "../../../test/ledger.ts";
@@ -149,6 +152,45 @@ describe("the channel in the behandlingshistorik", () => {
       ANOTHER_CHANNEL,
     );
     expect(await historyOf(books.company)).toEqual(before);
+  });
+
+  it("records a write through REST by an integration: its actor, the kind integration and the channel rest on every history row of the request", async () => {
+    const books = await addBooks(app);
+    const actor = randomUUID();
+    const pool = appPool(db, 1);
+    try {
+      const { hono } = buildTestApp({
+        database: pool.database,
+        resolve: testResolver({ integration: principalOf(books.company, { actorId: actor, kind: "integration" }) }),
+      });
+      let voucher = "";
+      const written = await added(books.company, async () => {
+        const response = await postVoucher(hono, "integration", randomUUID());
+        expect(response.status).toBe(201);
+        voucher = ((await response.json()) as { id: string }).id;
+      });
+      // The voucher, its two rows, the counter's move and the key.
+      expect(written.map((row) => `${row.operation} ${row.table_name}`).sort()).toEqual([
+        "INSERT ledger.idempotency_keys",
+        "INSERT ledger.voucher_rows",
+        "INSERT ledger.voucher_rows",
+        "INSERT ledger.vouchers",
+        "UPDATE ledger.voucher_counters",
+      ]);
+      expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.channel])))).toEqual(
+        new Set([JSON.stringify([actor, "integration", "rest"])]),
+      );
+      const ofVoucher = await inTransaction(app, { company: books.company }, () =>
+        app.query<{ table_name: string }>(
+          `SELECT table_name FROM audit.history
+           WHERE row_id = $1::uuid OR row_id IN (SELECT id FROM ledger.voucher_rows WHERE voucher_id = $1::uuid) ORDER BY id`,
+          [voucher],
+        ),
+      );
+      expect(ofVoucher.rows.map((row) => row.table_name)).toEqual(["ledger.vouchers", "ledger.voucher_rows", "ledger.voucher_rows"]);
+    } finally {
+      await pool.pool.end();
+    }
   });
 
   it("lets a transaction take another channel before its first write, and forgets the channel of writes that a savepoint took back", async () => {

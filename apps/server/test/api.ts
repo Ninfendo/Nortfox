@@ -1,24 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // What the API tests share: a resolver that maps a bearer token to a
-// principal, the test-only list, a database that fails a test when it is
-// asked, a pool as the app role, and an app builder that checks the /v1
+// principal, the test-only write and list, a database that fails a test when
+// it is asked, a pool as the app role, and an app builder that checks the /v1
 // routes as startServer does. The test-only operations live here, outside
 // src, so no build holds them and openapi.json never shows them.
 
 import { randomUUID } from "node:crypto";
-import { PERMISSIONS, REGISTRY, defineListOperation, type Operation } from "@nortfox/contract";
+import { Money, PERMISSIONS, REGISTRY, defineListOperation, defineOperation, moneyToOre, oreToMoney, type Operation } from "@nortfox/contract";
+import type { Client } from "pg";
 import { Pool } from "pg";
 import { z } from "zod";
 import type { ContextResolver, Principal } from "../src/api/context.ts";
-import { handleList, ok, type Handler } from "../src/api/operation.ts";
+import { KeysInFlight } from "../src/api/idempotency.ts";
+import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps } from "../src/api/operation.ts";
 import { assertV1Routes } from "../src/api/route-guard.ts";
 import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
 import { connectionConfig } from "../src/db/connect.ts";
 import { databaseOver, type ActorKind, type Database } from "../src/db/database.ts";
 import { serverHandlers } from "../src/handlers.ts";
 import { urlOf } from "./cluster.ts";
-import type { TestDatabase } from "./database.ts";
+import { inTransaction, type TestDatabase } from "./database.ts";
 
 /** The permissions of the test-only operations. */
 export const TEST_PERMISSIONS = ["test:read", "test:write"] as const;
@@ -69,12 +71,149 @@ export const testListAccountsHandler = handleList(testListAccounts, async ({ tx,
   return ok(found.rows.length > page.limit && last !== undefined ? { items, total, next: [last.id] } : { items, total });
 });
 
-/** The registry of the test app: the real operations and the test-only ones. */
-export const TEST_REGISTRY: readonly Operation[] = [...REGISTRY, testListAccounts];
+/** What the test-only write takes: a description and one amount. */
+export const TestVoucherInput = z.strictObject({
+  description: z.string().min(1).max(200).meta({ description: "The voucher's description." }),
+  amount: Money,
+});
 
-/** The handlers of the test app. */
-export function testHandlers(version = TEST_VERSION): Handler[] {
-  return [...serverHandlers(version), testListAccountsHandler];
+/** The voucher the test-only write booked. */
+export const TestVoucher = z.strictObject({
+  id: z.uuid().meta({ description: "The voucher's id." }),
+  number: z.int().meta({ description: "The voucher's number in series A." }),
+  amount: Money,
+});
+
+/** A write that books one voucher, only for the tests. */
+export const testBookVoucher = defineOperation({
+  id: "testBookVoucher",
+  method: "post",
+  path: "/v1/test-vouchers",
+  tags: ["test"],
+  summary: "Book a voucher",
+  description: "Books a voucher of one amount on 2090-03-15, debit 6110 and credit 1930, in series A. Only the tests serve it.",
+  body: TestVoucherInput,
+  output: TestVoucher,
+  status: 201,
+  permission: "test:write",
+  tool: "Books a voucher of one amount in the company you work in. Only the tests serve it.",
+  writes: true,
+});
+
+/** The date the test-only write books on: inside the year that addBooks makes. */
+export const BOOKING_DATE = "2090-03-15";
+
+/** Holds a booking after it booked, until the test opens it. */
+export interface Gate {
+  /** Resolves once a booking waits at the gate. */
+  readonly reached: Promise<void>;
+  /** Lets the waiting booking go on. */
+  open(): void;
+  /** What the booking calls: it waits here until the gate opens. */
+  pass(): Promise<void>;
+}
+
+export function gate(): Gate {
+  const reached = Promise.withResolvers<undefined>();
+  const opened = Promise.withResolvers<undefined>();
+  return {
+    reached: reached.promise,
+    open: () => {
+      opened.resolve(undefined);
+    },
+    pass: () => {
+      reached.resolve(undefined);
+      return opened.promise;
+    },
+  };
+}
+
+/**
+ * What a test makes the next booking do after it booked, each once: throw,
+ * wait at a gate, or answer an output that does not fit its schema.
+ */
+export interface BookingControls {
+  failOnce: boolean;
+  badOutput: boolean;
+  gate: Gate | undefined;
+}
+
+export function bookingControls(): BookingControls {
+  return { failOnce: false, badOutput: false, gate: undefined };
+}
+
+/** Waits until the request `running` waits at `held`, and fails at once when the request ends first. */
+export async function untilAtGate(held: Gate, running: Promise<Response>): Promise<void> {
+  await Promise.race([
+    held.reached,
+    running.then((response) => {
+      throw new Error(`The request ended with ${String(response.status)} before it reached the gate.`);
+    }),
+  ]);
+}
+
+/**
+ * Books a voucher in the request's transaction. Its one rule of its own: an
+ * amount of zero or less is refused, at /amount. The database's rules hold
+ * the rest, such as the period lock.
+ */
+export function testBookVoucherHandler(controls: BookingControls = bookingControls()): Handler {
+  return handleData(testBookVoucher, async ({ context, tx }, { body }) => {
+    const amount = moneyToOre(body.amount);
+    if (amount <= 0n) {
+      return refused({
+        code: "amount-not-positive",
+        detail: "The field /amount must be more than zero.",
+        pointer: "/amount",
+        data: { amount: oreToMoney(amount, "SEK") },
+      });
+    }
+    const vouchers = await tx.query<{ id: string; number: number }>(
+      `INSERT INTO ledger.vouchers (company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
+       SELECT $1, id, 'A', $2, $3, 'MANUAL' FROM ledger.fiscal_years WHERE $3::date BETWEEN from_date AND to_date
+       RETURNING id, number`,
+      [context.companyId, body.description, BOOKING_DATE],
+    );
+    const [voucher] = vouchers.rows;
+    if (voucher === undefined) {
+      throw new Error("The company has no fiscal year on the booking date.");
+    }
+    const debit = await tx.query<{ debit: bigint }>(
+      "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, debit) VALUES ($1, $2, 6110, $3) RETURNING debit",
+      [context.companyId, voucher.id, amount],
+    );
+    await tx.query("INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, credit) VALUES ($1, $2, 1930, $3)", [
+      context.companyId,
+      voucher.id,
+      amount,
+    ]);
+    const waiting = controls.gate;
+    controls.gate = undefined;
+    await waiting?.pass();
+    if (controls.failOnce) {
+      controls.failOnce = false;
+      throw new Error("The test made the booking fail after it booked.");
+    }
+    const booked = { id: voucher.id, number: voucher.number, amount: oreToMoney(debit.rows[0]?.debit ?? 0n, "SEK") };
+    if (controls.badOutput) {
+      controls.badOutput = false;
+      return ok({ ...booked, amount: 125 } as unknown as OutputOf<typeof testBookVoucher>);
+    }
+    return ok(booked);
+  });
+}
+
+/** The registry of the test app: the real operations and the test-only ones. */
+export const TEST_REGISTRY: readonly Operation[] = [...REGISTRY, testBookVoucher, testListAccounts];
+
+/** The handlers of the test app, with the controls of its bookings. */
+export function testHandlers(controls: BookingControls = bookingControls(), version = TEST_VERSION): Handler[] {
+  return [...serverHandlers(version), testBookVoucherHandler(controls), testListAccountsHandler];
+}
+
+/** What the runner needs, for a test that calls it directly: the database, the cursor key and a set of keys in flight of its own. */
+export function runnerDeps(database: Database): RunnerDeps {
+  return { database, cursorKey: CURSOR_KEY, keysInFlight: new KeysInFlight() };
 }
 
 /** A principal in `companyId`: an integration with every permission, unless the options say otherwise. */
@@ -169,4 +308,39 @@ export async function problemIn(response: Response): Promise<ProblemBody> {
     throw new Error(`The answer is ${String(response.status)} with ${String(response.headers.get("content-type"))}, not problem details.`);
   }
   return (await response.json()) as ProblemBody;
+}
+
+/** A body for the test-only write: a description and the amount as SEK. */
+export function voucherBody(amount = "125.00", description = "Kontorsmaterial"): { description: string; amount: { amount: string; currency: string } } {
+  return { description, amount: { amount, currency: "SEK" } };
+}
+
+/** The headers of a write: the actor's token, JSON, and the idempotency key when one is given. */
+export function writeHeaders(token: string, key?: string): Record<string, string> {
+  return { ...bearer(token), "content-type": "application/json", ...(key === undefined ? {} : { "idempotency-key": key }) };
+}
+
+/** Posts `body` as JSON to the test-only write. */
+export function postVoucher(hono: ServerApp["hono"], token: string, key: string | undefined, body: unknown = voucherBody()): Promise<Response> {
+  return Promise.resolve(hono.request("/v1/test-vouchers", { method: "POST", headers: writeHeaders(token, key), body: JSON.stringify(body) }));
+}
+
+/** What a company holds after the test-only writes: its vouchers with their rows' amounts, and its keys. */
+export interface Written {
+  readonly vouchers: readonly { readonly id: string; readonly number: number; readonly debit: bigint; readonly credit: bigint }[];
+  readonly keys: readonly { readonly actor_id: string; readonly idempotency_key: string; readonly response_status: number; readonly response_body: unknown }[];
+}
+
+/** The vouchers and the keys of `company`, read as `client` (the app role). */
+export async function writtenIn(client: Client, company: string): Promise<Written> {
+  return inTransaction(client, { company }, async () => {
+    const vouchers = await client.query<Written["vouchers"][number]>(
+      `SELECT v.id, v.number, sum(r.debit)::bigint AS debit, sum(r.credit)::bigint AS credit
+       FROM ledger.vouchers AS v JOIN ledger.voucher_rows AS r ON r.voucher_id = v.id GROUP BY v.id, v.number ORDER BY v.number`,
+    );
+    const keys = await client.query<Written["keys"][number]>(
+      "SELECT actor_id, idempotency_key, response_status, response_body FROM ledger.idempotency_keys ORDER BY created_at, id",
+    );
+    return { vouchers: vouchers.rows, keys: keys.rows };
+  });
 }

@@ -2,7 +2,17 @@
 
 import { PROBLEM_CODES, Problem } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
-import { fieldProblemOf, internalError, methodNotAllowed, notFound, problemOf, type ProblemAnswer } from "./problem.ts";
+import {
+  fieldProblemOf,
+  internalError,
+  malformedJson,
+  methodNotAllowed,
+  notFound,
+  payloadTooLarge,
+  problemOf,
+  unsupportedMediaType,
+  type ProblemAnswer,
+} from "./problem.ts";
 
 const JSON_PROBLEM = { "Content-Type": "application/problem+json" };
 
@@ -99,6 +109,38 @@ describe("problemOf", () => {
     });
   });
 
+  it("answers a key that a running request holds with 409 idempotency-key-in-use", () => {
+    const answer = problemOf({ kind: "idempotency-key-in-use" });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 409,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Conflict",
+        status: 409,
+        detail: "Another request with this idempotency key is still running. Send the request again when it has ended.",
+        code: "idempotency-key-in-use",
+      },
+    });
+  });
+
+  it("answers a key that belongs to another request with 422 idempotency-key-reused", () => {
+    const answer = problemOf({ kind: "idempotency-key-reused" });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 422,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Unprocessable Content",
+        status: 422,
+        detail: "This idempotency key belongs to another request. A new request takes a new key.",
+        code: "idempotency-key-reused",
+      },
+    });
+  });
+
   it("leaves out a rule's pointer and facts when it has none", () => {
     const answer = problemOf({ kind: "rule", refusal: { code: "description-missing", detail: "The voucher has no description.", data: {} } });
     expectProblem(answer);
@@ -160,6 +202,42 @@ describe("the answers of the surface itself", () => {
         status: 405,
         detail: "The path takes only GET, HEAD.",
         code: "method-not-allowed",
+      },
+    });
+  });
+
+  it("answers a body that is not JSON with 400 malformed-json", () => {
+    const answer = malformedJson();
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 400,
+      headers: JSON_PROBLEM,
+      body: { type: "about:blank", title: "Bad Request", status: 400, detail: "The body is not valid JSON in UTF-8.", code: "malformed-json" },
+    });
+  });
+
+  it("answers a body over the limit with 413 payload-too-large", () => {
+    const answer = payloadTooLarge();
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 413,
+      headers: JSON_PROBLEM,
+      body: { type: "about:blank", title: "Content Too Large", status: 413, detail: "The body is larger than 1 MiB.", code: "payload-too-large" },
+    });
+  });
+
+  it("answers a body that is not application/json with 415 unsupported-media-type", () => {
+    const answer = unsupportedMediaType();
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 415,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Unsupported Media Type",
+        status: 415,
+        detail: "The body must be application/json.",
+        code: "unsupported-media-type",
       },
     });
   });
