@@ -1,6 +1,6 @@
 # Running NortFox yourself
 
-One Docker Compose file runs an install ([decision 7](../docs/decisions/0007-self-hosting-and-backups.md)). Today it runs PostgreSQL with pgBackRest and the one-shot migrate step. The server and Caddy come with later slices of the plan (2b and 2c).
+One Docker Compose file runs an install ([decision 7](../docs/decisions/0007-self-hosting-and-backups.md)). Today it runs PostgreSQL with pgBackRest and the one-shot migrate step. The server image holds the server too, but this file starts it only from slice 2c on, with Caddy in front of it: until 2c brings login, the server knows no actor, so it would answer 401 to every request for data.
 
 | Service | What it does |
 | --- | --- |
@@ -19,7 +19,7 @@ Make the folder `deploy/secrets` with four files. Git ignores the folder.
 | --- | --- |
 | `postgres-password` | The password of the superuser `postgres`. Only the first start and the operator use it. |
 | `owner-password` | The password of `nortfox_owner`: the migrations, and later the restore tool. |
-| `app-password` | The password of `nortfox_app`: the server, from slice 2b on. |
+| `app-password` | The password of `nortfox_app`: the server, which this file runs from slice 2c on. |
 | `repo2.conf` | The off-site repository's options, in pgBackRest's own form (below). |
 
 For example:

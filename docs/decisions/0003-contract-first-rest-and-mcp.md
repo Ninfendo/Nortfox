@@ -21,6 +21,9 @@ Everything in NortFox must work through the API and through MCP. A screen must n
 
 - A new feature starts as a new operation. REST, the API description, the client and the MCP tool follow from it.
 - CI fails when `openapi.json` or the client is out of date, or when an operation has no permission or no MCP tool.
+- An operation also declares whether it writes. A write takes an idempotency key: the `Idempotency-Key` header on `/v1`, the `idempotencyKey` argument on MCP. A guard refuses a write that takes none, and the server refuses to start with a `/v1` route that is not in the registry.
+- `openapi.json` carries each operation's permission, its flags and its tool text, under `x-nortfox`.
+- REST and MCP call one runner with the same handler, so a refusal is the same problem details on both, and each field problem points into the operation's input, which is the tool's arguments ([docs/api.md](../api.md)).
 - The diff of `openapi.json` in a PR shows a reviewer every change to the API.
 - Operation names and texts must be good, because agents read them.
 - The registry is also the list of what the assistant may do. Approvals, payments, supplier payment details, tokens, memberships, webhooks and settings stay closed to it, because the assistant reads text that outsiders wrote, such as supplier invoices.

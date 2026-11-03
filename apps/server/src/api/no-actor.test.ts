@@ -9,8 +9,20 @@
 import { PUBLIC, type Operation } from "@nortfox/contract";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { TEST_REGISTRY, bearer, buildTestApp, principalOf, problemIn, testResolver, untouchedDatabase, voucherBody } from "../../test/api.ts";
-import { resolveNoActor } from "./context.ts";
+import {
+  MCP_ERAS,
+  TEST_REGISTRY,
+  bearer,
+  buildTestApp,
+  callTool,
+  mcpClient,
+  principalOf,
+  problemIn,
+  testResolver,
+  untouchedDatabase,
+  voucherBody,
+} from "../../test/api.ts";
+import { resolveNoActor, type ContextResolver } from "./context.ts";
 
 const COMPANY = randomUUID();
 const TOKENS = { nobody: principalOf(COMPANY, { permissions: [] }) };
@@ -144,6 +156,77 @@ describe("a refused write's body", () => {
   });
 });
 
+/** A tool's arguments: none, a well-formed write, an unknown one, and every field with the wrong type. */
+const ARGUMENTS: readonly [string, Readonly<Record<string, unknown>>][] = [
+  ["no arguments", {}],
+  ["a well-formed write", { ...voucherBody(), idempotencyKey: KEY["idempotency-key"] }],
+  ["an unknown argument", { unknown: 1 }],
+  ["badly typed arguments", { limit: "abc", cursor: 5, description: 5, amount: 125, idempotencyKey: 7 }],
+];
+
+const TOOL_CASES = MCP_ERAS.flatMap((era) =>
+  DATA_OPERATIONS.flatMap((operation) => ARGUMENTS.map(([label, args]) => [`${operation.operationId} with ${label} (${era})`, operation, args, era] as const)),
+);
+
+/** Calls a tool as the token's actor, or as no actor, on an app over `database`. */
+async function callAs(database: ReturnType<typeof untouchedDatabase>, token: string | undefined, operation: Operation, args: Readonly<Record<string, unknown>>, era: (typeof MCP_ERAS)[number], resolve: ContextResolver = testResolver(TOKENS)) {
+  const client = await mcpClient(buildTestApp({ database, resolve }), { era, ...(token === undefined ? {} : { token }) });
+  try {
+    return await callTool(client, operation.operationId, args);
+  } finally {
+    await client.close();
+  }
+}
+
+describe("no actor by MCP", () => {
+  it("covers every operation that reads or writes data, by both eras", () => {
+    expect(TOOL_CASES).toHaveLength(MCP_ERAS.length * DATA_OPERATIONS.length * ARGUMENTS.length);
+  });
+
+  it.each(TOOL_CASES)("%s answers isError with 401 authentication-required before it reads an argument, and asks no database", async (_label, operation, args, era) => {
+    for (const token of [undefined, "unknown-token"]) {
+      const database = untouchedDatabase();
+      expect(await callAs(database, token, operation, args, era)).toEqual({
+        isError: true,
+        structured: {
+          type: "about:blank",
+          title: "Unauthorized",
+          status: 401,
+          detail: "The request names no actor. Send a credential in the Authorization header.",
+          code: "authentication-required",
+        },
+      });
+      expect(database.asked).toEqual([]);
+    }
+  });
+
+  it.each(TOOL_CASES)("%s answers 401 from the server's own resolver, which knows no actor", async (_label, operation, args, era) => {
+    const database = untouchedDatabase();
+    const answer = await callAs(database, "nobody", operation, args, era, resolveNoActor);
+    expect(answer).toMatchObject({ isError: true, structured: { status: 401, code: "authentication-required" } });
+    expect(database.asked).toEqual([]);
+  });
+});
+
+describe("an actor without the permission by MCP", () => {
+  it.each(TOOL_CASES)("%s answers isError with 403 permission-missing before it reads an argument, and asks no database", async (_label, operation, args, era) => {
+    const database = untouchedDatabase();
+    const permission = operation["x-nortfox"].permission;
+    expect(await callAs(database, "nobody", operation, args, era)).toEqual({
+      isError: true,
+      structured: {
+        type: "about:blank",
+        title: "Forbidden",
+        status: 403,
+        detail: `The actor lacks the permission ${permission}, which this operation needs.`,
+        code: "permission-missing",
+        permission,
+      },
+    });
+    expect(database.asked).toEqual([]);
+  });
+});
+
 describe("what stays open", () => {
   it("answers GET /v1/health and /openapi.json with no actor, and asks no database", async () => {
     const database = untouchedDatabase();
@@ -155,5 +238,14 @@ describe("what stays open", () => {
     expect(description.status).toBe(200);
     expect(await description.json()).toMatchObject({ openapi: "3.1.0" });
     expect(database.asked).toEqual([]);
+  });
+
+  it("lists the tools and answers getHealth by MCP with no actor, and asks no database", async () => {
+    const database = untouchedDatabase();
+    const client = await mcpClient(buildTestApp({ database, resolve: resolveNoActor }));
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TEST_REGISTRY.map((operation) => operation.operationId));
+    expect(await callTool(client, "getHealth")).toEqual({ isError: false, structured: { status: "ok", version: "0.0.0-test" } });
+    expect(database.asked).toEqual([]);
+    await client.close();
   });
 });

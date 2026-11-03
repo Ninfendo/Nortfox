@@ -7,6 +7,7 @@
 // src, so no build holds them and openapi.json never shows them.
 
 import { randomUUID } from "node:crypto";
+import { Client as McpClient, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { Money, PERMISSIONS, REGISTRY, defineListOperation, defineOperation, moneyToOre, oreToMoney, type Operation } from "@nortfox/contract";
 import type { Client } from "pg";
 import { Pool } from "pg";
@@ -143,11 +144,12 @@ export function bookingControls(): BookingControls {
 }
 
 /** Waits until the request `running` waits at `held`, and fails at once when the request ends first. */
-export async function untilAtGate(held: Gate, running: Promise<Response>): Promise<void> {
+export async function untilAtGate(held: Gate, running: Promise<unknown>): Promise<void> {
   await Promise.race([
     held.reached,
-    running.then((response) => {
-      throw new Error(`The request ended with ${String(response.status)} before it reached the gate.`);
+    running.then((ended) => {
+      const answer = ended instanceof Response ? String(ended.status) : JSON.stringify(ended);
+      throw new Error(`The request ended with ${answer} before it reached the gate.`);
     }),
   ]);
 }
@@ -323,6 +325,59 @@ export function writeHeaders(token: string, key?: string): Record<string, string
 /** Posts `body` as JSON to the test-only write. */
 export function postVoucher(hono: ServerApp["hono"], token: string, key: string | undefined, body: unknown = voucherBody()): Promise<Response> {
   return Promise.resolve(hono.request("/v1/test-vouchers", { method: "POST", headers: writeHeaders(token, key), body: JSON.stringify(body) }));
+}
+
+/** The two eras of MCP a client may speak: the 2025 handshake, and the 2026-07-28 revision. */
+export const MCP_ERAS = ["2025", "2026-07-28"] as const;
+export type McpEra = (typeof MCP_ERAS)[number];
+
+/** Where the test clients find /mcp. The app answers through app.request, so the host is never looked up. */
+const MCP_URL = "http://nortfox.test/mcp";
+
+/**
+ * An MCP client of the app, connected through app.request, as the SDK's
+ * client connects to a real server. It sends the token's credential and the
+ * Origin when they are given. It speaks the 2026-07-28 revision unless the
+ * era says 2025.
+ */
+export async function mcpClient(
+  app: ServerApp,
+  options: { readonly token?: string; readonly era?: McpEra; readonly origin?: string } = {},
+): Promise<McpClient> {
+  const headers: Record<string, string> = {
+    ...(options.token === undefined ? {} : bearer(options.token)),
+    ...(options.origin === undefined ? {} : { origin: options.origin }),
+  };
+  const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
+    fetch: (url, init) => Promise.resolve(app.hono.request(url, init)),
+    requestInit: { headers },
+  });
+  const client = new McpClient(
+    { name: "nortfox-tests", version: "0.0.0" },
+    options.era === "2025" ? {} : { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  await client.connect(transport);
+  return client;
+}
+
+/** A tool's answer: whether it is a refusal, and its structured content. */
+export interface ToolAnswer {
+  readonly isError: boolean;
+  readonly structured: unknown;
+}
+
+/**
+ * Calls a tool, and checks that the answer's one text block is its
+ * structured content as JSON, as the MCP specification recommends.
+ */
+export async function callTool(client: McpClient, name: string, args: Readonly<Record<string, unknown>> = {}): Promise<ToolAnswer> {
+  const result = await client.callTool({ name, arguments: { ...args } });
+  const { content, structuredContent, isError } = result as { content?: unknown; structuredContent?: unknown; isError?: boolean };
+  const text = JSON.stringify(structuredContent);
+  if (JSON.stringify(content) !== JSON.stringify([{ type: "text", text }])) {
+    throw new Error(`The answer of ${name} does not hold its structured content as its one text: ${JSON.stringify(result)}`);
+  }
+  return { isError: isError === true, structured: structuredContent };
 }
 
 /** What a company holds after the test-only writes: its vouchers with their rows' amounts, and its keys. */

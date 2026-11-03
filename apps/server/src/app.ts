@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The app: /v1 from the registry, the API description at /openapi.json, and
-// problem details for an unknown path and for an error the server did not
-// expect. createApp checks what it is given: the registry guard runs on the
-// registry, and each operation must have exactly one handler. It never
-// listens; startServer does that, after it checks the app's /v1 routes.
+// The app: /v1 from the registry, /mcp with a tool for each of its
+// operations, the API description at /openapi.json, and problem details for
+// an unknown path and for an error the server did not expect. createApp
+// checks what it is given: the registry guard runs on the registry, each
+// operation must have exactly one handler, and each allowed origin must be
+// an origin as a browser sends it. It never listens; startServer does that,
+// after it checks the app's /v1 routes.
+//
+// /v1 and /mcp share the runner's dependencies, above all the idempotency
+// keys in flight, so a key that a REST request holds gives 409 to an MCP
+// call, and the other way round.
 
 import { PERMISSIONS, REGISTRY, registryProblems, type Operation } from "@nortfox/contract";
 import { Hono } from "hono";
 import type { ContextResolver } from "./api/context.ts";
 import { KeysInFlight } from "./api/idempotency.ts";
 import type { Handler } from "./api/operation.ts";
+import { mountMcp } from "./api/mcp.ts";
 import { internalError, notFound } from "./api/problem.ts";
 import { mountV1, problemResponse, type V1Env } from "./api/v1.ts";
 import type { Database } from "./db/database.ts";
@@ -33,6 +40,12 @@ export interface AppOptions {
   readonly permissions?: readonly string[];
   /** Told of every error that answers 500. By default console.error. */
   readonly report?: (error: unknown) => void;
+  /**
+   * The browser origins that may call /mcp, such as https://nortfox.example.
+   * By default none: a request with an Origin header gets 403, and one
+   * without, from a program that is not a browser, is served.
+   */
+  readonly allowedOrigins?: readonly string[];
 }
 
 /** The app as the server serves it: the Hono app, and the registry it serves under /v1. */
@@ -71,6 +84,16 @@ function handlersOf(registry: readonly Operation[], handlers: readonly Handler[]
   return served;
 }
 
+/** The origins as a browser sends them. Throws on one that a browser would send in another form, or not at all. */
+function originsOf(allowed: readonly string[]): ReadonlySet<string> {
+  for (const origin of allowed) {
+    if (!URL.canParse(origin) || new URL(origin).origin !== origin) {
+      throw new Error(`The allowed origin "${origin}" is not an origin as a browser sends it, such as https://nortfox.example or http://localhost:5173.`);
+    }
+  }
+  return new Set(allowed);
+}
+
 function logError(error: unknown): void {
   console.error("The server failed:", error);
 }
@@ -88,8 +111,12 @@ export function createApp(options: AppOptions): ServerApp {
     throw new Error(`The cursor key must be at least ${String(CURSOR_KEY_BYTES)} bytes long.`);
   }
 
+  const allowedOrigins = originsOf(options.allowedOrigins ?? []);
+
   const hono = new Hono<V1Env>();
-  mountV1(hono, handlers, { resolve: options.resolve, database: options.database, cursorKey: options.cursorKey, keysInFlight: new KeysInFlight(), report });
+  const deps = { resolve: options.resolve, database: options.database, cursorKey: options.cursorKey, keysInFlight: new KeysInFlight(), report };
+  mountV1(hono, handlers, deps);
+  mountMcp(hono, handlers, { ...deps, version: options.version, allowedOrigins });
   // The description is rendered once, at start.
   const description = JSON.stringify(openApiDocument(registry, options.version));
   hono.get("/openapi.json", () => new Response(description, { headers: { "Content-Type": "application/json" } }));

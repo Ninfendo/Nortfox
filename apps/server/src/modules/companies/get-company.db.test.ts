@@ -1,15 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // getCompany gives the request's company from 2a's company table: the same
-// by REST, by the generated client and through its handler with no HTTP
-// request. An actor without company:read gets the same refusal on each, with
-// the stable code permission-missing. (MCP comes with /mcp.)
+// by REST, by the generated client, as an MCP tool call and through its
+// handler with no HTTP request. An actor without company:read gets the same
+// refusal on each, with the stable code permission-missing: the same problem
+// details by REST, by the client and by MCP, where the tool result is marked
+// isError.
 
 import { ApiError, createClient, type FetchFunction } from "@nortfox/client";
 import type { Company } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { appPool, bearer, buildTestApp, principalOf, problemIn, runnerDeps, testResolver, type AppPool } from "../../../test/api.ts";
+import {
+  MCP_ERAS,
+  appPool,
+  bearer,
+  buildTestApp,
+  callTool,
+  mcpClient,
+  principalOf,
+  problemIn,
+  runnerDeps,
+  testResolver,
+  type AppPool,
+} from "../../../test/api.ts";
 import { failureOf, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { addCompany } from "../../../test/ledger.ts";
 import type { RequestContext } from "../../api/context.ts";
@@ -67,13 +81,19 @@ describe("getCompany", () => {
     expect(expected.databaseNumber).toBeGreaterThan(0);
   });
 
-  it("gives the same company by REST, by the generated client and through its handler with no HTTP request", async () => {
+  it("gives the same company by REST, by the generated client, as an MCP tool call by both eras and through its handler with no HTTP request", async () => {
     const response = await server.hono.request("/v1/company", { headers: bearer("reader") });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(expected);
 
     const client = createClient({ baseUrl: "http://nortfox.test", fetch: fetchFrom(server, "reader") });
     expect(await client.getCompany()).toEqual(expected);
+
+    for (const era of MCP_ERAS) {
+      const mcp = await mcpClient(server, { token: "reader", era });
+      expect(await callTool(mcp, "getCompany")).toEqual({ isError: false, structured: expected });
+      await mcp.close();
+    }
 
     const context: RequestContext = { ...principalOf(company, { ...reader, permissions: ["company:read"] }), channel: "rest" };
     const outcome = await runOperation(
@@ -94,7 +114,7 @@ describe("getCompany", () => {
     expect(outcome).toEqual({ ok: false, refusal: { kind: "permission-missing", permission: "company:read" } });
   });
 
-  it("refuses an actor without company:read with the same problem details by REST and by the generated client", async () => {
+  it("refuses an actor without company:read with the same problem details by REST, by the generated client and by MCP, marked isError", async () => {
     const response = await server.hono.request("/v1/company", { headers: bearer("outsider") });
     expect(response.status).toBe(403);
     const problem = await problemIn(response);
@@ -111,5 +131,11 @@ describe("getCompany", () => {
     const error = await failureOf(client.getCompany());
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 403, problem });
+
+    for (const era of MCP_ERAS) {
+      const mcp = await mcpClient(server, { token: "outsider", era });
+      expect(await callTool(mcp, "getCompany")).toEqual({ isError: true, structured: problem });
+      await mcp.close();
+    }
   });
 });

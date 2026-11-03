@@ -19,12 +19,12 @@ Other commands:
 
 | Command | What it does |
 | --- | --- |
-| `pnpm --filter @nortfox/server dev` | Runs the server on port 4100 (`PORT` changes it). It reads the database from `NORTFOX_DATABASE_URL` and `NORTFOX_DATABASE_PASSWORD_FILE`, as the migrate step does ([db/README.md](db/README.md)), and connects at the first request. Until login comes, every data operation answers 401. |
+| `pnpm --filter @nortfox/server dev` | Runs the server on port 4100 (`PORT` changes it): the API under `/v1` and MCP at `/mcp` ([docs/api.md](docs/api.md)). It reads the database from `NORTFOX_DATABASE_URL` and `NORTFOX_DATABASE_PASSWORD_FILE`, as the migrate step does ([db/README.md](db/README.md)), and connects at the first request. Until login comes, every data operation answers 401. |
 | `pnpm --filter @nortfox/web dev` | Runs the web app. It passes `/v1` to the server on port 4100. |
 | `pnpm test` | Runs every test suite once, the database tests too. `pnpm test:coverage` also checks the coverage floors. |
 | `pnpm db:test` | Starts the test database: PostgreSQL in Docker, on 127.0.0.1:55433, with its data in memory. `pnpm db:test:stop` stops it. |
 | `pnpm backup:test` | Runs the point-in-time restore test: the compose file of an install in Docker, restored from each backup repository ([deploy/README.md](deploy/README.md)). It needs bash and Docker. CI runs it in the job `backup`. |
-| `pnpm openapi` | After a change to the API: writes `packages/client/openapi.json` and the generated client. CI fails when they are out of date. |
+| `pnpm openapi` | After a change to the registry in `packages/contract`: writes `packages/client/openapi.json` and the generated client. CI fails when they are out of date. |
 | `pnpm changeset` | Records what users will notice in your change. |
 | `pnpm names` | Runs the names check over every file. |
 | `pnpm fixtures` | Runs the fixture guard over every file. |

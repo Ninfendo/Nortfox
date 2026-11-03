@@ -163,4 +163,26 @@ describe("createApp", () => {
   it("refuses a cursor key shorter than 32 bytes", () => {
     expect(() => createApp(defaults({ cursorKey: new Uint8Array(31) }))).toThrow("The cursor key must be at least 32 bytes long.");
   });
+
+  it.each(["https://nortfox.example/", "https://nortfox.example/mcp", "https://NortFox.example", "https://nortfox.example:443", "nortfox.example", "null", "*", ""])(
+    "refuses the allowed origin %j: each is an origin as a browser sends it",
+    (origin) => {
+      expect(() => createApp(defaults({ allowedOrigins: ["https://other.example", origin] }))).toThrow(
+        `The allowed origin "${origin}" is not an origin as a browser sends it, such as https://nortfox.example or http://localhost:5173.`,
+      );
+    },
+  );
+
+  it("takes allowed origins with a scheme, a host and a port that is not the scheme's own", () => {
+    expect(() => createApp(defaults({ allowedOrigins: ["https://nortfox.example", "http://localhost:5173", "http://[::1]:8080"] }))).not.toThrow();
+  });
+});
+
+describe("/mcp", () => {
+  it("is served at its exact path, beside /v1: a path in another case or with a trailing slash is 404", async () => {
+    const response = await app.request("/mcp", { method: "GET" });
+    expect(response.status).toBe(405);
+    expect((await app.request("/mcp/")).status).toBe(404);
+    expect((await app.request("/MCP")).status).toBe(404);
+  });
 });

@@ -3,8 +3,9 @@
 // Starts the server: the database pool as nortfox_app, the app, and the
 // listener. The pool connects when the first request comes, so the server
 // starts without the database. Until slice 2c brings login, the resolver
-// knows no actor, so every data operation answers 401. A list's cursors are
-// signed with a key made at start, so a cursor lasts as long as the process.
+// knows no actor, so every data operation answers 401 on /v1 and on /mcp,
+// and /mcp allows no browser origin. A list's cursors are signed with a key
+// made at start, so a cursor lasts as long as the process.
 
 import { randomBytes } from "node:crypto";
 import { resolveNoActor } from "./api/context.ts";
@@ -25,6 +26,8 @@ const app = createApp({
   resolve: resolveNoActor,
   database,
   cursorKey: randomBytes(32),
+  // Slice 2c puts the install's public origin here, behind Caddy.
+  allowedOrigins: [],
 });
 const server = await startServer({ app, port: parsePort(process.env["PORT"]) });
 console.log(`NortFox server listening on http://localhost:${String(server.port)}`);

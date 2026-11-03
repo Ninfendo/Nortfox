@@ -70,6 +70,7 @@ const CODES = {
   mediaType: "unsupported-media-type",
   keyReused: "idempotency-key-reused",
   internal: "internal-error",
+  origin: "origin-not-allowed",
 } as const satisfies Record<string, ProblemCode>;
 
 /** A refusal of the runner as problem details. */
@@ -126,6 +127,11 @@ export function notFound(): ProblemAnswer {
 export function methodNotAllowed(allow: readonly string[]): ProblemAnswer {
   const methods = allow.join(", ");
   return answer(405, CODES.method, `The path takes only ${methods}.`, {}, { Allow: methods });
+}
+
+/** The answer to a request to /mcp from a browser origin that may not call it. */
+export function originNotAllowed(): ProblemAnswer {
+  return answer(403, CODES.origin, "The Origin header names a site that may not call /mcp. A program that is not a browser sends no Origin.");
 }
 
 /** The answer to an error the server did not expect: nothing of the error reaches it. */

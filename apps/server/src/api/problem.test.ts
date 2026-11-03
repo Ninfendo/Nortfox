@@ -8,6 +8,7 @@ import {
   malformedJson,
   methodNotAllowed,
   notFound,
+  originNotAllowed,
   payloadTooLarge,
   problemOf,
   unsupportedMediaType,
@@ -238,6 +239,22 @@ describe("the answers of the surface itself", () => {
         status: 415,
         detail: "The body must be application/json.",
         code: "unsupported-media-type",
+      },
+    });
+  });
+
+  it("answers a request to /mcp from an origin that may not call it with 403 origin-not-allowed", () => {
+    const answer = originNotAllowed();
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 403,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Forbidden",
+        status: 403,
+        detail: "The Origin header names a site that may not call /mcp. A program that is not a browser sends no Origin.",
+        code: "origin-not-allowed",
       },
     });
   });

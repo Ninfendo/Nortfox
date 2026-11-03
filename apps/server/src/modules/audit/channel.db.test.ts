@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { appPool, buildTestApp, postVoucher, principalOf, testResolver } from "../../../test/api.ts";
+import { appPool, buildTestApp, callTool, mcpClient, postVoucher, principalOf, testResolver, voucherBody } from "../../../test/api.ts";
 import { CHECK_VIOLATION, INSUFFICIENT_PRIVILEGE, expectError, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { CHANNELS } from "../../../test/every-table.ts";
 import { addBooks, balanced, bookVoucher, someUser, writeVoucher, type Actor, type Books, type NewVoucher } from "../../../test/ledger.ts";
@@ -179,6 +179,47 @@ describe("the channel in the behandlingshistorik", () => {
       ]);
       expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.channel])))).toEqual(
         new Set([JSON.stringify([actor, "integration", "rest"])]),
+      );
+      const ofVoucher = await inTransaction(app, { company: books.company }, () =>
+        app.query<{ table_name: string }>(
+          `SELECT table_name FROM audit.history
+           WHERE row_id = $1::uuid OR row_id IN (SELECT id FROM ledger.voucher_rows WHERE voucher_id = $1::uuid) ORDER BY id`,
+          [voucher],
+        ),
+      );
+      expect(ofVoucher.rows.map((row) => row.table_name)).toEqual(["ledger.vouchers", "ledger.voucher_rows", "ledger.voucher_rows"]);
+    } finally {
+      await pool.pool.end();
+    }
+  });
+
+  it("records a write through MCP by a user: its actor, the kind user and the channel mcp on every history row of the request", async () => {
+    const books = await addBooks(app);
+    const actor = randomUUID();
+    const pool = appPool(db, 1);
+    try {
+      const server = buildTestApp({
+        database: pool.database,
+        resolve: testResolver({ user: principalOf(books.company, { actorId: actor, kind: "user" }) }),
+      });
+      const client = await mcpClient(server, { token: "user" });
+      let voucher = "";
+      const written = await added(books.company, async () => {
+        const answer = await callTool(client, "testBookVoucher", { ...voucherBody(), idempotencyKey: randomUUID() });
+        expect(answer.isError).toBe(false);
+        voucher = (answer.structured as { id: string }).id;
+      });
+      await client.close();
+      // The voucher, its two rows, the counter's move and the key.
+      expect(written.map((row) => `${row.operation} ${row.table_name}`).sort()).toEqual([
+        "INSERT ledger.idempotency_keys",
+        "INSERT ledger.voucher_rows",
+        "INSERT ledger.voucher_rows",
+        "INSERT ledger.vouchers",
+        "UPDATE ledger.voucher_counters",
+      ]);
+      expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.channel])))).toEqual(
+        new Set([JSON.stringify([actor, "user", "mcp"])]),
       );
       const ofVoucher = await inTransaction(app, { company: books.company }, () =>
         app.query<{ table_name: string }>(

@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# The NortFox server image. The compose file's one-shot migrate step runs
-# apps/server/dist/db/migrate-main.js from it. The server itself comes with
-# slice 2b. Build it from the repository root:
+# The NortFox server image. Its command starts the server: the API under
+# /v1 and MCP at /mcp. The compose file's one-shot migrate step runs
+# apps/server/dist/db/migrate-main.js from it, and the compose file runs the
+# server itself from slice 2c on, with Caddy in front of it. Build it from the
+# repository root:
 #
 #   docker build --file deploy/server/Dockerfile .
 #
