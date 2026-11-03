@@ -419,10 +419,48 @@ $keys$;
 
 -- Company tables ----------------------------------------------------------------
 --
+-- The planner keeps no statistics of a table's values. ANALYZE, which
+-- autovacuum runs by itself, would keep the most common values and a
+-- histogram of each column in pg_statistic, of every company's rows together.
+-- Under row level security the planner still reads them for an operator that
+-- is leakproof, such as = and < on text and on integers, and EXPLAIN shows its
+-- row estimates to every role that may read the table. So a reader could
+-- learn another company's values from its own EXPLAIN. With a statistics
+-- target of 0 on every column, and on every expression column of the table's
+-- indexes, ANALYZE keeps none. The planner then uses its default estimates
+-- for them. A migration that adds a column or an index with an expression to
+-- a company table calls this again. The table guard checks it.
+CREATE FUNCTION meta.hide_statistics(target regclass) RETURNS void
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $hide$
+DECLARE
+  found record;
+BEGIN
+  FOR found IN
+    SELECT a.attname FROM pg_catalog.pg_attribute AS a
+    WHERE a.attrelid = target AND a.attnum > 0 AND NOT a.attisdropped
+    ORDER BY a.attnum
+  LOOP
+    EXECUTE format('ALTER TABLE %s ALTER COLUMN %I SET STATISTICS 0', target, found.attname);
+  END LOOP;
+  FOR found IN
+    SELECT x.indexrelid::regclass AS index, a.attnum
+    FROM pg_catalog.pg_index AS x
+    JOIN pg_catalog.pg_attribute AS a ON a.attrelid = x.indexrelid AND a.attnum > 0
+    WHERE x.indrelid = target AND x.indkey[a.attnum - 1] = 0
+    ORDER BY 1, 2
+  LOOP
+    EXECUTE format('ALTER INDEX %s ALTER COLUMN %s SET STATISTICS 0', found.index, found.attnum);
+  END LOOP;
+END
+$hide$;
+
 -- What every company table gets, and what the table guard checks: row level
 -- security, enabled and forced; the three policies; the history trigger with
--- the table's key column; the truncate trigger; SELECT for the app and the
--- readers. Each table then grants the app only the writes it needs.
+-- the table's key column; the truncate trigger; no planner statistics of its
+-- values; SELECT for the app and the readers. Each table then grants the app
+-- only the writes it needs.
 CREATE FUNCTION meta.protect_company_table(target regclass, key_column name) RETURNS void
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -445,6 +483,7 @@ BEGIN
     'CREATE TRIGGER audit_history AFTER INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE FUNCTION audit.write_history(%L)',
     target, key_column);
   EXECUTE format('CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION ledger.refuse_truncate()', target);
+  PERFORM meta.hide_statistics(target);
   EXECUTE format('GRANT SELECT ON %s TO nortfox_app, nortfox_reader', target);
 END
 $protect$;
@@ -468,6 +507,7 @@ CREATE TRIGGER audit_history AFTER INSERT OR UPDATE OR DELETE ON ledger.reader_r
   FOR EACH ROW EXECUTE FUNCTION audit.write_history('id');
 CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON ledger.reader_roles
   FOR EACH STATEMENT EXECUTE FUNCTION ledger.refuse_truncate();
+SELECT meta.hide_statistics('ledger.reader_roles');
 GRANT SELECT ON ledger.reader_roles TO nortfox_reader;
 
 -- The history: the three company policies and the truncate trigger, but no
@@ -484,6 +524,7 @@ CREATE TRIGGER history_append_only BEFORE INSERT OR UPDATE OR DELETE ON audit.hi
   FOR EACH ROW EXECUTE FUNCTION audit.history_append_only();
 CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON audit.history
   FOR EACH STATEMENT EXECUTE FUNCTION ledger.refuse_truncate();
+SELECT meta.hide_statistics('audit.history');
 GRANT SELECT ON audit.history TO nortfox_app, nortfox_reader;
 
 -- The helpers that the policies call.

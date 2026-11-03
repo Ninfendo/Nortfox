@@ -277,6 +277,33 @@ describe("the database roles", () => {
     },
   );
 
+  // A limit that db/README.md states. PostgreSQL lets every role set its own
+  // defaults, and has no privilege to take that away. So a reader can keep
+  // some text of its own in the cluster's catalog, outside the ledger. Only
+  // PostgreSQL's own settings that any role may set take it: a setting of
+  // ours is refused, and so are another role's defaults. A superuser sees
+  // them and clears them.
+  it("lets a reader keep text only in its own role's defaults, which a superuser sees and clears", async () => {
+    const reader = await db.connect("readerA");
+    const admin = await db.admin();
+    const stored = "'stored by a reader, one', 'two'";
+    const settingsOf = async (): Promise<string[]> => {
+      const found = await admin.query<{ setting: string }>(
+        `SELECT pg_catalog.unnest(s.setconfig) AS setting
+         FROM pg_catalog.pg_db_role_setting AS s JOIN pg_catalog.pg_database AS d ON d.oid = s.setdatabase
+         WHERE d.datname = $1 AND s.setrole = 'nortfox_test_reader_a'::pg_catalog.regrole`,
+        [db.name],
+      );
+      return found.rows.map((row) => row.setting);
+    };
+    await reader.query(`ALTER ROLE CURRENT_USER IN DATABASE ${db.name} SET search_path = ${stored}`);
+    await expectError(reader.query(`ALTER ROLE CURRENT_USER IN DATABASE ${db.name} SET nortfox.company_id = '${company}'`), INSUFFICIENT_PRIVILEGE);
+    await expectError(reader.query(`ALTER ROLE nortfox_test_reader_b IN DATABASE ${db.name} SET search_path = ${stored}`), INSUFFICIENT_PRIVILEGE);
+    expect(await settingsOf()).toEqual(['search_path="stored by a reader, one", two']);
+    await admin.query(`ALTER ROLE nortfox_test_reader_a IN DATABASE ${db.name} RESET ALL`);
+    expect(await settingsOf()).toEqual([]);
+  });
+
   it("keeps the large objects and the WAL messages closed when db/database.sql runs again", async () => {
     const admin = await db.admin();
     await admin.query(readFileSync(DATABASE_FILE, "utf8"));

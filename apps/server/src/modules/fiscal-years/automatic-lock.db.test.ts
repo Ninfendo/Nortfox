@@ -16,17 +16,22 @@ import {
   CHECK_VIOLATION,
   INSUFFICIENT_PRIVILEGE,
   UNIQUE_VIOLATION,
+  backendPid,
   begin,
   expectError,
   expectRefusal,
   freshDatabase,
   inTransaction,
+  untilWaitingForLock,
   type TestDatabase,
 } from "../../../test/database.ts";
 import {
   AUTOMATIC_LOCK_COLUMNS,
+  addBooks,
   addCompany,
   addFiscalYear,
+  balanced,
+  bookVoucher,
   setAutomaticLock,
   someUser,
   type AutomaticInterval,
@@ -152,18 +157,15 @@ describe("the automatic lock", () => {
     ] as const) {
       await expectRefusal(asApp(company, `UPDATE ledger.automatic_locks SET ${set}`), "immutable_field", { field, operation: "update" });
     }
-    // As the owner, which may add the row of a company that has none: the same on insert.
-    await begin(owner, { company, ...who });
-    try {
-      await owner.query("DELETE FROM ledger.automatic_locks");
-      await expectRefusal(
+    // As the owner, which may insert a row: the same on insert. The trigger
+    // refuses it before the unique key would.
+    await expectRefusal(
+      inTransaction(owner, { company, ...who }, () =>
         owner.query("INSERT INTO ledger.automatic_locks (company_id, set_by) VALUES ($1, $2)", [company, randomUUID()]),
-        "immutable_field",
-        { field: "set_by", operation: "create" },
-      );
-    } finally {
-      await owner.query("ROLLBACK");
-    }
+      ),
+      "immutable_field",
+      { field: "set_by", operation: "create" },
+    );
   });
 
   it("is one row per company: the owner cannot add a second one", async () => {
@@ -173,6 +175,30 @@ describe("the automatic lock", () => {
       UNIQUE_VIOLATION,
       /automatic_locks_one_per_company/,
     );
+  });
+
+  // Every change of a lock date, and every change of a voucher, locks this
+  // row. Without it, they would lock nothing and never wait for each other.
+  it("is never deleted, the owner's statements neither, so a lock date that is set still waits for an open change of a voucher", async () => {
+    const books = await addBooks(app, who);
+    const before = await settings(books.company);
+    await expectRefusal(
+      inTransaction(owner, { company: books.company, ...who }, () => owner.query("DELETE FROM ledger.automatic_locks")),
+      "append_only",
+      { table: "ledger.automatic_locks", operation: "DELETE" },
+    );
+    expect(await settings(books.company)).toEqual(before);
+    const voucher = await bookVoucher(app, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced() }, who);
+    const other = await db.connect("app");
+    const otherPid = await backendPid(other);
+    await begin(app, { company: books.company, ...who });
+    await app.query("UPDATE ledger.vouchers SET description = 'Ny text' WHERE id = $1", [voucher.id]);
+    await begin(other, { company: books.company, ...who });
+    const locked = other.query("INSERT INTO ledger.period_locks (company_id, scope, end_date) VALUES ($1, 'all', '2090-06-30')", [books.company]);
+    await untilWaitingForLock(app, otherPid);
+    await app.query("COMMIT");
+    await locked;
+    await other.query("COMMIT");
   });
 
   it.each(ISSUE_DATES)("with $interval, reaches $through on $today", async ({ interval, today, through }) => {

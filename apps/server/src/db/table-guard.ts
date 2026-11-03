@@ -20,6 +20,12 @@
 //   too: one company could learn from the error whether another company holds
 //   a value. A primary key of one uuid column, and the pinned KEY_EXCEPTIONS,
 //   leave it out;
+// - no planner statistics of its values: a statistics target of 0 on every
+//   column and on every expression column of its indexes, and no extended
+//   statistics. The planner reads statistics for a leakproof operator also
+//   under row level security, and EXPLAIN shows its estimates to every role
+//   that reads the table, so they would tell a reader another company's
+//   values. meta.hide_statistics sets the targets;
 // - nortfox_owner as its owner.
 // And every table and view: privileges only for the app (never TRUNCATE,
 // REFERENCES or TRIGGER) and for the readers (only SELECT). A view reads with
@@ -190,6 +196,19 @@ interface UniqueRow {
   readonly company: boolean;
 }
 
+interface StatisticsRow {
+  readonly relation: string;
+  /** What keeps statistics: a column, or an expression column of an index. */
+  readonly what: string;
+}
+
+interface ExtendedStatisticsRow {
+  readonly relation: string;
+  readonly name: string;
+}
+
+const KEEPS_VALUES = "which hold values of every company's rows: EXPLAIN shows estimates from them to every role that reads the table.";
+
 /** Every table and view the guard reads, by name. */
 export async function guardedRelations(client: ClientBase): Promise<string[]> {
   const found = await client.query<{ relation: string }>(`SELECT r.relation FROM (${RELATIONS}) AS r ORDER BY 1`);
@@ -287,6 +306,28 @@ async function read(client: ClientBase) {
     LEFT JOIN pg_catalog.pg_constraint AS k ON k.conindid = x.indexrelid AND k.conrelid = x.indrelid AND k.contype IN ('p', 'u', 'x')
     WHERE x.indisunique OR k.contype = 'x'
     ORDER BY 1, 2`);
+  // Every column, and every expression column of an index, whose statistics
+  // target is not 0: ANALYZE keeps statistics of its values. NULL is the
+  // default target.
+  const statistics = await client.query<StatisticsRow>(`
+    SELECT s.relation, s.what FROM (
+      SELECT r.relation, 0 AS place, '' AS index, a.attnum AS number, 'the column ' || a.attname AS what
+      FROM (${RELATIONS}) AS r
+      JOIN pg_catalog.pg_attribute AS a ON a.attrelid = r.oid AND a.attnum > 0 AND NOT a.attisdropped
+      WHERE a.attstattarget IS DISTINCT FROM 0
+      UNION ALL
+      SELECT r.relation, 1, i.relname, a.attnum, 'column ' || a.attnum::text || ' of the index ' || i.relname
+      FROM (${RELATIONS}) AS r
+      JOIN pg_catalog.pg_index AS x ON x.indrelid = r.oid
+      JOIN pg_catalog.pg_class AS i ON i.oid = x.indexrelid
+      JOIN pg_catalog.pg_attribute AS a ON a.attrelid = x.indexrelid AND a.attnum > 0
+      WHERE x.indkey[a.attnum - 1] = 0 AND a.attstattarget IS DISTINCT FROM 0
+    ) AS s
+    ORDER BY s.relation, s.place, s.index, s.number`);
+  const extendedStatistics = await client.query<ExtendedStatisticsRow>(`
+    SELECT r.relation, s.stxname AS name
+    FROM (${RELATIONS}) AS r JOIN pg_catalog.pg_statistic_ext AS s ON s.stxrelid = r.oid
+    ORDER BY 1, 2`);
   return {
     relations: relations.rows,
     policies: policies.rows,
@@ -294,6 +335,8 @@ async function read(client: ClientBase) {
     keys: keys.rows,
     privileges: privileges.rows,
     uniques: uniques.rows,
+    statistics: statistics.rows,
+    extendedStatistics: extendedStatistics.rows,
   };
 }
 
@@ -401,6 +444,11 @@ export async function tableGuardProblems(client: ClientBase): Promise<string[]> 
             own.push(problem);
           }
         }
+        const kept = of(catalog.statistics).map((found) => found.what);
+        if (kept.length > 0) {
+          own.push(`keeps planner statistics of ${kept.join(", ")}, ${KEEPS_VALUES}`);
+        }
+        own.push(...of(catalog.extendedStatistics).map((found) => `has the extended statistics ${found.name}, ${KEEPS_VALUES}`));
       }
     }
     for (const privilege of of(catalog.privileges)) {

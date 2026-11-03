@@ -219,7 +219,10 @@ END
 $rules$;
 
 -- The same for the automatic lock's settings: who changed them and when come
--- from the transaction's actor, and the row's id never changes.
+-- from the transaction's actor, and the row's id never changes. The row is
+-- never deleted, by any role, the owner's statements too (append_only).
+-- Every change of a lock date and every change of a voucher lock it, so they
+-- never overlap. Without the row, they would lock nothing.
 CREATE FUNCTION ledger.automatic_locks_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -227,6 +230,9 @@ AS $rules$
 DECLARE
   actor record;
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    PERFORM ledger.refuse('append_only', jsonb_build_object('table', 'ledger.automatic_locks', 'operation', TG_OP));
+  END IF;
   IF TG_OP = 'INSERT' THEN
     IF NEW.set_by IS NOT NULL THEN
       PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'set_by', 'operation', 'create'));
@@ -276,7 +282,7 @@ CREATE TRIGGER periods_rules BEFORE INSERT OR UPDATE ON ledger.periods
   FOR EACH ROW EXECUTE FUNCTION ledger.periods_rules();
 CREATE TRIGGER period_locks_rules BEFORE INSERT OR UPDATE ON ledger.period_locks
   FOR EACH ROW EXECUTE FUNCTION ledger.period_locks_rules();
-CREATE TRIGGER automatic_locks_rules BEFORE INSERT OR UPDATE ON ledger.automatic_locks
+CREATE TRIGGER automatic_locks_rules BEFORE INSERT OR UPDATE OR DELETE ON ledger.automatic_locks
   FOR EACH ROW EXECUTE FUNCTION ledger.automatic_locks_rules();
 CREATE TRIGGER make_automatic_lock AFTER INSERT ON ledger.companies
   FOR EACH ROW EXECUTE FUNCTION ledger.companies_automatic_lock();

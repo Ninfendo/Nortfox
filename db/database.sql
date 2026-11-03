@@ -21,7 +21,9 @@
 --   which the archive sends to both repositories and keeps with the backups.
 --
 -- So no role of NortFox may run them: not the app, which reads and writes
--- rows, not a reader, which only reads, and not the owner.
+-- rows, not a reader, which writes nothing in the ledger, and not the owner.
+-- No privilege closes one more way out: every role may set its own role
+-- settings, which the cluster's catalog keeps (db/README.md).
 
 REVOKE EXECUTE ON FUNCTION
   pg_catalog.lo_creat(integer),

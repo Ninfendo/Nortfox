@@ -22,5 +22,7 @@ One NortFox install holds many companies, for example all the clients of an acco
 
 - A query without a company set returns nothing. It never returns everything.
 - A reader role that sets another company's id still sees only its own company.
+- No company table keeps planner statistics of its values. Otherwise a reader's `EXPLAIN` would show from its row estimates the values of another company's rows. The planner then uses its default estimates, which can give a worse plan for a large report. PostgreSQL cannot hide the totals: every role sees how many rows each table holds over all the companies of the install ([db/README.md](../../db/README.md)).
+- A reader, like any role, can still set its own role settings and its password, which the cluster's catalog keeps. PostgreSQL has no privilege to stop it. A superuser sees the settings and clears them.
 - Work that spans companies, such as the doctor's checks, runs company by company.
 - Tests run as the app role and as a reader role against real PostgreSQL. A guard fails if a table lacks FORCE RLS or its policy.

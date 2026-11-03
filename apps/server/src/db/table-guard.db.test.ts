@@ -16,6 +16,10 @@ const NO_READER_POLICY = `ledger.bare: has no permissive policy for nortfox_read
 const NO_HISTORY =
   "ledger.bare: has no audit_history trigger: AFTER INSERT OR UPDATE OR DELETE, FOR EACH ROW, enabled, with no WHEN and no column list, calling audit.write_history with the primary key column.";
 const NO_TRUNCATE = "ledger.bare: has no refuse_truncate trigger: BEFORE TRUNCATE, FOR EACH STATEMENT, enabled, calling ledger.refuse_truncate().";
+const keeps = (what: string, table = "ledger.bare"): string =>
+  `${table}: keeps planner statistics of ${what}, which hold values of every company's rows: EXPLAIN shows estimates from them to every role that reads the table.`;
+const extended = (name: string): string =>
+  `ledger.bare: has the extended statistics ${name}, which hold values of every company's rows: EXPLAIN shows estimates from them to every role that reads the table.`;
 
 /** A company table that has everything the guard needs. */
 const GUARDED = `
@@ -101,6 +105,7 @@ describe("the table guard", () => {
       NO_READER_POLICY,
       NO_HISTORY,
       NO_TRUNCATE,
+      keeps("the column id, the column company_id"),
     ]);
   });
 
@@ -231,6 +236,7 @@ describe("the table guard", () => {
       CREATE POLICY company_reader ON ledger.bare FOR SELECT TO nortfox_reader USING ${READER};
       CREATE TRIGGER audit_history AFTER INSERT OR UPDATE OR DELETE ON ledger.bare FOR EACH ROW EXECUTE FUNCTION audit.write_history('id');
       CREATE TRIGGER refuse_truncate BEFORE TRUNCATE ON ledger.bare FOR EACH STATEMENT EXECUTE FUNCTION ledger.refuse_truncate();
+      SELECT meta.hide_statistics('ledger.bare');
     `;
     const noKey = "ledger.bare: has no primary key of one uuid column, which the history needs as the row's id.";
     expect(await problemsAfter(keyed("uuid PRIMARY KEY"))).toEqual([]);
@@ -268,21 +274,44 @@ describe("the table guard", () => {
     // company_id must be a key column: in INCLUDE, in the WHERE or inside an expression it is not.
     expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare (note) INCLUDE (company_id);`)).toEqual([unique("bare_note")]);
     expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare (note) WHERE company_id IS NOT NULL;`)).toEqual([unique("bare_note")]);
-    expect(await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare ((company_id::text), note);`)).toEqual([unique("bare_note")]);
+    expect(
+      await problemsAfter(`${GUARDED} CREATE UNIQUE INDEX bare_note ON ledger.bare ((company_id::text), note); ALTER INDEX ledger.bare_note ALTER COLUMN 1 SET STATISTICS 0;`),
+    ).toEqual([unique("bare_note")]);
     // An exclusion constraint must compare company_id with =.
     expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ADD CONSTRAINT bare_apart EXCLUDE USING gist (company_id WITH <>, note WITH =);`)).toEqual([
       exclusion("bare_apart"),
     ]);
     // A primary key of one uuid column is the one key without company_id; one of another type is not.
-    expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ADD COLUMN number bigint; CREATE UNIQUE INDEX bare_number ON ledger.bare (number);`)).toEqual([
-      unique("bare_number"),
-    ]);
+    expect(
+      await problemsAfter(
+        `${GUARDED} ALTER TABLE ledger.bare ADD COLUMN number bigint; ALTER TABLE ledger.bare ALTER COLUMN number SET STATISTICS 0; CREATE UNIQUE INDEX bare_number ON ledger.bare (number);`,
+      ),
+    ).toEqual([unique("bare_number")]);
     // With company_id as a key column, or compared with =, each passes, a partial one too.
     expect(
       await problemsAfter(`${GUARDED}
         CREATE UNIQUE INDEX bare_note ON ledger.bare (note, company_id) WHERE note IS NOT NULL;
         ALTER TABLE ledger.bare ADD CONSTRAINT bare_apart EXCLUDE USING gist (company_id WITH =, note WITH =);`),
     ).toEqual([]);
+  });
+
+  it("fails a company table that keeps planner statistics of a column or of an index's expression, or has extended statistics", async () => {
+    expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ALTER COLUMN note SET STATISTICS 100;`)).toEqual([keeps("the column note")]);
+    // -1 gives the column the default target back, which ANALYZE uses.
+    expect(await problemsAfter(`${GUARDED} ALTER TABLE ledger.bare ALTER COLUMN note SET STATISTICS -1;`)).toEqual([keeps("the column note")]);
+    // A column, or an index with an expression, that comes after meta.protect_company_table keeps them until meta.hide_statistics runs again.
+    const added = `${GUARDED} ALTER TABLE ledger.bare ADD COLUMN extra text; CREATE INDEX bare_lower ON ledger.bare (company_id, pg_catalog.lower(note), extra);`;
+    expect(await problemsAfter(added)).toEqual([keeps("the column extra, column 2 of the index bare_lower")]);
+    expect(await problemsAfter(`${added} SELECT meta.hide_statistics('ledger.bare');`)).toEqual([]);
+    expect(await problemsAfter(`${GUARDED} CREATE STATISTICS ledger.bare_pairs ON company_id, note FROM ledger.bare;`)).toEqual([extended("bare_pairs")]);
+    // The tables of the migrations, the exceptions that hold company data among them.
+    expect(await problemsAfter("ALTER INDEX ledger.periods_no_overlap ALTER COLUMN 3 SET STATISTICS -1")).toEqual([
+      keeps("column 3 of the index periods_no_overlap", "ledger.periods"),
+    ]);
+    expect(await problemsAfter("ALTER TABLE audit.history ALTER COLUMN new_values SET STATISTICS -1")).toEqual([keeps("the column new_values", "audit.history")]);
+    expect(await problemsAfter("ALTER TABLE ledger.reader_roles ALTER COLUMN role_name SET STATISTICS -1")).toEqual([
+      keeps("the column role_name", "ledger.reader_roles"),
+    ]);
   });
 
   it.each([

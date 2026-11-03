@@ -29,6 +29,7 @@ import {
   balanced,
   bookVoucher,
   someUser,
+  voucherOf,
   writeVoucher,
   type FiscalYear,
 } from "../../../test/ledger.ts";
@@ -300,5 +301,34 @@ describe("fiscal years", () => {
       await booked;
       await other.query("ROLLBACK");
     });
+
+    // A change of a voucher's date locks its year's row first in
+    // ledger.assert_in_own_year, before it reads the year's dates. Nothing
+    // else in that change locks the year before the check.
+    it.each([
+      { cut: "to_date = '2090-11-30'", moved: "2090-12-15" },
+      { cut: "from_date = '2090-02-01'", moved: "2090-01-15" },
+    ])(
+      "holds when the year's dates change ($cut) and a voucher's date changes at the same time: the change waits for the year, and is refused outside it",
+      async ({ cut, moved }) => {
+        const books = await addBooks(app, who);
+        const voucher = await bookVoucher(app, books.company, { year: books.year.id, series: "A", date: "2090-03-15", rows: balanced() }, who);
+        const other = await db.connect("app");
+        const otherPid = await backendPid(other);
+        await begin(app, { company: books.company, ...who });
+        await app.query(`UPDATE ledger.fiscal_years SET ${cut} WHERE id = $1`, [books.year.id]);
+        await begin(other, { company: books.company, ...who });
+        const changed = expectRefusal(
+          other.query("UPDATE ledger.vouchers SET transaction_date = $2 WHERE id = $1", [voucher.id, moved]),
+          "no_fiscal_year",
+          { date: moved },
+        );
+        await untilWaitingForLock(app, otherPid);
+        await app.query("COMMIT");
+        await changed;
+        await other.query("ROLLBACK");
+        expect((await voucherOf(app, books.company, voucher.id))?.transaction_date).toBe("2090-03-15");
+      },
+    );
   });
 });
