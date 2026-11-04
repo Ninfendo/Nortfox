@@ -30,6 +30,7 @@ import {
   mcpClient,
   personOf,
   principalOf,
+  problemIn,
   testResolver,
   untouchedDatabase,
   voucherBody,
@@ -38,12 +39,13 @@ import { SHAPES_REGISTRY, SHAPE_OPERATIONS, fakeDatabase, shapeLog, shapesHandle
 import { createApp } from "../app.ts";
 import type { Database } from "../db/database.ts";
 import { startServer } from "../start.ts";
+import type { Principal } from "./context.ts";
 import { callerPrincipal } from "./mcp.ts";
 
 const COMPANY = randomUUID();
 const TOKENS = {
-  reader: principalOf(COMPANY, { permissions: ["company:read"] }),
-  writer: principalOf(COMPANY),
+  reader: await principalOf(COMPANY, { permissions: ["company:read"] }),
+  writer: await principalOf(COMPANY),
 };
 
 const UUID = {
@@ -451,6 +453,25 @@ describe("tools/call", () => {
     expect(database.asked).toEqual(["read"]);
     expect(reported.map(String)).toEqual(["Error: The database was asked to read, and this test must not touch it."]);
     await client.close();
+  });
+
+  it("answers 500 internal-error to a principal whose company access the one membership function did not make, runs nothing, and reports it", async () => {
+    const reported: unknown[] = [];
+    const database = untouchedDatabase();
+    const plain = { ...TOKENS.reader, company: { companyId: COMPANY, permissions: new Set(["company:read"]) } } as unknown as Principal;
+    const app = buildTestApp({ database, resolve: testResolver({ plain }), report: (error) => reported.push(error) });
+    const client = await mcpClient(app, { token: "plain" });
+    expect(await callTool(client, "getCompany")).toMatchObject({ isError: true, structured: { status: 500, code: "internal-error" } });
+    expect(database.asked).toEqual([]);
+    expect(reported.map(String)).toEqual([
+      "Error: The principal's company access was not made from the one membership function's answer (modules/memberships/resolve.ts).",
+    ]);
+    await client.close();
+    // REST answers the same, through the app's own 500.
+    const rest = await app.hono.request("/v1/company", { headers: bearer("plain") });
+    expect(rest.status).toBe(500);
+    expect(await problemIn(rest)).toMatchObject({ code: "internal-error" });
+    expect(reported).toHaveLength(2);
   });
 
   it("takes an argument the operation does not declare as an unknown field at its pointer, with the text /v1 gives", async () => {

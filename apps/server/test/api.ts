@@ -8,8 +8,8 @@
 
 import { randomUUID } from "node:crypto";
 import { Client as McpClient, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { Money, PERMISSIONS, REGISTRY, defineListOperation, defineOperation, moneyToOre, oreToMoney, type Operation } from "@nortfox/contract";
-import type { Client } from "pg";
+import { Money, PERMISSIONS, REGISTRY, defineListOperation, defineOperation, moneyToOre, oreToMoney, type AdminLevel, type Operation } from "@nortfox/contract";
+import type { Client, QueryResult, QueryResultRow } from "pg";
 import { Pool } from "pg";
 import { z } from "zod";
 import type { CompanyAccess, ContextResolver, Principal, PrincipalKind } from "../src/api/context.ts";
@@ -20,8 +20,9 @@ import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
 import { InstallKey } from "../src/auth/install-key.ts";
 import { PasswordHasher, type PasswordCost } from "../src/auth/password.ts";
 import { connectionConfig } from "../src/db/connect.ts";
-import { databaseOver, type Database } from "../src/db/database.ts";
+import { databaseOver, type Database, type Queryable } from "../src/db/database.ts";
 import { serverHandlers } from "../src/handlers.ts";
+import { resolveActive, type MembershipRow, type ResolvedMembership } from "../src/modules/memberships/resolve.ts";
 import { urlOf } from "./cluster.ts";
 import { inTransaction, type TestDatabase } from "./database.ts";
 import { expectNoTokens } from "./secrets.ts";
@@ -269,12 +270,43 @@ export function personOf(options: Omit<PrincipalOptions, "permissions"> = {}): P
   };
 }
 
-/** A principal in `companyId`: an integration with every permission, unless the options say otherwise. */
-export function principalOf(companyId: string, options: PrincipalOptions = {}): Principal & { readonly company: CompanyAccess } {
-  return {
-    ...personOf({ kind: options.kind ?? "integration", ...(options.personId === undefined ? {} : { personId: options.personId }) }),
-    company: { companyId, permissions: new Set(options.permissions ?? ALL_PERMISSIONS) },
+/**
+ * A membership of `personId` in `companyId`, as resolve.ts makes it from a
+ * row of the one membership function. The row is made up, and the
+ * transaction that gives it answers every query with it, so a runner test
+ * gets a principal in a company without asking PostgreSQL. Such a
+ * membership enters no real transaction: tx.enter takes only one that the
+ * function gave in that transaction.
+ */
+export async function testMembership(companyId: string, personId: string, adminLevel: AdminLevel | null = null): Promise<ResolvedMembership> {
+  const row: MembershipRow = {
+    membership_id: randomUUID(),
+    company_id: companyId,
+    status: "active",
+    admin_level: adminLevel,
+    idle_timeout_minutes: 120,
+    company_name: "Testbolaget Alfa AB",
+    organization_number: "556000-0167",
+    database_number: 1,
+    person_id: personId,
   };
+  const answering: Queryable = { query: <Row extends QueryResultRow>() => Promise.resolve({ rows: [row] } as unknown as QueryResult<Row>) };
+  const membership = await resolveActive(answering, companyId);
+  if (membership === undefined) {
+    throw new Error("resolve.ts made no membership of the row.");
+  }
+  return membership;
+}
+
+/**
+ * A principal in `companyId`: an integration with every permission, unless
+ * the options say otherwise. Its company access is made from a membership
+ * that resolve.ts made (testMembership), as the resolver makes it.
+ */
+export async function principalOf(companyId: string, options: PrincipalOptions = {}): Promise<Principal & { readonly company: CompanyAccess }> {
+  const person = personOf({ kind: options.kind ?? "integration", ...(options.personId === undefined ? {} : { personId: options.personId }) });
+  const membership = await testMembership(companyId, person.personId);
+  return { ...person, company: membership.access(options.permissions ?? ALL_PERMISSIONS) };
 }
 
 /** A resolver that maps `Authorization: Bearer <token>` to the token's principal, and anything else to no actor. */

@@ -22,7 +22,7 @@ import { codeOf } from "../db/refusals.ts";
 import { getCompanyHandler } from "../modules/companies/get-company.ts";
 import { healthHandler } from "../modules/status/health.ts";
 import type { AfterAnswerTask } from "./after-answer.ts";
-import type { RequestContext } from "./context.ts";
+import type { Principal, RequestContext } from "./context.ts";
 import { readCursor, signCursor } from "./cursor.ts";
 import { requestHash } from "./idempotency.ts";
 import {
@@ -50,7 +50,7 @@ import {
 const SESSION_CHALLENGE = CHALLENGES.sessionCookie;
 
 const COMPANY = "5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a";
-const CONTEXT: RequestContext = { ...principalOf(COMPANY, { kind: "user" }), channel: "mcp" };
+const CONTEXT: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "mcp" };
 const COMPANY_ROW = { id: COMPANY, name: "Testbolaget Alfa AB", organizationNumber: "556000-0167", databaseNumber: 7 };
 
 /** How the fake transaction answers a query: with rows, or by refusing it. */
@@ -123,23 +123,53 @@ describe("authorize", () => {
     expect(authorize(testSignIn, personOf())).toBeUndefined();
   });
 
-  it("lets a signed-in person call a signed-in operation, with a company or without, and refuses no actor", () => {
+  it("lets a signed-in person call a signed-in operation, with a company or without, and refuses no actor", async () => {
     expect(authorize(testGetPerson, undefined)).toEqual({ kind: "authentication-required", challenge: SESSION_CHALLENGE });
     expect(authorize(testGetPerson, personOf())).toBeUndefined();
-    expect(authorize(testGetPerson, principalOf(COMPANY, { permissions: [] }))).toBeUndefined();
+    expect(authorize(testGetPerson, await principalOf(COMPANY, { permissions: [] }))).toBeUndefined();
   });
 
   it("refuses a person whose credential names no company an operation in the credential's company, before its permission", () => {
     expect(authorize(getCompany, personOf())).toEqual({ kind: "company-required" });
   });
 
-  it("refuses no actor, then an actor without the permission", () => {
+  it("refuses no actor, then an actor without the permission", async () => {
     expect(authorize(getCompany, undefined)).toEqual({ kind: "authentication-required", challenge: SESSION_CHALLENGE });
-    expect(authorize(getCompany, principalOf(COMPANY, { permissions: ["test:read"] }))).toEqual({
+    expect(authorize(getCompany, await principalOf(COMPANY, { permissions: ["test:read"] }))).toEqual({
       kind: "permission-missing",
       permission: "company:read",
     });
-    expect(authorize(getCompany, principalOf(COMPANY, { permissions: ["company:read"] }))).toBeUndefined();
+    expect(authorize(getCompany, await principalOf(COMPANY, { permissions: ["company:read"] }))).toBeUndefined();
+  });
+
+  // Issue 12, "Companies and members": every access check goes through the
+  // one membership function. A principal's company access is made only from
+  // a membership that it gave (modules/memberships/resolve.ts). A principal
+  // whose access is anything else is a fault of the server, for every kind
+  // of operation, before any refusal.
+  it("refuses a principal whose company access is a plain object, also a copy of a real one, for every kind of operation", async () => {
+    const real = await principalOf(COMPANY, { kind: "user", permissions: ["company:read"] });
+    const plain = {
+      ...personOf(),
+      company: { companyId: COMPANY, membershipId: "3f2e1d0c-9b8a-4c7d-8e6f-5a4b3c2d1e0f", adminLevel: "owner", permissions: new Set(["company:read"]) },
+    } as unknown as Principal;
+    const copied = { ...real, company: Object.fromEntries(Object.entries(real.company)) } as unknown as Principal;
+    const madeElsewhere = new Error("The principal's company access was not made from the one membership function's answer (modules/memberships/resolve.ts).");
+    for (const principal of [plain, copied]) {
+      for (const operation of [getHealth, testSignIn, testGetPerson, getCompany]) {
+        expect(() => authorize(operation, principal)).toThrow(madeElsewhere);
+      }
+    }
+    expect(authorize(getCompany, real)).toBeUndefined();
+  });
+
+  it("runs nothing for a principal whose company access is a plain object, and asks no database", async () => {
+    const { database, transactions } = recordingDatabase();
+    const plain = { ...CONTEXT, company: { companyId: COMPANY, permissions: new Set(["company:read"]) } } as unknown as RequestContext;
+    await expect(runOperation(getCompanyHandler, call(plain), runnerDeps(database))).rejects.toThrow(
+      "The principal's company access was not made from the one membership function's answer",
+    );
+    expect(transactions).toEqual([]);
   });
 });
 
@@ -219,7 +249,7 @@ describe("runOperation", () => {
 
   it("refuses an actor without the permission with 403 before it reads any input, and asks no database", async () => {
     const { database, transactions } = recordingDatabase();
-    const context = { ...CONTEXT, company: { companyId: COMPANY, permissions: new Set(["test:read"]) } };
+    const context: RequestContext = { ...(await principalOf(COMPANY, { kind: "user", permissions: ["test:read"] })), channel: "mcp" };
     const outcome = await runOperation(getCompanyHandler, call(context, { limit: "abc" }, [UNKNOWN]), runnerDeps(database));
     expect(outcome).toEqual({ ok: false, refusal: { kind: "permission-missing", permission: "company:read" } });
     expect(transactions).toEqual([]);
@@ -837,7 +867,7 @@ describe("runOperation for a signed-in person's operation", () => {
       seen.push(personCall);
       return Promise.resolve(ok({ personId: personCall.context.personId }));
     });
-    const inCompany: RequestContext = { ...principalOf(COMPANY, { kind: "user" }), channel: "mcp" };
+    const inCompany: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "mcp" };
     for (const context of [PERSON, inCompany]) {
       expect(await runOperation(handler, { ...call(context), later: () => undefined }, runnerDeps(database))).toEqual({
         ok: true,

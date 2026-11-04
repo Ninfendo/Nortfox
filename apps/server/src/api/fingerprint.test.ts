@@ -17,7 +17,7 @@ import { canonicalJson, requestHash } from "./idempotency.ts";
 import { handleData, handlePerson, ok, runOperation } from "./operation.ts";
 
 const COMPANY = randomUUID();
-const CONTEXT: RequestContext = { ...principalOf(COMPANY, { kind: "user" }), channel: "rest" };
+const CONTEXT: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "rest" };
 
 /** The request_hash that a write's key was stored with, as the fake database saw the insert. */
 function storedHash(queries: readonly { readonly text: string; readonly values: readonly unknown[] }[]): unknown {

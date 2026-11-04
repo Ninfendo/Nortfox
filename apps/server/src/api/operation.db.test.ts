@@ -101,12 +101,12 @@ describe("the runner's read path", () => {
     await db.close();
   });
 
-  function contextIn(companyId: string, permissions?: readonly string[]): RequestContext {
-    return { ...principalOf(companyId, { kind: "user", ...(permissions === undefined ? {} : { permissions }) }), channel: "rest" };
+  async function contextIn(companyId: string, permissions?: readonly string[]): Promise<RequestContext> {
+    return { ...(await principalOf(companyId, { kind: "user", ...(permissions === undefined ? {} : { permissions }) })), channel: "rest" };
   }
 
   it("runs a read in one transaction at REPEATABLE READ READ ONLY, with the request's company, actor, kind and channel", async () => {
-    const context = contextIn(company);
+    const context = await contextIn(company);
     const outcome = await runOperation(readSettings, call(context), runnerDeps(pool.database));
     expect(outcome).toEqual({
       ok: true,
@@ -116,7 +116,7 @@ describe("the runner's read path", () => {
   });
 
   it("lets a read handler write nothing", async () => {
-    const error = await failureOf(runOperation(writeInRead, call(contextIn(company)), runnerDeps(pool.database)));
+    const error = await failureOf(runOperation(writeInRead, call(await contextIn(company)), runnerDeps(pool.database)));
     expect(error).toMatchObject({ code: READ_ONLY_SQL_TRANSACTION });
   });
 
@@ -136,7 +136,7 @@ describe("the runner's read path", () => {
       lookup: () => Promise.reject(new Error("A read looks nothing up.")),
       end: () => Promise.resolve(),
     };
-    const error = await failureOf(runOperation(getCompanyHandler, call(contextIn(broken)), runnerDeps(watching)));
+    const error = await failureOf(runOperation(getCompanyHandler, call(await contextIn(broken)), runnerDeps(watching)));
     expect(String(error)).toContain("The output of getCompany does not fit its schema: /organizationNumber");
     expect(inside).toEqual([error]);
   });
@@ -145,7 +145,7 @@ describe("the runner's read path", () => {
     const reported: unknown[] = [];
     const { hono } = buildTestApp({
       database: pool.database,
-      resolve: testResolver({ broken: principalOf(broken) }),
+      resolve: testResolver({ broken: await principalOf(broken) }),
       report: (error) => reported.push(error),
     });
     const response = await hono.request("/v1/company", { headers: bearer("broken") });
@@ -160,12 +160,12 @@ describe("the runner's read path", () => {
     try {
       const deps = runnerDeps(pool.database);
       expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
-      expect(await runOperation(readSettings, call(contextIn(company, [])), deps)).toEqual({
+      expect(await runOperation(readSettings, call(await contextIn(company, [])), deps)).toEqual({
         ok: false,
         refusal: { kind: "permission-missing", permission: "test:read" },
       });
-      expect(await runOperation(readSettings, call(contextIn(company), { x: 1 }), deps)).toMatchObject({ ok: false, refusal: { kind: "invalid" } });
-      const write = await runOperation(testBookVoucherHandler(), { context: contextIn(company), input: { query: {}, body: voucherBody() }, idempotency: { key: undefined } }, deps);
+      expect(await runOperation(readSettings, call(await contextIn(company), { x: 1 }), deps)).toMatchObject({ ok: false, refusal: { kind: "invalid" } });
+      const write = await runOperation(testBookVoucherHandler(), { context: await contextIn(company), input: { query: {}, body: voucherBody() }, idempotency: { key: undefined } }, deps);
       expect(write).toMatchObject({ ok: false, refusal: { kind: "invalid", problems: [{ code: "idempotency-key-missing" }] } });
     } finally {
       held.release();
@@ -213,12 +213,12 @@ describe("the runner's write path", () => {
     return ok(found.rows[0] ?? { level: "", readOnly: "", company: "", actor: "", kind: "", channel: "" });
   });
 
-  function contextOf(kind: PrincipalKind): RequestContext {
-    return { ...principalOf(books.company, { kind }), channel: "rest" };
+  async function contextOf(kind: PrincipalKind): Promise<RequestContext> {
+    return { ...(await principalOf(books.company, { kind })), channel: "rest" };
   }
 
   it("runs a write in one transaction at READ COMMITTED, with the request's company, actor, kind and channel", async () => {
-    const context = contextOf("integration");
+    const context = await contextOf("integration");
     const outcome = await runOperation(writeSettings, { context, input: { query: {}, body: undefined }, idempotency: "none" }, runnerDeps(pool.database));
     expect(outcome).toEqual({
       ok: true,
@@ -229,7 +229,7 @@ describe("the runner's write path", () => {
 
   it("with the key policy none runs a write on every call, and stores no key and no history row of one", async () => {
     const before = await writtenIn(app, books.company);
-    const none: OperationCall = { context: contextOf("user"), input: { query: {}, body: voucherBody() }, idempotency: "none" };
+    const none: OperationCall = { context: await contextOf("user"), input: { query: {}, body: voucherBody() }, idempotency: "none" };
     const deps = runnerDeps(pool.database);
     const first = await runOperation(testBookVoucherHandler(), none, deps);
     const second = await runOperation(testBookVoucherHandler(), none, deps);

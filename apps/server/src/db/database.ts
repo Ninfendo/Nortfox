@@ -23,7 +23,10 @@
 //   it finds the credential through the lookup functions before it knows the
 //   person. The work may then set the person once, with actAs: the actor and
 //   its kind, a user or an integration, never the internal system user. A
-//   second actAs throws.
+//   second actAs throws. After that it may enter one company, with enter:
+//   only with a membership that the one membership function gave in this
+//   same lookup, to the person it acts as (modules/memberships/resolve.ts).
+//   Anything else, and a second enter, throws before any statement.
 // - The work ends the transaction with commit(value) or rollBack(value). A
 //   throw rolls it back and is thrown again, and so is a COMMIT that fails,
 //   such as the ledger's checks at commit. The work's queries run only while
@@ -37,6 +40,7 @@
 //   SELECT 1 FROM ledger.vouchers WHERE id = $1 FOR NO KEY UPDATE.
 
 import { Pool, type ClientConfig, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
+import { ResolvedMembership } from "../modules/memberships/resolve.ts";
 
 /** The kinds of actor the database knows. */
 export type ActorKind = "user" | "system" | "integration";
@@ -102,10 +106,17 @@ export type Work<T> = (tx: Queryable) => Promise<Ending<T>>;
 /** The kinds of actor that a credential gives a person: never the internal system user. */
 export type PersonKind = "user" | "integration";
 
-/** The lookup's transaction: its queries, and the person it may set once. */
+/** The lookup's transaction: its queries, the person it may set once, and the company it may enter once. */
 export interface LookupQueryable extends Queryable {
   /** Sets the transaction's person, the actor and its kind, once. A second call throws. */
   actAs(personId: string, kind: PersonKind): Promise<void>;
+  /**
+   * Sets the transaction's company, once, from a membership that the one
+   * membership function gave in this lookup, to the person it acts as
+   * (modules/memberships/resolve.ts). Anything else, and a second call,
+   * throws before any statement.
+   */
+  enter(membership: ResolvedMembership): Promise<void>;
 }
 
 /** The resolver's work in its lookup. */
@@ -139,21 +150,46 @@ const SET_PERSON = "SELECT pg_catalog.set_config('nortfox.actor_id', $1, true), 
 
 const ENDED = "The transaction has ended. A query after its end would run outside it.";
 
+const SET_COMPANY = "SELECT pg_catalog.set_config('nortfox.company_id', $1, true)";
+
 const PERSON_SET = "The lookup has set its person already. A lookup sets the person once.";
 
-/** The lookup's transaction over `tx`: its queries, and actAs once. */
+const NOT_RESOLVED_HERE = "tx.enter takes only a membership that the one membership function gave in this transaction (modules/memberships/resolve.ts).";
+
+const ANOTHER_PERSON = "tx.enter takes a membership of the person the lookup acts as.";
+
+const COMPANY_ENTERED = "The lookup has entered its company already. A lookup enters one company.";
+
+/** The lookup's transaction over `tx`: its queries, actAs once, and enter once. */
 function lookupOver(tx: Queryable): LookupQueryable {
-  let person = false;
-  return {
+  let person: string | undefined;
+  let entered = false;
+  const lookup: LookupQueryable = {
     query: (text, values) => tx.query(text, values),
     actAs: async (personId, kind) => {
-      if (person) {
+      if (person !== undefined) {
         throw new Error(PERSON_SET);
       }
-      person = true;
+      person = personId;
       await tx.query(SET_PERSON, [personId, kind]);
     },
+    enter: async (membership) => {
+      // The membership must be this module's object, made in this lookup, so
+      // neither a plain object nor one from an earlier transaction enters.
+      if (!(membership instanceof ResolvedMembership) || !membership.resolvedIn(lookup)) {
+        throw new Error(NOT_RESOLVED_HERE);
+      }
+      if (membership.personId !== person) {
+        throw new Error(ANOTHER_PERSON);
+      }
+      if (entered) {
+        throw new Error(COMPANY_ENTERED);
+      }
+      entered = true;
+      await tx.query(SET_COMPANY, [membership.companyId]);
+    },
   };
+  return lookup;
 }
 
 /**

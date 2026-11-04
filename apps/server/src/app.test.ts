@@ -115,7 +115,7 @@ describe("GET /openapi.json", () => {
 
 describe("createApp", () => {
   it("serves the registry by default, and no test-only operation", async () => {
-    const { hono, registry } = createApp(defaults({ resolve: testResolver({ t: principalOf("c") }) }));
+    const { hono, registry } = createApp(defaults({ resolve: testResolver({ t: await principalOf("6f5e4d3c-2b1a-4c9d-8e7f-0a1b2c3d4e5f") }) }));
     expect(registry).toBe(REGISTRY);
     expect((await hono.request("/v1/company")).status).toBe(401);
     expect((await hono.request("/v1/test-accounts", { headers: bearer("t") })).status).toBe(404);

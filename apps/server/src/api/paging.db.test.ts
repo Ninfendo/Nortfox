@@ -47,7 +47,7 @@ describe("paging", () => {
       return found.rows.map((row) => row.id);
     });
     pool = appPool(db, 2);
-    server = buildTestApp({ database: pool.database, resolve: testResolver({ reader: principalOf(company) }) });
+    server = buildTestApp({ database: pool.database, resolve: testResolver({ reader: await principalOf(company) }) });
   });
 
   afterAll(async () => {

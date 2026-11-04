@@ -15,8 +15,14 @@
 // cookie on /v1, and knows no credential on /mcp yet, so a tool that needs an
 // actor answers 401 there. The tests pass their own resolver. No setting
 // turns on a fixed actor.
+//
+// The company in a principal comes only from the one membership function
+// (modules/memberships/resolve.ts): a CompanyAccess is made from a membership
+// that it gave, and authorize refuses a principal whose company is anything
+// else.
 
 import type { ActorKind, Channel } from "../db/database.ts";
+import type { CompanyAccess } from "../modules/memberships/resolve.ts";
 
 /** The kinds of actor a credential can name. A session acts as its user (decision 2); the system user is never a request's actor. */
 export type PrincipalKind = Exclude<ActorKind, "system">;
@@ -34,11 +40,13 @@ export interface SessionCredential {
 /** What the request's credential is. */
 export type Credential = SessionCredential;
 
-/** The company a request works in, and the permissions the person holds there. */
-export interface CompanyAccess {
-  readonly companyId: string;
-  readonly permissions: ReadonlySet<string>;
-}
+/**
+ * The company a request works in: the membership, its admin level and the
+ * permissions the person holds there. It is made only from a membership that
+ * the one membership function gave (modules/memberships/resolve.ts), and
+ * authorize refuses any other.
+ */
+export type { CompanyAccess } from "../modules/memberships/resolve.ts";
 
 /** Who acts, as the request's credential says. */
 export interface Principal {

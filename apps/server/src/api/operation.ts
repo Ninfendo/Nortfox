@@ -30,7 +30,8 @@
 //    401. A credential that names no company gets 403 company-required for an
 //    operation in the credential's company, and an actor without the
 //    operation's permission 403 permission-missing. Nothing of the input is
-//    read, and the database is not asked.
+//    read, and the database is not asked. A principal whose company access
+//    the one membership function did not give is a fault of the server.
 // 3. The input: a list's limit by the paging rule, then the path parameters,
 //    the query and the body by the operation's schemas, with the problems the
 //    surface's reader found, and a write's idempotency key when the
@@ -104,6 +105,7 @@ import type { CookieEffect } from "../auth/cookies.ts";
 import type { InstallKey } from "../auth/install-key.ts";
 import { ServerBusy, type PasswordHasher } from "../auth/password.ts";
 import { commit, rollBack, type Channel, type Database, type Ending, type Queryable, type TransactionSettings, type Work } from "../db/database.ts";
+import { CompanyAccess } from "../modules/memberships/resolve.ts";
 import type { AfterAnswerTask } from "./after-answer.ts";
 import type { CompanyContext, Principal, RequestContext } from "./context.ts";
 import { readCursor, signCursor, type CursorScope } from "./cursor.ts";
@@ -437,14 +439,24 @@ export interface RunnerDeps {
   readonly services: Services;
 }
 
+const MADE_ELSEWHERE = "The principal's company access was not made from the one membership function's answer (modules/memberships/resolve.ts).";
+
 /**
  * The refusal for a principal that may not call the operation, or undefined
  * when it may. The surfaces call it before they read any part of a request.
  * An operation with a permission works in the credential's company (the
  * registry guard holds that), so a credential that names no company is
  * refused before its permissions are read.
+ *
+ * A principal's company access is made only from a membership that the one
+ * membership function gave (modules/memberships/resolve.ts). Any other, such
+ * as a plain object, is a fault of the server: authorize throws, for every
+ * operation, and the surface answers 500.
  */
 export function authorize(operation: Operation, principal: Principal | undefined): Refusal | undefined {
+  if (principal?.company !== undefined && !(principal.company instanceof CompanyAccess)) {
+    throw new Error(MADE_ELSEWHERE);
+  }
   const { permission } = operation["x-nortfox"];
   if (permission === PUBLIC || permission === NONE) {
     return undefined;

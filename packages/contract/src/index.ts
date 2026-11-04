@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+export { ADMIN_LEVELS, MEMBER_PERMISSIONS, SYSTEM_ADMINISTRATOR_PERMISSIONS, platformPermissions } from "./access/permissions.ts";
+export type { AdminLevel } from "./access/permissions.ts";
 export { assistantOperations } from "./assistant.ts";
 export {
   IDEMPOTENCY_KEY_ARGUMENT,

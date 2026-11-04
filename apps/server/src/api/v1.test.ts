@@ -18,7 +18,7 @@ import { errorReport } from "./report.ts";
 import { handleData, ok } from "./operation.ts";
 
 const COMPANY = randomUUID();
-const TOKENS = { reader: principalOf(COMPANY) };
+const TOKENS = { reader: await principalOf(COMPANY) };
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -241,10 +241,13 @@ describe("an error the server did not expect", () => {
   });
 });
 
+/** The shapes app's reader, in the company. */
+const SHAPE_READER = await principalOf(COMPANY);
+
 describe("the shapes of slice 2c on /v1", () => {
   const THING = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b";
   const PERSON = personOf();
-  const SHAPE_TOKENS = { reader: principalOf(COMPANY), person: PERSON };
+  const SHAPE_TOKENS = { reader: SHAPE_READER, person: PERSON };
 
   interface ShapeApp {
     readonly app: ReturnType<typeof buildTestApp>;

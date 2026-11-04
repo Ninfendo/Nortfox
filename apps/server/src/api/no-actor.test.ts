@@ -28,7 +28,7 @@ import {
 import { resolveNoActor, type ContextResolver } from "./context.ts";
 
 const COMPANY = randomUUID();
-const TOKENS = { nobody: principalOf(COMPANY, { permissions: [] }) };
+const TOKENS = { nobody: await principalOf(COMPANY, { permissions: [] }) };
 
 /** The operations that need an actor: every one but the public ones and those that run before sign-in. */
 const DATA_OPERATIONS = TEST_REGISTRY.filter((operation) => ![PUBLIC, NONE].includes(operation["x-nortfox"].permission));
