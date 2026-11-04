@@ -4,7 +4,7 @@ import { get } from "node:http";
 import { createServer, type Server } from "node:net";
 import { describe, expect, it } from "vitest";
 import { CURSOR_KEY, TEST_INSTALL_KEY, testResolver, untouchedDatabase } from "../test/api.ts";
-import { createApp } from "./app.ts";
+import { createApp, type ServerApp } from "./app.ts";
 import { DEFAULT_PORT, parsePort, startServer } from "./start.ts";
 import { parseVersion, readServerVersion } from "./version.ts";
 
@@ -76,6 +76,31 @@ describe("startServer", () => {
     } finally {
       await server.close();
     }
+  });
+
+  it("closes only once the work queued for after the answers has run, so a stop loses no entry before the pool ends", async () => {
+    const built = app();
+    let release: () => void = () => undefined;
+    const queued = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const order: string[] = [];
+    const waiting: ServerApp = {
+      ...built,
+      afterAnswer: {
+        idle: async () => {
+          await queued;
+          order.push("queue idle");
+        },
+      },
+    };
+    const server = await startServer({ app: waiting, port: 0 });
+    const closing = server.close().then(() => order.push("closed"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(order).toEqual([]);
+    release();
+    await closing;
+    expect(order).toEqual(["queue idle", "closed"]);
   });
 
   it("reports a failed close", async () => {

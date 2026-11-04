@@ -8,6 +8,7 @@ import {
   NoBody,
   Redirect,
   bodySchema,
+  challengeOf,
   defineListOperation,
   defineOperation,
   outputSchema,
@@ -154,10 +155,26 @@ describe("defineOperation", () => {
     }
   });
 
-  it("documents the challenge of a 401", () => {
+  it("documents the challenge of a 401: the one that names the credential the operation takes", () => {
     expect(read.responses[401]).toMatchObject({
-      headers: { "WWW-Authenticate": { description: expect.stringContaining("Bearer") as unknown, schema: { type: "string" } } },
+      headers: { "WWW-Authenticate": { description: expect.stringContaining(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`) as unknown, schema: { type: "string" } } },
     });
+    expect(read.responses[401]?.headers).not.toMatchObject({ "WWW-Authenticate": { description: expect.stringContaining("Bearer") as unknown } });
+  });
+
+  it("gives the challenge of each credential an operation takes, and none for an operation that needs no actor", () => {
+    expect(challengeOf(read)).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`);
+    expect(challengeOf(write)).toBe(challengeOf(read));
+    expect(() => challengeOf(publicRead)).toThrow("An operation that needs no actor answers no 401, so it has no challenge.");
+  });
+
+  it("names the causes of a 403 that the operation can give: its permission and its company, and another site for a write", () => {
+    expect(read.responses[403]?.description).toBe(
+      "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+    );
+    expect(write.responses[403]?.description).toBe(
+      "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+    );
   });
 
   it("takes the body as JSON and a required Idempotency-Key on a write", () => {
@@ -312,7 +329,11 @@ describe("an operation that runs before sign-in", () => {
     expect(signIn.request.headers).toBeUndefined();
     expect(takesIdempotencyKey(signIn)).toBe(false);
     expect(signIn["x-nortfox"]).toMatchObject({ permission: "none", session: "flow", company: "none", writes: true });
-    expect(statuses(signIn)).toEqual(["200", "400", "413", "415", "422", "429", "500", "503"]);
+    expect(statuses(signIn)).toEqual(["200", "400", "403", "413", "415", "422", "429", "500", "503"]);
+  });
+
+  it("can be refused for another site only: a page of another site may not start a sign-in", () => {
+    expect(signIn.responses[403]?.description).toBe("The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).");
   });
 
   it("names Retry-After on its 429 and its 503, and on no other answer", () => {
@@ -340,7 +361,7 @@ describe("an operation that runs before sign-in", () => {
       tool: "Reads a link.",
       writes: false,
     });
-    expect(statuses(readLink)).toEqual(["200", "400", "422", "429", "500", "503"]);
+    expect(statuses(readLink)).toEqual(["200", "400", "403", "422", "429", "500", "503"]);
   });
 });
 
@@ -365,6 +386,21 @@ describe("a signed-in operation", () => {
     expect(endSession.request.headers?.shape[IDEMPOTENCY_KEY_HEADER]).toBeDefined();
     expect(endSession["x-nortfox"]).toMatchObject({ permission: "signed-in", session: "flow", company: "none" });
     expect(statuses(endSession)).toEqual(["204", "400", "401", "403", "409", "422", "500"]);
+    // A signed-in operation needs no permission: only another site's page refuses it, and only when it is no GET.
+    expect(endSession.responses[403]?.description).toBe("The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).");
+    const readPerson = defineOperation({
+      id: "getItemSessionPerson",
+      method: "get",
+      path: "/v1/item-session-people",
+      tags: ["items"],
+      summary: "Read",
+      description: "Reads.",
+      output: Item,
+      permission: "signed-in",
+      tool: "Reads.",
+      writes: false,
+    });
+    expect(statuses(readPerson)).toEqual(["200", "400", "401", "500"]);
   });
 
   it("takes a company source of its own", () => {

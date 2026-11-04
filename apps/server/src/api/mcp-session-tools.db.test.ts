@@ -23,6 +23,7 @@ import {
   challengeOf,
   codeOf,
   cookieHeader,
+  expectNoTokensFromSignInApps,
   passwordStep,
   signIn,
   signInApp,
@@ -130,6 +131,7 @@ describe("the session operations on /mcp", () => {
   it("gives no tool result that holds a token, and leaves no secret in clear", async () => {
     expect(results).toHaveLength(2 * SESSION_OPERATIONS.length);
     expectNoTokens(results);
+    expectNoTokensFromSignInApps();
     await expectNoSecretsAtRest(db, { passwords: [...people.map((person) => person.password), "signes-första-lösenord"] });
   });
 });

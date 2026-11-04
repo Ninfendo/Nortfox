@@ -19,6 +19,9 @@
 //   own cost, and gives false. So the time does not tell the cases apart. A
 //   password longer than 1024 characters is never right, and is checked as
 //   an empty one against the dummy, so a sign-in never hashes a megabyte.
+// - A string of more than 4096 UTF-16 units is longer than 1024 characters
+//   in any form, and is never normalised, so a long run of combining marks
+//   cannot make NFC hold the event loop.
 // - At most as many hashes run at once as the host has cores, with a queue
 //   of the same length. 19 MiB each would otherwise let a few hundred
 //   requests take gigabytes. When both are full, the hasher refuses with
@@ -67,8 +70,20 @@ export class ServerBusy extends Error {
   }
 }
 
-/** A password's length: its code points after NFC normalisation. */
+/**
+ * The most UTF-16 units that a password of 1024 characters can have: NFC
+ * makes at most four units one character, such as an alpha with three
+ * marks. A longer string is longer than any password, and is never
+ * normalised: on a long run of combining marks NFC takes time that grows
+ * with the square of the run.
+ */
+export const PASSWORD_MAX_UNITS = 4 * PASSWORD_MAX_LENGTH;
+
+/** A password's length: its code points after NFC normalisation, or Infinity for one of more units than PASSWORD_MAX_UNITS. */
 export function passwordLength(password: string): number {
+  if (password.length > PASSWORD_MAX_UNITS) {
+    return Number.POSITIVE_INFINITY;
+  }
   // A string's iterator gives its code points, which is what the rule counts.
   return Array.from(password.normalize("NFC")).length;
 }

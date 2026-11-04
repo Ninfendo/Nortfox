@@ -11,8 +11,8 @@ import type { Client } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { TEST_INSTALL_KEY, appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { expectNoSecretsAtRest, expectNoTokens } from "../../../test/secrets.ts";
-import { DAY, TEST_ORIGIN, postAsBrowser, signInApp, testClock, type SignInApp, type TestClock } from "../../../test/sign-in.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
+import { DAY, TEST_ORIGIN, expectNoTokensFromSignInApps, postAsBrowser, signInApp, testClock, type SignInApp, type TestClock } from "../../../test/sign-in.ts";
 import { open } from "../../auth/secret-box.ts";
 import { base32Decode } from "../../auth/totp.ts";
 import { createSetupLink } from "../../setup.ts";
@@ -107,8 +107,6 @@ describe("the setup link", () => {
     expect(await problemIn(again)).toEqual(LINK_INVALID);
     expect(await identitiesOf(install.owner)).toHaveLength(1);
 
-    expectNoTokens([...install.server.bodies, ...install.server.reports]);
-    await expectNoSecretsAtRest(install.db, { passwords: [PASSWORD], totpSecrets: [secret ?? Buffer.alloc(0)] });
   });
 
   it("is refused, of two uses at once, for one", async () => {
@@ -182,7 +180,6 @@ describe("completeSetup's password", () => {
     // The refusals left the link as it was.
     const response = await complete(install, token, { password: "tolv-tecken!" });
     expect(response.status).toBe(201);
-    expectNoTokens([...install.server.bodies, ...install.server.reports]);
   });
 
   it("refuses more than 1024 characters, and every other field problem with it in one answer when the rest fits", async () => {
@@ -198,5 +195,17 @@ describe("completeSetup's password", () => {
       ["bad-format", "/email"],
     ]);
     expect(await identitiesOf(install.owner)).toEqual([]);
+  });
+});
+
+describe("every install of these tests", () => {
+  it("leaves no token in an answer or a report, and no password or TOTP secret in clear in its database", async () => {
+    expect(installs.length).toBeGreaterThan(5);
+    expectNoTokensFromSignInApps();
+    for (const install of installs) {
+      // The TOTP secrets that the answers gave, each in its otpauth URI.
+      const secrets = install.server.bodies.flatMap((body) => [...body.matchAll(/[?&]secret=([A-Z2-7]+)/g)].map((match) => base32Decode(match[1] ?? "") ?? Buffer.alloc(0)));
+      await expectNoSecretsAtRest(install.db, { passwords: [PASSWORD, "tolv-tecken!", "elva-tecken"], totpSecrets: secrets });
+    }
   });
 });

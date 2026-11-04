@@ -16,7 +16,7 @@ import { z } from "zod";
 import { IDEMPOTENCY_KEY_DESCRIPTION, IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
 import { Cursor, Limit, pageOf } from "./paging.ts";
 import { Problem } from "./problem.ts";
-import type { SecurityScheme } from "./security.ts";
+import { CHALLENGES, type SecurityScheme } from "./security.ts";
 
 /**
  * The permissions an operation can need, each with what it allows. Which
@@ -188,7 +188,8 @@ export interface ListDefinition<Query extends Shape | undefined, Item extends z.
 const REFUSALS = {
   400: "The request does not fit the operation. Each field problem names its field.",
   401: "No actor: the request carries no credential that names one.",
-  403: "The request may not call the operation: the actor lacks its permission, or the credential names no company.",
+  // The causes follow, by the operation (forbiddenCauses).
+  403: "The request may not call the operation",
   409: "A request with the same idempotency key is still running.",
   413: "The body is larger than 1 MiB.",
   415: "The body is not application/json.",
@@ -200,14 +201,27 @@ const REFUSALS = {
 
 type RefusalStatus = keyof typeof REFUSALS;
 
-function refusal(status: RefusalStatus): ResponseConfig {
+/** The causes of a 403, each by its problem code. */
+const FORBIDDEN = {
+  permission: "the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing)",
+  cookieOrigin: "it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed)",
+  noneOrigin: "its Origin is another site's, not the install's own (origin-not-allowed)",
+} as const;
+
+/** The texts of the refusals that differ from one operation to another: the causes of its 403, and the challenge of its 401. */
+interface RefusalTexts {
+  readonly forbidden: readonly string[];
+  readonly challenge: () => string;
+}
+
+function refusal(status: RefusalStatus, texts: RefusalTexts): ResponseConfig {
   const response: ResponseConfig = {
-    description: REFUSALS[status],
+    description: status === 403 ? `${REFUSALS[403]}: ${texts.forbidden.join("; or ")}.` : REFUSALS[status],
     content: { "application/problem+json": { schema: Problem } },
   };
   if (status === 401) {
     response.headers = {
-      "WWW-Authenticate": { description: "The challenge, as RFC 9110 asks of every 401: Bearer.", schema: { type: "string" } },
+      "WWW-Authenticate": { description: `The challenge, as RFC 9110 asks of every 401: ${texts.challenge()}.`, schema: { type: "string" } },
     };
   }
   if (status === 429 || status === 503) {
@@ -231,6 +245,30 @@ export function securityOf(permission: string): SecurityRequirement[] | undefine
   return permission === PUBLIC || permission === NONE ? undefined : [{ sessionCookie: [] }];
 }
 
+/**
+ * The challenge that a 401 of the operation carries in WWW-Authenticate
+ * (RFC 9110, 11.6.1): one for each credential that it takes, so it names a
+ * credential that the operation takes. An operation that needs no actor
+ * answers no 401, so it has none.
+ */
+export function challengeOf(operation: Pick<Operation, "x-nortfox">): string {
+  const security = securityOf(operation["x-nortfox"].permission);
+  if (security === undefined) {
+    throw new Error("An operation that needs no actor answers no 401, so it has no challenge.");
+  }
+  return security.flatMap((requirement) => Object.keys(requirement).map((scheme) => CHALLENGES[scheme as SecurityScheme])).join(", ");
+}
+
+/** The causes of a 403 that /v1 can give an operation, by who may call it and its method. */
+function forbiddenCauses(permission: string, method: Method): string[] {
+  const open = (OPEN_PERMISSIONS as readonly string[]).includes(permission);
+  return [
+    ...(open ? [] : [FORBIDDEN.permission]),
+    ...(permission !== PUBLIC && permission !== NONE && method !== "get" ? [FORBIDDEN.cookieOrigin] : []),
+    ...(permission === NONE ? [FORBIDDEN.noneOrigin] : []),
+  ];
+}
+
 /** Whether a call of an operation takes an idempotency key: a write does, unless it runs before sign-in. */
 export function takesIdempotencyKey(operation: Pick<Operation, "x-nortfox">): boolean {
   const { writes, permission } = operation["x-nortfox"];
@@ -239,17 +277,19 @@ export function takesIdempotencyKey(operation: Pick<Operation, "x-nortfox">): bo
 
 /**
  * The refusals an operation can give. They depend on who may call it, whether
- * it writes and takes a key, and whether it takes a body. An operation that
+ * it writes and takes a key, whether it takes a body, and, for a 403, its
+ * method (forbiddenCauses). An operation that
  * runs before sign-in can be refused by a rule even when it only reads, such
  * as a link that has ended. It can also be refused for too many attempts, or
  * because the server checks as many passwords as it can at once.
  */
-function refusals(permission: string, writes: boolean, hasBody: boolean): RefusalStatus[] {
+function refusals(permission: string, writes: boolean, hasBody: boolean, forbidden: readonly string[]): RefusalStatus[] {
   const anyone = permission === PUBLIC || permission === NONE;
   const key = writes && permission !== NONE;
   return [
     400,
-    ...(anyone ? [] : ([401, 403] as const)),
+    ...(anyone ? [] : ([401] as const)),
+    ...(forbidden.length > 0 ? ([403] as const) : []),
     ...(key ? ([409] as const) : []),
     ...(writes || permission === NONE ? ([422] as const) : []),
     ...(hasBody ? ([413, 415] as const) : []),
@@ -337,8 +377,9 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
     request.headers = IdempotencyKeyHeaders;
   }
   const responses: Record<string, ResponseConfig> = { [status]: successResponse(definition.id, status, output) };
-  for (const code of refusals(permission, writes, body !== undefined)) {
-    responses[code] = refusal(code);
+  const texts: RefusalTexts = { forbidden: forbiddenCauses(permission, definition.method), challenge: () => challengeOf({ "x-nortfox": meta }) };
+  for (const code of refusals(permission, writes, body !== undefined, texts.forbidden)) {
+    responses[code] = refusal(code, texts);
   }
   const security = securityOf(permission);
   const route = createRoute({

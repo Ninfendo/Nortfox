@@ -16,13 +16,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, gate, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { PERSONAL_IDENTITY_NUMBERS, addIdentity, deleteIdentity } from "../../../test/identities.ts";
-import { expectNoSecretsAtRest, expectNoTokens } from "../../../test/secrets.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   PASSWORD_FAILED,
   TEST_ORIGIN,
   addSignInIdentity,
   challengeOf,
   codeOf,
+  expectNoTokensFromSignInApps,
   passwordStep,
   postAsBrowser,
   setCookiesOf,
@@ -98,7 +99,6 @@ describe("the password sign-in", () => {
     expect(signedIn.session).toMatch(/^nfs_/);
     const states = await owner.query<{ state: string }>("SELECT state FROM access.totp_secrets WHERE identity_id = $1", [user.id]);
     expect(states.rows.map((row) => row.state)).toEqual(["active"]);
-    expectNoTokens([...production.bodies, ...production.reports], challengesIn(production.bodies));
   });
 
   it("logs in with the e-mail address, in any letter case and in either form of Å", async () => {
@@ -235,7 +235,7 @@ describe("the password sign-in", () => {
 
   it("leaves no token but its challenges in an answer or a report, and no secret in clear in the database", async () => {
     expect(challengesIn(server.bodies)).toEqual(expect.arrayContaining(challenges));
-    expectNoTokens([...server.bodies, ...server.reports], challengesIn(server.bodies));
+    expectNoTokensFromSignInApps();
     await expectNoSecretsAtRest(db, { passwords, totpSecrets: secrets });
   });
 });

@@ -12,7 +12,9 @@
 // minutes the server purges the login rows that have passed. A list's
 // cursors are signed with a key made at start, so a cursor lasts as long as
 // the process. Every error is logged through the safe report
-// (api/report.ts), a failed start too, which exits with 1.
+// (api/report.ts), a failed start too, which exits with 1. A stop (SIGINT or
+// SIGTERM) stops the purge timer, closes the server, which waits for the
+// work queued for after the answers (start.ts), and only then ends the pool.
 
 import { randomBytes } from "node:crypto";
 import { errorReport, reportSafely } from "./api/report.ts";

@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   HASH_BYTES,
   PASSWORD_MAX_LENGTH,
+  PASSWORD_MAX_UNITS,
   PASSWORD_MIN_LENGTH,
   PRODUCTION_PASSWORD_COST,
   PasswordHasher,
@@ -141,6 +142,42 @@ describe("a new password", () => {
     expect(newPasswordIssue("é".repeat(12), "/password")).toBeUndefined();
     expect(newPasswordIssue("😀".repeat(12), "/password")).toBeUndefined();
     expect(newPasswordIssue("é".repeat(1024), "/password")).toBeUndefined();
+  });
+
+  it("never normalises a password of more UTF-16 units than four to each of 1024 characters, and counts it as too long", async () => {
+    // A long run of combining marks of two classes in turn makes NFC take quadratic time, so such a password never reaches normalize().
+    const below = String.fromCodePoint(0x316);
+    const above = String.fromCodePoint(0x301);
+    const attack = `a${`${below}${above}`.repeat(32 * 1024)}`;
+    expect(PASSWORD_MAX_UNITS).toBe(4 * PASSWORD_MAX_LENGTH);
+    const { hasher, calls } = watched();
+    const normalize = vi.spyOn(String.prototype, "normalize");
+    try {
+      expect(passwordLength(attack)).toBe(Number.POSITIVE_INFINITY);
+      expect(newPasswordIssue(attack, "/password")?.code).toBe("too-long");
+      expect(await hasher.hash(attack, "/password")).toMatchObject({ ok: false, issue: { code: "too-long" } });
+      expect(await hasher.verify(attack, undefined)).toBe(false);
+      expect(normalize.mock.contexts.filter((text) => String(text).length > PASSWORD_MAX_UNITS)).toEqual([]);
+    } finally {
+      normalize.mockRestore();
+    }
+    // It was checked as the empty password, against the dummy.
+    expect(calls.map((call) => Buffer.from(call.message as Uint8Array).length)).toEqual([0]);
+    // NFC makes at most four code points one character: 1024 such characters, written out in 4096 units, are a password.
+    const fourToOne = String.fromCodePoint(0x3b1, 0x313, 0x300, 0x345);
+    expect(fourToOne.normalize("NFC")).toHaveLength(1);
+    expect(passwordLength(fourToOne.repeat(PASSWORD_MAX_LENGTH))).toBe(PASSWORD_MAX_LENGTH);
+    expect(newPasswordIssue(fourToOne.repeat(PASSWORD_MAX_LENGTH), "/password")).toBeUndefined();
+    expect(passwordLength(`${fourToOne.repeat(PASSWORD_MAX_LENGTH)}a`)).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("answers a password of combining marks quickly, however long it is", async () => {
+    const attack = `a${`${String.fromCodePoint(0x316)}${String.fromCodePoint(0x301)}`.repeat(32 * 1024)}`;
+    const { hasher } = watched();
+    const started = performance.now();
+    expect(await hasher.verify(attack, undefined)).toBe(false);
+    expect(newPasswordIssue(attack, "/password")?.code).toBe("too-long");
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   it("is hashed in its NFC form, so either way of writing é gives the same password", async () => {

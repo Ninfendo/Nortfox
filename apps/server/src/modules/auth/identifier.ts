@@ -14,9 +14,13 @@
 //   combining ring is the same address as Å.
 //
 // The spaces around an identifier are left out. An identifier that names no
-// identity is counted under the HMAC of its form above, with an e-mail
-// address in lower case, so the failures of one unknown address are counted
-// together, and the database never holds the address.
+// identity is counted under the HMAC of the form that access.find_login
+// matches on, which the database gives (access.identifier_form): an e-mail
+// address folded with casefold(), as the unique index folds it. So every
+// spelling that would find one identity is counted as one, for an unknown
+// address as for an identity, and the database never holds the address.
+// The server never folds the case itself: JavaScript's lower case folds
+// less than casefold() does, such as the long s and the sharp s.
 
 import type { InstallKey } from "../../auth/install-key.ts";
 
@@ -48,8 +52,7 @@ export function readIdentifier(text: string, today: Date): Identifier {
   return { kind: "email", value: trimmed.normalize("NFC") };
 }
 
-/** The attempt counter's subject of an identifier that names no identity: the HMAC of its form, with the key's id. */
-export function unknownSubject(installKey: InstallKey, identifier: Identifier): string {
-  const form = identifier.kind === "email" ? identifier.value.toLowerCase() : identifier.value;
+/** The attempt counter's subject of an identifier that names no identity: the HMAC, with the key's id, of the form that the database matches on. */
+export function unknownSubject(installKey: InstallKey, form: string): string {
   return `hmac:${String(installKey.keyId)}:${installKey.mac("identifier v1", form)}`;
 }

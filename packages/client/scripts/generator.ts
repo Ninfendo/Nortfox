@@ -493,15 +493,23 @@ function operation(path: string, method: string, value: unknown, schemas: Json, 
   const entry = record(value, where);
   refuseOtherKeys(entry, OPERATION_KEYS, where);
   const id = identifier(text(entry["operationId"], `${where}.operationId`), `${where}.operationId`);
+  const summary = optionalText(entry["summary"], `${where}.summary`);
+  const description = optionalText(entry["description"], `${where}.description`);
+  const meta = metaOf(entry["x-nortfox"], `${where}.x-nortfox`);
+  const parameters = parametersOf(entry["parameters"], path, where);
+  const body = bodyOf(entry["requestBody"], where, schemas);
+  if (body !== undefined && method === "get") {
+    throw new GeneratorError(`${where}.requestBody: a GET takes no body, which fetch cannot send.`);
+  }
   return {
     id,
     method: method.toUpperCase(),
     path,
-    summary: optionalText(entry["summary"], `${where}.summary`),
-    description: optionalText(entry["description"], `${where}.description`),
-    meta: metaOf(entry["x-nortfox"], `${where}.x-nortfox`),
-    ...parametersOf(entry["parameters"], path, where),
-    body: bodyOf(entry["requestBody"], where, schemas),
+    summary,
+    description,
+    meta,
+    ...parameters,
+    body,
     ...successOf(record(entry["responses"], `${where}.responses`), `${where}.responses`),
     credentials: credentialsOf(entry["security"], where, schemes),
   };

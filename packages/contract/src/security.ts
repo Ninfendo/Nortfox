@@ -4,7 +4,8 @@
 // (docs/decisions/0008-authentication.md). Each operation that needs an
 // actor names, in OpenAPI's `security`, the credentials that can name one.
 // In this part of slice 2c that is the browser's session alone: its cookie,
-// which the browser sends by itself. API tokens come in a later part.
+// which the browser sends by itself. API tokens come in a later part. A 401
+// names the operation's credentials in its challenge.
 // x-nortfox's permission stays what the server checks, and the registry
 // guard holds the two together.
 
@@ -22,3 +23,14 @@ export const SECURITY_SCHEMES = {
 } as const;
 
 export type SecurityScheme = keyof typeof SECURITY_SCHEMES;
+
+/**
+ * The challenge of each credential, which a 401 sends in WWW-Authenticate
+ * (RFC 9110, 11.6.1). HTTP has no registered scheme for a cookie, so the
+ * session's challenge is NortFox's own: the scheme Cookie, with the
+ * install's realm and the cookie's name. A client that knows no such scheme
+ * ignores it, as RFC 9110 says it may.
+ */
+export const CHALLENGES: Readonly<Record<SecurityScheme, string>> = {
+  sessionCookie: `Cookie realm="NortFox", cookie-name="${SESSION_COOKIE}"`,
+};

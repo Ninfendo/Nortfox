@@ -9,7 +9,7 @@
 // the key policy none, as the compatible surface will pass it, a write on
 // every call and no key stored.
 
-import { defineOperation } from "@nortfox/contract";
+import { CHALLENGES, defineOperation } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -32,6 +32,9 @@ import type { Database } from "../db/database.ts";
 import { getCompanyHandler } from "../modules/companies/get-company.ts";
 import type { PrincipalKind, RequestContext } from "./context.ts";
 import { handleData, ok, runOperation, type OperationCall } from "./operation.ts";
+
+/** The challenge of the session cookie, the one credential in this part. */
+const SESSION_CHALLENGE = CHALLENGES.sessionCookie;
 
 /** PostgreSQL's SQLSTATE for a write in a READ ONLY transaction. */
 const READ_ONLY_SQL_TRANSACTION = "25006";
@@ -158,7 +161,7 @@ describe("the runner's read path", () => {
     const held = await pool.pool.connect();
     try {
       const deps = runnerDeps(pool.database);
-      expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required" } });
+      expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
       expect(await runOperation(readSettings, call(contextIn(company, [])), deps)).toEqual({
         ok: false,
         refusal: { kind: "permission-missing", permission: "test:read" },

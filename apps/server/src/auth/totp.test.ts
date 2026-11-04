@@ -8,6 +8,7 @@
 // test vectors.
 
 import type * as NodeCrypto from "node:crypto";
+import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 import {
   TOTP_DIGITS,
@@ -66,6 +67,16 @@ describe("base32", () => {
     for (const text of ["MZXW1", "MZXW6YTB0I", "MZ=XW", "M", "MZX", "MZXW6Y", "MZXW6YT=", "MZXW6YTBOI======="]) {
       expect(base32Decode(text)).toBeUndefined();
     }
+  });
+
+  it("gives back the bytes it was given, with or without padding, in either case", () => {
+    fc.assert(
+      fc.property(fc.uint8Array({ maxLength: 64 }), fc.boolean(), fc.boolean(), (bytes, padding, lower) => {
+        const encoded = base32Encode(bytes, { padding });
+        expect(encoded).toMatch(padding ? /^([A-Z2-7]{8})*([A-Z2-7]{2}={6}|[A-Z2-7]{4}={4}|[A-Z2-7]{5}={3}|[A-Z2-7]{7}=)?$/ : /^[A-Z2-7]*$/);
+        expect(base32Decode(lower ? encoded.toLowerCase() : encoded)).toEqual(Buffer.from(bytes));
+      }),
+    );
   });
 
   it("gives the RFC secret in the form the otpauth URI carries", () => {

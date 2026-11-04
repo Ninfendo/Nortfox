@@ -50,6 +50,14 @@ describe("src/generated.ts", () => {
       "packages/client/src/generated.ts is out of date. Run `pnpm openapi` and commit the result.",
     ).toBe(true);
   });
+
+  it("has every interface it declares exported by the package, so a program can name each input and answer", () => {
+    const declared = [...readFileSync(GENERATED_TS, "utf8").matchAll(/^export interface (\w+)/gm)].map((match) => match[1]);
+    const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+    const exported = /^export type \{([^}]*)\} from "\.\/generated\.ts";$/m.exec(index)?.[1]?.split(",").map((name) => name.trim()) ?? [];
+    expect(declared.length).toBeGreaterThan(5);
+    expect(exported).toEqual(declared);
+  });
 });
 
 describe("generateClient", () => {
@@ -587,6 +595,10 @@ describe("generateClient", () => {
     [
       documentWith({}, { "/v1/x": getOperation({ type: "string" }, { requestBody: { required: true, content: { "application/json": {} } } }) }),
       'paths["/v1/x"].get.requestBody must be required, with an application/json schema.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } } }) }),
+      'paths["/v1/x"].get.requestBody: a GET takes no body, which fetch cannot send.',
     ],
     [
       documentWith({}, { "/v1/x": getOperation({ type: "string" }, { requestBody: { required: true, content: { "text/plain": { schema: { type: "string" } } } } }) }),

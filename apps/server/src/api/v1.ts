@@ -10,7 +10,7 @@
 //    Origin. A refusal is 403 origin-not-allowed, before the resolver reads
 //    the cookie.
 // 2. authorize: the resolver reads the credential from the request's headers,
-//    and the runner's authorize answers 401 (with the Bearer challenge) or
+//    and the runner's authorize answers 401 (with the operation's challenge) or
 //    403 at once. No query parameter and no byte of the body is read first.
 // 3. the body limit, for an operation that takes a body: a body over 1 MiB
 //    gets 413. A Content-Length over the limit is refused before a byte is

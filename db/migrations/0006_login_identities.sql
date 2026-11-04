@@ -242,7 +242,9 @@ CREATE UNIQUE INDEX totp_secrets_one_per_state ON access.totp_secrets (identity_
 SELECT meta.protect_install_table('access.totp_secrets');
 
 -- A known device: the device cookie's hash, with the identity, and when a
--- TOTP step last passed on it. One browser can be known to two identities.
+-- TOTP step last passed on it. The table lets one device token be known to
+-- two identities; the server makes a new token for a person who does not
+-- know the browser's, so in use each token is one person's.
 CREATE TABLE access.known_devices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   identity_id uuid NOT NULL REFERENCES access.identities (id),
@@ -473,6 +475,22 @@ BEGIN
 END
 $find$;
 
+-- The form of an identifier that find_login matches on: a personnummer as it
+-- is, and an e-mail address folded as the unique index folds it. casefold()
+-- folds more than lower case does, such as the long s to s and the sharp s
+-- to ss. The server counts the failures of an identifier that names no
+-- identity under the HMAC of this form, so every spelling that would find
+-- one identity is counted as one, as it is for an identity.
+CREATE FUNCTION access.identifier_form(identifier text) RETURNS text
+LANGUAGE sql IMMUTABLE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+BEGIN ATOMIC
+  SELECT CASE
+    WHEN identifier_form.identifier ~ '^[0-9]{8}-[0-9]{4}$' THEN identifier_form.identifier
+    ELSE casefold(identifier_form.identifier COLLATE pg_catalog.pg_unicode_fast)
+  END;
+END;
+
 -- Opens a login challenge after a right password, and gives its id.
 CREATE FUNCTION access.open_challenge(token_hash bytea, person uuid, method text, device_hash bytea, at timestamptz, expires_at timestamptz) RETURNS uuid
 LANGUAGE sql SECURITY DEFINER
@@ -566,10 +584,18 @@ BEGIN ATOMIC
 END;
 
 -- Counts one failure in the subject's window of `span`, or starts a new
--- window once the old one has passed, and gives the counter. A lock is kept
--- until its end. Parallel calls each count: the insert waits for the row.
+-- window once the old one has passed, and gives the counter after the count
+-- and as it was just before it (all NULL before the subject's first
+-- failure). A lock is kept until its end. Parallel calls each count, one
+-- after another: the insert waits for the row's lock, so each call sees the
+-- counts before its own. So the server counts an attempt before it checks
+-- it, and decides from the counter before the count whether the attempt
+-- may run; when it may not, it rolls the count back.
 CREATE FUNCTION access.count_failure(subject text, kind text, span interval, at timestamptz)
-RETURNS TABLE (failures integer, window_started_at timestamptz, last_failure_at timestamptz, locked_until timestamptz)
+RETURNS TABLE (
+  failures integer, window_started_at timestamptz, last_failure_at timestamptz, locked_until timestamptz,
+  before_failures integer, before_window_started_at timestamptz, before_last_failure_at timestamptz, before_locked_until timestamptz
+)
 LANGUAGE sql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 BEGIN ATOMIC
@@ -579,8 +605,31 @@ BEGIN ATOMIC
     window_started_at = CASE WHEN a.window_started_at + count_failure.span > count_failure.at THEN a.window_started_at ELSE count_failure.at END,
     failures = CASE WHEN a.window_started_at + count_failure.span > count_failure.at THEN a.failures + 1 ELSE 1 END,
     last_failure_at = count_failure.at
-  RETURNING a.failures, a.window_started_at, a.last_failure_at, a.locked_until;
+  RETURNING new.failures, new.window_started_at, new.last_failure_at, new.locked_until,
+    old.failures, old.window_started_at, old.last_failure_at, old.locked_until;
 END;
+
+-- Gives back a failure that was counted before its check, when the check
+-- found none: a right TOTP code, or a password that the server could not
+-- check. The last one forgets the counter. The row's lock comes first, so
+-- parallel calls each give one back.
+CREATE FUNCTION access.give_back_failure(subject text, kind text) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $give$
+DECLARE
+  counted integer;
+BEGIN
+  SELECT a.failures INTO counted FROM access.attempt_counters AS a
+  WHERE a.subject = give_back_failure.subject AND a.kind = give_back_failure.kind
+  FOR UPDATE;
+  IF counted = 1 THEN
+    DELETE FROM access.attempt_counters AS a WHERE a.subject = give_back_failure.subject AND a.kind = give_back_failure.kind;
+  ELSIF counted > 1 THEN
+    UPDATE access.attempt_counters AS a SET failures = a.failures - 1 WHERE a.subject = give_back_failure.subject AND a.kind = give_back_failure.kind;
+  END IF;
+END
+$give$;
 
 -- Locks the subject's guesses of one kind until `until`. A shorter lock never
 -- shortens a longer one.
@@ -796,6 +845,7 @@ $purge$;
 
 GRANT EXECUTE ON FUNCTION
   access.find_login(text),
+  access.identifier_form(text),
   access.open_challenge(bytea, uuid, text, bytea, timestamptz, timestamptz),
   access.challenge_by_token(bytea, timestamptz),
   access.claim_attempt(uuid, timestamptz),
@@ -803,6 +853,7 @@ GRANT EXECUTE ON FUNCTION
   access.use_totp_step(uuid, uuid, bigint, timestamptz),
   access.attempt_counter(text, text),
   access.count_failure(text, text, interval, timestamptz),
+  access.give_back_failure(text, text),
   access.lock_attempts(text, text, timestamptz),
   access.clear_attempts(text, text),
   access.known_device(uuid, bytea),

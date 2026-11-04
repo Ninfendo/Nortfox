@@ -329,6 +329,9 @@ function entryProblems(entry: Entry, name: string, permissions: ReadonlySet<stri
   if (bodyConfig !== undefined && body === undefined) {
     problems.push(`${name}: its body must be a strict object, and so must every object in it.`);
   }
+  if (bodyConfig !== undefined && method === "get") {
+    problems.push(`${name} is a GET with a body. A GET takes its input in the path and the query: HTTP gives a GET's content no meaning, and fetch cannot send it.`);
+  }
   const success = successOf(name, entry);
   problems.push(...success.problems, ...redirectProblems(name, entry, meta, success));
 

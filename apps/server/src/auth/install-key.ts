@@ -9,7 +9,12 @@
 //   value that the server reads again (secret-box.ts): a TOTP secret, a
 //   provider's secret, and the key check value. Four make an HMAC: an e-mail
 //   code, a recovery code, an identifier that names no identity, and a
-//   request's fingerprint. Each stored value keeps the key id beside it.
+//   request's fingerprint. A sealed value keeps the key id in its header,
+//   and an identifier's HMAC keeps it in its subject (hmac:<key id>:...). A
+//   request's fingerprint keeps none: it is 64 hexadecimal digits, which the
+//   idempotency key tables check. So after a change of install key, a retry
+//   of an older write no longer matches its stored request, and is refused
+//   as another request instead of getting the stored answer again.
 // - The key never shows itself: the secret and the derived keys live in
 //   private fields, and inspecting the key, writing it as JSON or as text
 //   gives only its key id.

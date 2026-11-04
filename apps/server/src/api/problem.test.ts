@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { PROBLEM_CODES, Problem } from "@nortfox/contract";
+import { CHALLENGES, PROBLEM_CODES, Problem } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
 import {
   browserOnly,
@@ -17,6 +17,9 @@ import {
 } from "./problem.ts";
 
 /** Every problem answer is application/problem+json, and no cache keeps it. */
+/** The challenge of the session cookie, the one credential in this part. */
+const CHALLENGE = CHALLENGES.sessionCookie;
+
 const JSON_PROBLEM = { "Content-Type": "application/problem+json", "Cache-Control": "no-store" };
 
 /** Every answer is problem details that the contract's schema takes, with a code it lists at its status. */
@@ -30,12 +33,12 @@ function expectProblem(answer: ProblemAnswer): void {
 }
 
 describe("problemOf", () => {
-  it("answers no actor with 401, the Bearer challenge and authentication-required", () => {
-    const answer = problemOf({ kind: "authentication-required" });
+  it("answers no actor with 401, the operation's challenge and authentication-required", () => {
+    const answer = problemOf({ kind: "authentication-required", challenge: CHALLENGE });
     expectProblem(answer);
     expect(answer).toEqual({
       status: 401,
-      headers: { ...JSON_PROBLEM, "WWW-Authenticate": "Bearer" },
+      headers: { ...JSON_PROBLEM, "WWW-Authenticate": CHALLENGE },
       body: {
         type: "about:blank",
         title: "Unauthorized",

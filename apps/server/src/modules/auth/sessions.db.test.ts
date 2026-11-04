@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, bearer, buildTestApp, callTool, mcpClient, personOf, problemIn, testResolver, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { PERSONAL_IDENTITY_NUMBERS, deleteIdentity } from "../../../test/identities.ts";
-import { expectNoSecretsAtRest, expectNoTokens } from "../../../test/secrets.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   HOUR,
   MINUTE,
@@ -24,6 +24,7 @@ import {
   challengeOf,
   codeOf,
   cookieHeader,
+  expectNoTokensFromSignInApps,
   passwordStep,
   sendAsBrowser,
   setCookiesOf,
@@ -129,9 +130,9 @@ describe("a browser session", () => {
       personalIdentityNumber: PERSONAL_IDENTITY_NUMBERS[0],
       twoStep: "new_device_90_days",
     });
-    await owner.query("UPDATE access.identities SET mobile = '070-123 45 67', language = 'en', two_step = 'every_login' WHERE id = $1", [person.id]);
+    await owner.query("UPDATE access.identities SET mobile = '070-174 06 07', language = 'en', two_step = 'every_login' WHERE id = $1", [person.id]);
     const changed = await sendAsBrowser(server, "GET", "/v1/me", { cookies: { session: browser.session } });
-    expect(await changed.json()).toMatchObject({ user: { language: "en" }, mobile: "070-123 45 67", twoStep: "every_login" });
+    expect(await changed.json()).toMatchObject({ user: { language: "en" }, mobile: "070-174 06 07", twoStep: "every_login" });
   });
 
   it("logout ends the session, clears its cookie, and its cookie is refused from the next request", async () => {
@@ -218,8 +219,7 @@ describe("a browser session", () => {
   });
 
   it("leaves no token in an answer or a report, and no secret in clear in the database", async () => {
-    const challenges = server.bodies.flatMap((body) => [...body.matchAll(/nfc_[A-Za-z0-9_-]{43}/g)].map((match) => match[0]));
-    expectNoTokens([...server.bodies, ...server.reports], challenges);
+    expectNoTokensFromSignInApps();
     await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
   });
 });

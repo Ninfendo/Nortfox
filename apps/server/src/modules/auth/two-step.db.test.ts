@@ -13,7 +13,7 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { expectNoSecretsAtRest, expectNoTokens } from "../../../test/secrets.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   DAY,
   MINUTE,
@@ -21,6 +21,7 @@ import {
   addSignInIdentity,
   challengeOf,
   codeOf,
+  expectNoTokensFromSignInApps,
   passwordStep,
   postAsBrowser,
   sendAsBrowser,
@@ -147,6 +148,28 @@ describe("the TOTP step of a password sign-in", () => {
     expect(known.rows).toEqual([{ identity_id: person.id, last_totp_at: server.clock.now() }]);
   });
 
+  it("never makes a device token that the server did not give the person a known device, so a token put in the browser before skips no TOTP step", async () => {
+    const person = await addPerson();
+    const other = await addPerson();
+    // A token someone chose, and one the server gave another person: neither is this person's device.
+    const chosen = `nfd_${"Q".repeat(43)}`;
+    const othersDevice = (await signIn(server, other)).device;
+    for (const planted of [chosen, othersDevice]) {
+      const challenge = await challengeOf(await passwordStep(server, person.email, person.password, { cookies: { device: planted } }));
+      const answer = await totpStep(server, challenge, codeOf(person, server.clock.now()), { cookies: { device: planted } });
+      expect(answer.status).toBe(204);
+      const given = setCookiesOf(answer)["__Host-nortfox-device"]?.value ?? "";
+      expect(given).toMatch(/^nfd_[A-Za-z0-9_-]{43}$/);
+      expect(given).not.toBe(planted);
+      server.clock.advance(MINUTE);
+      // The planted token still asks for a code, and the one the server gave signs in at once.
+      expect(await passwordAnswer(person, planted)).toEqual({ status: 200, body: TOTP_REQUIRED, cookies: [] });
+      expect(await passwordAnswer(person, given)).toEqual({ status: 200, body: { outcome: "signed-in" }, cookies: ["__Host-nortfox-session"] });
+      const known = await owner.query("SELECT 1 FROM access.known_devices WHERE identity_id = $1 AND device_hash = $2", [person.id, tokenHash(planted)]);
+      expect(known.rowCount).toBe(0);
+    }
+  });
+
   it("refuses a code that is not the person's, and gives no session for it", async () => {
     const person = await addPerson();
     const other = await addPerson();
@@ -158,8 +181,7 @@ describe("the TOTP step of a password sign-in", () => {
   });
 
   it("leaves no token but its challenges in an answer or a report, and no secret in clear in the database", async () => {
-    const challenges = server.bodies.flatMap((body) => [...body.matchAll(/nfc_[A-Za-z0-9_-]{43}/g)].map((match) => match[0]));
-    expectNoTokens([...server.bodies, ...server.reports], challenges);
+    expectNoTokensFromSignInApps();
     await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
   });
 });

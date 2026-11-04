@@ -98,7 +98,7 @@ export function problemOf(refusal: Refusal): ProblemAnswer {
         CODES.authentication,
         "The request names no actor. Sign in first: a browser sends its session cookie, and a program its token in the Authorization header.",
         {},
-        { "WWW-Authenticate": "Bearer" },
+        { "WWW-Authenticate": refusal.challenge },
       );
     case "company-required":
       return answer(403, CODES.company, "The operation works in a company, and the request's credential names none. Choose a company first.");

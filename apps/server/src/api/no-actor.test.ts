@@ -93,12 +93,12 @@ describe("no actor", () => {
     expect(CASES.filter(([, , operation]) => operation["x-nortfox"].writes).map(([label]) => label)).toEqual([...writeLabels("/v1/auth/logout"), ...writeLabels("/v1/test-vouchers")]);
   });
 
-  it.each(CASES)("%s answers 401 with WWW-Authenticate: Bearer, and asks no database", async (_label, sent) => {
+  it.each(CASES)("%s answers 401 with the challenge of the session cookie, which it takes, and asks no database", async (_label, sent) => {
     for (const credential of [{}, bearer("unknown-token"), { authorization: "Basic YTpi" }]) {
       const database = untouchedDatabase();
       const response = await send(database, sent, credential);
       expect(response.status).toBe(401);
-      expect(response.headers.get("www-authenticate")).toBe("Bearer");
+      expect(response.headers.get("www-authenticate")).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`);
       expect(await problemIn(response)).toEqual({
         type: "about:blank",
         title: "Unauthorized",

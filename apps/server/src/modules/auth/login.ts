@@ -6,13 +6,20 @@
 // 1. The identifier is written as the database finds it (identifier.ts),
 //    and its login is looked up: the identity, its two-step choice and its
 //    password's hash. The failures count under the identity's id, or, for an
-//    identifier that names no identity, under the HMAC of the identifier.
-// 2. An attempt that comes too soon after failures, or while the step is
-//    locked, gets 429 too-many-attempts and the seconds to wait. Its password
-//    is not checked.
+//    identifier that names no identity, under the HMAC of the form that the
+//    database matches on.
+// 2. The attempt is counted as a failure before its password is checked, in
+//    the same transaction, under the counter's row lock (limits.ts). An
+//    attempt that comes too soon after failures, or while the step is locked,
+//    rolls its count back and gets 429 too-many-attempts and the seconds to
+//    wait. Its password is not checked. So attempts sent at once come one
+//    after another, and a burst gets no more checked than one attempt after
+//    another would.
 // 3. The password is checked through the one wrapper: against the dummy hash
-//    when there is no identity or no password, so the time tells nothing.
-// 4. A failure of any kind counts once, and gets the one answer, 422
+//    when there is no identity or no password, so the time tells nothing. A
+//    password the wrapper could not check, such as when it is busy, gives its
+//    count back.
+// 4. A failure of any kind has counted once, and gets the one answer, 422
 //    sign-in-failed. At 100 failures in the window the step is locked until
 //    the window's hour has passed. A failure for an identity is written to
 //    its Kontoaktivitet after the answer, and so is the lock, once.
@@ -27,12 +34,12 @@
 
 import { loginWithPassword, type PasswordSignIn } from "@nortfox/contract";
 import type { SignInMethod } from "../../api/context.ts";
-import { handleNone, ok, refused, tooManyAttempts, type Answer } from "../../api/operation.ts";
+import { handleNone, ok, refused, tooManyAttempts, type Answer, type NoneCall } from "../../api/operation.ts";
 import { newToken, tokenHash } from "../../auth/tokens.ts";
 import { commit, rollBack, type Ending, type Queryable } from "../../db/database.ts";
 import { addAccountEvent, addAfterAnswer, asPerson, signInDetails, type AccountEvent } from "./account-events.ts";
 import { readIdentifier, unknownSubject } from "./identifier.ts";
-import { PASSWORD_CAP, PASSWORD_WINDOW_MS, attemptCounter, clearAttempts, countFailure, lockAttempts, passwordLockEnd, passwordWait } from "./limits.ts";
+import { PASSWORD_CAP, PASSWORD_WINDOW_MS, clearAttempts, countFailure, giveBackFailure, lockAttempts, passwordLockEnd, passwordWait, type AttemptCounter } from "./limits.ts";
 import { CHALLENGE_LIFETIME_MS, PASSWORD_FAILED, deviceHashOf, knownDevice, openSession } from "./sign-in.ts";
 
 /** An identity's login, as access.find_login gives it. */
@@ -62,33 +69,58 @@ async function findLogin(tx: Queryable, identifier: string): Promise<Login | und
 /** What a right password opened: a session's token, or a challenge; or nothing, for an identity no longer active. */
 type Opened = { readonly session: string } | { readonly challenge: string } | undefined;
 
+/** The attempt, counted and free to run, or the seconds it must wait. */
+type Claim = { readonly login: Login | undefined; readonly subject: string; readonly counted: AttemptCounter } | { readonly wait: number };
+
+/** The form of an identifier that access.find_login matches on. */
+async function identifierForm(tx: Queryable, identifier: string): Promise<string> {
+  const found = await tx.query<{ form: string }>("SELECT access.identifier_form($1) AS form", [identifier]);
+  // A SELECT of one function call gives one row.
+  return (found.rows as [{ readonly form: string }])[0].form;
+}
+
+/** Checks the password. When the wrapper cannot check it, the attempt gives its count back, and the error goes on. */
+async function checkPassword(call: NoneCall, password: string, login: Login | undefined, subject: string): Promise<boolean> {
+  try {
+    return await call.services.passwords.verify(password, login?.passwordHash);
+  } catch (error) {
+    await call.database.write({ channel: call.channel }, async (tx) => {
+      await giveBackFailure(tx, subject, "password");
+      return commit(undefined);
+    });
+    throw error;
+  }
+}
+
 export const loginWithPasswordHandler = handleNone(loginWithPassword, async (call, { body }): Promise<Answer<PasswordSignIn>> => {
   const { database, services, channel, request, later } = call;
   const at = call.now();
   const identifier = readIdentifier(body.identifier, at);
   const method: SignInMethod = identifier.kind === "email" ? "password-email" : "password-personnummer";
-  const { login, subject, counter } = await database.read({ channel }, async (tx) => {
+  const claim = await database.write({ channel }, async (tx): Promise<Ending<Claim>> => {
     const found = await findLogin(tx, identifier.value);
-    const counted = found === undefined ? unknownSubject(services.installKey, identifier) : found.identityId;
-    return commit({ login: found, subject: counted, counter: await attemptCounter(tx, counted, "password") });
+    const subject = found === undefined ? unknownSubject(services.installKey, await identifierForm(tx, identifier.value)) : found.identityId;
+    const { before, after } = await countFailure(tx, subject, "password", PASSWORD_WINDOW_MS, at);
+    const wait = passwordWait(before, at);
+    return wait === undefined ? commit({ login: found, subject, counted: after }) : rollBack({ wait });
   });
-  const wait = passwordWait(counter, at);
-  if (wait !== undefined) {
-    return tooManyAttempts(wait);
+  if ("wait" in claim) {
+    return tooManyAttempts(claim.wait);
   }
-  const right = await services.passwords.verify(body.password, login?.passwordHash);
+  const { login, subject, counted } = claim;
+  const right = await checkPassword(call, body.password, login, subject);
   if (!right || login === undefined) {
-    const after = await database.write({ channel }, async (tx) => {
-      const failed = await countFailure(tx, subject, "password", PASSWORD_WINDOW_MS, at);
-      if (failed.failures >= PASSWORD_CAP) {
-        await lockAttempts(tx, subject, "password", passwordLockEnd(failed));
-      }
-      return commit(failed);
-    });
+    // The failure counted before the check. The one that reached the cap locks the step.
+    if (counted.failures === PASSWORD_CAP) {
+      await database.write({ channel }, async (tx) => {
+        await lockAttempts(tx, subject, "password", passwordLockEnd(counted));
+        return commit(undefined);
+      });
+    }
     if (login !== undefined) {
       const events: AccountEvent[] = [{ kind: "sign-in", details: signInDetails(method, undefined, request, "failed") }];
-      if (after.failures === PASSWORD_CAP) {
-        events.push({ kind: "sign-in-locked", details: { step: "password", until: passwordLockEnd(after).toISOString() } });
+      if (counted.failures === PASSWORD_CAP) {
+        events.push({ kind: "sign-in-locked", details: { step: "password", until: passwordLockEnd(counted).toISOString() } });
       }
       addAfterAnswer(later, database, channel, login.identityId, events);
     }

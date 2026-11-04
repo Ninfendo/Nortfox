@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { addTotpSecret, deleteIdentity } from "../../../test/identities.ts";
-import { expectNoSecretsAtRest, expectNoTokens } from "../../../test/secrets.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   CODE_FAILED,
   MINUTE,
@@ -21,6 +21,7 @@ import {
   addSignInIdentity,
   challengeOf,
   codeOf,
+  expectNoTokensFromSignInApps,
   holdingWrites,
   passwordStep,
   setCookiesOf,
@@ -153,6 +154,49 @@ describe("the limits of the TOTP step", () => {
     expect(answer.status).toBe(204);
   });
 
+  it("checks at most ten codes of one identity from a parallel burst across its challenges, and refuses the rest with 429", async () => {
+    server.clock.advance(15 * MINUTE);
+    const person = await addPerson();
+    const challenges: string[] = [];
+    for (let count = 0; count < 5; count += 1) {
+      challenges.push(await challengeFor(person));
+    }
+    const wrong = wrongCodeOf(person, server.clock.now());
+    const burst = await Promise.all(challenges.flatMap((challenge) => Array.from({ length: 5 }, () => totpStep(server, challenge, wrong))));
+    const statuses = burst.map((answer) => answer.status);
+    expect(statuses.filter((status) => status === 422)).toHaveLength(10);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(15);
+    expect(await failures(person)).toBe(10);
+    // The step is locked: a right code on a new challenge is refused too.
+    expect((await totpStep(server, await challengeFor(person), codeOf(person, server.clock.now()))).status).toBe(429);
+    expect(await sessionsOf(person)).toBe(0);
+    await server.app.afterAnswer.idle();
+    const locks = await owner.query("SELECT 1 FROM access.account_events WHERE identity_id = $1 AND kind = 'sign-in-locked'", [person.id]);
+    expect(locks.rowCount).toBe(1);
+  });
+
+  it("takes a right code until 20 minutes after the password step, and refuses it from then on", async () => {
+    server.clock.advance(15 * MINUTE);
+    const person = await addPerson();
+    const inTime = await challengeFor(person);
+    server.clock.advance(20 * MINUTE - SECOND);
+    expect((await totpStep(server, inTime, codeOf(person, server.clock.now()))).status).toBe(204);
+    const late = await challengeFor(person);
+    server.clock.advance(20 * MINUTE);
+    expect(await problemIn(await totpStep(server, late, codeOf(person, server.clock.now())))).toEqual(signInFailed(CODE_FAILED));
+    expect(await sessionsOf(person)).toBe(1);
+  });
+
+  it("counts a code sent again, whose step is used, as a wrong code of the identity", async () => {
+    server.clock.advance(MINUTE);
+    const person = await addPerson();
+    const code = codeOf(person, server.clock.now());
+    expect((await totpStep(server, await challengeFor(person), code)).status).toBe(204);
+    expect(await failures(person)).toBeUndefined();
+    expect((await totpStep(server, await challengeFor(person), code)).status).toBe(422);
+    expect(await failures(person)).toBe(1);
+  });
+
   it("gives one session for one code sent twice at once, on one challenge or on two", async () => {
     server.clock.advance(MINUTE);
     const person = await addPerson();
@@ -256,8 +300,7 @@ describe("the limits of the TOTP step", () => {
   });
 
   it("leaves no token but its challenges in an answer or a report, and no secret in clear in the database", async () => {
-    const challenges = server.bodies.flatMap((body) => [...body.matchAll(/nfc_[A-Za-z0-9_-]{43}/g)].map((match) => match[0]));
-    expectNoTokens([...server.bodies, ...server.reports], challenges);
+    expectNoTokensFromSignInApps();
     await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
   });
 });

@@ -22,6 +22,7 @@ export {
   SIGNED_IN,
   SUCCESS_STATUSES,
   bodySchema,
+  challengeOf,
   defineListOperation,
   defineOperation,
   outputSchema,
@@ -56,7 +57,7 @@ export { Cursor, LIMIT, Limit, effectiveLimit, pageOf } from "./paging.ts";
 export { FIELD_PROBLEM_CODES, FieldProblem, PROBLEM_CODES, Problem, fieldIssues, jsonPointer } from "./problem.ts";
 export type { FieldIssue, FieldProblemCode, JsonValue, ProblemCode } from "./problem.ts";
 export { REGISTRY } from "./registry.ts";
-export { SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
+export { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
 export type { SecurityScheme } from "./security.ts";
 export { registryProblems } from "./registry-guard.ts";
 export { jsonSchemaOf, toolInputSchema, toolOutputSchema } from "./tool-schema.ts";

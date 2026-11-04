@@ -85,6 +85,7 @@ import {
   PUBLIC,
   SIGNED_IN,
   bodySchema,
+  challengeOf,
   effectiveLimit,
   fieldIssues,
   jsonPointer,
@@ -370,7 +371,8 @@ export function handleList<Op extends Operation>(
 
 /** Why the runner refused a call. Each surface turns it into its own answer. */
 export type Refusal =
-  | { readonly kind: "authentication-required" }
+  /** No actor. The challenge names the credentials that the operation takes (RFC 9110, 11.6.1). */
+  | { readonly kind: "authentication-required"; readonly challenge: string }
   /** The operation works in the credential's company, and the credential names none. */
   | { readonly kind: "company-required" }
   | { readonly kind: "permission-missing"; readonly permission: string }
@@ -448,7 +450,7 @@ export function authorize(operation: Operation, principal: Principal | undefined
     return undefined;
   }
   if (principal === undefined) {
-    return { kind: "authentication-required" };
+    return { kind: "authentication-required", challenge: challengeOf(operation) };
   }
   if (permission === SIGNED_IN) {
     return undefined;

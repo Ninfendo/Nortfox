@@ -9,6 +9,7 @@
 // another row does not open.
 
 import { randomUUID } from "node:crypto";
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { InstallKey } from "./install-key.ts";
 import { HEADER_BYTES, NONCE_BYTES, SEALED_FORMAT_VERSION, TAG_BYTES, open, seal, sealedLength } from "./secret-box.ts";
@@ -47,6 +48,19 @@ describe("a sealed secret", () => {
     expect(open(KEY, "totp-secret v1", sealed, [ROW, PERSON])).toBeUndefined();
     expect(open(KEY, "totp-secret v1", sealed, [`${PERSON}${ROW}`])).toBeUndefined();
     expect(open(KEY, "totp-secret v1", sealed, [])).toBeUndefined();
+  });
+
+  it("opens to what was sealed in its own row, and to nothing in any other", () => {
+    const row = fc.array(fc.string({ maxLength: 40 }), { maxLength: 3 });
+    fc.assert(
+      fc.property(fc.uint8Array({ maxLength: 64 }), row, row, (secret, context, other) => {
+        const sealed = seal(KEY, "totp-secret v1", secret, context);
+        expect(sealed).toHaveLength(sealedLength(secret.length));
+        expect(open(KEY, "totp-secret v1", sealed, context)).toEqual(Buffer.from(secret));
+        fc.pre(JSON.stringify(other) !== JSON.stringify(context));
+        expect(open(KEY, "totp-secret v1", sealed, other)).toBeUndefined();
+      }),
+    );
   });
 
   it("does not open for another use of the same key", () => {

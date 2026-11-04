@@ -397,7 +397,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Bearer.",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
                 "schema": {
                   "type": "string"
                 }
@@ -412,7 +412,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the actor lacks its permission, or the credential names no company.",
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -511,6 +511,16 @@
           },
           "400": {
             "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -664,6 +674,16 @@
               }
             }
           },
+          "403": {
+            "description": "The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "413": {
             "description": "The body is larger than 1 MiB.",
             "content": {
@@ -793,6 +813,16 @@
           },
           "400": {
             "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -933,7 +963,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Bearer.",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
                 "schema": {
                   "type": "string"
                 }
@@ -948,7 +978,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the actor lacks its permission, or the credential names no company.",
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1037,22 +1067,12 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Bearer.",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
                 "schema": {
                   "type": "string"
                 }
               }
             },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The request may not call the operation: the actor lacks its permission, or the credential names no company.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1121,22 +1141,12 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Bearer.",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
                 "schema": {
                   "type": "string"
                 }
               }
             },
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "The request may not call the operation: the actor lacks its permission, or the credential names no company.",
             "content": {
               "application/problem+json": {
                 "schema": {

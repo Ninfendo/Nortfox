@@ -11,6 +11,7 @@
 // test moves it. The set-once columns never change once they are set.
 
 import { randomBytes, randomUUID } from "node:crypto";
+import fc from "fast-check";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CHECK_VIOLATION, INSUFFICIENT_PRIVILEGE, UNIQUE_VIOLATION, expectError, expectRefusal, freshDatabase, type TestDatabase } from "../../../test/database.ts";
@@ -303,15 +304,106 @@ describe("the lookup functions", () => {
       return anonymously(app, "SELECT * FROM access.attempt_counter($1, $2)", [subject, kind]);
     }
 
+    /** The counter before a subject's first failure of a kind: nothing. */
+    const NOTHING_BEFORE = { before_failures: null, before_window_started_at: null, before_last_failure_at: null, before_locked_until: null };
+
+    function giveBack(client: Client, subject: string, kind = "password") {
+      return anonymously(client, "SELECT access.give_back_failure($1, $2)", [subject, kind]);
+    }
+
+    it("gives each count the counter as it was just before, also to parallel calls, so each sees the counts before its own", async () => {
+      const subject = randomUUID();
+      const [many, one] = await Promise.all([atOnce(7, (client) => count(client, subject, T0)), count(app, subject, T0)]);
+      const counts = [...many, one];
+      // The counts come one after another under the row's lock: each sees the one before it.
+      const seen = counts.map((row) => [row?.["before_failures"] ?? 0, row?.["failures"]]).sort((a, b) => Number(a[0]) - Number(b[0]));
+      expect(seen).toEqual(Array.from({ length: 8 }, (_, before) => [before, before + 1]));
+      await anonymously(app, "SELECT access.lock_attempts($1, 'password', $2)", [subject, later(T0, 30)]);
+      expect(await count(app, subject, later(T0, 1))).toEqual({
+        failures: 9,
+        window_started_at: T0,
+        last_failure_at: later(T0, 1),
+        locked_until: later(T0, 30),
+        before_failures: 8,
+        before_window_started_at: T0,
+        before_last_failure_at: T0,
+        before_locked_until: later(T0, 30),
+      });
+    });
+
+    it("gives a failure back that was counted before its check, and forgets the counter when it was the only one", async () => {
+      const subject = randomUUID();
+      await count(app, subject, T0);
+      await count(app, subject, later(T0, 1));
+      await count(app, subject, later(T0, 2), "totp");
+      await giveBack(app, subject);
+      expect(await counter(subject)).toEqual([{ failures: 1, window_started_at: T0, last_failure_at: later(T0, 1), locked_until: null }]);
+      // Of two parallel give-backs, each gives one back: the second finds the first's counter, and the last forgets it.
+      await count(app, subject, later(T0, 3));
+      await atOnce(2, (client) => giveBack(client, subject));
+      expect(await counter(subject)).toEqual([]);
+      // Each kind on its own, and nothing for a subject without a counter.
+      expect(await counter(subject, "totp")).toMatchObject([{ failures: 1 }]);
+      await giveBack(app, subject);
+      await giveBack(app, randomUUID());
+      expect(await counter(subject)).toEqual([]);
+    });
+
+    function formOf(identifier: string): Promise<string | undefined> {
+      return first(anonymously<{ form: string }>(app, "SELECT access.identifier_form($1) AS form", [identifier])).then((row) => row?.form);
+    }
+
+    it("gives the form of an identifier that find_login matches on: an e-mail address folded as the unique index folds it, a personnummer as it is", async () => {
+      expect(await formOf("Dag.STRÖM@Example.com")).toBe("dag.ström@example.com");
+      // casefold() folds more than lower case does: the long s, the sharp s and the ligatures.
+      expect(await formOf("ſven.ek@example.com")).toBe("sven.ek@example.com");
+      expect(await formOf("Straße@example.com")).toBe("strasse@example.com");
+      expect(await formOf("ﬁa.ﬆrand@example.com")).toBe("fia.strand@example.com");
+      expect(await formOf(FIRST_NUMBER)).toBe(FIRST_NUMBER);
+      // Every spelling that the form gives one form for finds the same identity.
+      const person = await addIdentity(owner, { email: "Sven.Strasse@example.com" });
+      for (const spelling of ["ſven.ſtraße@example.com", "SVEN.STRASSE@EXAMPLE.COM"]) {
+        expect(await formOf(spelling)).toBe(await formOf("Sven.Strasse@example.com"));
+        expect(await anonymously(app, "SELECT identity_id FROM access.find_login($1)", [spelling])).toEqual([{ identity_id: person }]);
+      }
+    });
+
+    it("gives two spellings one form exactly when find_login finds the one's identity by the other", async () => {
+      // Letters that casefold() and lower case fold in different ways: the long s, the sharp s, the ligatures, the sigmas and the Kelvin sign.
+      const letters = ["a", "A", "s", "S", "ss", "ſ", "ß", "fi", "ﬁ", "st", "ﬆ", "σ", "ς", "Σ", "k", "K", String.fromCodePoint(0x212a)];
+      const spelling = fc.array(fc.constantFrom(...letters), { minLength: 1, maxLength: 4 }).map((parts) => parts.join(""));
+      let run = 0;
+      await fc.assert(
+        fc.asyncProperty(spelling, spelling, async (stored, tried) => {
+          run += 1;
+          const email = `${stored}.${String(run)}@example.com`;
+          const other = `${tried}.${String(run)}@example.com`;
+          const person = await addIdentity(owner, { email });
+          const found = await anonymously<{ identity_id: string }>(app, "SELECT identity_id FROM access.find_login($1)", [other]);
+          expect(found.length > 0 && found[0]?.identity_id === person).toBe((await formOf(other)) === (await formOf(email)));
+        }),
+        { numRuns: 40 },
+      );
+    });
+
     it("counts failures in a window, also from ten parallel calls, starts a new window once it has passed, and locks and clears", async () => {
       const subject = randomUUID();
       expect(await counter(subject)).toEqual([]);
-      expect(await count(app, subject, T0)).toEqual({ failures: 1, window_started_at: T0, last_failure_at: T0, locked_until: null });
+      expect(await count(app, subject, T0)).toEqual({ failures: 1, window_started_at: T0, last_failure_at: T0, locked_until: null, ...NOTHING_BEFORE });
       await Promise.all([atOnce(7, (client) => count(client, subject, later(T0, 1))), count(app, subject, later(T0, 1)), count(owner, subject, later(T0, 1))]);
       expect(await counter(subject)).toEqual([{ failures: 10, window_started_at: T0, last_failure_at: later(T0, 1), locked_until: null }]);
       // The window is the hour from its first failure.
       expect(await count(app, subject, later(T0, 59))).toMatchObject({ failures: 11, window_started_at: T0 });
-      expect(await count(app, subject, later(T0, 60))).toEqual({ failures: 1, window_started_at: later(T0, 60), last_failure_at: later(T0, 60), locked_until: null });
+      expect(await count(app, subject, later(T0, 60))).toEqual({
+        failures: 1,
+        window_started_at: later(T0, 60),
+        last_failure_at: later(T0, 60),
+        locked_until: null,
+        before_failures: 11,
+        before_window_started_at: T0,
+        before_last_failure_at: later(T0, 59),
+        before_locked_until: null,
+      });
       // Each kind counts on its own, and an identifier that names no identity is counted by its HMAC.
       expect(await count(app, subject, later(T0, 61), "totp")).toMatchObject({ failures: 1 });
       const unknown = `hmac:1:${randomBytes(32).toString("hex")}`;

@@ -15,10 +15,10 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { TEST_INSTALL_KEY, appPool, gate, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { expectNoSecretsAtRest, expectNoTokens } from "../../../test/secrets.ts";
-import { MINUTE, SECOND, addSignInIdentity, passwordStep, signInApp, testClock, type SignInApp, type TestIdentity } from "../../../test/sign-in.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
+import { MINUTE, SECOND, addSignInIdentity, expectNoTokensFromSignInApps, passwordStep, signInApp, testClock, type SignInApp, type TestIdentity } from "../../../test/sign-in.ts";
 import { PasswordHasher, nodeArgon2id, type Argon2id } from "../../auth/password.ts";
-import { readIdentifier, unknownSubject } from "./identifier.ts";
+import { unknownSubject } from "./identifier.ts";
 
 /** An answer as the tests compare them: its status, Retry-After and problem. */
 interface Seen {
@@ -32,7 +32,6 @@ describe("the limits of the password step", () => {
   let owner: Client;
   let pool: AppPool;
   const people: TestIdentity[] = [];
-  const servers: SignInApp[] = [];
 
   beforeAll(async () => {
     db = await freshDatabase();
@@ -53,7 +52,6 @@ describe("the limits of the password step", () => {
       return nodeArgon2id(parameters);
     };
     const server = signInApp(pool.database, { clock: testClock(), passwords: new PasswordHasher({ cost: { memory: 64, passes: 1, parallelism: 1 }, argon2id: counting }) });
-    servers.push(server);
     return { server, checked };
   }
 
@@ -138,7 +136,7 @@ describe("the limits of the password step", () => {
     people.push(person);
     const cases: [string, string][] = [
       [person.email, person.id],
-      ["okand.person@example.com", unknownSubject(TEST_INSTALL_KEY, readIdentifier("okand.person@example.com", new Date()))],
+      ["okand.person@example.com", unknownSubject(TEST_INSTALL_KEY, "okand.person@example.com")],
     ];
     const answers: Seen[][] = [];
     for (const [identifier, subject] of cases) {
@@ -163,6 +161,87 @@ describe("the limits of the password step", () => {
     expect(events.rows).toEqual([{ kind: "sign-in-locked", details: { step: "password", until: expect.any(String) as unknown } }]);
   });
 
+  it("counts every spelling that finds one identity as one, for a known identity and an unknown identifier alike", async () => {
+    // casefold() folds more than lower case does: the long s to s, the sharp s to ss, the ligatures to their letters.
+    const spellings: [string, string][] = [
+      ["s", "ſ"],
+      ["ss", "ß"],
+      ["fi", "ﬁ"],
+      ["st", "ﬆ"],
+      ["a", "A"],
+    ];
+    for (const [index, [plain, variant]] of spellings.entries()) {
+      const person = await addSignInIdentity(owner, { email: `anna.${plain}${String(index)}@example.com` });
+      people.push(person);
+      const answers: Seen[][] = [];
+      for (const local of ["anna", "bodil"]) {
+        const { server } = serverWithCount();
+        const seenHere: Seen[] = [];
+        for (let failure = 1; failure <= 5; failure += 1) {
+          seenHere.push(await seen(await passwordStep(server, `${local}.${plain}${String(index)}@example.com`, "fel-lösenord-varje-gång")));
+        }
+        seenHere.push(await seen(await passwordStep(server, `${local}.${variant}${String(index)}@example.com`, "fel-lösenord-varje-gång")));
+        answers.push(seenHere);
+      }
+      const expected = [FAILED, FAILED, FAILED, FAILED, FAILED, wait(1)];
+      expect(answers, `${plain} and ${variant}`).toEqual([expected, expected]);
+    }
+  });
+
+  it("lets one attempt of a parallel burst through when its delay has passed, and checks no other's password, for a known identity and an unknown identifier alike", async () => {
+    const person = await addSignInIdentity(owner);
+    people.push(person);
+    const answers: number[][] = [];
+    for (const identifier of [person.email, "okand.skur@example.com"]) {
+      const { server, checked } = serverWithCount();
+      for (let failure = 1; failure <= 5; failure += 1) {
+        expect((await passwordStep(server, identifier, "fel-lösenord-före")).status).toBe(422);
+      }
+      server.clock.advance(SECOND);
+      const before = checked.length;
+      const burst = await Promise.all(Array.from({ length: 12 }, () => passwordStep(server, identifier, "fel-lösenord-i-skur")));
+      answers.push(burst.map((response) => response.status).sort());
+      expect(checked.length - before).toBe(1);
+    }
+    const expected = [422, ...Array.from({ length: 11 }, () => 429)];
+    expect(answers).toEqual([expected, expected]);
+  });
+
+  it("never counts past 100 from a parallel burst at 99 failures, for a known identity and an unknown identifier alike, and records the lock once", async () => {
+    const person = await addSignInIdentity(owner);
+    people.push(person);
+    const cases: [string, string][] = [
+      [person.email, person.id],
+      ["okand.taket@example.com", unknownSubject(TEST_INSTALL_KEY, "okand.taket@example.com")],
+    ];
+    const answers: Seen[][] = [];
+    for (const [identifier, subject] of cases) {
+      const { server, checked } = serverWithCount();
+      await ninetyNine(subject, server.clock.now(), 20 * MINUTE);
+      const before = checked.length;
+      const burst = await Promise.all(Array.from({ length: 12 }, () => passwordStep(server, identifier, "fel-lösenord-vid-taket")));
+      answers.push((await Promise.all(burst.map(seen))).sort((a, b) => a.status - b.status));
+      expect(checked.length - before).toBe(1);
+      const counted = await owner.query<{ failures: number }>("SELECT failures FROM access.attempt_counters WHERE subject = $1 AND kind = 'password'", [subject]);
+      expect(counted.rows).toEqual([{ failures: 100 }]);
+      await server.app.afterAnswer.idle();
+    }
+    const expected = [FAILED, ...Array.from({ length: 11 }, () => wait(40 * 60))];
+    expect(answers).toEqual([expected, expected]);
+    const events = await owner.query("SELECT 1 FROM access.account_events WHERE identity_id = $1 AND kind = 'sign-in-locked'", [person.id]);
+    expect(events.rowCount).toBe(1);
+  });
+
+  it("gives the attempt back when the server could not check its password", async () => {
+    const person = await addSignInIdentity(owner);
+    people.push(person);
+    const failing: Argon2id = () => Promise.reject(new Error("The hash failed."));
+    const server = signInApp(pool.database, { clock: testClock(), passwords: new PasswordHasher({ cost: { memory: 64, passes: 1, parallelism: 1 }, argon2id: failing }) });
+    expect((await passwordStep(server, person.email, "kan-inte-kollas")).status).toBe(500);
+    const counted = await owner.query("SELECT 1 FROM access.attempt_counters WHERE subject = $1", [person.id]);
+    expect(counted.rowCount).toBe(0);
+  });
+
   it("answers 503 server-busy with Retry-After 1 when the password wrapper runs and queues as many as it may", async () => {
     const person = await addSignInIdentity(owner);
     people.push(person);
@@ -180,7 +259,6 @@ describe("the limits of the password step", () => {
       }
     }
     const server = signInApp(pool.database, { clock: testClock(), passwords: new Counting({ cost: { memory: 64, passes: 1, parallelism: 1 }, argon2id: holding, concurrency: 1 }) });
-    servers.push(server);
     const running = passwordStep(server, person.email, "första-i-kön-här");
     await held.reached;
     const queued = passwordStep(server, person.email, "andra-i-kön-här");
@@ -199,13 +277,13 @@ describe("the limits of the password step", () => {
     });
     held.open();
     expect([(await running).status, (await queued).status]).toEqual([422, 422]);
+    // The refused attempt checked no password, so it counts no failure.
+    const counted = await owner.query<{ failures: number }>("SELECT failures FROM access.attempt_counters WHERE subject = $1 AND kind = 'password'", [person.id]);
+    expect(counted.rows).toEqual([{ failures: 2 }]);
   });
 
   it("leaves no token in an answer or a report, and no secret in clear in the database", async () => {
-    for (const server of servers) {
-      const challenges = server.bodies.flatMap((body) => [...body.matchAll(/nfc_[A-Za-z0-9_-]{43}/g)].map((match) => match[0]));
-      expectNoTokens([...server.bodies, ...server.reports], challenges);
-    }
+    expectNoTokensFromSignInApps();
     await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password) });
   });
 });

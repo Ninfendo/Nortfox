@@ -4,8 +4,9 @@
 // the server's time. The database keeps the counters; these rules say how
 // long an attempt must wait, in whole seconds, or that it may run.
 
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { PASSWORD_CAP, PASSWORD_WINDOW_MS, TOTP_CAP, TOTP_LOCK_MS, TOTP_WINDOW_MS, lockWait, passwordLockEnd, passwordWait, type AttemptCounter } from "./limits.ts";
+import { PASSWORD_CAP, PASSWORD_WINDOW_MS, TOTP_CAP, TOTP_LOCK_MS, TOTP_WINDOW_MS, lockWait, passwordLockEnd, passwordWait, totpWait, type AttemptCounter } from "./limits.ts";
 
 const T0 = new Date("2090-03-15T10:00:00.000Z");
 
@@ -31,8 +32,9 @@ describe("the password step's wait", () => {
     expect(passwordWait(counter(7, 10), at(14))).toBeUndefined();
   });
 
-  it("forgets the failures once their window's hour has passed", () => {
-    expect(passwordWait(counter(9, 3599, { started: 0 }), at(3599))).toBe(16);
+  it("forgets the failures once their window's hour has passed, so no wait goes past the window's end", () => {
+    expect(passwordWait(counter(9, 3500, { started: 0 }), at(3500))).toBe(16);
+    expect(passwordWait(counter(9, 3599, { started: 0 }), at(3599))).toBe(1);
     expect(passwordWait(counter(9, 3599, { started: 0 }), at(3600))).toBeUndefined();
   });
 
@@ -48,6 +50,24 @@ describe("the password step's wait", () => {
     expect(PASSWORD_WINDOW_MS).toBe(60 * 60 * 1000);
     expect(passwordLockEnd(counter(100, 900, { started: 120 }))).toEqual(at(120 + 3600));
   });
+
+  it("makes every attempt wait at 100 failures until the window's hour has passed, also before the lock is written", () => {
+    // A counter at the cap is locked: the attempt that reached it may still be checking its password.
+    expect(passwordWait(counter(100, 900, { started: 120 }), at(1000))).toBe(120 + 3600 - 1000);
+    expect(passwordWait(counter(99, 900, { started: 120 }), at(1000))).toBeUndefined();
+    expect(passwordWait(counter(100, 900, { started: 120 }), at(3720))).toBeUndefined();
+  });
+
+  it("never waits less after one more failure, inside a window", () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 150 }), fc.integer({ min: 0, max: 3599 }), fc.integer({ min: 0, max: 3599 }), (failures, last, since) => {
+        const now = at(Math.min(last + since, 3599));
+        const before = passwordWait(counter(failures, last), now) ?? 0;
+        const after = passwordWait(counter(failures + 1, last), now) ?? 0;
+        expect(after).toBeGreaterThanOrEqual(before);
+      }),
+    );
+  });
 });
 
 describe("the TOTP step's lock", () => {
@@ -61,5 +81,16 @@ describe("the TOTP step's lock", () => {
     expect(lockWait(counter(10, 0, { lockedUntil: 900 }), at(0.5))).toBe(900);
     expect(lockWait(counter(10, 0, { lockedUntil: 900 }), at(899.001))).toBe(1);
     expect(lockWait(counter(10, 0, { lockedUntil: 900 }), at(900))).toBeUndefined();
+  });
+
+  it("makes every attempt wait at 10 wrong codes for 15 minutes from the tenth, also before the lock is written", () => {
+    expect(totpWait(undefined, T0)).toBeUndefined();
+    expect(totpWait(counter(9, 100), at(200))).toBeUndefined();
+    // The tenth code may still be checked: the counter at the cap locks the step on its own.
+    expect(totpWait(counter(10, 100), at(200))).toBe(900 - 100);
+    expect(totpWait(counter(10, 100, { lockedUntil: 1000 }), at(200))).toBe(800);
+    // Once the window of 15 minutes from the first wrong code has passed, only a lock counts.
+    expect(totpWait(counter(10, 100), at(900))).toBeUndefined();
+    expect(totpWait(counter(10, 100, { lockedUntil: 1000 }), at(900))).toBe(100);
   });
 });

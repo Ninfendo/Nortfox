@@ -26,7 +26,10 @@ export interface RunningServer {
 /**
  * Serves a built app. Port 0 picks a free port. It first checks the app's
  * routes: a route under /v1 that is not in the registry, added anywhere after
- * createApp, stops the server before it listens.
+ * createApp, stops the server before it listens. Its close stops the
+ * listener, waits for the open requests, and then for the work queued for
+ * after their answers, such as the entries of a failed sign-in, so a stop
+ * that ends the database pool next loses none of it.
  */
 export function startServer(options: { readonly app: ServerApp; readonly port: number }): Promise<RunningServer> {
   return new Promise((resolve) => {
@@ -45,7 +48,7 @@ export function startServer(options: { readonly app: ServerApp; readonly port: n
                 done();
               }
             });
-          }),
+          }).then(() => options.app.afterAnswer.idle()),
       });
     });
   });

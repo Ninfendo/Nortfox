@@ -14,11 +14,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { PERSONAL_IDENTITY_NUMBERS } from "../../../test/identities.ts";
-import { expectNoSecretsAtRest, expectNoTokens } from "../../../test/secrets.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   addSignInIdentity,
   challengeOf,
   codeOf,
+  expectNoTokensFromSignInApps,
   passwordStep,
   signInApp,
   testClock,
@@ -128,8 +129,7 @@ describe("Kontoaktivitet of a sign-in", () => {
   });
 
   it("leaves no token in an answer or a report, and no secret in clear in the database", async () => {
-    const challenges = server.bodies.flatMap((body) => [...body.matchAll(/nfc_[A-Za-z0-9_-]{43}/g)].map((match) => match[0]));
-    expectNoTokens([...server.bodies, ...server.reports], challenges);
+    expectNoTokensFromSignInApps();
     await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
   });
 });

@@ -534,6 +534,12 @@ describe("registryProblems", () => {
     ]);
   });
 
+  it("fails a GET that takes a body, which fetch cannot send", () => {
+    expect(problemsOf(withRequest(readThing, { body: jsonBody(z.strictObject({ note: z.string() })) }))).toEqual([
+      "getThing is a GET with a body. A GET takes its input in the path and the query: HTTP gives a GET's content no meaning, and fetch cannot send it.",
+    ]);
+  });
+
   it.each(["GetThing", "get_thing", "get-thing", "", "1get", `g${"x".repeat(64)}`])("fails the id %j", (operationId) => {
     expect(problemsOf(changed(readThing, { operationId }))).toEqual([
       `The operation id ${JSON.stringify(operationId)} is not a camelCase tool name of at most 64 letters and digits.`,

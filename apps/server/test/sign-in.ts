@@ -11,8 +11,10 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "pg";
+import { expect } from "vitest";
 import { buildTestApp, gate, testPasswords, TEST_INSTALL_KEY, TEST_NOW, type Gate, type ProblemBody } from "./api.ts";
 import { addIdentity, addPassword, someEmail } from "./identities.ts";
+import { expectNoTokensButChallenges } from "./secrets.ts";
 import type { AppOptions, ServerApp } from "../src/app.ts";
 import { sessionResolver } from "../src/auth/resolver.ts";
 import { seal } from "../src/auth/secret-box.ts";
@@ -66,6 +68,17 @@ export interface SignInAppOptions {
   readonly options?: Partial<AppOptions>;
 }
 
+/** Every sign-in app that the test file made, for the secret scan at its end. */
+const made: SignInApp[] = [];
+
+/** Fails on a token in an answer or a report of any sign-in app that the test file made, but a login challenge where loginWithPassword gives it. */
+export function expectNoTokensFromSignInApps(): void {
+  expect(made.length, "The test file made no sign-in app.").toBeGreaterThan(0);
+  for (const server of made) {
+    expectNoTokensButChallenges(server.bodies, server.reports);
+  }
+}
+
 export function signInApp(database: Database, options: SignInAppOptions = {}): SignInApp {
   const clock = options.clock ?? testClock();
   const reports: unknown[] = [];
@@ -79,7 +92,7 @@ export function signInApp(database: Database, options: SignInAppOptions = {}): S
     report: (error) => reports.push(error),
     ...options.options,
   });
-  return {
+  const server: SignInApp = {
     app,
     clock,
     reports,
@@ -91,6 +104,8 @@ export function signInApp(database: Database, options: SignInAppOptions = {}): S
       return response;
     },
   };
+  made.push(server);
+  return server;
 }
 
 /** An identity that can sign in: its password and, unless it has none, its TOTP secret in clear, as only the test knows them. */

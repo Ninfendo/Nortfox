@@ -48,6 +48,38 @@ export function expectNoTokens(values: readonly unknown[], expected: readonly st
   expect(found, "A token reached an answer, a tool result or a report.").toEqual([]);
 }
 
+/** A body as JSON, or undefined when it is none, such as the empty body of a 204. */
+function parsedBody(body: string): unknown {
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a body is loginWithPassword's answer of the TOTP step: its outcome and its challenge, and nothing else. */
+function isChallengeAnswer(body: string): boolean {
+  const parsed = parsedBody(body);
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    Object.keys(parsed).sort().join() === "challenge,outcome" &&
+    (parsed as { outcome?: unknown }).outcome === "totp-required" &&
+    /^nfc_[A-Za-z0-9_-]{43}$/.test(String((parsed as { challenge?: unknown }).challenge))
+  );
+}
+
+/**
+ * Fails on any token in the answers' bodies but the challenge in the answer
+ * of loginWithPassword that gives it, and on any token at all in what the
+ * reporter received. So a challenge that comes back in a problem or a report
+ * fails too.
+ */
+export function expectNoTokensButChallenges(bodies: readonly string[], reports: readonly unknown[]): void {
+  expectNoTokens(bodies.filter((body) => !isChallengeAnswer(body)));
+  expectNoTokens(reports);
+}
+
 /** What a test used in clear, which the database must never hold so. */
 export interface SecretsInClear {
   readonly passwords?: readonly string[];
