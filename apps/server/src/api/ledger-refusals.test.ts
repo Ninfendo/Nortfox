@@ -46,8 +46,8 @@ describe("the ledger's refusals", () => {
     }
   });
 
-  it("are rules for NF001 to NF020, period_outside_fiscal_year and fiscal_year_strands_rows", () => {
-    expect(RULES.map(codeOf)).toEqual([...Array.from({ length: 20 }, (_unused, index) => `NF${String(index + 1).padStart(3, "0")}`), "NF056", "NF057"]);
+  it("are rules for NF001 to NF021, period_outside_fiscal_year and fiscal_year_strands_rows", () => {
+    expect(RULES.map(codeOf)).toEqual([...Array.from({ length: 21 }, (_unused, index) => `NF${String(index + 1).padStart(3, "0")}`), "NF056", "NF057"]);
   });
 
   it.each(RULES)("answer %s with its code in kebab-case, which PROBLEM_CODES lists at 422, and a sentence", (reason) => {

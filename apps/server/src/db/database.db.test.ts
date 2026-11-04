@@ -159,6 +159,49 @@ describe("one transaction per request", () => {
     expect(await database.read(person, async (tx) => commit((await tx.query("SELECT company_id FROM ledger.companies")).rows))).toEqual([]);
   });
 
+  // A lookup is the resolver's transaction (db/README.md): it finds the
+  // credential through the lookup functions before it knows the person, so
+  // it starts with only the channel, and may then set the person once.
+  it("runs a lookup at READ COMMITTED with only the channel set, lets the work set the person once, and carries nothing on", async () => {
+    const { database } = poolOf(1);
+    const person = randomUUID();
+    const seen = await database.lookup("rest", async (tx) => {
+      const before = await seenBy(tx);
+      const mode = await modeOf(tx);
+      await tx.actAs(person, "user");
+      const after = await seenBy(tx);
+      const again = await failureOf(tx.actAs(randomUUID(), "integration"));
+      return commit({ before, mode, after, again, last: await seenBy(tx) });
+    });
+    expect(seen.before).toMatchObject({ company: "", actor: "", kind: "", channel: "rest" });
+    expect(seen.mode).toEqual({ level: "read committed", readOnly: "off" });
+    expect(seen.after).toMatchObject({ company: "", actor: person, kind: "user", channel: "rest" });
+    expect(seen.again).toEqual(new Error("The lookup has set its person already. A lookup sets the person once."));
+    expect(seen.last).toMatchObject({ actor: person, kind: "user" });
+    expect(await database.read({ channel: "mcp" }, async (tx) => commit(await seenBy(tx)))).toMatchObject({ ...UNSET, channel: "mcp" });
+    // An integration, as a token's lookup sets it, with the other channel.
+    const token = await database.lookup("mcp", async (tx) => {
+      await tx.actAs(person, "integration");
+      return commit(await seenBy(tx));
+    });
+    expect(token).toMatchObject({ company: "", actor: person, kind: "integration", channel: "mcp" });
+    // Its writes commit, or roll back.
+    const kept = Buffer.from("a made-up check value");
+    const keep = (value: Buffer) => async (tx: Queryable) =>
+      (await tx.query<{ kept: Buffer }>("SELECT access.install_key(9, $1) AS kept", [value])).rows[0]?.kept;
+    expect(await database.lookup("rest", async (tx) => rollBack(await keep(Buffer.from("rolled back"))(tx)))).toEqual(Buffer.from("rolled back"));
+    expect(await database.lookup("rest", async (tx) => commit(await keep(kept)(tx)))).toEqual(kept);
+    expect(await database.lookup("rest", async (tx) => commit(await keep(Buffer.from("later"))(tx)))).toEqual(kept);
+    // Once it has ended, neither a query nor setting the person runs.
+    let ended: Parameters<Parameters<Database["lookup"]>[1]>[0] | undefined;
+    await database.lookup("rest", (tx) => {
+      ended = tx;
+      return Promise.resolve(commit(undefined));
+    });
+    expect(await failureOf(ended?.actAs(person, "user") ?? Promise.resolve())).toEqual(ENDED);
+    expect(await failureOf(ended?.query("SELECT 1") ?? Promise.resolve())).toEqual(ENDED);
+  });
+
   it("runs a read at REPEATABLE READ READ ONLY and a write at READ COMMITTED, whatever the connection's defaults", async () => {
     const { pool, database } = poolOf(1);
     for (const defaults of [[], ["SET default_transaction_isolation = 'serializable'", "SET default_transaction_read_only = on"]]) {

@@ -94,6 +94,7 @@ const LEDGER_RULES = [
   "series-code-duplicate",
   "series-code-changed",
   "immutable-field",
+  "install-not-empty",
   "period-outside-fiscal-year",
   "fiscal-year-strands-rows",
 ] as const;

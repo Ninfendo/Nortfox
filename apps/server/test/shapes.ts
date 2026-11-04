@@ -265,5 +265,12 @@ export function fakeDatabase(): FakeDatabase {
       transaction.ended = ending.commit ? "commit" : "rollback";
       return ending.value;
     };
-  return { transactions, queries, read: run("read"), write: run("write"), end: () => Promise.resolve() };
+  return {
+    transactions,
+    queries,
+    read: run("read"),
+    write: run("write"),
+    lookup: () => Promise.reject(new Error("The fake database runs no lookup.")),
+    end: () => Promise.resolve(),
+  };
 }

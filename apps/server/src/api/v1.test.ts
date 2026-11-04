@@ -183,7 +183,7 @@ describe("an error the server did not expect", () => {
   const SECRET = "the secret detail of the failure";
 
   function failing(error: Error): Database {
-    return { read: () => Promise.reject(error), write: () => Promise.reject(error), end: () => Promise.resolve() };
+    return { read: () => Promise.reject(error), write: () => Promise.reject(error), lookup: () => Promise.reject(error), end: () => Promise.resolve() };
   }
 
   const INTERNAL = {
@@ -436,7 +436,12 @@ describe("the shapes of slice 2c on /v1", () => {
   it("answers every answer with Cache-Control: no-store", async () => {
     const shapes = shapeApp();
     const hono = shapes.app.hono;
-    const failing = buildTestApp({ database: { read: () => Promise.reject(new Error("down")), write: () => Promise.reject(new Error("down")), end: () => Promise.resolve() }, resolve: testResolver(TOKENS), report: () => undefined }).hono;
+    const failing = buildTestApp({ database: {
+        read: () => Promise.reject(new Error("down")),
+        write: () => Promise.reject(new Error("down")),
+        lookup: () => Promise.reject(new Error("down")),
+        end: () => Promise.resolve(),
+      }, resolve: testResolver(TOKENS), report: () => undefined }).hono;
     const answers: Response[] = [
       await hono.request("/v1/health"),
       await hono.request(`/v1/test-things/${THING}`, { headers: bearer("reader") }),

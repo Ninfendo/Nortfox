@@ -3,7 +3,7 @@
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { freshDatabase, type TestDatabase } from "../../test/database.ts";
-import { GUARD_EXCEPTIONS, KEY_EXCEPTIONS, guardedRelations, tableGuardProblems } from "./table-guard.ts";
+import { GUARD_EXCEPTIONS, INSTALL_TABLES, KEY_EXCEPTIONS, guardedRelations, tableGuardProblems, type InstallTable } from "./table-guard.ts";
 
 const COMPANY = "(company_id = ledger.current_company_id())";
 const READER_COMPANY = "(company_id = ( SELECT ledger.reader_company_id() AS reader_company_id))";
@@ -61,6 +61,17 @@ describe("the table guard", () => {
 
   it("lists every table and view, and keeps exactly the pinned exceptions", async () => {
     expect(await guardedRelations(owner)).toEqual([
+      "access.account_events",
+      "access.attempt_counters",
+      "access.idempotency_keys",
+      "access.identities",
+      "access.install_keys",
+      "access.known_devices",
+      "access.login_challenges",
+      "access.password_credentials",
+      "access.sessions",
+      "access.setup_tokens",
+      "access.totp_secrets",
       "audit.history",
       "ledger.accounts",
       "ledger.automatic_locks",
@@ -427,5 +438,248 @@ describe("the table guard", () => {
     expect(await problemsAfter("GRANT TRUNCATE ON meta.schema_migrations TO nortfox_app")).toEqual([
       "meta.schema_migrations: nortfox_app has TRUNCATE. The app never gets TRUNCATE, REFERENCES or TRIGGER.",
     ]);
+  });
+
+  // The install-wide tables hold what belongs to no company (db/README.md,
+  // the schema access). Each is on the pinned list with its class, and the
+  // guard holds it to that class's policies. The probes below are tables of
+  // each class on a list that the test gives the guard beside the real one.
+  describe("the install-wide tables", () => {
+    const PROBES: ReadonlyMap<string, InstallTable> = new Map<string, InstallTable>([
+      ["access.probe_person", { class: "person", column: "identity_id", commands: ["SELECT", "INSERT", "UPDATE", "DELETE"], why: "A probe of the person class." }],
+      ["access.probe_company", { class: "company", column: "probe_company_id", commands: ["SELECT", "INSERT"], why: "A probe of the company class." }],
+      ["access.probe_public", { class: "public", why: "A probe of the public class." }],
+      ["access.probe_secret", { class: "secret", why: "A probe of the secret class." }],
+      ["ledger.probe_elsewhere", { class: "secret", why: "A probe outside the schema access." }],
+    ]);
+    const LIST: ReadonlyMap<string, InstallTable> = new Map([...INSTALL_TABLES, ...PROBES]);
+
+    const PERSON = "(identity_id = access.current_person_id())";
+    const IN_COMPANY = "(probe_company_id = ledger.current_company_id())";
+    const OWNER_POLICY = (table: string): string => `${table}: has no permissive policy for nortfox_owner on ALL with USING true and WITH CHECK true.`;
+    const UNEXPECTED = (table: string, name: string): string => `${table}: has the permissive policy ${name}, which the guard does not expect.`;
+    const UNPAIRED = (table: string, key: string): string => `${table}: the foreign key ${key} to ledger.bare does not pair a company column with company_id.`;
+
+    /** A table of each class with everything the guard needs, and a company table that two of them name. */
+    const PROTECTED = `${GUARDED}
+      CREATE TABLE access.probe_person (id uuid PRIMARY KEY, identity_id uuid NOT NULL REFERENCES access.identities (id), note text);
+      SELECT meta.protect_install_table('access.probe_person');
+      CREATE POLICY person_select ON access.probe_person FOR SELECT TO nortfox_app USING (identity_id = access.current_person_id());
+      CREATE POLICY person_insert ON access.probe_person FOR INSERT TO nortfox_app WITH CHECK (identity_id = access.current_person_id());
+      CREATE POLICY person_update ON access.probe_person FOR UPDATE TO nortfox_app
+        USING (identity_id = access.current_person_id()) WITH CHECK (identity_id = access.current_person_id());
+      CREATE POLICY person_delete ON access.probe_person FOR DELETE TO nortfox_app USING (identity_id = access.current_person_id());
+      GRANT SELECT, INSERT, UPDATE, DELETE ON access.probe_person TO nortfox_app;
+      CREATE TABLE access.probe_company (
+        id uuid PRIMARY KEY, probe_company_id uuid NOT NULL REFERENCES ledger.companies (company_id), bare_id uuid NOT NULL,
+        CONSTRAINT paired FOREIGN KEY (probe_company_id, bare_id) REFERENCES ledger.bare (company_id, id));
+      SELECT meta.protect_install_table('access.probe_company');
+      CREATE POLICY company_select ON access.probe_company FOR SELECT TO nortfox_app USING (probe_company_id = ledger.current_company_id());
+      CREATE POLICY company_insert ON access.probe_company FOR INSERT TO nortfox_app WITH CHECK (probe_company_id = ledger.current_company_id());
+      GRANT SELECT, INSERT ON access.probe_company TO nortfox_app;
+      CREATE TABLE access.probe_public (id uuid PRIMARY KEY, label text);
+      SELECT meta.protect_install_table('access.probe_public');
+      CREATE POLICY public_select ON access.probe_public FOR SELECT TO nortfox_app USING (true);
+      GRANT SELECT ON access.probe_public TO nortfox_app;
+      CREATE TABLE access.probe_secret (
+        id uuid PRIMARY KEY, token_hash bytea, kept_company_id uuid, bare_id uuid,
+        CONSTRAINT kept FOREIGN KEY (kept_company_id, bare_id) REFERENCES ledger.bare (company_id, id));
+      SELECT meta.protect_install_table('access.probe_secret');
+    `;
+
+    /** The guard's problems with the probes on its list, after `setup`, in a transaction that is then rolled back. */
+    async function installProblems(setup: string, list: ReadonlyMap<string, InstallTable> = LIST): Promise<string[]> {
+      await owner.query("BEGIN");
+      try {
+        await owner.query(setup);
+        return await tableGuardProblems(owner, list);
+      } finally {
+        await owner.query("ROLLBACK");
+      }
+    }
+
+    it("pins the install-wide tables, each with its class and its reason", () => {
+      expect([...INSTALL_TABLES.keys()].sort()).toEqual([
+        "access.account_events",
+        "access.attempt_counters",
+        "access.idempotency_keys",
+        "access.identities",
+        "access.install_keys",
+        "access.known_devices",
+        "access.login_challenges",
+        "access.password_credentials",
+        "access.sessions",
+        "access.setup_tokens",
+        "access.totp_secrets",
+      ]);
+      for (const [table, entry] of INSTALL_TABLES) {
+        expect(entry.why, table).toMatch(/^[A-Z].*\.$/);
+      }
+      expect(INSTALL_TABLES.get("access.identities")).toMatchObject({ class: "person", column: "id", commands: ["SELECT", "UPDATE"] });
+      expect(INSTALL_TABLES.get("access.account_events")).toMatchObject({ class: "person", column: "identity_id", commands: ["SELECT", "INSERT"] });
+      expect(INSTALL_TABLES.get("access.idempotency_keys")).toMatchObject({ class: "person", column: "actor_id", commands: ["SELECT", "INSERT"] });
+    });
+
+    it("passes an install-wide table of each class that has everything, and the migrated tables only with their list", async () => {
+      expect(await installProblems(PROTECTED)).toEqual([]);
+      const unlisted = await installProblems("SELECT 1", new Map());
+      expect(unlisted).toEqual(
+        [...INSTALL_TABLES.keys()].sort().map((table) => `${table}: is in the schema access, but is neither a company table nor on the install-wide list.`),
+      );
+    });
+
+    it.each([
+      [
+        "a person policy that reads every row",
+        "ALTER POLICY person_select ON access.probe_person USING (true)",
+        [`access.probe_person: has no permissive policy for nortfox_app on SELECT with USING ${PERSON}.`, UNEXPECTED("access.probe_person", "person_select")],
+      ],
+      [
+        "a person policy on another column",
+        "ALTER POLICY person_update ON access.probe_person USING (id = access.current_person_id())",
+        [
+          `access.probe_person: has no permissive policy for nortfox_app on UPDATE with USING ${PERSON} and WITH CHECK ${PERSON}.`,
+          UNEXPECTED("access.probe_person", "person_update"),
+        ],
+      ],
+      [
+        "a person policy that checks nothing on insert",
+        "ALTER POLICY person_insert ON access.probe_person WITH CHECK (true)",
+        [`access.probe_person: has no permissive policy for nortfox_app on INSERT with WITH CHECK ${PERSON}.`, UNEXPECTED("access.probe_person", "person_insert")],
+      ],
+      [
+        "a person policy for every command in one",
+        "DROP POLICY person_select ON access.probe_person; CREATE POLICY person_all ON access.probe_person TO nortfox_app USING (identity_id = access.current_person_id()) WITH CHECK (identity_id = access.current_person_id())",
+        [`access.probe_person: has no permissive policy for nortfox_app on SELECT with USING ${PERSON}.`, UNEXPECTED("access.probe_person", "person_all")],
+      ],
+      [
+        "a policy for a command the table does not list",
+        "CREATE POLICY company_delete ON access.probe_company FOR DELETE TO nortfox_app USING (probe_company_id = ledger.current_company_id())",
+        [UNEXPECTED("access.probe_company", "company_delete")],
+      ],
+      [
+        "a company policy that trusts any company",
+        "ALTER POLICY company_select ON access.probe_company USING (probe_company_id IS NOT NULL)",
+        [`access.probe_company: has no permissive policy for nortfox_app on SELECT with USING ${IN_COMPANY}.`, UNEXPECTED("access.probe_company", "company_select")],
+      ],
+      [
+        "a company policy that names the person",
+        "ALTER POLICY company_insert ON access.probe_company WITH CHECK (probe_company_id = access.current_person_id())",
+        [`access.probe_company: has no permissive policy for nortfox_app on INSERT with WITH CHECK ${IN_COMPANY}.`, UNEXPECTED("access.probe_company", "company_insert")],
+      ],
+      [
+        "a public table that the app writes",
+        "CREATE POLICY public_insert ON access.probe_public FOR INSERT TO nortfox_app WITH CHECK (true)",
+        [UNEXPECTED("access.probe_public", "public_insert")],
+      ],
+      [
+        "an app policy on a secret table",
+        "CREATE POLICY secret_select ON access.probe_secret FOR SELECT TO nortfox_app USING (true)",
+        [UNEXPECTED("access.probe_secret", "secret_select")],
+      ],
+      [
+        "an app policy for PUBLIC",
+        "CREATE POLICY anyone ON access.probe_public FOR SELECT TO PUBLIC USING (true)",
+        [UNEXPECTED("access.probe_public", "anyone")],
+      ],
+      ["a missing owner policy", "DROP POLICY install_owner ON access.probe_secret", [OWNER_POLICY("access.probe_secret")]],
+      [
+        "an owner policy that reads less than every row",
+        "ALTER POLICY install_owner ON access.probe_person USING (note IS NULL)",
+        [OWNER_POLICY("access.probe_person"), UNEXPECTED("access.probe_person", "install_owner")],
+      ],
+      [
+        "an owner policy that names the app too",
+        "ALTER POLICY install_owner ON access.probe_public TO nortfox_owner, nortfox_app",
+        [OWNER_POLICY("access.probe_public"), UNEXPECTED("access.probe_public", "install_owner")],
+      ],
+      [
+        "a privilege for the reader",
+        "GRANT SELECT ON access.probe_public TO nortfox_reader",
+        ["access.probe_public: nortfox_reader has SELECT. A reader gets nothing on an install-wide table."],
+      ],
+      [
+        "a column privilege for the reader",
+        "GRANT SELECT (token_hash) ON access.probe_secret TO nortfox_reader",
+        ["access.probe_secret: nortfox_reader has SELECT on token_hash. A reader gets nothing on an install-wide table."],
+      ],
+      [
+        "a privilege for PUBLIC",
+        "GRANT SELECT ON access.probe_person TO PUBLIC",
+        ["access.probe_person: PUBLIC has SELECT. Only nortfox_app and nortfox_reader get privileges on a table."],
+      ],
+      [
+        "TRUNCATE for the app",
+        "GRANT TRUNCATE ON access.probe_person TO nortfox_app",
+        ["access.probe_person: nortfox_app has TRUNCATE. The app never gets TRUNCATE, REFERENCES or TRIGGER."],
+      ],
+      [
+        "a privilege for the app on a secret table",
+        "GRANT SELECT (id) ON access.probe_secret TO nortfox_app",
+        ["access.probe_secret: nortfox_app has SELECT on id, but the app reaches a secret table only through the lookup functions."],
+      ],
+      ["row level security that is not forced", "ALTER TABLE access.probe_secret NO FORCE ROW LEVEL SECURITY", ["access.probe_secret: row level security is not forced."]],
+      ["row level security that is off", "ALTER TABLE access.probe_public DISABLE ROW LEVEL SECURITY", ["access.probe_public: row level security is not enabled."]],
+      [
+        "no truncate trigger",
+        "DROP TRIGGER refuse_truncate ON access.probe_secret",
+        ["access.probe_secret: has no refuse_truncate trigger: BEFORE TRUNCATE, FOR EACH STATEMENT, enabled, calling ledger.refuse_truncate()."],
+      ],
+      [
+        "a foreign key to a company table without its company column",
+        "ALTER TABLE access.probe_company ADD CONSTRAINT loose FOREIGN KEY (bare_id) REFERENCES ledger.bare (id)",
+        [UNPAIRED("access.probe_company", "loose")],
+      ],
+      [
+        "a foreign key that pairs another column than the table's company column",
+        "ALTER TABLE access.probe_company ADD COLUMN other_company_id uuid, ADD CONSTRAINT crossed FOREIGN KEY (other_company_id, bare_id) REFERENCES ledger.bare (company_id, id)",
+        [UNPAIRED("access.probe_company", "crossed")],
+      ],
+      [
+        "a foreign key that pairs a column that names no company",
+        "ALTER TABLE access.probe_secret ADD COLUMN owner_id uuid, ADD CONSTRAINT owned FOREIGN KEY (owner_id, bare_id) REFERENCES ledger.bare (company_id, id)",
+        [UNPAIRED("access.probe_secret", "owned")],
+      ],
+      [
+        "a company_id column",
+        "ALTER TABLE access.probe_secret ADD COLUMN company_id uuid",
+        ["access.probe_secret: is on the install-wide list, but has a company_id column, which makes a company table."],
+      ],
+    ])("fails an install-wide table with %s", async (_case, change, problems) => {
+      expect(await installProblems(`${PROTECTED} ${change};`)).toEqual(problems);
+    });
+
+    it("fails a table on the list outside the schema access, and a table in it that is on no list", async () => {
+      expect(
+        await installProblems(`
+          CREATE TABLE ledger.probe_elsewhere (id uuid PRIMARY KEY);
+          SELECT meta.protect_install_table('ledger.probe_elsewhere');`),
+      ).toEqual(["ledger.probe_elsewhere: is on the install-wide list, but is not in the schema access."]);
+      expect(await installProblems("CREATE TABLE access.loose (id uuid PRIMARY KEY)")).toEqual([
+        "access.loose: is in the schema access, but is neither a company table nor on the install-wide list.",
+      ]);
+      // A company table in access is held to every company table's rules.
+      expect(await installProblems("CREATE TABLE access.bare (id uuid PRIMARY KEY, company_id uuid NOT NULL)")).toEqual(
+        [
+          "row level security is not enabled.",
+          "row level security is not forced.",
+          `has no permissive policy for nortfox_app on ALL with USING ${COMPANY} and WITH CHECK ${COMPANY}.`,
+          `has no permissive policy for nortfox_owner on ALL with USING ${COMPANY} and WITH CHECK ${COMPANY}.`,
+          `has no permissive policy for nortfox_reader on SELECT with USING ${READER}.`,
+          NO_HISTORY.replace("ledger.bare: ", ""),
+          NO_TRUNCATE.replace("ledger.bare: ", ""),
+          "keeps planner statistics of the column id, the column company_id, which hold values of every company's rows: EXPLAIN shows estimates from them to every role that reads the table.",
+        ].map((problem) => `access.bare: ${problem}`),
+      );
+    });
+
+    it("lets an install-wide table keep statistics, a partial index and a unique key without company_id, which no reader reads", async () => {
+      expect(
+        await installProblems(`${PROTECTED}
+          ALTER TABLE access.probe_person ALTER COLUMN note SET STATISTICS 100;
+          CREATE UNIQUE INDEX probe_person_noted ON access.probe_person (note) WHERE note IS NOT NULL;
+          CREATE STATISTICS access.probe_person_pairs ON identity_id, note FROM access.probe_person;`),
+      ).toEqual([]);
+    });
   });
 });

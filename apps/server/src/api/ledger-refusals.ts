@@ -4,8 +4,8 @@
 // with a reason in the class NF (db/refusals.ts). Each reason is one of two:
 //
 // - A rule that a request can break: NF001 to NF020, which later slices also
-//   answer with the established system's message, and
-//   period_outside_fiscal_year and fiscal_year_strands_rows. The runner
+//   answer with the established system's message, NF021 install_not_empty,
+//   and period_outside_fiscal_year and fiscal_year_strands_rows. The runner
 //   answers it as a rule's refusal, 422. Its code is the reason in kebab-case,
 //   and its facts are the database's with camelCase keys, as /v1 names its
 //   fields, and with amounts as Money. It has no pointer: the database does
@@ -51,6 +51,7 @@ export const LEDGER_REFUSALS = {
   series_code_duplicate: { rule: true, detail: "The fiscal year has a voucher series with this code already." },
   series_code_changed: { rule: true, detail: "A voucher series keeps its code." },
   immutable_field: { rule: true, detail: "The field cannot be set or changed." },
+  install_not_empty: { rule: true, detail: "The install has an identity already, so its setup is done." },
   period_outside_fiscal_year: { rule: true, detail: "The period is not inside its fiscal year." },
   fiscal_year_strands_rows: { rule: true, detail: "The new dates would leave periods or vouchers outside the fiscal year." },
   actor_missing: { rule: false },

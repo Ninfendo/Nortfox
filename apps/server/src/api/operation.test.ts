@@ -84,7 +84,11 @@ function recordingDatabase(answering: Answering = answersNothing) {
       transaction.ended = ending.commit ? "commit" : "rollback";
       return ending.value;
     };
-  return { transactions, queries, database: { read: run("read"), write: run("write"), end: () => Promise.resolve() } };
+  return {
+    transactions,
+    queries,
+    database: { read: run("read"), write: run("write"), lookup: () => Promise.reject(new Error("The runner runs no lookup.")), end: () => Promise.resolve() },
+  };
 }
 
 function call(context: RequestContext | undefined, query: Record<string, unknown> = {}, problems?: readonly FieldIssue[]): OperationCall {

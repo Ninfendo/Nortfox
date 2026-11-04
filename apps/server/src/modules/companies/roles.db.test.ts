@@ -25,6 +25,17 @@ import { guardedRelations } from "../../db/table-guard.ts";
 
 /** The app's privileges on each table: SELECT, and only the writes each table needs. */
 const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
+  "access.account_events": ["INSERT", "SELECT"],
+  "access.attempt_counters": [],
+  "access.idempotency_keys": ["INSERT", "SELECT"],
+  "access.identities": ["SELECT", "UPDATE"],
+  "access.install_keys": [],
+  "access.known_devices": [],
+  "access.login_challenges": [],
+  "access.password_credentials": [],
+  "access.sessions": [],
+  "access.setup_tokens": [],
+  "access.totp_secrets": [],
   "audit.history": ["SELECT"],
   "ledger.accounts": ["DELETE", "INSERT", "SELECT", "UPDATE"],
   "ledger.automatic_locks": ["SELECT", "UPDATE"],
@@ -45,8 +56,19 @@ const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "meta.schema_migrations": [],
 };
 
-/** A reader's privileges: SELECT on each company table. */
+/** A reader's privileges: SELECT on each company table, and nothing on an install-wide table. */
 const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
+  "access.account_events": [],
+  "access.attempt_counters": [],
+  "access.idempotency_keys": [],
+  "access.identities": [],
+  "access.install_keys": [],
+  "access.known_devices": [],
+  "access.login_challenges": [],
+  "access.password_credentials": [],
+  "access.sessions": [],
+  "access.setup_tokens": [],
+  "access.totp_secrets": [],
   "audit.history": ["SELECT"],
   "ledger.accounts": ["SELECT"],
   "ledger.automatic_locks": ["SELECT"],
@@ -73,6 +95,28 @@ const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
  */
 const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
   nortfox_app: [
+    "access.attempt_counter",
+    "access.challenge_by_token",
+    "access.claim_attempt",
+    "access.clear_attempts",
+    "access.complete_setup",
+    "access.count_failure",
+    "access.create_setup_token",
+    "access.current_person_id",
+    "access.end_other_sessions",
+    "access.end_session",
+    "access.find_login",
+    "access.install_key",
+    "access.known_device",
+    "access.lock_attempts",
+    "access.open_challenge",
+    "access.open_session",
+    "access.purge_expired",
+    "access.remember_device",
+    "access.session_by_token",
+    "access.touch_session",
+    "access.use_challenge",
+    "access.use_totp_step",
     "ledger.applicable_locks",
     "ledger.automatic_lock_end_date",
     "ledger.current_company_id",
@@ -148,6 +192,13 @@ describe("the database roles", () => {
     ["delete a stored idempotency key", "DELETE FROM ledger.idempotency_keys"],
     ["call the trigger that stamps an idempotency key", "SELECT ledger.idempotency_keys_rules()"],
     ["give out the next tenant id", "SELECT nextval('ledger.database_number_seq')"],
+    ["make a table in access", "CREATE TABLE access.mine (a integer)"],
+    ["read the password hashes", "SELECT * FROM access.password_credentials"],
+    ["read the sessions", "SELECT * FROM access.sessions"],
+    ["delete an identity", "DELETE FROM access.identities"],
+    ["empty the identities", "TRUNCATE access.identities"],
+    ["call the trigger that keeps the identities' rules", "SELECT access.identities_rules()"],
+    ["call the trigger that keeps a column set once", "SELECT access.keep_set_once()"],
   ])("refuses the app to %s", async (_case, sql) => {
     await expectError(app.query(sql), INSUFFICIENT_PRIVILEGE);
   });
@@ -237,7 +288,7 @@ describe("the database roles", () => {
       const found = await owner.query<{ name: string }>(
         `SELECT DISTINCT n.nspname || '.' || p.proname AS name
          FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-         WHERE n.nspname IN ('ledger', 'audit', 'meta') AND pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE')
+         WHERE n.nspname IN ('access', 'ledger', 'audit', 'meta') AND pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE')
          ORDER BY 1`,
         [role],
       );
@@ -253,7 +304,7 @@ describe("the database roles", () => {
         ) AS public,
         p.proconfig AS config, p.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype AS trigger, p.prosecdef AS definer
       FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-      WHERE n.nspname IN ('ledger', 'audit', 'meta')
+      WHERE n.nspname IN ('access', 'ledger', 'audit', 'meta')
       ORDER BY 1`);
     expect(found.rows.filter((row) => row.trigger).length).toBeGreaterThan(0);
     for (const row of found.rows) {

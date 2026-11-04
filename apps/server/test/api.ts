@@ -278,6 +278,7 @@ export function untouchedDatabase(): UntouchedDatabase {
     asked,
     read: () => refuse("read"),
     write: () => refuse("write"),
+    lookup: () => refuse("lookup"),
     end: () => refuse("end"),
   };
 }

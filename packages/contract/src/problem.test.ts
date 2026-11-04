@@ -308,6 +308,7 @@ describe("the problem codes", () => {
       "series-code-duplicate",
       "series-code-changed",
       "immutable-field",
+      "install-not-empty",
       "period-outside-fiscal-year",
       "fiscal-year-strands-rows",
     ];

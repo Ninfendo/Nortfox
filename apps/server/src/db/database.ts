@@ -18,6 +18,12 @@
 //   from one snapshot, and a read cannot write. A write runs at READ
 //   COMMITTED, as the ledger asks of every write. Both are named in BEGIN, so
 //   a default of the connection's never changes them.
+// - A lookup is the resolver's transaction, before the request's own. It
+//   writes, at READ COMMITTED, and starts with only the channel set, since
+//   it finds the credential through the lookup functions before it knows the
+//   person. The work may then set the person once, with actAs: the actor and
+//   its kind, a user or an integration, never the internal system user. A
+//   second actAs throws.
 // - The work ends the transaction with commit(value) or rollBack(value). A
 //   throw rolls it back and is thrown again, and so is a COMMIT that fails,
 //   such as the ledger's checks at commit. The work's queries run only while
@@ -93,11 +99,25 @@ export function rollBack<T>(value: T): Ending<T> {
 /** A request's work in its transaction. */
 export type Work<T> = (tx: Queryable) => Promise<Ending<T>>;
 
+/** The kinds of actor that a credential gives a person: never the internal system user. */
+export type PersonKind = "user" | "integration";
+
+/** The lookup's transaction: its queries, and the person it may set once. */
+export interface LookupQueryable extends Queryable {
+  /** Sets the transaction's person, the actor and its kind, once. A second call throws. */
+  actAs(personId: string, kind: PersonKind): Promise<void>;
+}
+
+/** The resolver's work in its lookup. */
+export type LookupWork<T> = (tx: LookupQueryable) => Promise<Ending<T>>;
+
 export interface Database {
   /** Runs `work` in a transaction at REPEATABLE READ READ ONLY. */
   read<T>(settings: TransactionSettings, work: Work<T>): Promise<T>;
   /** Runs `work` in a transaction at READ COMMITTED. */
   write<T>(settings: TransactionSettings, work: Work<T>): Promise<T>;
+  /** Runs the resolver's `work` in a transaction at READ COMMITTED, with only the channel set. */
+  lookup<T>(channel: Channel, work: LookupWork<T>): Promise<T>;
   /** Closes the pool's connections. */
   end(): Promise<void>;
 }
@@ -115,10 +135,39 @@ const WRITE = "BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE";
 const SETTINGS = `SELECT pg_catalog.set_config('nortfox.company_id', $1, true), pg_catalog.set_config('nortfox.actor_id', $2, true),
   pg_catalog.set_config('nortfox.actor_kind', $3, true), pg_catalog.set_config('nortfox.channel', $4, true)`;
 
+const SET_PERSON = "SELECT pg_catalog.set_config('nortfox.actor_id', $1, true), pg_catalog.set_config('nortfox.actor_kind', $2, true)";
+
 const ENDED = "The transaction has ended. A query after its end would run outside it.";
 
-/** Runs `work` in one transaction that `begin` opens, on a connection of the pool. */
-async function runInTransaction<T>(pool: Pool, begin: string, settings: TransactionSettings, work: Work<T>, onConnectionError: (error: Error) => void): Promise<T> {
+const PERSON_SET = "The lookup has set its person already. A lookup sets the person once.";
+
+/** The lookup's transaction over `tx`: its queries, and actAs once. */
+function lookupOver(tx: Queryable): LookupQueryable {
+  let person = false;
+  return {
+    query: (text, values) => tx.query(text, values),
+    actAs: async (personId, kind) => {
+      if (person) {
+        throw new Error(PERSON_SET);
+      }
+      person = true;
+      await tx.query(SET_PERSON, [personId, kind]);
+    },
+  };
+}
+
+/**
+ * Runs `work` in one transaction that `begin` opens, on a connection of the
+ * pool. `over` gives the work its view of the transaction.
+ */
+async function runInTransaction<T, Q extends Queryable>(
+  pool: Pool,
+  begin: string,
+  settings: TransactionSettings,
+  over: (tx: Queryable) => Q,
+  work: (tx: Q) => Promise<Ending<T>>,
+  onConnectionError: (error: Error) => void,
+): Promise<T> {
   const client: PoolClient = await pool.connect();
   let broken = false;
   const noteBreak = (error: Error): void => {
@@ -136,7 +185,7 @@ async function runInTransaction<T>(pool: Pool, begin: string, settings: Transact
     try {
       await client.query(begin);
       await client.query(SETTINGS, [settings.companyId ?? "", settings.actorId ?? "", settings.actorKind ?? "", settings.channel]);
-      ending = await work(tx);
+      ending = await work(over(tx));
       open = false;
       await client.query(ending.commit ? "COMMIT" : "ROLLBACK");
     } catch (error) {
@@ -154,13 +203,19 @@ async function runInTransaction<T>(pool: Pool, begin: string, settings: Transact
   }
 }
 
+/** The transaction as it is, for a read or a write. */
+function same(tx: Queryable): Queryable {
+  return tx;
+}
+
 /** The database over `pool`, whose connections log in as nortfox_app. */
 export function databaseOver(pool: Pool, onConnectionError: (error: Error) => void): Database {
   // An idle connection that PostgreSQL ends leaves the pool, which emits its error here.
   pool.on("error", onConnectionError);
   return {
-    read: (settings, work) => runInTransaction(pool, READ, settings, work, onConnectionError),
-    write: (settings, work) => runInTransaction(pool, WRITE, settings, work, onConnectionError),
+    read: (settings, work) => runInTransaction(pool, READ, settings, same, work, onConnectionError),
+    write: (settings, work) => runInTransaction(pool, WRITE, settings, same, work, onConnectionError),
+    lookup: (channel, work) => runInTransaction(pool, WRITE, { channel }, lookupOver, work, onConnectionError),
     end: () => pool.end(),
   };
 }

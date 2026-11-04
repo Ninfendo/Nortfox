@@ -132,6 +132,7 @@ describe("the runner's read path", () => {
           }
         }),
       write: () => Promise.reject(new Error("A read never writes.")),
+      lookup: () => Promise.reject(new Error("A read looks nothing up.")),
       end: () => Promise.resolve(),
     };
     const error = await failureOf(runOperation(getCompanyHandler, call(contextIn(broken)), runnerDeps(watching)));
