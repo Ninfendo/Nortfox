@@ -88,6 +88,8 @@ Each module lives in `apps/server/src/modules/<name>`. A module owns its tables,
 | appearance | Runtime themes: 8 shadcn styles, 7 base colours, 24 theme colours, chart colours, light and dark, radius, menu colour, menu accent, 26 self-hosted fonts. A style builder for company admins. Values only, never raw CSS. Contrast is checked. |
 | audit | The behandlingshistorik: who changed what, when, and through which client. Written by database triggers. |
 | jobs | Background jobs, the outbox, and webhooks. |
+| start-page | The Startsida: the Att göra card, the key figures and the onboarding card, as in the established system. One operation lists what needs the user, and the card is one client of it. |
+| messages | Notices under the bell, and messages between the users of a company, on their own or on a voucher or a supplier invoice, as in the established system. |
 | files | Attachments (underlag), stored with a hash in NortFox's own storage, with optional copies on the company's own cloud drive. A removed file goes to a trash for 30 days, as in the established system. |
 | status | Health checks and `nortfox doctor`, which checks that an install is sound. |
 | import | Bring a company's books in: from a SIE4 file, or from another system's API through an import adapter. Each adapter lives in its own folder, under a neutral id ([decision 11](decisions/0011-names-policy.md)). |
@@ -108,9 +110,10 @@ Each module lives in `apps/server/src/modules/<name>`. A module owns its tables,
 | accruals | Periodisering: spread an amount over several periods. |
 | cash-register | Dagskassa: book a day's sales from a cash register report. |
 | vat | The VAT report (momsdeklaration) and the EU sales list (periodisk sammanställning). |
+| tax-agency | Skatteverket by API: the VAT report sent as a draft that the user signs at Skatteverket, and the tax account (skattekonto) read each day, as in the established system. |
 | reports | Grundbok, huvudbok, saldobalans, balansrapport, resultatrapport and more. |
 | sie | SIE 4 import and export. |
-| bank | Bank statement files, booking rules, reconciliation. |
+| bank | Bank statement files, booking and linking their lines, booking rules, reconciliation. |
 | supplier-invoices | Leverantörsfakturor, with approval flows (attest). |
 | payments | Payment files. |
 
@@ -192,7 +195,7 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 **2d. Web frame with the theme switcher**
 
-- **What:** `apps/web` with React 19, Vite and Tailwind v4; `packages/ui` with the first shadcn components on Base UI; `packages/i18n` with Swedish and English, and the Swedish amount form moved there from `packages/engine`; login, company picker and an empty app frame with the menu; the theme switcher over the appearance values.
+- **What:** `apps/web` with React 19, Vite and Tailwind v4; `packages/ui` with the first shadcn components on Base UI; `packages/i18n` with Swedish and English, and the Swedish amount form moved there from `packages/engine`; login, company picker and an empty app frame with the menu; the theme switcher over the appearance values. The frame lands on the Startsida and leaves room in the top bar for the messages and the bell, as in the established system. 3r fills them.
 - **Design:** every screen follows the [design rules](design/README.md).
 - **Done when:**
   - Login, company choice and logout work in the browser through the generated client only. A guard refuses any other way of calling the server.
@@ -257,7 +260,7 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 ### Step 3: Bokföring
 
-The ledger comes first, then what a voucher carries, then the reports and SIE so the books can be checked and moved, then the VAT report, then the modules that bring money in and out. Two platform modules come in where the first Bokföring module needs them.
+The ledger comes first, then what a voucher carries, then the reports and SIE so the books can be checked and moved, then the VAT report, then the modules that bring money in and out. Two platform modules come in where the first Bokföring module needs them. Last come the Startsida, the bell and messages, which show what the earlier slices leave for the user, and Skatteverket by API.
 
 **3a. accounts: the kontoplan**
 
@@ -369,6 +372,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 **3i. vat: VAT report and EU sales list**
 
 - **What:** VAT codes and report boxes per year from `reference-data`; the VAT report for a month, quarter or year; the file for the tax agency; the VAT settlement voucher; the EU sales list (periodisk sammanställning). As far as is known, the established system does not lock a period when its VAT report is booked. 3i's issue confirms this, and until then 3i adds no lock.
+  - Each VAT period has a state, as in the established system's Moms view: it waits until the user marks it Klar or Redan hanterad. The Startsida shows the periods that wait (3r). Sending the report to Skatteverket by API comes in 3s.
   - A booked report is corrected as in the established system. Either its VAT voucher is deleted, while it is the last of its series, and a new report is booked. Or the period's bookings are fixed and the report is booked again. The VAT module then books a reversing voucher of its earlier VAT voucher, linked both ways, and a new VAT voucher. Booking the report again with no change in the period books nothing.
   - A booked report keeps the box values it was booked with, stored with its VAT voucher. So it can be read again with those numbers, also after a later change in its period. Whether the established system keeps them, or works a booked report out again from the books, was not checked. 3i's issue checks it. Until then, the values are stored, as NortFox's own working default.
 - **Done when:**
@@ -378,7 +382,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **3j. jobs (platform): background jobs and the outbox**
 
-- **What:** a job queue in PostgreSQL, run by the server process; an outbox written in the same transaction as the change it reports; retries with backoff; jobs readable through the API. The first jobs are the reminder before each automatic lock run (3b), shown in the app as in the established system, and the job that deletes a file once it has been in the trash for 30 days (3e).
+- **What:** a job queue in PostgreSQL, run by the server process; an outbox written in the same transaction as the change it reports; retries with backoff; jobs readable through the API. The first jobs are the reminder before each automatic lock run (3b), shown in the app by 3r as in the established system, and the job that deletes a file once it has been in the trash for 30 days (3e).
 - **Done when:** a job survives a server restart and runs exactly once; a test shows an outbox event exists if and only if its transaction committed; the reminder appears the chosen number of days before an automatic lock run; a file in the trash is deleted once it has been there for 30 days, and not before.
 
 **3k. currencies**
@@ -403,8 +407,8 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **3o. bank: statements, booking rules, reconciliation**
 
-- **What:** import statement files (ISO 20022 camt.053, and CSV through a column mapping); booking rules that match a line on text, amount or counterparty and propose a voucher; reconciliation of each bank account against the statement.
-- **Done when:** importing the same file twice changes nothing; a rule can be tried as a dry run first; the reconciliation of the reference books shows no difference.
+- **What:** import statement files (ISO 20022 camt.053, and CSV through a column mapping); booking a waiting line by hand, or linking it to a voucher that is already booked, as in the established system; booking rules that match a line on text, amount or counterparty and book it, as in the established system; reconciliation of each bank account against the statement.
+- **Done when:** importing the same file twice changes nothing; a line linked to a booked voucher changes nothing in the books and leaves the waiting lines; a rule can be tried as a dry run first; the reconciliation of the reference books shows no difference.
 
 **3p. supplier-invoices: leverantörsfakturor with approval**
 
@@ -415,6 +419,38 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 - **What:** a payment proposal from approved invoices that are due; a payment file in ISO 20022 pain.001; bank days from the holidays in `reference-data`; the payment is booked when the bank statement shows it.
 - **Done when:** every payment file validates against the pain.001 schema; a test shows one invoice is never in two files; matching the statement books the payment and closes the invoice.
+
+**3r. start-page and messages (platform): the Startsida, the bell and messages**
+
+- **What:** the Startsida, the bell and the messages panel, as in the established system. They show the user what the earlier slices leave to do.
+  - One operation, with its MCP tool, lists what needs the user in the current company, within the user's own rights: supplier invoices that wait for the user's approval (3p), bank lines that wait to be booked or linked (3o), approved invoices that are due and in no payment file (3q), and VAT periods that wait (3i). The Att göra card is one client of it, as in the established system.
+  - The key figures, as in the established system: Omsättning, Kostnader and Resultat for the fiscal year, worked out from the books; the unpaid supplier invoices, from the supplier invoices of 3p; and each bank account's balance. The established card takes the balances from its bank link. NortFox reads statement files (3o), so it shows each account's balance from its latest statement. The established figures for customer invoices and financing are outside this plan.
+  - The onboarding card (Kom igång), with the set-up tasks that have a screen by then.
+  - The bell lists the user's notices, made from outbox events (3j): the supplier-invoice approval notices (3p) and the reminder before an automatic lock run (3j). As in the established system, the approval notices also go by e-mail to a user who has them on, when the install names a mail server.
+  - The messages panel: the users of a company write to each other, on their own or in a thread on a voucher (3d) or a supplier invoice (3p). A message changes nothing in the books.
+  - Each of these is an operation in the registry, with its MCP tool, and the screens call the same operations. The established API has none of them, so 3r has no compatible endpoint.
+  - 3r's issue holds the detail, and settles what the established system's help pages leave open.
+- **Done when:**
+  - Through REST, MCP and the Startsida, the list of what needs the user gives the same rows. A record leaves its row once it is handled. A supplier invoice that waits for approval shows to each user whose approval it waits for, and to no other user. A record of the other kinds shows to each user whose rights cover it, and to no other user. A member of another company never sees any of them.
+  - With a fixed clock, the key figures for the reference books equal numbers worked out by hand, also for a company on the cash method that has unpaid supplier invoices.
+  - Through REST, MCP and the bell, the approvers of a supplier invoice's step get its approval notice, and no other user gets that notice. The reminder before an automatic lock run shows in the app to the users it is for, the chosen number of days before the run. A notice is made only when its transaction commits.
+  - Through REST, MCP and the messages panel, a user starts a thread on a voucher and one on a supplier invoice with a chosen colleague, and the colleague reads and answers it. Every user who may see that voucher or invoice reads its thread. A user who neither takes part in the thread nor may see its voucher or invoice never reads it, and a member of another company never does. The thread leaves the books as they were.
+
+**3s. tax-agency: Skatteverket by API**
+
+- **What:** Skatteverket's APIs, as the established system uses them.
+  - The VAT report of a period (3i) is sent as a draft (utkast), and Skatteverket's checks come back at once. The user signs the return at Skatteverket, through a link. NortFox never signs. Once it is signed, the receipt (kvittens) is saved as a file on the VAT voucher (3e).
+  - The company's tax account (skattekonto) is read each day by a job (3j). It is a transaction account of 3o, and its lines wait with the bank lines and are handled as 3o handles those, with the established system's ready rules for the tax account. A payment between a bank account and the tax account shows on both, and it is booked once. The tax account's balance shows on the Startsida (3r).
+  - Each install makes its own agreements with Skatteverket, as it makes its own BankID agreement in 2f ([decision 8](decisions/0008-authentication.md)), and follows Skatteverket's terms for each API. With no agreement configured, the operations of 3s refuse with 422 `tax-agency-not-configured`, and the VAT report's file from 3i still works.
+  - Each of these is an operation in the registry, with its MCP tool. The established API has none of them, so 3s has no compatible endpoint.
+  - 3s's issue holds the detail, with Skatteverket's terms, and settles what the established system's help pages leave open.
+- **Done when:**
+  - One contract test suite for the Skatteverket client runs against a local stand-in for the VAT return API and the tax account API.
+  - With no agreement configured, every operation of 3s refuses with 422 `tax-agency-not-configured`, and the VAT report and its file of 3i work as before. A test checks both.
+  - Against the stand-in, sending a booked report gives a draft and Skatteverket's checks, and no operation signs. Once the stand-in marks the draft signed, the receipt is a file on the VAT voucher.
+  - Against the stand-in, the daily read brings in each line on the tax account once, and one payment that shows on a bank statement and on the tax account is booked once.
+  - A test against Skatteverket's test service runs in a workflow of its own, on a schedule and on demand, as in 2f. No required check needs it. Without its keys it fails, and it never skips.
+  - The API keys, the private key of the organisation certificate (organisationslegitimation) and Skatteverket's tokens never appear in a log, in an answer or in clear in a table.
 
 ### Step 4: the rest of the platform
 
