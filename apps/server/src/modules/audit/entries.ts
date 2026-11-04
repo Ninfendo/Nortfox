@@ -37,7 +37,7 @@ export const ENTRY_WORDS = {
 export type EntryDetails = Readonly<Record<string, string | number>>;
 
 /** One entry of the behandlingshistorik in the transaction's company. */
-export interface Entry {
+export interface AuditEntry {
   readonly program: keyof (typeof ENTRY_WORDS)["programs"];
   readonly heading: keyof (typeof ENTRY_WORDS)["headings"];
   /** The person the entry is about. */
@@ -48,7 +48,7 @@ export interface Entry {
 }
 
 /** Adds an entry to the behandlingshistorik of the transaction's company. */
-export async function addEntry(tx: Queryable, entry: Entry): Promise<void> {
+export async function addEntry(tx: Queryable, entry: AuditEntry): Promise<void> {
   await tx.query("INSERT INTO access.events (company_id, program, heading, subject_id, details, at) VALUES (ledger.current_company_id(), $1, $2, $3, $4, $5)", [
     entry.program,
     entry.heading,

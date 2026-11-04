@@ -72,6 +72,7 @@ The guard runs in `pnpm check`, in CI, and in the pre-commit hook over the stage
 
 - One slice or one fix per PR, with its tests and, when users will notice it, a changeset.
 - A slice's terms go into [docs/glossary.md](docs/glossary.md), each with its name in `/v1` and the code. `packages/contract/src/terms.test.ts` checks that the glossary and `/v1` give the same names.
+- A new operation or problem code goes into [docs/api.md](docs/api.md) in the same PR. `packages/contract/src/api-docs.test.ts` checks its tables of operations and codes against the registry and the contract.
 - Every new rule has tests, and every new guard has a test that shows it fails on a bad input.
 - No PR lowers a coverage floor, switches off a lint rule or skips a check.
 - Test data is made up: fictional companies and people, the test numbers on the fixture guard's list, and addresses at the reserved example domains. Never personal data or real company data.

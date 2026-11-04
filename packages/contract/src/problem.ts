@@ -73,7 +73,7 @@ export const Problem = z
 export type Problem = z.infer<typeof Problem>;
 
 /** The ledger's rules a request can break: each a refusal by the database, answered with 422. */
-const LEDGER_RULES = [
+export const LEDGER_RULES = [
   "unbalanced",
   "too-few-rows",
   "account-missing",
