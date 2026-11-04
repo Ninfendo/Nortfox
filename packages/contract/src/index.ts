@@ -27,6 +27,7 @@ export {
   challengeOf,
   defineListOperation,
   defineOperation,
+  isCompanyInput,
   outputSchema,
   paramsSchema,
   querySchema,
@@ -35,6 +36,7 @@ export {
   takesIdempotencyKey,
 } from "./operation.ts";
 export type {
+  CompanyInput,
   CompanySource,
   JsonBody,
   ListDefinition,
@@ -51,9 +53,23 @@ export type {
   SuccessStatus,
 } from "./operation.ts";
 export { PasswordSignIn, SetupResult, TotpEnrolment, completeSetup, loginWithPassword, logout, verifyTotp } from "./operations/auth.ts";
-export { Company, getCompany } from "./operations/companies.ts";
+export {
+  Company,
+  CompanyChoice,
+  IDLE_TIMEOUTS,
+  IdleTimeout,
+  MEMBERSHIP_STATUSES,
+  Membership,
+  RecentCompanies,
+  SysAdmin,
+  createCompany,
+  getCompany,
+  listCompanies,
+  listRecentCompanies,
+  updateMyMembership,
+} from "./operations/companies.ts";
 export { LANGUAGES, Me, TWO_STEP_CHOICES, User, getMe } from "./operations/me.ts";
-export { Session, getSession } from "./operations/session.ts";
+export { Session, getSession, selectCompany } from "./operations/session.ts";
 export { Health, getHealth } from "./operations/status.ts";
 export { Cursor, LIMIT, Limit, effectiveLimit, pageOf } from "./paging.ts";
 export {
@@ -65,6 +81,7 @@ export {
   newPasswordIssue,
   passwordLength,
 } from "./password.ts";
+export { isPersonal, personal, personalPointers } from "./fields.ts";
 export { FIELD_PROBLEM_CODES, FieldProblem, PROBLEM_CODES, Problem, fieldIssues, jsonPointer } from "./problem.ts";
 export type { FieldIssue, FieldProblemCode, JsonValue, ProblemCode } from "./problem.ts";
 export { REGISTRY } from "./registry.ts";

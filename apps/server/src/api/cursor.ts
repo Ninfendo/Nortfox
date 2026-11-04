@@ -2,20 +2,25 @@
 
 // A list's cursor is opaque to the caller. It holds the sort key of the last
 // item of a page, and the server signs it, so a cursor that the server did
-// not make for this list, in this company, is refused (400 cursor-invalid).
+// not make for this list, in this company, or for this person, is refused
+// (400 cursor-invalid).
 //
 // The form: base64url of the payload {"v":1,"after":[...]}, a point, and
-// base64url of HMAC-SHA256 over the operation's id, the company's id and the
-// payload's base64url text. The key is made when the server starts, so a
-// cursor lasts as long as the process: after a restart, a client starts its
-// list again.
+// base64url of HMAC-SHA256 over the operation's id, the company's id, the
+// payload's base64url text and, for a person's own list, the person's id, so
+// a cursor works only for the person it was made for. The key is made when
+// the server starts, so a cursor lasts as long as the process: after a
+// restart, a client starts its list again.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-/** Which list a cursor belongs to: one operation in one company. */
+/** Which list a cursor belongs to: one operation in one company, or one person's own list in no company. */
 export interface CursorScope {
   readonly operationId: string;
+  /** The company, or "" for a person's own list. */
   readonly companyId: string;
+  /** The person, for a person's own list. */
+  readonly personId?: string;
 }
 
 const VERSION = 1;
@@ -23,7 +28,7 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const SIGNATURE_BYTES = 32;
 
 function signature(key: Uint8Array, scope: CursorScope, payload: string): Buffer {
-  return createHmac("sha256", key).update(JSON.stringify([scope.operationId, scope.companyId, payload])).digest();
+  return createHmac("sha256", key).update(JSON.stringify(scope.personId === undefined ? [scope.operationId, scope.companyId, payload] : [scope.operationId, scope.companyId, payload, scope.personId])).digest();
 }
 
 /** The cursor of the page after the item whose sort key is `after`. */

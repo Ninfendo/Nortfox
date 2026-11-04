@@ -133,6 +133,7 @@ describe("the runner's read path", () => {
           }
         }),
       write: () => Promise.reject(new Error("A read never writes.")),
+      person: () => Promise.reject(new Error("A read in the credential's company is no person's transaction.")),
       lookup: () => Promise.reject(new Error("A read looks nothing up.")),
       end: () => Promise.resolve(),
     };

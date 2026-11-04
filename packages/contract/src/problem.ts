@@ -117,6 +117,7 @@ export const PROBLEM_CODES = {
   "idempotency-key-reused": 422,
   "sign-in-failed": 422,
   "setup-link-invalid": 422,
+  "company-not-available": 422,
   "too-many-attempts": 429,
   "internal-error": 500,
   "server-busy": 503,

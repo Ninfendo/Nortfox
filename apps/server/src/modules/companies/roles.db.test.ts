@@ -105,6 +105,7 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
   nortfox_app: [
     "access.active_membership",
     "access.challenge_by_token",
+    "access.choose_company",
     "access.claim_attempt",
     "access.clear_attempts",
     "access.complete_setup",

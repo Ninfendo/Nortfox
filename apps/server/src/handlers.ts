@@ -2,10 +2,10 @@
 
 import type { Handler } from "./api/operation.ts";
 import { authHandlers } from "./modules/auth/handlers.ts";
-import { getCompanyHandler } from "./modules/companies/get-company.ts";
+import { companyHandlers } from "./modules/companies/handlers.ts";
 import { healthHandler } from "./modules/status/health.ts";
 
 /** The handler of every operation in the registry. */
 export function serverHandlers(version: string): Handler[] {
-  return [healthHandler(version), getCompanyHandler, ...authHandlers];
+  return [healthHandler(version), ...companyHandlers, ...authHandlers];
 }

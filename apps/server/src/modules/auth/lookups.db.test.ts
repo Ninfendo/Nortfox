@@ -594,8 +594,9 @@ describe("the lookup functions", () => {
     });
 
     function openSession(hash: Buffer, person: string, device: string | null, at = T0, method = "password-email"): Promise<string | null | undefined> {
+      const secondStep = method.startsWith("password-") ? "totp" : null;
       return first(
-        anonymously<{ id: string | null }>(app, "SELECT access.open_session($1, $2, $3, $4, $5) AS id", [hash, person, method, device, at]),
+        anonymously<{ id: string | null }>(app, "SELECT access.open_session($1, $2, $3, $4, $5, $6) AS id", [hash, person, method, secondStep, device, at]),
       ).then((row) => row?.id);
     }
 
@@ -616,7 +617,19 @@ describe("the lookup functions", () => {
       const device = (await remember(person, tokenHash(), T0)) ?? null;
       const hash = tokenHash();
       const id = (await openSession(hash, person, device)) ?? "";
-      const live = { session_id: id, identity_id: person, status: "active", method: "password-email", device_id: device, started_at: T0, last_seen_at: T0 };
+      const live = {
+        session_id: id,
+        identity_id: person,
+        status: "active",
+        method: "password-email",
+        second_step: "totp",
+        device_id: device,
+        started_at: T0,
+        last_seen_at: T0,
+        current_company_id: null,
+        current_membership_id: null,
+        permissions: null,
+      };
       expect(await sessionOf(hash)).toEqual([live]);
       expect(await sessionOf(tokenHash())).toEqual([]);
       expect(await touch(id, later(T0, 2))).toBe(true);
@@ -696,7 +709,7 @@ describe("the lookup functions", () => {
       const person = await addIdentity(owner);
       const short = randomBytes(31);
       const at = later(T0, 20);
-      await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3)", [short, person, T0]), CHECK_VIOLATION, /sessions_token_hash_form/);
+      await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', 'totp', NULL, $3)", [short, person, T0]), CHECK_VIOLATION, /sessions_token_hash_form/);
       await expectError(anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', NULL, $3, $4)", [short, person, T0, at]), CHECK_VIOLATION, /login_challenges_token_hash_form/);
       await expectError(
         anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', $3, $4, $5)", [tokenHash(), person, short, T0, at]),
@@ -710,8 +723,8 @@ describe("the lookup functions", () => {
         /setup_tokens_token_hash_form/,
       );
       const hash = tokenHash();
-      await anonymously(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3)", [hash, person, T0]);
-      await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3)", [hash, person, T0]), UNIQUE_VIOLATION, /sessions_token_hash_key/);
+      await anonymously(app, "SELECT access.open_session($1, $2, 'password-email', 'totp', NULL, $3)", [hash, person, T0]);
+      await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', 'totp', NULL, $3)", [hash, person, T0]), UNIQUE_VIOLATION, /sessions_token_hash_key/);
       const challenge = tokenHash();
       await anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', NULL, $3, $4)", [challenge, person, T0, at]);
       await expectError(
@@ -753,14 +766,14 @@ describe("the lookup functions", () => {
         CHECK_VIOLATION,
         /attempt_counters_failures_positive/,
       );
-      const session = await first(anonymously<{ id: string }>(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3) AS id", [tokenHash(), person, T0]));
+      const session = await first(anonymously<{ id: string }>(app, "SELECT access.open_session($1, $2, 'password-email', 'totp', NULL, $3) AS id", [tokenHash(), person, T0]));
       await expectError(anonymously(app, "SELECT access.end_session($1, NULL, $2)", [session?.id, T0]), CHECK_VIOLATION, /sessions_ended_with_reason/);
       for (const [ended, reason] of [
         [T0, null],
         [null, "logout"],
       ] as const) {
         await expectError(
-          owner.query("INSERT INTO access.sessions (token_hash, identity_id, method, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', $3, $3, $4, $5)", [
+          owner.query("INSERT INTO access.sessions (token_hash, identity_id, method, second_step, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', 'totp', $3, $3, $4, $5)", [
             tokenHash(),
             person,
             T0,
@@ -825,7 +838,7 @@ describe("the lookup functions", () => {
       "access.sessions": async (person) =>
         (
           await owner.query<{ id: string }>(
-            "INSERT INTO access.sessions (token_hash, identity_id, method, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', $3, $3, $3, 'logout') RETURNING id",
+            "INSERT INTO access.sessions (token_hash, identity_id, method, second_step, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', 'totp', $3, $3, $3, 'logout') RETURNING id",
             [tokenHash(), person, T0],
           )
         ).rows[0]?.id ?? "",

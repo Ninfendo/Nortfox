@@ -4,7 +4,9 @@
 // with which permissions, and through which channel. An operation that needs
 // a permission acts as one person in one company (decision 8). The company
 // comes from the request's credential, never from its path or its body. An
-// operation that needs only a signed-in person works in no company.
+// operation that needs only a signed-in person works in the company that its
+// company source says: none, the credential's, one its input names where the
+// person is an active member, or one it makes (api/operation.ts).
 //
 // A resolver reads the credential from the request's headers and gives the
 // principal: the person, the actor's kind, the credential, and the company
@@ -30,11 +32,16 @@ export type PrincipalKind = Exclude<ActorKind, "system">;
 /** How a session signed in: the login methods of slice 2c. */
 export type SignInMethod = "password-email" | "password-personnummer" | "bankid" | "oidc";
 
+/** The second step of a password sign-in: a TOTP code, or a device the person knows inside its 90 days. */
+export type SecondStep = "totp" | "known-device";
+
 /** A browser session, from the session cookie. API tokens and MCP tokens come later in slice 2c. */
 export interface SessionCredential {
   readonly kind: "session";
   readonly sessionId: string;
   readonly method: SignInMethod;
+  /** The second step of its sign-in, for a sign-in with a password. */
+  readonly secondStep?: SecondStep;
 }
 
 /** What the request's credential is. */

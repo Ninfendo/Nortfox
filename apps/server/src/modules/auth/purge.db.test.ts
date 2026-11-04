@@ -79,7 +79,7 @@ describe("the purge of expired login rows", () => {
   it("deletes a session 30 days after it ended, and one that never ended 30 days after its 12 hours", async () => {
     const person = await addIdentity(owner);
     const session = (ended: Date | null): Promise<string> =>
-      insert("INSERT INTO access.sessions (token_hash, identity_id, method, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', $3, $3, $4, $5)", [
+      insert("INSERT INTO access.sessions (token_hash, identity_id, method, second_step, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', 'totp', $3, $3, $4, $5)", [
         tokenHash(),
         person,
         T0,

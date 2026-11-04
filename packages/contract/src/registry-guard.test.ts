@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { personal } from "./fields.ts";
 import { Money } from "./money.ts";
 import { Limit } from "./paging.ts";
 import { NoBody, Redirect, defineListOperation, defineOperation, type Operation } from "./operation.ts";
@@ -172,7 +173,85 @@ const endSession = defineOperation({
   writes: true,
 });
 
-const GOOD = [readThing, bookThing, listThings, health, readOne, removeOne, signIn, sendLetter, startRedirect, getPerson, endSession];
+const chooseThing = defineOperation({
+  id: "chooseThing",
+  method: "post",
+  path: "/v1/thing-choices",
+  tags: ["person"],
+  summary: "Choose a company",
+  description: "Chooses the company that the body names.",
+  body: z.strictObject({ companyId: z.uuid() }),
+  output: z.strictObject({ user: z.strictObject({ name: personal(z.string()) }) }),
+  permission: "signed-in",
+  session: "flow",
+  company: { input: "companyId" },
+  tool: "Chooses a company.",
+  writes: true,
+});
+
+const changeMember = defineOperation({
+  id: "changeMember",
+  method: "patch",
+  path: "/v1/thing-members/{companyId}",
+  tags: ["person"],
+  summary: "Change your membership",
+  description: "Changes the person's membership in the company that the path names.",
+  params: z.strictObject({ companyId: z.uuid() }),
+  body: z.strictObject({ workEmail: personal(z.string()).nullable().optional() }),
+  output: z.strictObject({ companyId: z.uuid(), workEmail: personal(z.string()).optional() }),
+  permission: "signed-in",
+  company: { input: "companyId" },
+  tool: "Changes your membership.",
+  writes: true,
+});
+
+const makeThing = defineOperation({
+  id: "makeThing",
+  method: "post",
+  path: "/v1/made-things",
+  tags: ["person"],
+  summary: "Make a company",
+  description: "Makes a company.",
+  body: z.strictObject({ name: z.string() }),
+  output: z.strictObject({ id: z.uuid() }),
+  status: 201,
+  permission: "signed-in",
+  company: "new",
+  tool: "Makes a company.",
+  writes: true,
+});
+
+const readCurrent = defineOperation({
+  id: "getCurrentThing",
+  method: "get",
+  path: "/v1/current-thing",
+  tags: ["person"],
+  summary: "Read the current company",
+  description: "Reads the session's company, when it has one.",
+  output: z.strictObject({ name: z.string().optional() }),
+  permission: "signed-in",
+  company: "current",
+  tool: "Reads the current company.",
+  writes: false,
+});
+
+const GOOD = [
+  readThing,
+  bookThing,
+  listThings,
+  health,
+  readOne,
+  removeOne,
+  signIn,
+  sendLetter,
+  startRedirect,
+  getPerson,
+  endSession,
+  chooseThing,
+  changeMember,
+  makeThing,
+  readCurrent,
+];
 
 /** A copy of an entry with some parts replaced. */
 function changed(entry: object, parts: Record<string, unknown>): object {
@@ -203,7 +282,7 @@ function problemsOf(...entries: unknown[]): string[] {
 }
 
 describe("registryProblems", () => {
-  it("passes good entries: a read, a write with its key, a list, a public read, path parameters, a 204, and the session's operations", () => {
+  it("passes good entries: a read, a write with its key, a list, a public read, path parameters, a 204, the session's operations, and each company source", () => {
     expect(problemsOf(...GOOD)).toEqual([]);
   });
 
@@ -245,15 +324,15 @@ describe("registryProblems", () => {
   it("fails an entry that declares nothing", () => {
     const bare = without(readThing, "x-nortfox");
     expect(problemsOf(bare)).toEqual([
-      "getThing declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark and company source.",
+      "getThing declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark, company source and personal output.",
     ]);
     expect(problemsOf(changed(readThing, { "x-nortfox": "company:read" }))).toEqual([
-      "getThing declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark and company source.",
+      "getThing declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark, company source and personal output.",
     ]);
   });
 
   describe("the marks of part 1", () => {
-    it.each(["scope", "personalOutput", "Session", ""])("fails a mark the registry does not know: %j", (mark) => {
+    it.each(["scope", "secretOutput", "personal", "Session", ""])("fails a mark the registry does not know: %j", (mark) => {
       expect(problemsOf(withMeta(readThing, { [mark]: null }))).toEqual([
         `getThing has the mark ${JSON.stringify(mark)} in x-nortfox, which the registry does not know.`,
       ]);
@@ -265,11 +344,14 @@ describe("registryProblems", () => {
       ]);
     });
 
-    it.each(["current", "new", { input: "companyId" }, "", undefined])("fails the company source %j", (company) => {
-      expect(problemsOf(withMeta(readThing, { company }))).toEqual([
-        `getThing has the company source ${company === undefined ? "undefined" : JSON.stringify(company)}. It is "none" or "credential".`,
-      ]);
-    });
+    it.each(["Current", "input", { input: "" }, { input: 7 }, { input: "companyId", also: "x" }, { field: "companyId" }, ["companyId"], null, "", undefined])(
+      "fails the company source %j",
+      (company) => {
+        expect(problemsOf(withMeta(readThing, { company }))).toEqual([
+          `getThing has the company source ${company === undefined ? "undefined" : JSON.stringify(company)}. It is "none", "credential", "current", "new" or {"input": "<field>"}.`,
+        ]);
+      },
+    );
 
     it("fails a write that runs before sign-in and takes a key, required or not", () => {
       for (const headers of [bookThing.request.headers, z.object({ "Idempotency-Key": z.string().optional() })]) {
@@ -308,6 +390,69 @@ describe("registryProblems", () => {
       expect(problemsOf(withMeta(readThing, { company: "none" }))).toEqual([
         'getThing needs the permission "test:read", so it takes its company from the credential, not "none".',
       ]);
+    });
+  });
+
+  describe("the marks of part 2", () => {
+    it.each([
+      ["current", "current"],
+      ["new", "new"],
+      ["the input", { input: "companyId" }],
+    ])("fails the company source %s on an operation that is not signed-in", (_what, company) => {
+      for (const [entry, name] of [
+        [health, "getStatus"],
+        [signIn, "signIn"],
+        [readThing, "getThing"],
+      ] as const) {
+        const input = withRequest(entry, { query: z.strictObject({ companyId: z.uuid() }) });
+        expect(problemsOf(withMeta(input, { company }))).toEqual([
+          `${name} has the company source ${JSON.stringify(company)}, which only a signed-in operation may have.`,
+        ]);
+      }
+    });
+
+    it.each([
+      ["a field it does not have", "otherId"],
+      ["a number", "count"],
+      ["a string that may be left out", "note"],
+      ["a string or null", "maybe"],
+    ])("fails a company from the input that names %s", (_what, input) => {
+      const body = z.strictObject({ companyId: z.uuid(), count: z.int(), note: z.string().optional(), maybe: z.string().nullable() });
+      expect(problemsOf(withMeta(withRequest(chooseThing, { body: jsonBody(body) }), { company: { input } }))).toEqual([
+        `chooseThing takes its company from the input field ${JSON.stringify(input)}, which its input does not have as a required string.`,
+      ]);
+    });
+
+    it("takes a company from a required string of the path, the query or the body", () => {
+      expect(problemsOf(changeMember)).toEqual([]);
+      const query = withRequest(getPerson, { query: z.strictObject({ companyId: z.string() }) });
+      expect(problemsOf(withMeta(query, { company: { input: "companyId" } }))).toEqual([]);
+      expect(problemsOf(chooseThing)).toEqual([]);
+    });
+
+    it.each([undefined, "/name", [1], {}, null])("fails a personal output that is not a list of pointers: %j", (personalOutput) => {
+      expect(problemsOf(withMeta(readThing, { personalOutput }))).toEqual([
+        `getThing has the personal output ${personalOutput === undefined ? "undefined" : JSON.stringify(personalOutput)}. It is the list of the JSON Pointers of the output's personal fields.`,
+      ]);
+    });
+
+    it.each([
+      ["leaves a personal field out", chooseThing, [], "chooseThing", '["/user/name"]'],
+      ["names a field that is not personal", readThing, ["/name"], "getThing", "[]"],
+      ["names a field that the output does not have", changeMember, ["/workEmail", "/workPhone"], "changeMember", '["/workEmail"]'],
+      ["lists a field twice", changeMember, ["/workEmail", "/workEmail"], "changeMember", '["/workEmail"]'],
+      ["names a field of an answer with no body", endSession, ["/name"], "endSession", "[]"],
+    ])("fails a personal output that %s", (_what, entry, personalOutput, name, wanted) => {
+      expect(problemsOf(withMeta(entry, { personalOutput }))).toEqual([
+        `${name}'s personal output is ${JSON.stringify(personalOutput)}, but the personal fields of its output are ${wanted}.`,
+      ]);
+    });
+
+    it("derives the personal output from the output schema", () => {
+      expect(chooseThing["x-nortfox"].personalOutput).toEqual(["/user/name"]);
+      expect(changeMember["x-nortfox"].personalOutput).toEqual(["/workEmail"]);
+      expect(readThing["x-nortfox"].personalOutput).toEqual([]);
+      expect(endSession["x-nortfox"].personalOutput).toEqual([]);
     });
   });
 

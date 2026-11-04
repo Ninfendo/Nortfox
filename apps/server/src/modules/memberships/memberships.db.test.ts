@@ -308,8 +308,8 @@ describe("the memberships", () => {
   });
 
   describe("a session's chosen membership", () => {
-    const insert = `INSERT INTO access.sessions (token_hash, identity_id, method, started_at, last_seen_at, current_company_id, current_membership_id, permissions)
-                    VALUES ($1, $2, 'password-email', pg_catalog.now(), pg_catalog.now(), $3, $4, $5)`;
+    const insert = `INSERT INTO access.sessions (token_hash, identity_id, method, second_step, started_at, last_seen_at, current_company_id, current_membership_id, permissions)
+                    VALUES ($1, $2, 'password-email', 'totp', pg_catalog.now(), pg_catalog.now(), $3, $4, $5)`;
 
     it("pairs with its company, and comes with the permissions, or none of the three", async () => {
       const other = await aCompany(app, "Testbolaget Zeta AB");

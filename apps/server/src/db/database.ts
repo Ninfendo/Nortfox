@@ -27,6 +27,13 @@
 //   only with a membership that the one membership function gave in this
 //   same lookup, to the person it acts as (modules/memberships/resolve.ts).
 //   Anything else, and a second enter, throws before any statement.
+// - A person's transaction (person) is a read or a write as the person, in
+//   no company at first. It may set its company once: with enter, from a
+//   membership that the one membership function gave in it, to its person,
+//   as for a request whose input names its company; or with inNewCompany,
+//   for the company that the work makes, whose id the layer picks, so no
+//   caller can name an existing company there. The company is set while
+//   that work runs and unset after it.
 // - The work ends the transaction with commit(value) or rollBack(value). A
 //   throw rolls it back and is thrown again, and so is a COMMIT that fails,
 //   such as the ledger's checks at commit. The work's queries run only while
@@ -39,6 +46,7 @@
 //   same transaction (db/README.md, the lock order):
 //   SELECT 1 FROM ledger.vouchers WHERE id = $1 FOR NO KEY UPDATE.
 
+import { randomUUID } from "node:crypto";
 import { Pool, type ClientConfig, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { ResolvedMembership } from "../modules/memberships/resolve.ts";
 
@@ -122,11 +130,33 @@ export interface LookupQueryable extends Queryable {
 /** The resolver's work in its lookup. */
 export type LookupWork<T> = (tx: LookupQueryable) => Promise<Ending<T>>;
 
+/** A person's transaction: its queries, and the one company it may come to work in. */
+export interface PersonQueryable extends Queryable {
+  /**
+   * Sets the transaction's company from a membership that the one
+   * membership function gave in this transaction, to the person it acts as
+   * (modules/memberships/resolve.ts). Anything else, and a company set
+   * before, throws before any statement.
+   */
+  enter(membership: ResolvedMembership): Promise<void>;
+  /**
+   * Picks a new company's id, sets it as the transaction's company while
+   * `work` runs, and sets no company again after it: the company that the
+   * work makes. A company set before throws before any statement.
+   */
+  inNewCompany<T>(work: (companyId: string) => Promise<T>): Promise<T>;
+}
+
+/** A person's work in a transaction that may come to work in one company. */
+export type PersonWork<T> = (tx: PersonQueryable) => Promise<Ending<T>>;
+
 export interface Database {
   /** Runs `work` in a transaction at REPEATABLE READ READ ONLY. */
   read<T>(settings: TransactionSettings, work: Work<T>): Promise<T>;
   /** Runs `work` in a transaction at READ COMMITTED. */
   write<T>(settings: TransactionSettings, work: Work<T>): Promise<T>;
+  /** Runs a person's `work` in a read or a write that starts in no company, and may set its company once (PersonQueryable). */
+  person<T>(mode: "read" | "write", settings: PersonSettings, work: PersonWork<T>): Promise<T>;
   /** Runs the resolver's `work` in a transaction at READ COMMITTED, with only the channel set. */
   lookup<T>(channel: Channel, work: LookupWork<T>): Promise<T>;
   /** Closes the pool's connections. */
@@ -192,6 +222,49 @@ function lookupOver(tx: Queryable): LookupQueryable {
   return lookup;
 }
 
+const PERSON_ELSEWHERE = "tx.enter takes a membership of the person the transaction acts as.";
+
+const COMPANY_SET = "The transaction works in a company already. It sets its company once.";
+
+/**
+ * A person's transaction over `tx`, which starts in no company: its queries,
+ * and one company, entered from a membership that the one function gave in
+ * it, or made by the work.
+ */
+function personOver(tx: Queryable, settings: PersonSettings): PersonQueryable {
+  let companySet = false;
+  const person: PersonQueryable = {
+    query: (text, values) => tx.query(text, values),
+    enter: async (membership) => {
+      // The membership must be this module's object, made in this transaction, for its person.
+      if (!(membership instanceof ResolvedMembership) || !membership.resolvedIn(person)) {
+        throw new Error(NOT_RESOLVED_HERE);
+      }
+      if (membership.personId !== settings.actorId) {
+        throw new Error(PERSON_ELSEWHERE);
+      }
+      if (companySet) {
+        throw new Error(COMPANY_SET);
+      }
+      companySet = true;
+      await tx.query(SET_COMPANY, [membership.companyId]);
+    },
+    inNewCompany: async (work) => {
+      if (companySet) {
+        throw new Error(COMPANY_SET);
+      }
+      companySet = true;
+      const companyId = randomUUID();
+      await tx.query(SET_COMPANY, [companyId]);
+      // A throw of the work rolls the transaction back, with the company.
+      const result = await work(companyId);
+      await tx.query(SET_COMPANY, [""]);
+      return result;
+    },
+  };
+  return person;
+}
+
 /**
  * Runs `work` in one transaction that `begin` opens, on a connection of the
  * pool. `over` gives the work its view of the transaction.
@@ -251,6 +324,7 @@ export function databaseOver(pool: Pool, onConnectionError: (error: Error) => vo
   return {
     read: (settings, work) => runInTransaction(pool, READ, settings, same, work, onConnectionError),
     write: (settings, work) => runInTransaction(pool, WRITE, settings, same, work, onConnectionError),
+    person: (mode, settings, work) => runInTransaction(pool, mode === "read" ? READ : WRITE, settings, (tx) => personOver(tx, settings), work, onConnectionError),
     lookup: (channel, work) => runInTransaction(pool, WRITE, { channel }, lookupOver, work, onConnectionError),
     end: () => pool.end(),
   };

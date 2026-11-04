@@ -270,6 +270,7 @@ export function fakeDatabase(): FakeDatabase {
     queries,
     read: run("read"),
     write: run("write"),
+    person: () => Promise.reject(new Error("The fake database runs no person's transaction: no shape takes its company from its input or makes one.")),
     lookup: () => Promise.reject(new Error("The fake database runs no lookup.")),
     end: () => Promise.resolve(),
   };

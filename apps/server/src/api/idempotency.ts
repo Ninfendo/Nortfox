@@ -21,16 +21,19 @@
 //   database test guesses at SHA-256's speed; without the install secret, a
 //   stored fingerprint tells nothing.
 // - Keys are kept per company and actor, and a signed-in person's own write,
-//   which works in no company, keeps its keys per person. While a request
-//   runs, its key is in flight in this process, and a second request with it
-//   gets 409 before it asks the pool for a connection. NortFox runs one
-//   server process (decision 3); across processes the database's unique key
-//   decides.
+//   which works in no company, keeps its keys per person, as createCompany
+//   does, whose company is new on each try. While a request runs, its key is
+//   in flight in this process, and a second request with it gets 409 before
+//   it asks the pool for a connection. NortFox runs one server process
+//   (decision 3); across processes the database's unique key decides.
 // - The key and the first answer are stored in the write's own transaction,
 //   after the output passed its check: a write in a company in
 //   ledger.idempotency_keys, a person's own write in access.idempotency_keys,
-//   which belongs to no company. A refused or failed write stores nothing, so
-//   a retry with the key runs again.
+//   which belongs to no company. A write in a company whose answer holds a
+//   person's contact data (personalOutput) keeps its key in
+//   access.idempotency_keys too, with the company, so that data never reaches
+//   a company table and its behandlingshistorik. A refused or failed write
+//   stores nothing, so a retry with the key runs again.
 // - A write that runs before sign-in takes no key: there is no actor to keep
 //   it for.
 
@@ -247,3 +250,27 @@ export const personKeys: KeyStore = {
     return found.rows.length > 0;
   },
 };
+
+/**
+ * The keys of a signed-in person's writes in a company whose answer holds a
+ * person's contact data (the operation's personalOutput), in
+ * access.idempotency_keys with the company as key_company_id: the table
+ * belongs to no company, so the answer never reaches a company's
+ * behandlingshistorik. The trigger files the key under the transaction's
+ * company, which is `companyId`.
+ */
+export function personCompanyKeys(companyId: string): KeyStore {
+  return {
+    scope: companyId,
+    find: async (tx, actorId, key) =>
+      answerOf(
+        (
+          await tx.query<KeyRow>(
+            "SELECT request_hash, response_status, response_body FROM access.idempotency_keys WHERE actor_id = $1 AND key_company_id = $2 AND idempotency_key = $3",
+            [actorId, companyId, key],
+          )
+        ).rows,
+      ),
+    store: (tx, stored) => personKeys.store(tx, stored),
+  };
+}

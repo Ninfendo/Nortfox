@@ -264,4 +264,93 @@ describe("the one membership function in the server", () => {
       );
     });
   });
+
+  // A signed-in request whose input names its company runs as the person in
+  // no company, asks the one function, and enters the company only with its
+  // answer (database.person). createCompany works in a company that it makes,
+  // whose id the database layer picks.
+  describe("a person's transaction", () => {
+    const SET_ALREADY = new Error("The transaction works in a company already. It sets its company once.");
+
+    it("enters the company of a membership that the function gave in it, as a read and as a write", async () => {
+      for (const mode of ["read", "write"] as const) {
+        const seen = await pool.database.person(mode, asThePerson(), async (tx) => {
+          const before = await companiesSeen(tx);
+          await tx.enter(present(await resolveActive(tx, beta.id)));
+          const mode = await tx.query<{ read_only: string; level: string }>(
+            "SELECT pg_catalog.current_setting('transaction_read_only') AS read_only, pg_catalog.current_setting('transaction_isolation') AS level",
+          );
+          return commit({ before, settings: await settingsOf(tx), after: await companiesSeen(tx), mode: mode.rows[0] });
+        });
+        expect(seen.before).toEqual({ companies: [], memberships: [] });
+        expect(seen.settings).toEqual({ company: beta.id, actor: person, kind: "user" });
+        expect(seen.after).toEqual({ companies: [beta.id], memberships: [beta.id] });
+        expect(seen.mode).toEqual(mode === "read" ? { read_only: "on", level: "repeatable read" } : { read_only: "off", level: "read committed" });
+      }
+    });
+
+    it("refuses a plain object, a membership of another transaction, and one of another person, and enters nothing", async () => {
+      const outside = await pool.database.read(asThePerson(), async (tx) => commit(await resolveActive(tx, beta.id)));
+      const refused = await pool.database.person("write", asThePerson(), async (tx) => {
+        const plain = await failureOf(tx.enter(fieldsOf(await resolveActive(tx, beta.id)) as unknown as ResolvedMembership));
+        const earlier = await failureOf(tx.enter(present(outside)));
+        await tx.query("SELECT pg_catalog.set_config('nortfox.actor_id', $1, true)", [beta.owner]);
+        const another = await failureOf(tx.enter(present(await resolveActive(tx, beta.id))));
+        return commit({ plain, earlier, another, settings: await settingsOf(tx) });
+      });
+      const notHere = new Error("tx.enter takes only a membership that the one membership function gave in this transaction (modules/memberships/resolve.ts).");
+      expect(refused).toEqual({
+        plain: notHere,
+        earlier: notHere,
+        another: new Error("tx.enter takes a membership of the person the transaction acts as."),
+        settings: { company: "", actor: beta.owner, kind: "user" },
+      });
+    });
+
+    it("works in a new company while the work runs, with an id it picks, and in none before and after", async () => {
+      const seen = await pool.database.person("write", asThePerson(), async (tx) => {
+        const before = await settingsOf(tx);
+        const inside = await tx.inNewCompany(async (companyId) => ({ companyId, settings: await settingsOf(tx) }));
+        return commit({ before, inside, after: await settingsOf(tx) });
+      });
+      expect(seen.inside.companyId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(seen.inside.settings).toEqual({ company: seen.inside.companyId, actor: person, kind: "user" });
+      expect(seen.before.company).toBe("");
+      expect(seen.after.company).toBe("");
+      const other = await pool.database.person("write", asThePerson(), async (tx) => commit(await tx.inNewCompany((companyId) => Promise.resolve(companyId))));
+      expect(other).not.toBe(seen.inside.companyId);
+    });
+
+    it("sets its company once: no second company, and no new company beside an entered one", async () => {
+      const refused = await pool.database.person("write", asThePerson(), async (tx) => {
+        const [inAlfa, inB] = await activeMemberships(tx);
+        await tx.enter(present(inB));
+        const second = await failureOf(tx.enter(present(inAlfa)));
+        const made = await failureOf(tx.inNewCompany(() => Promise.resolve(undefined)));
+        return commit({ second, made, settings: await settingsOf(tx) });
+      });
+      expect(refused).toEqual({ second: SET_ALREADY, made: SET_ALREADY, settings: { company: beta.id, actor: person, kind: "user" } });
+      const afterNew = await pool.database.person("write", asThePerson(), async (tx) => {
+        await tx.inNewCompany(() => Promise.resolve(undefined));
+        const again = await failureOf(tx.inNewCompany(() => Promise.resolve(undefined)));
+        const entered = await failureOf(tx.enter(present(await resolveActive(tx, beta.id))));
+        return commit({ again, entered, settings: await settingsOf(tx) });
+      });
+      expect(afterNew).toEqual({ again: SET_ALREADY, entered: SET_ALREADY, settings: { company: "", actor: person, kind: "user" } });
+    });
+
+    it("rolls back what the work in a new company wrote when it throws", async () => {
+      const failed = new Error("The test's work failed.");
+      const thrown = await failureOf(
+        pool.database.person("write", asThePerson(), (tx) =>
+          tx.inNewCompany(async (companyId) => {
+            await tx.query("INSERT INTO ledger.companies (company_id, name, organization_number) VALUES ($1, 'Testbolaget Noll AB', '556000-0167')", [companyId]);
+            throw failed;
+          }),
+        ),
+      );
+      expect(thrown).toBe(failed);
+      expect((await owner.query("SELECT 1 FROM ledger.companies WHERE name = 'Testbolaget Noll AB'")).rows).toEqual([]);
+    });
+  });
 });

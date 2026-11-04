@@ -108,7 +108,7 @@ describe("the query", () => {
 });
 
 describe("the paths and the methods", () => {
-  it.each(["/v1/Company", "/v1/company/", "/V1/company", "/v1/companies", "/v1", "/"])("answers %s with 404 not-found", async (path) => {
+  it.each(["/v1/Company", "/v1/company/", "/V1/company", "/v1/compan", "/v1", "/"])("answers %s with 404 not-found", async (path) => {
     const response = await app().request(path, { headers: bearer("reader") });
     expect(response.status).toBe(404);
     expect(await problemIn(response)).toEqual({
@@ -184,7 +184,7 @@ describe("an error the server did not expect", () => {
   const SECRET = "the secret detail of the failure";
 
   function failing(error: Error): Database {
-    return { read: () => Promise.reject(error), write: () => Promise.reject(error), lookup: () => Promise.reject(error), end: () => Promise.resolve() };
+    return { read: () => Promise.reject(error), write: () => Promise.reject(error), person: () => Promise.reject(error), lookup: () => Promise.reject(error), end: () => Promise.resolve() };
   }
 
   const INTERNAL = {
@@ -445,6 +445,7 @@ describe("the shapes of slice 2c on /v1", () => {
     const failing = buildTestApp({ database: {
         read: () => Promise.reject(new Error("down")),
         write: () => Promise.reject(new Error("down")),
+        person: () => Promise.reject(new Error("down")),
         lookup: () => Promise.reject(new Error("down")),
         end: () => Promise.resolve(),
       }, resolve: testResolver(TOKENS), report: () => undefined }).hono;

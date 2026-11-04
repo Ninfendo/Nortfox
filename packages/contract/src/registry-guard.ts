@@ -10,9 +10,10 @@
  */
 
 import { z } from "zod";
+import { personalPointers } from "./fields.ts";
 import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
+import { jsonSchemaOf, type JsonSchema } from "./json-schema.ts";
 import { COMPANY_SOURCES, METHODS, NONE, OPEN_PERMISSIONS, PUBLIC, SIGNED_IN, securityOf } from "./operation.ts";
-import { jsonSchemaOf, type JsonSchema } from "./tool-schema.ts";
 
 const ID = /^[a-z][A-Za-z0-9]{0,63}$/;
 const WORD = "[a-z0-9]+(-[a-z0-9]+)*";
@@ -21,7 +22,10 @@ const PARAMETER = String.raw`\{[a-z][A-Za-z0-9]*\}`;
 const PATH = new RegExp(`^/v1/${WORD}(/(${WORD}|${PARAMETER}))*$`);
 
 /** The marks of x-nortfox, in the order they are read. */
-const MARKS = ["permission", "tool", "assistant", "writes", "list", "session", "company"];
+const MARKS = ["permission", "tool", "assistant", "writes", "list", "session", "company", "personalOutput"];
+
+/** The company sources that only a signed-in operation may have: its current company, a new one, or one its input names. */
+const PERSON_SOURCES: readonly unknown[] = ["current", "new"];
 
 /** The success statuses, and what each answers. */
 const JSON_SUCCESSES = ["200", "201", "303"];
@@ -111,10 +115,29 @@ function keyHeader(headers: unknown): "required" | "optional" | undefined {
   return Array.isArray(required) && required.includes(IDEMPOTENCY_KEY_HEADER) ? "required" : "optional";
 }
 
+/** The field that a company source {"input": "<field>"} names, or undefined for any other value. */
+function companyField(company: unknown): string | undefined {
+  if (!isRecord(company) || Object.keys(company).join() !== "input") {
+    return undefined;
+  }
+  const input = company["input"];
+  return typeof input === "string" && input !== "" ? input : undefined;
+}
+
+/** Whether a company source is one the registry knows. */
+function knownSource(company: unknown): boolean {
+  return (COMPANY_SOURCES as readonly unknown[]).includes(company) || companyField(company) !== undefined;
+}
+
+/** Whether a value is a list of strings. */
+function strings(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
 /** What is wrong with the values of x-nortfox, each one by itself. */
 function markProblems(name: string, meta: Entry, permissions: ReadonlySet<string>): string[] {
   const problems: string[] = [];
-  const { permission, tool, writes, assistant, list, session, company } = meta;
+  const { permission, tool, writes, assistant, list, session, company, personalOutput } = meta;
   for (const mark of Object.keys(meta).filter((key) => !MARKS.includes(key))) {
     problems.push(`${name} has the mark ${JSON.stringify(mark)} in x-nortfox, which the registry does not know.`);
   }
@@ -132,8 +155,11 @@ function markProblems(name: string, meta: Entry, permissions: ReadonlySet<string
   if (session !== "flow" && session !== null) {
     problems.push(`${name} has the session mark ${shown(session)}. It is "flow" or null.`);
   }
-  if (!(COMPANY_SOURCES as readonly unknown[]).includes(company)) {
-    problems.push(`${name} has the company source ${shown(company)}. It is "none" or "credential".`);
+  if (!knownSource(company)) {
+    problems.push(`${name} has the company source ${shown(company)}. It is "none", "credential", "current", "new" or {"input": "<field>"}.`);
+  }
+  if (!strings(personalOutput)) {
+    problems.push(`${name} has the personal output ${shown(personalOutput)}. It is the list of the JSON Pointers of the output's personal fields.`);
   }
   return problems;
 }
@@ -157,6 +183,9 @@ function pairingProblems(name: string, meta: Entry): string[] {
   }
   if (company === "none" && !open) {
     problems.push(`${name} needs the permission ${JSON.stringify(permission)}, so it takes its company from the credential, not "none".`);
+  }
+  if ((PERSON_SOURCES.includes(company) || companyField(company) !== undefined) && permission !== SIGNED_IN) {
+    problems.push(`${name} has the company source ${JSON.stringify(company)}, which only a signed-in operation may have.`);
   }
   return problems;
 }
@@ -301,6 +330,32 @@ function flatInputProblems(name: string, parts: readonly (readonly [string, read
   return problems;
 }
 
+/** Whether an object JSON Schema has the field `name` as a required string. */
+function requiredString(json: JsonSchema | undefined, name: string): boolean {
+  const required = field(json, "required");
+  return field(json, "properties", name, "type") === "string" && Array.isArray(required) && required.includes(name);
+}
+
+/**
+ * What is wrong with the personal output: it must be the list that personal()
+ * gives for the output schema, in its order, and empty for an answer with no
+ * body. A list that is no list of strings is a mark's problem already.
+ */
+function personalProblems(name: string, entry: Entry, personalOutput: unknown, success: Success): string[] {
+  if (!strings(personalOutput) || success.status === undefined) {
+    return [];
+  }
+  const schema = field(entry, "responses", success.status, "content", "application/json", "schema");
+  const noBody = NO_BODY_SUCCESSES.includes(success.status);
+  if (!noBody && !(schema instanceof z.ZodType)) {
+    return [];
+  }
+  const wanted = noBody || !(schema instanceof z.ZodType) ? [] : personalPointers(schema);
+  return JSON.stringify(personalOutput) === JSON.stringify(wanted)
+    ? []
+    : [`${name}'s personal output is ${JSON.stringify(personalOutput)}, but the personal fields of its output are ${JSON.stringify(wanted)}.`];
+}
+
 /** What is wrong with one entry, apart from the duplicates. */
 function entryProblems(entry: Entry, name: string, permissions: ReadonlySet<string>): string[] {
   const problems: string[] = [];
@@ -311,7 +366,7 @@ function entryProblems(entry: Entry, name: string, permissions: ReadonlySet<stri
   const meta = entry["x-nortfox"];
   if (!isRecord(meta)) {
     problems.push(
-      `${name} declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark and company source.`,
+      `${name} declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark, company source and personal output.`,
     );
   } else {
     const marks = metaProblems(name, meta, permissions);
@@ -354,6 +409,12 @@ function entryProblems(entry: Entry, name: string, permissions: ReadonlySet<stri
       ["body", fieldNames(body)],
     ]),
   );
+
+  const input = companyField(field(meta, "company"));
+  if (input !== undefined && ![path.params, query, body].some((part) => requiredString(part, input))) {
+    problems.push(`${name} takes its company from the input field ${JSON.stringify(input)}, which its input does not have as a required string.`);
+  }
+  problems.push(...personalProblems(name, entry, field(meta, "personalOutput"), success));
 
   if (field(meta, "list") === true) {
     const page = fieldNames(success.output);

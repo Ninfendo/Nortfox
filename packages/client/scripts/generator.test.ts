@@ -195,6 +195,48 @@ describe("generateClient", () => {
     expect(source).toContain("   * `GET /v1/c`\n   *\n   * Needs a signed-in person, and works in no company.\n   */\n  getC(");
   });
 
+  it("writes where a signed-in person's operation works, and the personal data of its answer, into the doc comment", () => {
+    const meta = (extra: Record<string, unknown>) => ({ permission: "signed-in", tool: "T.", assistant: false, writes: false, list: false, session: null, personalOutput: [], ...extra });
+    const source = generateClient(
+      documentWith(
+        {},
+        {
+          "/v1/d": getOperation({ type: "string" }, { operationId: "getD", "x-nortfox": meta({ company: "current", personalOutput: ["/user/name", "/items/*/email"] }) }),
+          "/v1/e": getOperation({ type: "string" }, { operationId: "getE", "x-nortfox": meta({ company: "new" }) }),
+          "/v1/f": getOperation({ type: "string" }, { operationId: "getF", "x-nortfox": meta({ company: { input: "companyId" } }) }),
+        },
+      ),
+    );
+    expect(source).toContain(
+      "   * `GET /v1/d`\n   *\n   * Needs a signed-in person, and works in the company that the credential names, or in none.\n   *\n" +
+        "   * The answer holds personal data: `/user/name`, `/items/*\\/email`.\n   */\n  getD(",
+    );
+    expect(source).toContain("   * `GET /v1/e`\n   *\n   * Needs a signed-in person, and works in the company it makes.\n   */\n  getE(");
+    expect(source).toContain(
+      "   * `GET /v1/f`\n   *\n   * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.\n   */\n  getF(",
+    );
+  });
+
+  it("writes a union, such as a nullable field, and an enum of numbers", () => {
+    const source = generateClient(
+      documentWith({
+        Change: {
+          type: "object",
+          properties: {
+            email: { anyOf: [{ type: "string", format: "email" }, { type: "null" }], description: "The address, or null for none." },
+            minutes: { type: "number", enum: [15, 30, 60] },
+            ids: { type: "array", items: { anyOf: [{ type: "string" }, { type: "integer" }] } },
+          },
+          required: ["minutes"],
+          additionalProperties: false,
+        },
+      }),
+    );
+    expect(source).toContain(
+      "export interface Change {\n  /**\n   * The address, or null for none.\n   */\n  readonly email?: string | null;\n  readonly minutes: 15 | 30 | 60;\n  readonly ids?: readonly (string | number)[];\n}",
+    );
+  });
+
   it("writes a method for each method of a path, in path order and then method order", () => {
     const answer = { responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } } };
     const source = generateClient(
@@ -425,7 +467,11 @@ describe("generateClient", () => {
     ],
     [documentWith({ Bad: { $ref: "#/definitions/X" } }), "components.schemas.Bad.$ref must point into #/components/schemas/."],
     [documentWith({ Bad: { $ref: "#/components/schemas/no-good" } }), 'components.schemas.Bad.$ref "no-good" is not a TypeScript identifier.'],
-    [documentWith({ Bad: { const: 1 } }), "components.schemas.Bad.const may only hold strings or booleans."],
+    [documentWith({ Bad: { const: null } }), "components.schemas.Bad.const may only hold strings, numbers or booleans."],
+    [documentWith({ Bad: { enum: [1, Number.NaN] } }), "components.schemas.Bad.enum[1] may only hold strings, numbers or booleans."],
+    [documentWith({ Bad: { anyOf: [] } }), "components.schemas.Bad.anyOf must be a list with at least one schema."],
+    [documentWith({ Bad: { anyOf: { type: "string" } } }), "components.schemas.Bad.anyOf must be a list with at least one schema."],
+    [documentWith({ Bad: { anyOf: [{ type: "string" }, {}] } }), "components.schemas.Bad.anyOf[1] needs a type, a $ref, a const or an enum."],
     [documentWith({ Bad: { enum: [] } }), "components.schemas.Bad.enum must be a list with at least one value."],
     [documentWith({ Bad: { enum: "a" } }), "components.schemas.Bad.enum must be a list with at least one value."],
     [documentWith({ Bad: {} }), "components.schemas.Bad needs a type, a $ref, a const or an enum."],
@@ -447,12 +493,28 @@ describe("generateClient", () => {
       'paths["/v1/x"].get.x-nortfox.session is "only", which the generator does not support yet.',
     ],
     [
-      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", company: "current" } }) }),
-      'paths["/v1/x"].get.x-nortfox.company is "current", which the generator does not support yet.',
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", company: "Current" } }) }),
+      'paths["/v1/x"].get.x-nortfox.company is "Current", which the generator does not support yet.',
     ],
     [
-      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", company: { input: "companyId" } } }) }),
-      'paths["/v1/x"].get.x-nortfox.company is {"input":"companyId"}, which the generator does not support yet.',
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", company: { input: 7 } } }) }),
+      'paths["/v1/x"].get.x-nortfox.company is {"input":7}, which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", company: { input: "companyId", also: "x" } } }) }),
+      'paths["/v1/x"].get.x-nortfox.company is {"input":"companyId","also":"x"}, which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", company: { input: "" } } }) }),
+      'paths["/v1/x"].get.x-nortfox.company is {"input":""}, which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", personalOutput: "/name" } }) }),
+      'paths["/v1/x"].get.x-nortfox.personalOutput must be a list of JSON Pointers.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", personalOutput: [1] } }) }),
+      'paths["/v1/x"].get.x-nortfox.personalOutput must be a list of JSON Pointers.',
     ],
     [
       documentWith({}, {

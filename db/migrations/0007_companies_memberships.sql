@@ -300,6 +300,9 @@ $rules$;
 
 CREATE TRIGGER events_rules BEFORE UPDATE OR DELETE ON access.events
   FOR EACH ROW EXECUTE FUNCTION access.events_rules();
+-- The server finds a person's latest entry in a company, for the bound of one
+-- failed sign-in entry a minute.
+CREATE INDEX events_subject ON access.events (company_id, subject_id, at);
 SELECT meta.protect_company_table('access.events', 'id');
 GRANT INSERT ON access.events TO nortfox_app;
 
@@ -389,6 +392,79 @@ ALTER TABLE access.sessions
   ADD CONSTRAINT sessions_current_membership_fkey FOREIGN KEY (current_company_id, current_membership_id) REFERENCES access.memberships (company_id, id),
   ADD CONSTRAINT sessions_company_whole CHECK (num_nulls(current_company_id, current_membership_id, permissions) IN (0, 3)),
   ADD CONSTRAINT sessions_permissions_object CHECK (jsonb_typeof(permissions) = 'object');
+
+-- A session's second step: the TOTP step, or a known device inside its 90
+-- days, for a sign-in with a password; none for the methods that need no
+-- second step. A sign-in's entry in the behandlingshistorik names it. A
+-- password session always had one. A session of 0006 holds no second step,
+-- so each one is deleted first: its person signs in again.
+DELETE FROM access.sessions;
+ALTER TABLE access.sessions
+  ADD COLUMN second_step text CONSTRAINT sessions_second_step_known CHECK (second_step IN ('totp', 'known-device')),
+  ADD CONSTRAINT sessions_second_step_by_method CHECK ((method IN ('password-email', 'password-personnummer')) = (second_step IS NOT NULL));
+
+-- Opens a session, with its second step, and gives its id. The device, if
+-- any, is the person's. It takes the place of 0006's, which had no second
+-- step.
+DROP FUNCTION access.open_session(bytea, uuid, text, uuid, timestamptz);
+CREATE FUNCTION access.open_session(token_hash bytea, person uuid, method text, second_step text, device uuid, at timestamptz) RETURNS uuid
+LANGUAGE sql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+BEGIN ATOMIC
+  INSERT INTO access.sessions (token_hash, identity_id, method, second_step, device_id, started_at, last_seen_at)
+  SELECT open_session.token_hash, i.id, open_session.method, open_session.second_step, open_session.device, open_session.at, open_session.at
+  FROM access.identities AS i
+  WHERE i.id = open_session.person AND i.status = 'active'
+    AND (open_session.device IS NULL OR EXISTS (
+      SELECT FROM access.known_devices AS d WHERE d.id = open_session.device AND d.identity_id = open_session.person
+    ))
+  RETURNING id;
+END;
+
+-- A session that has not ended, by its hash, with the identity's status, its
+-- second step, and its company, membership and permissions when it chose a
+-- company. The server ends one that is past its time, or whose membership is
+-- no longer the person's active one. It takes the place of 0006's.
+DROP FUNCTION access.session_by_token(bytea);
+CREATE FUNCTION access.session_by_token(token_hash bytea)
+RETURNS TABLE (
+  session_id uuid, identity_id uuid, status text, method text, second_step text, device_id uuid, started_at timestamptz, last_seen_at timestamptz,
+  current_company_id uuid, current_membership_id uuid, permissions jsonb
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+BEGIN ATOMIC
+  SELECT s.id, s.identity_id, i.status, s.method, s.second_step, s.device_id, s.started_at, s.last_seen_at,
+    s.current_company_id, s.current_membership_id, s.permissions
+  FROM access.sessions AS s JOIN access.identities AS i ON i.id = s.identity_id
+  WHERE s.token_hash = session_by_token.token_hash AND s.ended_at IS NULL;
+END;
+
+-- Byt företag: a live session of the transaction's person works in a company
+-- from now on, with the membership it chose it with and the person's
+-- permissions there as an object of each permission and the end of the grant
+-- that gives it, or null. It gives false when the session is not the
+-- person's, or has ended. The server calls it only with a membership that
+-- the one membership function gave in the same transaction, and the resolver
+-- checks on every request that it is still the person's active one. The
+-- paired key holds the membership to its company.
+CREATE FUNCTION access.choose_company(session uuid, company uuid, membership uuid, permissions jsonb) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $choose$
+BEGIN
+  UPDATE access.sessions AS s
+  SET current_company_id = choose_company.company, current_membership_id = choose_company.membership, permissions = choose_company.permissions
+  WHERE s.id = choose_company.session AND s.identity_id = access.current_person_id() AND s.ended_at IS NULL;
+  RETURN FOUND;
+END
+$choose$;
+
+GRANT EXECUTE ON FUNCTION
+  access.open_session(bytea, uuid, text, text, uuid, timestamptz),
+  access.session_by_token(bytea),
+  access.choose_company(uuid, uuid, uuid, jsonb)
+TO nortfox_app;
 
 -- The one membership function --------------------------------------------------------
 --

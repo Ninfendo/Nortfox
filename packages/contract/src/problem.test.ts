@@ -323,7 +323,7 @@ describe("the problem codes", () => {
       "fiscal-year-strands-rows",
     ];
     expect(Object.entries(PROBLEM_CODES).filter(([, status]) => status === 422).map(([code]) => code).sort()).toEqual(
-      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid"].sort(),
+      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid", "company-not-available"].sort(),
     );
   });
 

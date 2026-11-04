@@ -22,7 +22,8 @@ Each operation is one entry in the registry in `packages/contract` ([decision 3]
 - whether it is a list;
 - whether the AI assistant may call it. An operation is closed to the assistant unless it says otherwise;
 - whether it serves the browser's session (`session`);
-- where its company comes from (`company`).
+- where its company comes from (`company`);
+- which fields of its answer are a person's contact data (`personalOutput`).
 
 `openapi.json` shows these facts on each operation, under `x-nortfox`, and names the credential of each operation that needs an actor under OpenAPI's own `security` (Who acts, below). So the diff of `openapi.json` in a pull request shows a reviewer every change, a changed permission too.
 
@@ -36,10 +37,14 @@ Each operation is one entry in the registry in `packages/contract` ([decision 3]
 | | a permission, such as `company:read` | Needs that permission in the credential's company. |
 | `session` | `flow` | Serves the browser's session, such as a sign-in or a logout. Its MCP tool refuses every call. |
 | | `null` | Any other operation. |
-| `company` | `none` | Works in no company: every `public`, `none` and `signed-in` operation. |
+| `company` | `none` | Works in no company: every `public` and `none` operation, and a `signed-in` one by default. |
 | | `credential` | Works in the company that the request's credential names: every operation with a permission. |
+| | `current` | A `signed-in` operation that works in the credential's company when it names one, and in none otherwise, such as `getMe`. |
+| | `new` | A `signed-in` operation that works in the company it makes: `createCompany`. The server picks the company's id. |
+| | `{"input": "companyId"}` | A `signed-in` operation that works in the company that a field of its input names, where the person must be an active member, such as `selectCompany`. Any other company, also one that does not exist, gets 422 `company-not-available` at the field's pointer. |
+| `personalOutput` | a list of JSON Pointers | The fields of the answer that hold a person's contact data: a person's name, an e-mail address, a phone or mobile number, a personnummer. The registry derives the list from the answer's schema, and `*` stands for each item of a list. A write keeps the answer of its key outside every company table when the list is not empty (Writes and idempotency keys). |
 
-The registry guard holds these together. An operation that runs before sign-in serves the browser's session. Only a `none` or a `signed-in` operation may serve it. An operation with a permission takes its company from the credential, and no other operation does. A write takes an idempotency key, unless it runs before sign-in. A `GET` writes only when it runs before sign-in and answers 303. Two operations of one method never answer the same path, so `/v1/users/{userId}` and `/v1/users/me` cannot both be `GET`. Two operations whose paths differ only in a parameter's name are one path, so they give the parameter one name: `GET /v1/users/{userId}` and `PATCH /v1/users/{id}` cannot both be in the registry. An operation that needs an actor, `signed-in` or with a permission, names its credential in `security`, and a `public` or `none` operation names none.
+The registry guard holds these together. An operation that runs before sign-in serves the browser's session. Only a `none` or a `signed-in` operation may serve it. An operation with a permission takes its company from the credential, and no other operation does. Only a `signed-in` operation takes its company from `current`, `new` or its input, and the input's field is a required string. A write takes an idempotency key, unless it runs before sign-in. A `GET` writes only when it runs before sign-in and answers 303. Two operations of one method never answer the same path, so `/v1/users/{userId}` and `/v1/users/me` cannot both be `GET`. Two operations whose paths differ only in a parameter's name are one path, so they give the parameter one name: `GET /v1/users/{userId}` and `PATCH /v1/users/{id}` cannot both be in the registry. An operation that needs an actor, `signed-in` or with a permission, names its credential in `security`, and a `public` or `none` operation names none.
 
 The server serves only what the registry holds. It refuses to start when a route under `/v1` is not in the registry.
 
@@ -51,18 +56,25 @@ The server serves only what the registry holds. It refuses to start when a route
 | `loginWithPassword` | `POST /v1/auth/password` | `PasswordSignIn`: `outcome` and, for the TOTP step, `challenge` | `none` | no |
 | `verifyTotp` | `POST /v1/auth/totp` | none (204) | `none` | no |
 | `logout` | `POST /v1/auth/logout` | none (204) | `signed-in` | no |
-| `getSession` | `GET /v1/session` | `Session`: `user` | `signed-in` | no |
-| `getMe` | `GET /v1/me` | `Me`: `user`, `personalIdentityNumber`, `mobile` and `twoStep` | `signed-in` | no |
+| `getSession` | `GET /v1/session` | `Session`: `user`, and `company` once one is chosen | `signed-in` | no |
+| `getMe` | `GET /v1/me` | `Me`: `user`, `personalIdentityNumber`, `mobile`, `twoStep`, and in a company `company`, `membership` and `permissions` | `signed-in` | no |
+| `createCompany` | `POST /v1/companies` | `Company` (201) | `signed-in` | no |
+| `listCompanies` | `GET /v1/companies` | a page of `CompanyChoice`: `company` and `adminLevel` | `signed-in` | no |
+| `listRecentCompanies` | `GET /v1/me/companies/recent` | `RecentCompanies`: `companies` | `signed-in` | no |
+| `selectCompany` | `POST /v1/session/company` | `Session` | `signed-in` | no |
+| `updateMyMembership` | `PATCH /v1/me/companies/{companyId}` | `Membership` | `signed-in` | no |
 
 `User` is a person: `id`, `name`, `email` and `language` (`sv` or `en`).
+
+`Membership` is the person in one company, Användare there: `companyId`, `userId`, `status` (`invited`, `active`, `inactive`, `removed` or `left`), `adminLevel` (`owner` or `admin`, the system administrator's level, `SysAdmin`, absent for none), `idleTimeout` ("Utloggning efter inaktivitet": 15, 30, 60, 120 or 480 minutes, 120 by default) and the work contacts `workEmail` and `workPhone`.
 
 Field names are camelCase. An answer is the object itself, with no wrapper around it.
 
 ## Who acts
 
-Every operation with a permission acts as one actor in one company. The company comes from the request's credential, never from the path or the body. A path holds no company id. A `signed-in` operation acts as the signed-in person in no company. A `none` operation runs before there is an actor.
+Every operation with a permission acts as one actor in one company. The company comes from the request's credential, never from the path or the body. A path inside the company holds no company id. A `signed-in` operation acts as the signed-in person, in no company, in the credential's company (`current`), in the company it makes (`new`), or in the company its input names, where the person must be an active member: a path about the person's own memberships names the company. A `none` operation runs before there is an actor.
 
-A browser signs in with a password and a TOTP code, and then sends its session in a cookie (Signing in, below). `openapi.json` names that cookie as the security scheme `sessionCookie`, an API key in the cookie `__Host-nortfox-session`, on every operation that needs an actor. The browser sends it by itself, and no script reads it, so the generated client takes no option for it. The server looks the session up on every request. A session acts as its person, with the actor kind `user`, and works in no company yet. On `/v1`, a request with a bearer token ignores the cookie; API tokens come in a later part of slice 2c, so until then a bearer token names no actor. `/mcp` never reads the cookie: an MCP client signs in through OAuth, which comes in a later part of slice 2c, so until then every tool that needs an actor answers 401. An operation that needs an actor answers 401 without one, by REST with a challenge in `WWW-Authenticate` that names the credential the operation takes, and by MCP in a tool result marked `isError`. In this part of slice 2c that credential is the session cookie, whose challenge is `Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`. HTTP has no registered scheme for a cookie, so that scheme is NortFox's own, and a client that does not know it ignores it. `openapi.json` names the challenge on each 401. `GET /v1/health` and `/openapi.json` need no actor.
+A browser signs in with a password and a TOTP code, and then sends its session in a cookie (Signing in, below). `openapi.json` names that cookie as the security scheme `sessionCookie`, an API key in the cookie `__Host-nortfox-session`, on every operation that needs an actor. The browser sends it by itself, and no script reads it, so the generated client takes no option for it. The server looks the session up on every request. A session acts as its person, with the actor kind `user`. It works in no company until it chooses one with `selectCompany` (The companies, below). On `/v1`, a request with a bearer token ignores the cookie; API tokens come in a later part of slice 2c, so until then a bearer token names no actor. `/mcp` never reads the cookie: an MCP client signs in through OAuth, which comes in a later part of slice 2c, so until then every tool that needs an actor answers 401. An operation that needs an actor answers 401 without one, by REST with a challenge in `WWW-Authenticate` that names the credential the operation takes, and by MCP in a tool result marked `isError`. In this part of slice 2c that credential is the session cookie, whose challenge is `Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`. HTTP has no registered scheme for a cookie, so that scheme is NortFox's own, and a client that does not know it ignores it. `openapi.json` names the challenge on each 401. `GET /v1/health` and `/openapi.json` need no actor.
 
 The server checks the actor and the permission before it reads the rest of the request: on REST before the path parameters, the query and the body, on MCP before the tool's arguments. So a request with no actor gets 401, a credential that names no company gets 403 `company-required` for an operation that works in a company, and an actor without the permission gets 403 `permission-missing`, even when the rest of the request is wrong. No transaction of the operation runs for them, and nothing of the input is read. Only the session's own lookup runs first: the server finds the session by its cookie's hash, ends it when it has passed its end, and notes the request.
 
@@ -100,7 +112,7 @@ The person's two-step choice, `twoStep` in `getMe`, says how often the TOTP step
 | `__Host-nortfox-session` | the session | `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and no `Max-Age`, so it ends with the browser |
 | `__Host-nortfox-device` | the known device | `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and `Max-Age` 400 days |
 
-No answer body holds a session's token, and the server keeps every token only as its hash. `getSession` gives the session's person, and `getMe` the person's own login data. A session ends at `logout`, 12 hours after it began, and, while it has no company, after 120 minutes without a request. The server notes a request at most once a minute, so that end can come up to a minute early. From the next request on, its cookie gets 401. `logout` ends the session at once and clears its cookie. The browser stays a known device.
+No answer body holds a session's token, and the server keeps every token only as its hash. `getSession` gives the session's person, and `getMe` the person's own login data. A session ends at `logout`, 12 hours after it began, and after its idle time without a request: the membership's "Utloggning efter inaktivitet" while it works in a company, and 120 minutes while it works in none. The server notes a request at most once a minute, so that end can come up to a minute early. From the next request on, its cookie gets 401. `logout` ends the session at once and clears its cookie. The browser stays a known device.
 
 **One answer for every failure.** Every failed password step gets 422 `sign-in-failed`: an unknown identifier, a deleted identity, an identity without a password and a wrong password. With no identity or no password, the server checks the password against a dummy hash, so the time tells nothing either. Every failed TOTP step gets 422 `sign-in-failed` too: a wrong code, a code used before, and a challenge that is used, past its 20 minutes or out of codes. A stored TOTP secret that does not open with the install secret is the server's fault, not a wrong code: the step answers 500 `internal-error`, counts nothing against the person, and the server logs which secret it was.
 
@@ -111,11 +123,23 @@ No answer body holds a session's token, and the server keeps every token only as
 - Each attempt is counted before it is checked, so attempts sent at once come one after another: a burst gets no more checked than one attempt after another would. An attempt that the server could not check, such as one that gets 503, counts nothing.
 - The server checks at most as many passwords at once as it has cores, with a queue of as many. When both are full, a request gets 503 `server-busy` with `Retry-After: 1`.
 
-**Kontoaktivitet** holds the person's own events: each sign-in and each failed one, with the method, the second step, the application and the IP address; the lock of a step; and each logout. The entries of a failure are written after the answer.
+**Kontoaktivitet** holds the person's own events: each sign-in and each failed one, with the method, the second step, the application and the IP address; the lock of a step; each logout; and each company the person made. The entries of a failure are written after the answer.
+
+**The behandlingshistorik.** A sign-in is written in the company it signs in to, each time `selectCompany` chooses one, also when switching: Program "Användare", Rubrik "Inloggning", with the method (`password-email` or `password-personnummer`), the second step (`totp` or `known-device`), the personnummer for a sign-in with the personnummer, the application (`web`, "Webb") and the IP address of the choice. A failed sign-in, a wrong password for an identifier that names an identity or a wrong TOTP code, is written after the answer in each company where the identity is an active member, with the identity as the person, at most once a minute per company, with the count of the identity's failed sign-ins in the last hour. A failure for an identifier that names no identity is written nowhere. No operation of this slice reads the behandlingshistorik.
 
 **The first identity.** An empty install gets its first identity from a setup link that the install's setup command prints ([deploy/README.md](../deploy/README.md)). `completeSetup` takes the link's token in its path, with a name, an e-mail address and a password. The link works once, for 28 days, and a newer link stops it. Any other link gets 422 `setup-link-invalid`, and an install that has an identity 422 `install-not-empty`. The answer gives the new TOTP secret as an `otpauth` URI, and sets no session: the person signs in next, and the first right code confirms the secret.
 
 **Passwords.** A new password is 12 to 1024 characters, counted in code points after NFC normalisation. One that is too short or too long is a field problem at `/password`, `too-short` or `too-long`. One that holds a lone surrogate (half of a character, which JSON can send as an escape such as `\ud800`), or more than 30 combining marks in a row, is a field problem too, `invalid-value`, and such a password is never right at the sign-in. The server keeps a password only as an Argon2id hash.
+
+## The companies
+
+A signed-in person makes a company with `createCompany`: its name and organisation number. The person is its owner, a system administrator, from the same transaction, and the company gets its tenant id, `databaseNumber`, a number that is never given out again. The organisation number never changes.
+
+`listCompanies` lists the companies where the person is an active member, by name, with the person's system administrator's level in each; `query` keeps those whose name, in any letter case, or organisation number holds it. `listRecentCompanies` gives the three the person chose last, of those where the person is still an active member.
+
+`selectCompany` ("Byt företag") makes the session work in a company where the person is an active member, without a new sign-in. Any other company, also one that does not exist, gets 422 `company-not-available` at `/companyId`. The session keeps the membership it chose the company with, and the person's permissions there as they were then. On every request the server asks whether that membership is still the person's active one there: when the membership is deactivated, removed or left, or the person holds another one there now, the request gets 401 and the session ends. `getSession` and `getMe` then give the company, and `getMe` the membership and the permissions; `getCompany` and every other operation with a permission work in it.
+
+`updateMyMembership` changes the person's own work e-mail address and phone number in a company, and its idle logout, one of 15, 30, 60, 120 and 480 minutes. Any other value is a field problem at `/idleTimeout`. A field left out stays as it is, and `null` takes a work contact away.
 
 ## Answers on `/v1`
 
@@ -207,6 +231,7 @@ The registry keeps the names apart, so a pointer is never ambiguous. The same re
 | 422 | `idempotency-key-reused` | The idempotency key belongs to another request. |
 | 422 | `sign-in-failed` | A sign-in step failed. The answer is the same for every cause (Signing in). |
 | 422 | `setup-link-invalid` | The setup link is unknown, used, stopped by a newer link, or past its end. |
+| 422 | `company-not-available` | The person is no active member of the company that the input names, or it does not exist: the same answer for both. `pointer` names the field. |
 | 422 | a rule's code | A rule refuses the request, such as `period-locked-manual`, or `install-not-empty` for a setup link on an install that has an identity. |
 | 429 | `too-many-attempts` | An attempt came too soon after failed ones, or while its step is locked. `Retry-After` gives the seconds to wait. |
 | 500 | `internal-error` | The server failed. |
@@ -240,11 +265,11 @@ A write takes an idempotency key: the `Idempotency-Key` header on REST, and the 
 - The same key with another request gets 422 `idempotency-key-reused`. Another operation, another path parameter, another body or another query is another request, and so is `"1.5"` beside `"1.50"`.
 - A request whose key a running request holds gets 409 `idempotency-key-in-use`, and writes nothing. Send it again once the first has ended.
 - A write with no key gets 400, with the field problem `idempotency-key-missing` at `/idempotencyKey`. A key that is not a key gets `idempotency-key-invalid` there.
-- Keys belong to one company and one actor. The same key in another company, or from another actor, is another key. A signed-in person's write that works in no company keeps its keys for the person alone.
+- Keys belong to one company and one actor. The same key in another company, or from another actor, is another key. A signed-in person's write that works in no company keeps its keys for the person alone, and so does `createCompany`, whose company is new on each try. A write in a company whose answer holds a person's contact data (`personalOutput`), such as `updateMyMembership` and `selectCompany`, keeps its key for the person and the company outside every company table, so that data never reaches the behandlingshistorik.
 - The key and the first answer are stored in the write's own transaction. A write that is refused or fails stores no key, so a retry with the key runs again.
 - The server keeps a request's fingerprint, never the request: an HMAC-SHA256 of it, under a key from the install secret. A body can hold a password, and without the install secret a stored fingerprint tells nothing of it.
 - REST and MCP share the keys: the same input by either gives the same answer.
-- A signed-in person's own keys are purged 24 hours after they were stored. The keys of a write in a company do not expire yet.
+- The keys that are kept outside the company tables are purged 24 hours after they were stored. The keys of a write in a company's own table do not expire yet.
 
 ## Lists
 
@@ -256,7 +281,7 @@ A list takes `limit` and `cursor`, and answers its items, `nextCursor` while mor
 
 - `limit` is 1 to 500, and 100 by default. Any other whole number gives 100 too. A limit that is not a whole number gets 400 at `/limit`.
 - Pass the page's `nextCursor` as `cursor` to get the next page. The last page has no `nextCursor`.
-- A cursor is opaque. It works only for the list and the company it came from, and only until the server restarts. Any other cursor gets 400 `cursor-invalid`; start the list again without it.
+- A cursor is opaque. It works only for the list and the company it came from, or for the person whose own list it came from, and only until the server restarts. Any other cursor gets 400 `cursor-invalid`; start the list again without it.
 - Every item comes exactly once across the pages, in the list's order.
 
 ## MCP

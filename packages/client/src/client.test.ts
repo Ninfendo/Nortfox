@@ -144,6 +144,40 @@ describe("createClient", () => {
     ]);
   });
 
+  it("sends each operation of the companies and the person's own memberships as its operation takes it", async () => {
+    const company = { id: "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e", name: "Testbolaget Alfa AB", organizationNumber: "556000-0167", databaseNumber: 7 };
+    const user = { id: "8a9b0c1d-2e3f-4a5b-8c7d-6e5f4a3b2c1d", name: "Alva Berg", email: "alva.berg@example.com", language: "sv" };
+    const membership = { companyId: company.id, userId: user.id, status: "active", adminLevel: "owner", idleTimeout: 30 };
+    const answers: Response[] = [
+      Response.json(company, { status: 201 }),
+      Response.json({ items: [{ company, adminLevel: "owner" }], total: 1 }),
+      Response.json({ companies: [{ company }] }),
+      Response.json({ user, company }),
+      Response.json(membership),
+    ];
+    const calls: [string, RequestInit][] = [];
+    const client = createClient({
+      baseUrl: "https://nortfox.example",
+      fetch: (input, init) => {
+        calls.push([input, init]);
+        return Promise.resolve(answers.shift() ?? Response.json({}));
+      },
+    });
+    await expect(client.createCompany({ name: company.name, organizationNumber: company.organizationNumber }, { idempotencyKey: "make-1" })).resolves.toEqual(company);
+    await expect(client.listCompanies({ query: "alfa", limit: 10 })).resolves.toEqual({ items: [{ company, adminLevel: "owner" }], total: 1 });
+    await expect(client.listRecentCompanies()).resolves.toEqual({ companies: [{ company }] });
+    await expect(client.selectCompany({ companyId: company.id }, { idempotencyKey: "choose-1" })).resolves.toEqual({ user, company });
+    await expect(client.updateMyMembership({ companyId: company.id, workEmail: null, idleTimeout: 30 }, { idempotencyKey: "change-1" })).resolves.toEqual(membership);
+    const json = { accept: "application/json", "content-type": "application/json" };
+    expect(calls).toEqual([
+      ["https://nortfox.example/v1/companies", { method: "POST", headers: { ...json, "idempotency-key": "make-1" }, body: '{"name":"Testbolaget Alfa AB","organizationNumber":"556000-0167"}' }],
+      ["https://nortfox.example/v1/companies?query=alfa&limit=10", { method: "GET", headers: { accept: "application/json" } }],
+      ["https://nortfox.example/v1/me/companies/recent", { method: "GET", headers: { accept: "application/json" } }],
+      ["https://nortfox.example/v1/session/company", { method: "POST", headers: { ...json, "idempotency-key": "choose-1" }, body: `{"companyId":"${company.id}"}` }],
+      [`https://nortfox.example/v1/me/companies/${company.id}`, { method: "PATCH", headers: { ...json, "idempotency-key": "change-1" }, body: '{"workEmail":null,"idleTimeout":30}' }],
+    ]);
+  });
+
   it("uses the global fetch when none is given", async () => {
     const server = answering(200, { status: "ok", version: "2.0.0" });
     vi.stubGlobal("fetch", server.fetch);

@@ -21,8 +21,12 @@ const SCHEMAS: Readonly<Record<string, readonly string[]>> = {
   Company: ["id", "name", "organizationNumber", "databaseNumber"],
   // Slice 2c, part 1: the login identity.
   User: ["id", "name", "email", "language"],
-  Me: ["user", "personalIdentityNumber", "mobile", "twoStep"],
-  Session: ["user"],
+  Me: ["user", "personalIdentityNumber", "mobile", "twoStep", "company", "membership", "permissions"],
+  Session: ["user", "company"],
+  // Slice 2c, part 2: the companies and the memberships.
+  Membership: ["companyId", "userId", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone"],
+  CompanyChoice: ["company", "adminLevel"],
+  RecentCompanies: ["companies"],
 };
 
 /**

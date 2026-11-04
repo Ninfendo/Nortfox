@@ -153,3 +153,46 @@ export async function activeMemberships(tx: Queryable): Promise<readonly Resolve
   const found = await tx.query<MembershipRow>(membershipQuery(""));
   return found.rows.map((row) => new ResolvedMembership(MEMBERSHIP_TOKEN, row, tx));
 }
+
+/** What a page of the person's companies asks for: a part of the name or the organisation number, where the page starts, and its length. */
+export interface MembershipPageRequest {
+  /** A part of the company's name, in any letter case, or of its organisation number. */
+  readonly query?: string;
+  /** The sort key of the last company of the page before: its name and its id. */
+  readonly after?: readonly string[];
+  readonly limit: number;
+}
+
+/** A page of the person's active memberships, the sort key of its last one while more follow, and how many the whole list holds. */
+export interface MembershipPage {
+  readonly memberships: readonly ResolvedMembership[];
+  /** The last company's name and id, while more follow. */
+  readonly next?: readonly string[];
+  readonly total: number;
+}
+
+/** The condition of the companies that a query keeps: $1 is the query, or NULL for every company. */
+const KEPT = "($1::text IS NULL OR strpos(lower(m.company_name), lower($1)) > 0 OR strpos(m.organization_number, $1) > 0)";
+
+/**
+ * A page of the transaction's person's active memberships, by the company's
+ * name and then its id, as the one function orders them: at most `limit`
+ * after the sort key `after`, of the companies that `query` keeps. It reads
+ * one more to tell whether more follow, and the total in the same
+ * transaction.
+ */
+export async function activeMembershipPage(tx: Queryable, request: MembershipPageRequest): Promise<MembershipPage> {
+  const [afterName, afterId] = request.after ?? [];
+  const found = await tx.query<MembershipRow>(
+    `${membershipQuery("")} WHERE ${KEPT} AND ($2::text IS NULL OR (m.company_name, m.company_id) > ($2, $3::uuid))
+     ORDER BY m.company_name, m.company_id LIMIT $4`,
+    [request.query ?? null, afterName ?? null, afterId ?? null, request.limit + 1],
+  );
+  const counted = await tx.query<{ total: string }>(`SELECT count(*) AS total FROM access.active_membership() AS m WHERE ${KEPT}`, [request.query ?? null]);
+  const memberships = found.rows.slice(0, request.limit).map((row) => new ResolvedMembership(MEMBERSHIP_TOKEN, row, tx));
+  // While more follow, the page is full, and its last row is the next page's start.
+  const last = found.rows.length > request.limit ? found.rows[request.limit - 1] : undefined;
+  // A count gives one row.
+  const total = Number((counted.rows as [{ readonly total: string }])[0].total);
+  return last === undefined ? { memberships, total } : { memberships, next: [last.company_name, last.company_id], total };
+}

@@ -71,6 +71,7 @@ describe("GET /openapi.json", () => {
       list: false,
       session: null,
       company: "none",
+      personalOutput: [],
     });
     expect(Object.keys(health?.responses ?? {})).toEqual(["200", "400", "500"]);
     expect(health?.responses?.["400"]?.content).toEqual({
@@ -85,6 +86,7 @@ describe("GET /openapi.json", () => {
       list: false,
       session: null,
       company: "credential",
+      personalOutput: [],
     });
     expect(Object.keys(company?.responses ?? {})).toEqual(["200", "400", "401", "403", "500"]);
     expect(company?.responses?.["401"]?.headers).toEqual({
@@ -92,13 +94,17 @@ describe("GET /openapi.json", () => {
     });
     expect(Object.keys(document.components.schemas).sort()).toEqual([
       "Company",
+      "CompanyChoice",
       "FieldProblem",
       "Health",
       "Me",
+      "Membership",
       "PasswordSignIn",
       "Problem",
+      "RecentCompanies",
       "Session",
       "SetupResult",
+      "SysAdmin",
       "TotpEnrolment",
       "User",
     ]);

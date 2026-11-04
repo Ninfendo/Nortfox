@@ -129,6 +129,7 @@ describe("a browser session", () => {
       user: { id: person.id, name: "Alva Berg", email: person.email, language: "sv" },
       personalIdentityNumber: PERSONAL_IDENTITY_NUMBERS[0],
       twoStep: "new_device_90_days",
+      permissions: [],
     });
     await owner.query("UPDATE access.identities SET mobile = '070-174 06 07', language = 'en', two_step = 'every_login' WHERE id = $1", [person.id]);
     const changed = await sendAsBrowser(server, "GET", "/v1/me", { cookies: { session: browser.session } });

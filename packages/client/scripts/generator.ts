@@ -56,13 +56,16 @@ const SECURITY_SCHEME_KEYS = new Set(["type", "in", "name", "description"]);
 
 /**
  * The keys of x-nortfox, NortFox's own parts of an operation. The generator
- * reads the permission, the session mark and the company source for the doc
- * comment, and refuses a value of the last two that it does not know; the
- * others only document, for the server and MCP.
+ * reads the permission, the session mark, the company source and the
+ * personal output for the doc comment, and refuses a value of the last three
+ * that it does not know; the others only document, for the server and MCP.
  */
-const NORTFOX_KEYS = new Set(["permission", "tool", "assistant", "writes", "list", "session", "company"]);
+const NORTFOX_KEYS = new Set(["permission", "tool", "assistant", "writes", "list", "session", "company", "personalOutput"]);
 const SESSION_MARKS = [null, "flow"] as const;
-const COMPANY_SOURCES = ["none", "credential"] as const;
+const COMPANY_SOURCES = ["none", "credential", "current", "new"] as const;
+
+/** Where a request's company comes from: a source by name, or the field of the input that names it. */
+type CompanySource = (typeof COMPANY_SOURCES)[number] | { readonly input: string };
 
 /** The permission of an operation that reads no data. */
 const PUBLIC = "public";
@@ -74,7 +77,6 @@ const SIGNED_IN = "signed-in";
 /** Keys that would change a type, which the generator cannot express yet. */
 const UNSUPPORTED_KEYS = [
   "allOf",
-  "anyOf",
   "oneOf",
   "not",
   "if",
@@ -138,10 +140,10 @@ function docLines(schema: Json, where: string): string[] {
 }
 
 function literal(value: unknown, where: string): string {
-  if (typeof value === "string" || typeof value === "boolean") {
+  if (typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) {
     return JSON.stringify(value);
   }
-  throw new GeneratorError(`${where} may only hold strings or booleans.`);
+  throw new GeneratorError(`${where} may only hold strings, numbers or booleans.`);
 }
 
 function union(parts: readonly string[]): string {
@@ -171,6 +173,14 @@ function typeOf(value: unknown, where: string, indent: string): string {
   }
   if ("const" in schema) {
     return literal(schema["const"], `${where}.const`);
+  }
+  // A union, such as a nullable field's: each branch is a type of its own.
+  const branches = schema["anyOf"];
+  if (branches !== undefined) {
+    if (!Array.isArray(branches) || branches.length === 0) {
+      throw new GeneratorError(`${where}.anyOf must be a list with at least one schema.`);
+    }
+    return union(branches.map((branch, index) => typeOf(branch, `${where}.anyOf[${String(index)}]`, indent)));
   }
   const values = schema["enum"];
   if (values !== undefined) {
@@ -259,7 +269,9 @@ function declaration(name: string, schema: Json, where: string): string[] {
 interface Meta {
   readonly permission?: string;
   readonly session?: "flow" | null;
-  readonly company?: "none" | "credential";
+  readonly company?: CompanySource;
+  /** The JSON Pointers of the answer's personal fields. */
+  readonly personalOutput?: readonly string[];
 }
 
 /** One field of an operation's input that is not in its body: a path parameter or a query field. */
@@ -344,6 +356,25 @@ function oneOf<T>(value: unknown, known: readonly T[], where: string): T | undef
   return value as T | undefined;
 }
 
+/** A company source: one the generator knows by name, a field of the input, or absent. */
+function companySourceOf(value: unknown, where: string): CompanySource | undefined {
+  if (isJson(value) && Object.keys(value).join() === "input" && typeof value["input"] === "string" && value["input"] !== "") {
+    return { input: value["input"] };
+  }
+  return oneOf(value, COMPANY_SOURCES, where);
+}
+
+/** The pointers of the personal output: a list of JSON Pointers, or absent. */
+function pointersOf(value: unknown, where: string): readonly string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new GeneratorError(`${where} must be a list of JSON Pointers.`);
+  }
+  return value;
+}
+
 /** The parts of an operation's x-nortfox that its doc comment tells; none when it has no x-nortfox. */
 function metaOf(value: unknown, where: string): Meta {
   if (value === undefined) {
@@ -352,11 +383,13 @@ function metaOf(value: unknown, where: string): Meta {
   const meta = record(value, where);
   refuseOtherKeys(meta, NORTFOX_KEYS, where);
   const session = oneOf(meta["session"], SESSION_MARKS, `${where}.session`);
-  const company = oneOf(meta["company"], COMPANY_SOURCES, `${where}.company`);
+  const company = companySourceOf(meta["company"], `${where}.company`);
+  const personalOutput = pointersOf(meta["personalOutput"], `${where}.personalOutput`);
   return {
     permission: text(meta["permission"], `${where}.permission`),
     ...(session === undefined ? {} : { session }),
     ...(company === undefined ? {} : { company }),
+    ...(personalOutput === undefined ? {} : { personalOutput }),
   };
 }
 
@@ -556,11 +589,28 @@ function permissionLine(meta: Meta): string | undefined {
     case NONE:
       return "Needs no actor: anyone may call it, before signing in.";
     case SIGNED_IN:
-      return "Needs a signed-in person, and works in no company.";
+      return `Needs a signed-in person, and ${signedInCompany(meta.company)}.`;
     default:
       return meta.company === "credential"
         ? `Needs the permission \`${permission}\`, in the company that the credential names.`
         : `Needs the permission \`${permission}\`.`;
+  }
+}
+
+/** Where a signed-in person's operation works, by its company source. */
+function signedInCompany(company: CompanySource | undefined): string {
+  if (typeof company === "object") {
+    return `works in the company that \`${company.input}\` names, where the person must be an active member`;
+  }
+  switch (company) {
+    case "current":
+      return "works in the company that the credential names, or in none";
+    case "new":
+      return "works in the company it makes";
+    case "none":
+    case "credential":
+    case undefined:
+      return "works in no company";
   }
 }
 
@@ -571,7 +621,9 @@ function operationDocs(operation: Operation): string[] {
   const lines = [...parts.flatMap((part) => [part, ""]), `\`${operation.method} ${operation.path}\``];
   const session = operation.meta.session === "flow" ? "Serves the browser's session: its MCP tool refuses every call." : undefined;
   const credential = operation.credentials.length === 0 ? undefined : `Credential: ${operation.credentials.join(", or ")}.`;
-  for (const line of [permissionLine(operation.meta), credential, session]) {
+  const personal = operation.meta.personalOutput ?? [];
+  const personalLine = personal.length === 0 ? undefined : `The answer holds personal data: ${personal.map((pointer) => `\`${pointer}\``).join(", ")}.`;
+  for (const line of [permissionLine(operation.meta), credential, session, personalLine]) {
     if (line !== undefined) {
       lines.push("", line);
     }

@@ -24,7 +24,8 @@
 // 4. A failure of any kind has counted once, and gets the one answer, 422
 //    sign-in-failed. At 100 failures in the window the step is locked until
 //    the window's hour has passed. A failure for an identity is written to
-//    its Kontoaktivitet after the answer, and so is the lock, once.
+//    its Kontoaktivitet after the answer, and so is the lock, once; and to
+//    the behandlingshistorik of each company where it is an active member.
 // 5. A right password clears the count. With new_device_90_days, on a device
 //    the person knows whose last TOTP step is less than 90 days old, it opens
 //    a session at once: the session cookie, and a sign-in in Kontoaktivitet.
@@ -39,7 +40,7 @@ import type { SignInMethod } from "../../api/context.ts";
 import { handleNone, ok, refused, tooManyAttempts, type Answer, type NoneCall } from "../../api/operation.ts";
 import { newToken, tokenHash } from "../../auth/tokens.ts";
 import { commit, rollBack, type Ending, type Queryable } from "../../db/database.ts";
-import { addAccountEvent, addAfterAnswer, asPerson, signInDetails, type AccountEvent } from "./account-events.ts";
+import { addAccountEvent, addFailedSignIn, asPerson, signInDetails, type AccountEvent } from "./account-events.ts";
 import { readIdentifier, unknownSubject } from "./identifier.ts";
 import { PASSWORD_CAP, PASSWORD_WINDOW_MS, clearAttempts, countFailure, giveBackFailure, lockAttempts, passwordLockEnd, passwordWait, type AttemptCounter } from "./limits.ts";
 import { CHALLENGE_LIFETIME_MS, PASSWORD_FAILED, deviceHashOf, knownDevice, openSession } from "./sign-in.ts";
@@ -127,11 +128,9 @@ export const loginWithPasswordHandler = handleNone(loginWithPassword, async (cal
       });
     }
     if (login !== undefined) {
-      const events: AccountEvent[] = [{ kind: "sign-in", details: signInDetails(method, undefined, request, "failed") }];
-      if (counted.failures === PASSWORD_CAP) {
-        events.push({ kind: "sign-in-locked", details: { step: "password", until: passwordLockEnd(counted).toISOString() } });
-      }
-      addAfterAnswer(later, database, channel, login.identityId, events);
+      const lock: AccountEvent | undefined =
+        counted.failures === PASSWORD_CAP ? { kind: "sign-in-locked", details: { step: "password", until: passwordLockEnd(counted).toISOString() } } : undefined;
+      addFailedSignIn(later, database, channel, login.identityId, signInDetails(method, undefined, request, "failed"), lock, at);
     }
     return refused(PASSWORD_FAILED);
   }
@@ -140,7 +139,7 @@ export const loginWithPasswordHandler = handleNone(loginWithPassword, async (cal
     await clearAttempts(tx, login.identityId, "password");
     const device = login.twoStep === "new_device_90_days" && deviceHash !== undefined ? await knownDevice(tx, login.identityId, deviceHash, at) : undefined;
     if (device !== undefined) {
-      const session = await openSession(tx, login.identityId, method, device, at);
+      const session = await openSession(tx, login.identityId, method, "known-device", device, at);
       if (session === undefined) {
         return rollBack(undefined);
       }

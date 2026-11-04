@@ -90,6 +90,173 @@ const USER = {
 
 const CHALLENGE_PATTERN = "^nfc_[A-Za-z0-9_-]{43}$";
 
+const IDEMPOTENCY_KEY = {
+  type: "string",
+  minLength: 1,
+  maxLength: 255,
+  pattern: "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+  description:
+    'A key you choose for this write, 1 to 255 characters of visible ASCII without " and \\. Send the same key with the same input again, and you get the first answer back instead of a second write.',
+};
+
+const COMPANY_SCHEMA = {
+  type: "object",
+  description: "The company the request works in. Every data request works in exactly one company.",
+  properties: {
+    id: { ...UUID, description: "The company's id." },
+    name: { type: "string", description: "The company's name." },
+    organizationNumber: {
+      type: "string",
+      pattern: "^[0-9]{6}-[0-9]{4}$",
+      description: "The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number.",
+    },
+    databaseNumber: { type: "integer", minimum: 1, maximum: 2147483647, description: "The company's number for programs, its tenant id. It never changes." },
+  },
+  required: ["id", "name", "organizationNumber", "databaseNumber"],
+  additionalProperties: false,
+};
+
+const SYS_ADMIN = {
+  type: "string",
+  enum: ["owner", "admin"],
+  description:
+    "Systemadministratör: owner, the person who made the company, or admin, a member made system administrator later. Both hold the same rights, and neither gives work rights by itself.",
+};
+
+const IDLE_TIMEOUT = {
+  type: "integer",
+  enum: [15, 30, 60, 120, 480],
+  description: "Utloggning efter inaktivitet, in whole minutes: 15, 30, 60, 120 (2 hours, the default) or 480 (8 hours).",
+};
+
+const MEMBERSHIP = {
+  type: "object",
+  properties: {
+    companyId: { ...UUID, description: "The company's id." },
+    userId: { description: "The person's id. Absent while the membership is invited.", ...UUID },
+    status: { type: "string", enum: ["invited", "active", "inactive", "removed", "left"], description: "invited, active, inactive, removed or left." },
+    adminLevel: SYS_ADMIN,
+    idleTimeout: IDLE_TIMEOUT,
+    workEmail: { type: "string", description: "The person's work e-mail address in this company, where its notices go. Absent when none is set." },
+    workPhone: { type: "string", description: "The person's work phone number in this company. Absent when none is set." },
+  },
+  required: ["companyId", "status", "idleTimeout"],
+  additionalProperties: false,
+  description: "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts.",
+};
+
+const COMPANY_CHOICE = {
+  type: "object",
+  properties: { company: COMPANY_SCHEMA, adminLevel: SYS_ADMIN },
+  required: ["company"],
+  additionalProperties: false,
+  description: "A company where the person is an active member, with the person's system administrator's level there when they have one.",
+};
+
+const SESSION = {
+  type: "object",
+  properties: { user: USER, company: COMPANY_SCHEMA },
+  required: ["user"],
+  additionalProperties: false,
+  description: "The browser's session: the person it signed in, and the company it works in once one is chosen.",
+};
+
+/** The tools of the companies and of the person's own memberships, as tools/list gives them. */
+const COMPANY_TOOLS = [
+  {
+    name: "createCompany",
+    title: "Create a company",
+    description: "Creates a company and makes you its owner. Its organisation number never changes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", minLength: 1, maxLength: 200, description: "The company's name." },
+        organizationNumber: { type: "string", pattern: "^[0-9]{6}-[0-9]{4}$", description: "The organisation number: ten digits with a hyphen after the sixth." },
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["name", "organizationNumber", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: COMPANY_SCHEMA,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "listCompanies",
+    title: "List your companies",
+    description: "Lists the companies where you are an active member, with your system administrator's level in each.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { description: "A part of the company's name, in any letter case, or of its organisation number.", type: "string", minLength: 1, maxLength: 200 },
+        limit: { type: "integer", default: 100, description: "How many items a page holds: from 1 to 500. Any other whole number gives 100." },
+        cursor: { description: "Where the page starts: the nextCursor of the page before. Leave it out for the first page.", type: "string" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        items: { type: "array", items: COMPANY_CHOICE, description: "The items of this page, in the list's order." },
+        nextCursor: { description: "Where the next page starts. It is absent on the last page.", type: "string" },
+        total: { type: "integer", minimum: 0, maximum: 9007199254740991, description: "How many items the whole list holds." },
+      },
+      required: ["items", "total"],
+      additionalProperties: false,
+      description: "A page of the list.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "listRecentCompanies",
+    title: "List your recent companies",
+    description: "Gives the three companies you chose last, where you are still an active member.",
+    inputSchema: NO_INPUT,
+    outputSchema: {
+      type: "object",
+      properties: { companies: { maxItems: 3, type: "array", items: COMPANY_CHOICE, description: "The companies, the latest chosen first." } },
+      required: ["companies"],
+      additionalProperties: false,
+      description: "The three companies the person chose last, where the person is still an active member.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "selectCompany",
+    title: "Choose the company",
+    description: "Chooses the browser session's company. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+    inputSchema: {
+      type: "object",
+      properties: { companyId: { ...UUID, description: "The id of the company to work in." }, idempotencyKey: IDEMPOTENCY_KEY },
+      required: ["companyId", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: SESSION,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "updateMyMembership",
+    title: "Change your membership",
+    description: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        companyId: { ...UUID, description: "The company's id." },
+        workEmail: {
+          description: "The work e-mail address in this company, or null for none.",
+          anyOf: [{ type: "string", maxLength: 254, format: "email", pattern: '^[^\\s@"]{1,64}@[^\\s@]{1,255}$' }, { type: "null" }],
+        },
+        workPhone: { description: "The work phone number in this company, or null for none.", anyOf: [{ type: "string", minLength: 1, maxLength: 50 }, { type: "null" }] },
+        idleTimeout: IDLE_TIMEOUT,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["companyId", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: MEMBERSHIP,
+    annotations: { readOnlyHint: false },
+  },
+];
+
 /** The tools of the browser's sign-in and of the person's own operations, as tools/list gives them. */
 const SIGN_IN_TOOLS = [
   {
@@ -206,20 +373,15 @@ const SIGN_IN_TOOLS = [
     title: "Read the session",
     description: "Reads the browser's session. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
     inputSchema: NO_INPUT,
-    outputSchema: {
-      type: "object",
-      properties: { user: USER },
-      required: ["user"],
-      additionalProperties: false,
-      description: "The browser's session: the person it signed in. A session works in no company until one is chosen.",
-    },
+    outputSchema: SESSION,
     annotations: { readOnlyHint: true },
   },
   {
     name: "getMe",
     title: "Read yourself",
     description:
-      "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code.",
+      "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; " +
+      "and the company you work in, with your membership and permissions there.",
     inputSchema: NO_INPUT,
     outputSchema: {
       type: "object",
@@ -236,10 +398,17 @@ const SIGN_IN_TOOLS = [
           enum: ["new_device_90_days", "every_login"],
           description: "How often a password sign-in asks for a TOTP code: new_device_90_days on each new device and every 90 days on a known one, or every_login.",
         },
+        company: COMPANY_SCHEMA,
+        membership: MEMBERSHIP,
+        permissions: {
+          type: "array",
+          items: { type: "string" },
+          description: "The permissions the person holds in that company, in alphabetical order. Empty when the request works in no company.",
+        },
       },
-      required: ["user", "twoStep"],
+      required: ["user", "twoStep", "permissions"],
       additionalProperties: false,
-      description: "The signed-in person, with their own login data.",
+      description: "The signed-in person, with their own login data, and the company the request works in with the person's membership and permissions there.",
     },
     annotations: { readOnlyHint: true },
   },
@@ -295,6 +464,7 @@ const TOOLS = [
     annotations: { readOnlyHint: true },
   },
   ...SIGN_IN_TOOLS,
+  ...COMPANY_TOOLS,
   {
     name: "testBookVoucher",
     title: "Book a voucher",
@@ -622,7 +792,7 @@ describe("/mcp on the real server", () => {
         era === "2025" ? {} : { versionNegotiation: { mode: { pin: "2026-07-28" } } },
       );
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(server.port)}/mcp`)));
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...SIGN_IN_TOOLS.map((tool) => tool.name)]);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...[...SIGN_IN_TOOLS, ...COMPANY_TOOLS].map((tool) => tool.name)]);
       expect(await callTool(client, "getHealth")).toEqual({ isError: false, structured: { status: "ok", version: TEST_VERSION } });
       await client.close();
     } finally {

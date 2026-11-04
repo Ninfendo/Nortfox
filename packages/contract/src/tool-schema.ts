@@ -7,7 +7,7 @@
  * problem's pointer points into the same object, on REST too. The schemas
  * come from z.toJSONSchema with every reference inlined, so a client needs no
  * $defs, and they leave out $schema: MCP reads a tool schema as JSON Schema
- * 2020-12 when it names none.
+ * 2020-12 when it names none (json-schema.ts).
  */
 
 import { z } from "zod";
@@ -17,58 +17,12 @@ import {
   IDEMPOTENCY_KEY_MAX_LENGTH,
   IDEMPOTENCY_KEY_PATTERN,
 } from "./idempotency-key.ts";
+import { jsonSchemaOf, type JsonSchema } from "./json-schema.ts";
 import { bodySchema, outputSchema, paramsSchema, querySchema, takesIdempotencyKey, type Operation } from "./operation.ts";
 
 export { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_PATTERN } from "./idempotency-key.ts";
-
-/** A JSON Schema, as plain JSON. */
-export type JsonSchema = Readonly<Record<string, unknown>>;
-
-const DEFINITIONS = "#/$defs/";
-
-function isObject(value: unknown): value is JsonSchema {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** An object without some of its keys. */
-function omit(node: JsonSchema, keys: readonly string[]): JsonSchema {
-  return Object.fromEntries(Object.entries(node).filter(([key]) => !keys.includes(key)));
-}
-
-/** The schema with each reference to $defs replaced by its definition, and $defs left out. */
-function inline(node: unknown, definitions: JsonSchema, within: readonly string[]): unknown {
-  if (Array.isArray(node)) {
-    return node.map((item) => inline(item, definitions, within));
-  }
-  if (!isObject(node)) {
-    return node;
-  }
-  const reference = node["$ref"];
-  if (typeof reference === "string") {
-    const name = reference.startsWith(DEFINITIONS) ? reference.slice(DEFINITIONS.length) : undefined;
-    if (reference === "#" || (name !== undefined && within.includes(name))) {
-      throw new Error("A tool schema cannot hold itself: there is no way to write it without a reference.");
-    }
-    if (name === undefined || !Object.hasOwn(definitions, name)) {
-      throw new Error(`A tool schema refers to "${reference}", which it does not hold.`);
-    }
-    // A reference may carry keys of its own, such as a description; they win.
-    const definition = inline(definitions[name], definitions, [...within, name]) as JsonSchema;
-    const own = inline(omit(node, ["$ref"]), definitions, within) as JsonSchema;
-    return { ...definition, ...own };
-  }
-  return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, inline(value, definitions, within)]));
-}
-
-/**
- * A zod schema as plain JSON Schema, with every reference inlined. "input"
- * describes what a caller sends, "output" what an answer holds.
- */
-export function jsonSchemaOf(schema: z.ZodType, io: "input" | "output"): JsonSchema {
-  const generated = z.toJSONSchema(schema, { io }) as JsonSchema;
-  const definitions = generated["$defs"];
-  return inline(omit(generated, ["$schema", "$defs"]), isObject(definitions) ? definitions : {}, []) as JsonSchema;
-}
+export { jsonSchemaOf } from "./json-schema.ts";
+export type { JsonSchema } from "./json-schema.ts";
 
 /** The fields of an object schema, or none. */
 function fieldsOf(schema: z.ZodObject | undefined): z.ZodRawShape {
