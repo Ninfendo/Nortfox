@@ -3,7 +3,9 @@
 // The scan of the database at the end of each sign-in test file is a guard
 // of its own. It must fail on every password and TOTP code that a sign-in app
 // of the file sent, right or wrong, once it is stored in clear, also when the
-// test names only the right passwords.
+// test names only the right passwords. It must fail on every TOTP secret that
+// the file made for a person, or that an answer gave, also when the test
+// names none.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -20,6 +22,7 @@ import {
   totpStep,
   wrongCodeOf,
 } from "../../test/sign-in.ts";
+import { base32Encode, newTotpSecret, otpauthUri } from "./totp.ts";
 
 describe("the scan of the database after sign-ins", () => {
   let db: TestDatabase;
@@ -56,5 +59,20 @@ describe("the scan of the database after sign-ins", () => {
     await owner.query("UPDATE access.identities SET name = 'Alva Berg' WHERE id = $1", [person.id]);
     await expectNoSecretsAtRestFromSignInApps(db, named);
     expectNoTokensFromSignInApps();
+  });
+
+  it("fails on a TOTP secret that the test file made or that an answer gave, once it is in clear, though the test names none", async () => {
+    const server = signInApp(pool.database);
+    const person = await addSignInIdentity(owner);
+    // An answer that holds a new secret in its otpauth URI, as completeSetup's does.
+    const enrolled = newTotpSecret();
+    server.bodies.push(JSON.stringify({ totpEnrolment: { otpauthUri: otpauthUri(enrolled, "signe.ek@example.com") } }));
+    await expectNoSecretsAtRestFromSignInApps(db);
+    for (const leak of [person.totpSecret?.toString("hex") ?? "", base32Encode(enrolled)]) {
+      await owner.query("UPDATE access.identities SET name = $2 WHERE id = $1", [person.id, leak]);
+      await expect(expectNoSecretsAtRestFromSignInApps(db)).rejects.toThrow("The database holds a token or a secret in clear.");
+    }
+    await owner.query("UPDATE access.identities SET name = 'Signe Ek' WHERE id = $1", [person.id]);
+    await expectNoSecretsAtRestFromSignInApps(db);
   });
 });

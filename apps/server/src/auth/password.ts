@@ -4,10 +4,10 @@
 // sets a password, and every check of one, goes through this one wrapper.
 //
 // - A new password is 12 to 1024 characters, counted in code points after
-//   NFC normalisation, and hashed in that form. So é written as one code
-//   point or as e and a combining accent is the same password, and an emoji
-//   counts once. The upper bound is NortFox's own: no request makes the
-//   server hash a megabyte.
+//   NFC normalisation, and hashed in that form. The rule lives in the
+//   contract (packages/contract/src/password.ts), so an operation's body
+//   checks it beside its other fields; the wrapper checks it again before it
+//   hashes, and this module gives the rule's names to the server.
 // - Argon2id through Node's own crypto.argon2, at OWASP's first Argon2id
 //   setting: 19 MiB (19456 KiB), 2 passes, 1 lane, a 16-byte salt and a
 //   32-byte hash. It is kept as a PHC string,
@@ -19,13 +19,10 @@
 //   own cost, and gives false. So the time does not tell the cases apart. A
 //   password longer than 1024 characters is never right, and is checked as
 //   an empty one against the dummy, so a sign-in never hashes a megabyte.
-// - A string of more than 6144 UTF-16 units is longer than 1024 characters
-//   in any form, and is never normalised. Nor is one with a lone surrogate,
-//   which UTF-8 would write as U+FFFD, so two such passwords would be one;
-//   nor one with more than 30 combining marks in a row (the stream-safe
-//   limit of UAX #15), on which NFC takes time that grows with the square of
-//   the run. A new password with either is refused, and a check of one is
-//   never right. So no input makes NFC hold the event loop.
+// - A string of more than 6144 UTF-16 units, one with a lone surrogate, and
+//   one with more than 30 combining marks in a row are never normalised (the
+//   contract's rule says why). A new password of such a form is refused, and
+//   a check of one is never right. So no input makes NFC hold the event loop.
 // - At most as many hashes run at once as the host has cores, with a queue
 //   of the same length. 19 MiB each would otherwise let a few hundred
 //   requests take gigabytes. When both are full, the hasher refuses with
@@ -38,7 +35,9 @@
 import { argon2, randomBytes, timingSafeEqual, type Argon2Parameters } from "node:crypto";
 import { availableParallelism } from "node:os";
 import { promisify } from "node:util";
-import type { FieldIssue } from "@nortfox/contract";
+import { PASSWORD_MAX_LENGTH, newPasswordIssue, passwordLength, type FieldIssue } from "@nortfox/contract";
+
+export { PASSWORD_MAX_LENGTH, PASSWORD_MAX_MARK_RUN, PASSWORD_MAX_UNITS, PASSWORD_MIN_LENGTH, newPasswordIssue, passwordLength } from "@nortfox/contract";
 
 /** What a hash costs: Argon2id's memory in KiB, its passes and its lanes. */
 export interface PasswordCost {
@@ -50,8 +49,6 @@ export interface PasswordCost {
 /** OWASP's first Argon2id setting. */
 export const PRODUCTION_PASSWORD_COST: PasswordCost = { memory: 19456, passes: 2, parallelism: 1 };
 
-export const PASSWORD_MIN_LENGTH = 12;
-export const PASSWORD_MAX_LENGTH = 1024;
 export const SALT_BYTES = 16;
 export const HASH_BYTES = 32;
 
@@ -72,74 +69,6 @@ export class ServerBusy extends Error {
     super("The server runs as many password hashes as it can at once, and its queue is full.");
     this.name = "ServerBusy";
   }
-}
-
-/**
- * The most UTF-16 units that a password of 1024 characters can have: NFC
- * makes at most six units one character, such as U+16126 written as its
- * three vowel signs (a test walks every code point). A longer string is
- * longer than any password, and is never normalised.
- */
-export const PASSWORD_MAX_UNITS = 6 * PASSWORD_MAX_LENGTH;
-
-/**
- * The most combining marks in a row that a password may hold. Every
- * character whose decomposition starts with a mark that NFC reorders is a
- * mark (a test walks every code point), so this bounds each run that NFC
- * sorts.
- */
-export const PASSWORD_MAX_MARK_RUN = 30;
-
-const MARK_RUN = new RegExp(`\\p{M}{${String(PASSWORD_MAX_MARK_RUN + 1)}}`, "u");
-
-/** Why a string can never be a password, seen before it is normalised; undefined when it may be one. */
-function unfitness(password: string): "too-long" | "lone-surrogate" | "mark-run" | undefined {
-  if (password.length > PASSWORD_MAX_UNITS) {
-    return "too-long";
-  }
-  if (!password.isWellFormed()) {
-    return "lone-surrogate";
-  }
-  return MARK_RUN.test(password) ? "mark-run" : undefined;
-}
-
-/** A password's length: its code points after NFC normalisation, or Infinity for a string that is never normalised, which no password is. */
-export function passwordLength(password: string): number {
-  // A string's iterator gives its code points, which is what the rule counts.
-  return unfitness(password) === undefined ? Array.from(password.normalize("NFC")).length : Number.POSITIVE_INFINITY;
-}
-
-function tooLong(pointer: string): FieldIssue {
-  return {
-    code: "too-long",
-    detail: `The field ${pointer} must be at most ${String(PASSWORD_MAX_LENGTH)} characters long.`,
-    pointer,
-    data: { maximum: PASSWORD_MAX_LENGTH },
-  };
-}
-
-/** What is wrong with a new password, as a field problem at `pointer`; undefined when nothing is. It never holds the password. */
-export function newPasswordIssue(password: string, pointer: string): FieldIssue | undefined {
-  switch (unfitness(password)) {
-    case "too-long":
-      return tooLong(pointer);
-    case "lone-surrogate":
-      return { code: "invalid-value", detail: `The field ${pointer} holds a lone surrogate, which is not a character.`, pointer, data: {} };
-    case "mark-run":
-      return { code: "invalid-value", detail: `The field ${pointer} holds more than ${String(PASSWORD_MAX_MARK_RUN)} combining marks in a row.`, pointer, data: {} };
-    case undefined:
-      break;
-  }
-  const length = passwordLength(password);
-  if (length < PASSWORD_MIN_LENGTH) {
-    return {
-      code: "too-short",
-      detail: `The field ${pointer} must be at least ${String(PASSWORD_MIN_LENGTH)} characters long.`,
-      pointer,
-      data: { minimum: PASSWORD_MIN_LENGTH },
-    };
-  }
-  return length > PASSWORD_MAX_LENGTH ? tooLong(pointer) : undefined;
 }
 
 /** Base64 without its padding, as the PHC string format writes it. */

@@ -378,9 +378,32 @@ function routeOf(entry: Entry): Route {
   return { label: `${method} ${path}`, method, segments: path.split("/") };
 }
 
+function isParameter(segment: string): boolean {
+  return segment.startsWith("{");
+}
+
+/**
+ * Whether two routes of other methods name one path's parameters in two
+ * ways: as many segments, each the same word or a parameter in both, and
+ * some parameter with another name. OpenAPI takes such paths as one path,
+ * which must not be written twice, and /v1 answers 405 with one path's
+ * methods in Allow.
+ */
+function renamed(a: Route, b: Route): boolean {
+  return (
+    a.method !== b.method &&
+    a.segments.length === b.segments.length &&
+    a.segments.join("/") !== b.segments.join("/") &&
+    a.segments.every((segment, index) => {
+      // The two have as many segments, so b has one at each index of a.
+      const other = String(b.segments[index]);
+      return segment === other || (isParameter(segment) && isParameter(other));
+    })
+  );
+}
+
 /** Whether two routes can answer the same request: one method, and each segment the same word or a parameter in either. */
 function overlap(a: Route, b: Route): boolean {
-  const isParameter = (segment: string): boolean => segment.startsWith("{");
   return (
     a.method === b.method &&
     a.segments.length === b.segments.length &&
@@ -423,6 +446,9 @@ export function registryProblems(operations: readonly unknown[], permissions: re
       for (const other of routes.filter((each) => overlap(each, route))) {
         duplicates.push(`Two operations can answer the same path: ${other.label} and ${route.label}.`);
       }
+    }
+    for (const other of routes.filter((each) => renamed(each, route))) {
+      duplicates.push(`Two operations name the parameters of one path in two ways: ${other.label} and ${route.label}. A path's parameters have one name in every operation.`);
     }
     routes.push(route);
   }

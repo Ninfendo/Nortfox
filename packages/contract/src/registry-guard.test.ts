@@ -429,6 +429,18 @@ describe("registryProblems", () => {
       expect(problemsOf(readOne, removeOne, changed(readThing, { operationId: "getAll", path: "/v1/things/latest" }))).toEqual([]);
       expect(problemsOf(readOne, changed(readThing, { operationId: "getOtherPart", path: "/v1/things/latest/pieces/first" }))).toEqual([]);
     });
+
+    it("fails two operations of other methods whose paths differ only in a parameter's name", () => {
+      // OpenAPI takes one path for both, and the 405 answer names the methods of one path in Allow.
+      const byId = changed(withRequest(readOne, { params: z.strictObject({ id: z.uuid() }) }), { operationId: "getThingById", path: "/v1/things/{id}" });
+      expect(problemsOf(removeOne, byId)).toEqual([
+        "Two operations name the parameters of one path in two ways: DELETE /v1/things/{thingId} and GET /v1/things/{id}. A path's parameters have one name in every operation.",
+      ]);
+      // The same names pass, and so does a word where the other path has a parameter.
+      const sameName = changed(withRequest(readOne, { params: z.strictObject({ thingId: z.uuid() }) }), { operationId: "getThingById", path: "/v1/things/{thingId}" });
+      expect(problemsOf(removeOne, sameName)).toEqual([]);
+      expect(problemsOf(removeOne, changed(readThing, { operationId: "getLatest", path: "/v1/things/latest" }))).toEqual([]);
+    });
   });
 
   describe("the answers", () => {

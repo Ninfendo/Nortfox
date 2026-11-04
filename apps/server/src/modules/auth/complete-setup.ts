@@ -2,9 +2,11 @@
 
 // completeSetup: the first identity of an empty install (open point 12),
 // from the setup link that the install's command prints (setup.ts). The
-// password is checked and hashed through the one wrapper first, so a
-// password of fewer than 12 characters is a field problem at /password, and
-// the link is left as it was. Then one transaction, as the new person, whose
+// body's schema checks the password's rule beside its other fields (the
+// contract's newPassword()), so a password of fewer than 12 characters is a
+// field problem at /password in the same answer as any other, and the link
+// is left as it was. The password is hashed through the one wrapper first,
+// which checks the rule again. Then one transaction, as the new person, whose
 // id the server picks: the database uses the link once, if it is live, and
 // makes the identity with its password and its pending TOTP secret, sealed
 // with the install key and bound to the identity and the secret's row. Two

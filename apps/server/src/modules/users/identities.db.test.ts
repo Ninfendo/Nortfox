@@ -71,6 +71,12 @@ describe("the login identities", () => {
     // Å and å are one letter in two cases: a fold of ASCII alone would let the second in.
     await addIdentity(owner, { email: "Åsa.Lind@example.com" });
     await expectError(addIdentity(owner, { email: "åsa.lind@example.com" }), UNIQUE_VIOLATION, /identities_email_key/);
+    // Å written as A and a combining ring is the same address too.
+    await expectError(addIdentity(owner, { email: "A\u030asa.Lind@example.com" }), UNIQUE_VIOLATION, /identities_email_key/);
+    // The capital of ΐ, in NFC, is Ϊ and an acute. It folds to ϊ and an acute, and ΐ folds to ι, a diaeresis and an acute:
+    // the same letters in canonical terms, but not the same text. A fold that is not normalised again would let the second in.
+    await addIdentity(owner, { email: "\u0390rene.Berg@example.com" });
+    await expectError(addIdentity(owner, { email: "\u03aa\u0301RENE.BERG@EXAMPLE.COM" }), UNIQUE_VIOLATION, /identities_email_key/);
     // The app, as a person, takes another identity's address in another case.
     const person = await addIdentity(owner);
     await expectError(update(person, "email = $2", ["ÅSA.LIND@EXAMPLE.COM"]), UNIQUE_VIOLATION, /identities_email_key/);

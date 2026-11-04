@@ -95,7 +95,6 @@ const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
  */
 const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
   nortfox_app: [
-    "access.attempt_counter",
     "access.challenge_by_token",
     "access.claim_attempt",
     "access.clear_attempts",

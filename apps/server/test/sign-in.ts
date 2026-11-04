@@ -19,7 +19,7 @@ import { expectNoSecretsAtRest, expectNoTokensButChallenges, type SecretsInClear
 import type { AppOptions, ServerApp } from "../src/app.ts";
 import { sessionResolver } from "../src/auth/resolver.ts";
 import { seal } from "../src/auth/secret-box.ts";
-import { newTotpSecret, totpCode } from "../src/auth/totp.ts";
+import { base32Decode, newTotpSecret, totpCode } from "../src/auth/totp.ts";
 import type { PasswordHasher } from "../src/auth/password.ts";
 import type { Database, TransactionSettings } from "../src/db/database.ts";
 
@@ -82,21 +82,33 @@ export function expectNoTokensFromSignInApps(): void {
   }
 }
 
+/** Every TOTP secret that addSignInIdentity made in the test file, for the secret scan at its end. */
+const madeTotpSecrets: Buffer[] = [];
+
 /** Every password and TOTP code that the sign-in apps of the test file sent. */
 export function sentSecrets(): { readonly passwords: string[]; readonly codes: string[] } {
   return { passwords: made.flatMap((server) => server.sent.passwords), codes: made.flatMap((server) => server.sent.codes) };
 }
 
+/** The secret of every otpauth URI in an answer of a sign-in app of the test file, as completeSetup gives one. */
+function givenTotpSecrets(): Buffer[] {
+  return made.flatMap((server) =>
+    server.bodies.flatMap((body) => [...body.matchAll(/[?&]secret=([A-Z2-7]+)/g)].flatMap((match) => base32Decode(match[1] ?? "") ?? [])),
+  );
+}
+
 /**
  * Fails on a token, or on a secret in clear, in the database: the secrets
- * the test names, and every password and code, right or wrong, that a
- * sign-in app of the test file sent.
+ * the test names, every password and code, right or wrong, that a sign-in
+ * app of the test file sent, every TOTP secret that addSignInIdentity made,
+ * and every one that an answer gave in its otpauth URI.
  */
 export async function expectNoSecretsAtRestFromSignInApps(db: TestDatabase, secrets: SecretsInClear = {}): Promise<void> {
   const sent = sentSecrets();
   await expectNoSecretsAtRest(db, {
     ...secrets,
     passwords: [...(secrets.passwords ?? []), ...sent.passwords],
+    totpSecrets: [...(secrets.totpSecrets ?? []), ...madeTotpSecrets, ...givenTotpSecrets()],
     codes: [...(secrets.codes ?? []), ...sent.codes],
   });
 }
@@ -202,6 +214,7 @@ export async function addSignInIdentity(owner: Client, wanted: NewSignInIdentity
     return base;
   }
   const totpSecret = newTotpSecret();
+  madeTotpSecrets.push(totpSecret);
   const totpSecretId = randomUUID();
   await owner.query(
     `INSERT INTO access.totp_secrets (id, identity_id, secret, state, created_at, confirmed_at)

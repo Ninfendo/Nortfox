@@ -181,7 +181,7 @@ describe("completeSetup's password", () => {
     expect(response.status).toBe(201);
   });
 
-  it("refuses more than 1024 characters, and every other field problem with it in one answer when the rest fits", async () => {
+  it("refuses more than 1024 characters, and lists the password's problem with every other field problem in one answer", async () => {
     const install = await emptyInstall();
     const token = await setupToken(install);
     const tooLong = await complete(install, token, { password: "å".repeat(1025) });
@@ -192,6 +192,12 @@ describe("completeSetup's password", () => {
     expect((await problemIn(badFields)).errors?.map((error) => [error.code, error.pointer])).toEqual([
       ["too-short", "/name"],
       ["bad-format", "/email"],
+    ]);
+    // A bad name and a password of 11 characters: both problems in one answer.
+    const both = await complete(install, token, { name: "", password: "elva-tecken" });
+    expect((await problemIn(both)).errors).toEqual([
+      { code: "too-short", detail: "The field /name must be at least 1 character long.", pointer: "/name", data: { minimum: 1 } },
+      { code: "too-short", detail: "The field /password must be at least 12 characters long.", pointer: "/password", data: { minimum: 12 } },
     ]);
     expect(await identitiesOf(install.owner)).toEqual([]);
   });

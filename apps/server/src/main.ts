@@ -14,6 +14,7 @@
 // the process. Every error is logged through the safe report
 // (api/report.ts), a failed start too, which exits with 1. A stop (SIGINT or
 // SIGTERM) stops the purge timer, closes the server, which waits for the
+// requests that still run, also those whose client has left, and for the
 // work queued for after the answers (start.ts), and only then ends the pool.
 
 import { randomBytes } from "node:crypto";

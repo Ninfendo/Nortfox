@@ -16,7 +16,7 @@
 // It never holds a detail, a where, a hint, an internal query or a
 // statement's parameters. It takes every token (nf?_...), every
 // personnummer form (8 or 6 digits, then 4, with or without a hyphen or a
-// plus) and every e-mail address out of what it keeps. A thrown value that is
+// plus) and every e-mail address, in any script, out of what it keeps. A thrown value that is
 // not an Error is reported by its type only.
 
 /** NortFox's tokens, and any cut piece of one. */
@@ -25,8 +25,12 @@ const TOKEN = /nf[a-z]_[A-Za-z0-9_-]*/g;
 /** A personnummer, a coordination number or an organisation number, in any of its forms, not inside a longer run of digits. */
 const IDENTITY_NUMBER = /(?<![0-9])(?:[0-9]{8}|[0-9]{6})[-+]?[0-9]{4}(?![0-9])/g;
 
-/** An e-mail address: a local part, @, and a domain that ends in a name of letters. */
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+/**
+ * An e-mail address: a local part, @, and a domain that ends in a name of letters. The local part holds letters,
+ * marks and digits of any script (RFC 6531), dots, and every symbol that RFC 5322 lets an atom hold. The domain's
+ * labels hold letters, marks, digits and hyphens, so an internationalised domain is one too.
+ */
+const EMAIL = /[\p{L}\p{M}\p{N}.!#$%&'*+/=?^_`{|}~-]+@[\p{L}\p{M}\p{N}-]+(?:\.[\p{L}\p{M}\p{N}-]+)*\.[\p{L}\p{M}]{2,}/gu;
 
 /** The text with every token, personnummer form and e-mail address taken out. */
 export function scrub(text: string): string {

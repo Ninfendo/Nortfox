@@ -52,6 +52,10 @@ describe("scrubbing a text", () => {
     ["a personnummer of 10 digits", "pnr=9001012385;", "pnr=[personnummer];"],
     ["a personnummer of 10 digits with a plus", "(900101+2380)", "([personnummer])"],
     ["an e-mail address", "to anna.lind@example.com, cc: bo+kopia@sub.example.org.", "to [e-mail], cc: [e-mail]."],
+    ["an address with å in its local part", "failed for åsa@example.com", "failed for [e-mail]"],
+    ["an address with letters beyond ASCII in its domain", "failed for anna@räkning.example.org and Åsa.Nilsson@ekonomi.exämpel.example.com now", "failed for [e-mail] and [e-mail] now"],
+    ["an address in Greek letters, and one written decomposed", "for \u0390rene@example.com and A\u030asa@example.com.", "for [e-mail] and [e-mail]."],
+    ["an address with every symbol that a local part may hold", "for a!b#c$d%e&f'g*h+i/j=k?l^m_n`o{p|q}r~s-t@example.org", "for [e-mail]"],
   ])("takes out %s", (_case, text, scrubbed) => {
     expect(scrub(text)).toBe(scrubbed);
   });

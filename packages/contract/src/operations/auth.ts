@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import { NoBody, defineOperation } from "../operation.ts";
+import { newPassword } from "../password.ts";
 import { noNul } from "../text.ts";
 import { User } from "./me.ts";
 
@@ -56,7 +57,7 @@ export const completeSetup = defineOperation({
       .max(254)
       .check(noNul())
       .meta({ description: "The person's personal e-mail address." }),
-    password: z.string().meta({ description: "The password: 12 to 1024 characters." }),
+    password: z.string().check(newPassword()).meta({ description: "The password: 12 to 1024 characters." }),
   }),
   output: SetupResult,
   status: 201,

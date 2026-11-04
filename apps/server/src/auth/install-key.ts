@@ -21,9 +21,12 @@
 // - The key check value. The first start of an install stores, in
 //   access.install_keys, the key id and a fixed text sealed under the key.
 //   Each later start opens it with its own key, and refuses to start when it
-//   cannot. So a key made again by mistake fails loudly, before it writes
-//   anything that the old key cannot read. A key id with no check value yet
-//   stores its own.
+//   cannot, or when its key id is not the stored one. So a key made again by
+//   mistake, with the same key id or another, fails loudly, before it writes
+//   anything that the old key cannot read. The server cannot yet open what
+//   another key sealed, so a start never stores the check value of a second
+//   key id. A change of install secret comes with the old key files and the
+//   rekey command, in a later part.
 
 import { createHmac, hkdfSync } from "node:crypto";
 import { inspect } from "node:util";
@@ -105,17 +108,25 @@ export function opensCheckValue(key: InstallKey, value: Uint8Array): boolean {
 }
 
 /**
- * The key check at start: stores the key's check value when its key id has
- * none, and throws when the stored one does not open with the key. No row the
- * function writes takes the channel; it is set because every transaction
- * needs one.
+ * The key check at start: stores the key's check value on an install that
+ * has none, and throws when the install has the check value of another key
+ * id, or when the stored one does not open with the key. No row the function
+ * writes takes the channel; it is set because every transaction needs one.
  */
 export async function checkInstallKey(database: Database, key: InstallKey): Promise<void> {
-  const kept = await database.write({ channel: "rest" }, async (tx) => {
-    // The function gives one row: the check value it stored, or the one already there.
-    const [row] = (await tx.query<{ kept: Buffer }>("SELECT access.install_key($1, $2) AS kept", [key.keyId, checkValue(key)])).rows as [{ readonly kept: Buffer }];
-    return commit(row.kept);
+  const stored = await database.write({ channel: "rest" }, async (tx) => {
+    const found = await tx.query<{ kept_key_id: number; kept: Buffer }>("SELECT kept_key_id, kept FROM access.install_key($1, $2)", [key.keyId, checkValue(key)]);
+    return commit(found.rows);
   });
+  const others = stored.filter((row) => row.kept_key_id !== key.keyId).map((row) => String(row.kept_key_id));
+  if (others.length > 0) {
+    throw new Error(
+      `The install secret has key id ${String(key.keyId)}, but this install stored the check value of key id ${others.join(", ")} at its first start. ` +
+        "It is not the key that the install was set up with. Start the server with that key, from your backup of it.",
+    );
+  }
+  // The install has a check value, the one just stored at the least, and only of this key id.
+  const [{ kept }] = stored as unknown as [{ readonly kept: Buffer }];
   if (!opensCheckValue(key, kept)) {
     throw new Error(
       `The install secret does not open the check value that this install stored for key id ${String(key.keyId)} at its first start. ` +

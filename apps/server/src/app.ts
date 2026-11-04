@@ -77,8 +77,8 @@ export interface AppOptions {
 export interface ServerApp {
   readonly hono: Hono<V1Env>;
   readonly registry: readonly Operation[];
-  /** The tests wait here until the work after each answer has run. */
-  readonly afterAnswer: Pick<AfterAnswerQueue, "idle">;
+  /** The work after the answers. A served request holds a batch while it runs; a stop and the tests wait in idle(). */
+  readonly afterAnswer: Pick<AfterAnswerQueue, "batch" | "idle">;
 }
 
 /** The shortest key that signs the cursors. */

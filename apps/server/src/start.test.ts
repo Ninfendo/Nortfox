@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { get } from "node:http";
+import { get, request } from "node:http";
 import { createServer, type Server } from "node:net";
 import { describe, expect, it } from "vitest";
-import { CURSOR_KEY, TEST_INSTALL_KEY, testResolver, untouchedDatabase } from "../test/api.ts";
+import { CURSOR_KEY, TEST_INSTALL_KEY, buildTestApp, gate, testHandlers, testResolver, untouchedDatabase } from "../test/api.ts";
+import { SHAPES_REGISTRY, fakeDatabase, shapeHandlers, shapeLog, testSendLetter } from "../test/shapes.ts";
+import { handleNone, ok } from "./api/operation.ts";
 import { createApp, type ServerApp } from "./app.ts";
 import { DEFAULT_PORT, parsePort, startServer } from "./start.ts";
 import { parseVersion, readServerVersion } from "./version.ts";
@@ -25,6 +27,27 @@ function getText(port: number, path: string): Promise<{ status: number; body: st
 
 function app() {
   return createApp({ version: "9.9.9", resolve: testResolver({}), database: untouchedDatabase(), cursorKey: CURSOR_KEY, installKey: TEST_INSTALL_KEY });
+}
+
+/**
+ * Sends a request, as a client that leaves before its answer: once `leave`
+ * resolves, it destroys its socket. Resolves once the socket has closed.
+ */
+function sendAndLeave(port: number, method: string, path: string, body: string | undefined, leave: Promise<unknown>): Promise<void> {
+  return new Promise((resolve) => {
+    const sent = request({ host: "127.0.0.1", port, path, method, headers: body === undefined ? {} : { "content-type": "application/json" } });
+    sent.on("error", () => undefined);
+    sent.on("close", () => {
+      resolve();
+    });
+    sent.end(body);
+    void leave.then(() => sent.destroy());
+  });
+}
+
+/** A while, in which a close that does not wait for a running call would resolve. */
+function aWhile(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 100));
 }
 
 /** Listens on `port`, or on a free one for 0, and gives the listener. */
@@ -88,6 +111,7 @@ describe("startServer", () => {
     const waiting: ServerApp = {
       ...built,
       afterAnswer: {
+        batch: () => built.afterAnswer.batch(),
         idle: async () => {
           await queued;
           order.push("queue idle");
@@ -101,6 +125,57 @@ describe("startServer", () => {
     release();
     await closing;
     expect(order).toEqual(["queue idle", "closed"]);
+  });
+
+  it("closes only once a call whose client has left has ended, and its work after the answer has run", async () => {
+    const order: string[] = [];
+    const held = gate();
+    const log = shapeLog();
+    // The letter's handler waits at the gate, as a sign-in waits for its hash, and then queues its work for after the answer.
+    const handlers = [
+      ...testHandlers(),
+      ...shapeHandlers(log).filter((handler) => handler.operation !== testSendLetter),
+      handleNone(testSendLetter, async ({ later }) => {
+        await held.pass();
+        order.push("handler ends");
+        later(() => Promise.resolve(void order.push("work after the answer")));
+        return ok({});
+      }),
+    ];
+    const built = buildTestApp({ database: fakeDatabase(), resolve: testResolver({}), registry: SHAPES_REGISTRY, handlers });
+    const server = await startServer({ app: built, port: 0 });
+    // The client leaves while the handler runs, as a closed tab or a proxy's timeout does.
+    await sendAndLeave(server.port, "POST", "/v1/test-letters", JSON.stringify({ email: "anna@example.com" }), held.reached);
+    const closing = server.close().then(() => order.push("closed"));
+    await aWhile();
+    expect(order).toEqual([]);
+    held.open();
+    await closing;
+    expect(order).toEqual(["handler ends", "work after the answer", "closed"]);
+  });
+
+  it("closes only once a request whose client has left has its session looked up", async () => {
+    const order: string[] = [];
+    const held = gate();
+    const built = createApp({
+      version: "9.9.9",
+      resolve: async () => {
+        await held.pass();
+        order.push("looked up");
+        return undefined;
+      },
+      database: untouchedDatabase(),
+      cursorKey: CURSOR_KEY,
+      installKey: TEST_INSTALL_KEY,
+    });
+    const server = await startServer({ app: built, port: 0 });
+    await sendAndLeave(server.port, "GET", "/v1/company", undefined, held.reached);
+    const closing = server.close().then(() => order.push("closed"));
+    await aWhile();
+    expect(order).toEqual([]);
+    held.open();
+    await closing;
+    expect(order).toEqual(["looked up", "closed"]);
   });
 
   it("reports a failed close", async () => {

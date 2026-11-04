@@ -16,7 +16,8 @@
 // The spaces around an identifier are left out. An identifier that names no
 // identity is counted under the HMAC of the form that access.find_login
 // matches on, which the database gives (access.identifier_form): an e-mail
-// address folded with casefold(), as the unique index folds it. So every
+// address folded with casefold() between NFD and NFC, as the unique index
+// folds it. So every
 // spelling that would find one identity is counted as one, for an unknown
 // address as for an identity, and the database never holds the address.
 // The server never folds the case itself: JavaScript's lower case folds

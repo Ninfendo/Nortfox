@@ -8,6 +8,7 @@
 // records the lock. A code works once: the same code sent twice at once
 // gives one session.
 
+import { randomBytes, randomUUID } from "node:crypto";
 import type { Client, QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, gate, problemIn, type AppPool } from "../../../test/api.ts";
@@ -34,6 +35,9 @@ import {
   type SignInApp,
   type TestIdentity,
 } from "../../../test/sign-in.ts";
+import { InstallKey } from "../../auth/install-key.ts";
+import { seal } from "../../auth/secret-box.ts";
+import { newTotpSecret } from "../../auth/totp.ts";
 import type { Database } from "../../db/database.ts";
 
 describe("the limits of the TOTP step", () => {
@@ -366,16 +370,51 @@ describe("the limits of the TOTP step", () => {
     expect(await sessionsOf(during)).toBe(0);
   });
 
-  it("refuses every code of an identity without a TOTP secret, or whose secret does not open with the install key, as a wrong code", async () => {
+  it("refuses every code of an identity without a TOTP secret as a wrong code", async () => {
     server.clock.advance(MINUTE);
     const without = await addSignInIdentity(owner, { twoStep: "every_login", totp: "none" });
-    const foreign = await addSignInIdentity(owner, { twoStep: "every_login", totp: "none" });
-    await addTotpSecret(owner, foreign.id, "active");
-    people.push(without, foreign);
-    for (const person of [without, foreign]) {
+    people.push(without);
+    const challenge = await challengeFor(without);
+    expect(await problemIn(await totpStep(server, challenge, "123456"))).toEqual(signInFailed(CODE_FAILED));
+    expect(await failures(without)).toBe(1);
+  });
+
+  it("reports a TOTP secret that does not open with the install key, and counts it as no wrong code of the person", async () => {
+    server.clock.advance(MINUTE);
+    // A secret sealed under another key id, as a start with a key made again by mistake would find, and one whose bytes do not open.
+    const otherKey = new InstallKey(10, randomBytes(32));
+    const secret = newTotpSecret();
+    const sealedApart = await addSignInIdentity(owner, { twoStep: "every_login", totp: "none" });
+    const secretId = randomUUID();
+    await owner.query(
+      `INSERT INTO access.totp_secrets (id, identity_id, secret, state, created_at, confirmed_at)
+       VALUES ($1, $2, $3, 'active', pg_catalog.clock_timestamp(), pg_catalog.clock_timestamp())`,
+      [secretId, sealedApart.id, seal(otherKey, "totp-secret v1", secret, [sealedApart.id, secretId])],
+    );
+    const broken = await addSignInIdentity(owner, { twoStep: "every_login", totp: "none" });
+    const brokenId = await addTotpSecret(owner, broken.id, "active");
+    const cases = [
+      { person: { ...sealedApart, totpSecret: secret }, id: secretId, keyId: 10 },
+      { person: broken, id: brokenId, keyId: 1 },
+    ];
+    people.push(...cases.map((each) => each.person));
+    for (const { person, id, keyId } of cases) {
       const challenge = await challengeFor(person);
-      expect(await problemIn(await totpStep(server, challenge, "123456"))).toEqual(signInFailed(CODE_FAILED));
-      expect(await failures(person)).toBe(1);
+      const code = person.totpSecret === undefined ? "123456" : codeOf(person, server.clock.now());
+      const response = await totpStep(server, challenge, code);
+      expect(response.status).toBe(500);
+      expect((await problemIn(response)).code).toBe("internal-error");
+      // The person typed no wrong code: nothing counts, and Kontoaktivitet holds no failed step.
+      await server.app.afterAnswer.idle();
+      expect(await failures(person)).toBeUndefined();
+      const events = await owner.query("SELECT kind, details FROM access.account_events WHERE identity_id = $1", [person.id]);
+      expect(events.rows).toEqual([]);
+      // The operator learns which secret, and under which key id it was sealed, and nothing of the secret itself.
+      const report = server.reports.at(-1);
+      expect(report).toEqual(
+        new Error(`The TOTP secret ${id} does not open with the install secret of key id 9. Its sealed form names key id ${String(keyId)}. Its person cannot pass the TOTP step.`),
+      );
+      expect(String(report)).not.toContain(secret.toString("hex"));
     }
   });
 

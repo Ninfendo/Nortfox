@@ -12,9 +12,14 @@
 -- as the owner, whose one policy on each table reads and writes every row.
 -- These tables have no history trigger: their rows are no company's data.
 --
--- The times that a rule compares with come from the server's clock, which
--- the server passes in, so a test can move it. The database stamps the times
--- that no rule reads, such as when an identity was made, with its own clock.
+-- The database stamps a few times with its own clock: when an identity was
+-- made and deleted, when an account event happened, when a person's
+-- idempotency key was stored, and when an install key's check value was
+-- stored. The triggers refuse the first four when they are given. Every
+-- other time comes from the server's clock, which the server passes in, so
+-- a test can move it. The purge compares an idempotency key's stamp with the
+-- server's clock, for its 24 hours, and keeps each identity's latest account
+-- events by their stamps.
 
 -- A refusal ------------------------------------------------------------------
 --
@@ -122,7 +127,13 @@ $once$;
 -- One login identity per person, for every company (issue 12). Its e-mail
 -- address is unique in any letter case: the unique index folds the case
 -- with casefold() under pg_unicode_fast, so Å and å are one letter as A and
--- a are, and the address keeps the case it was given in. Its personnummer is
+-- a are, and the address keeps the case it was given in. The fold is
+-- Unicode's canonical caseless match: NFD before casefold(), since a fold
+-- of an NFC text can differ from the fold of its decomposed form (the
+-- capital of ΐ in NFC is Ϊ and an acute), and NFC after it, since casefold()
+-- does not keep a text normalised. So Å written as A and a combining ring is
+-- the same address too. Every place that matches an address folds it this
+-- one way: the index, find_login and identifier_form. Its personnummer is
 -- unique, in its twelve digits with the hyphen. A deleted identity keeps its
 -- row, its id and its name, so it stays the actor on its entries, and holds
 -- no e-mail address, personnummer or mobile number: so its address and its
@@ -143,7 +154,7 @@ CREATE TABLE access.identities (
   CONSTRAINT identities_deleted_at CHECK ((deleted_at IS NOT NULL) = (status = 'deleted')),
   CONSTRAINT identities_personal_identity_number_key UNIQUE (personal_identity_number)
 );
-CREATE UNIQUE INDEX identities_email_key ON access.identities (casefold(email COLLATE pg_catalog.pg_unicode_fast));
+CREATE UNIQUE INDEX identities_email_key ON access.identities (normalize(casefold(normalize(email, NFD) COLLATE pg_catalog.pg_unicode_fast), NFC));
 
 -- The rules no policy keeps: no identity is deleted, by any role; the
 -- database stamps when an identity was made and when it was deleted, and
@@ -328,10 +339,12 @@ CREATE TABLE access.attempt_counters (
 );
 SELECT meta.protect_install_table('access.attempt_counters');
 
--- The install key's check value: for each key id, a fixed text sealed under
--- a key that the install secret gives, as the first start stored it. A later
--- start whose key does not open it refuses to start. A check value never
--- changes and is never deleted, by any role.
+-- The install key's check value: a fixed text sealed under a key that the
+-- install secret gives, with its key id, as the first start stored it. A
+-- later start whose key does not open it, or whose key id is another,
+-- refuses to start. The table has a row for each key id, so a later part can
+-- add the keys of a change of install secret. A check value never changes
+-- and is never deleted, by any role.
 CREATE TABLE access.install_keys (
   key_id smallint PRIMARY KEY CONSTRAINT install_keys_key_id_range CHECK (key_id BETWEEN 1 AND 255),
   check_value bytea NOT NULL,
@@ -454,7 +467,8 @@ GRANT SELECT, INSERT ON access.idempotency_keys TO nortfox_app;
 -- second waits for the first's row lock, then finds the row used.
 
 -- The login of an identifier: a personnummer in its twelve digits with the
--- hyphen, or else an e-mail address in any letter case.
+-- hyphen, or else an e-mail address in any letter case, folded as the unique
+-- index folds it.
 CREATE FUNCTION access.find_login(identifier text)
 RETURNS TABLE (identity_id uuid, status text, two_step text, password_hash text)
 LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -470,15 +484,16 @@ BEGIN
     RETURN QUERY
       SELECT i.id, i.status, i.two_step, p.password_hash
       FROM access.identities AS i LEFT JOIN access.password_credentials AS p ON p.identity_id = i.id
-      WHERE casefold(i.email COLLATE pg_catalog.pg_unicode_fast) = casefold(find_login.identifier COLLATE pg_catalog.pg_unicode_fast);
+      WHERE normalize(casefold(normalize(i.email, NFD) COLLATE pg_catalog.pg_unicode_fast), NFC)
+        = normalize(casefold(normalize(find_login.identifier, NFD) COLLATE pg_catalog.pg_unicode_fast), NFC);
   END IF;
 END
 $find$;
 
 -- The form of an identifier that find_login matches on: a personnummer as it
--- is, and an e-mail address folded as the unique index folds it. casefold()
--- folds more than lower case does, such as the long s to s and the sharp s
--- to ss. The server counts the failures of an identifier that names no
+-- is, and an e-mail address folded as the unique index folds it, in NFC.
+-- casefold() folds more than lower case does, such as the long s to s and
+-- the sharp s to ss. The server counts the failures of an identifier that names no
 -- identity under the HMAC of this form, so every spelling that would find
 -- one identity is counted as one, as it is for an identity.
 CREATE FUNCTION access.identifier_form(identifier text) RETURNS text
@@ -487,7 +502,7 @@ SET search_path = pg_catalog, pg_temp
 BEGIN ATOMIC
   SELECT CASE
     WHEN identifier_form.identifier ~ '^[0-9]{8}-[0-9]{4}$' THEN identifier_form.identifier
-    ELSE casefold(identifier_form.identifier COLLATE pg_catalog.pg_unicode_fast)
+    ELSE normalize(casefold(normalize(identifier_form.identifier, NFD) COLLATE pg_catalog.pg_unicode_fast), NFC)
   END;
 END;
 
@@ -571,17 +586,6 @@ BEGIN
   RETURN FOUND;
 END
 $step$;
-
--- A subject's counter of one kind, or no row.
-CREATE FUNCTION access.attempt_counter(subject text, kind text)
-RETURNS TABLE (failures integer, window_started_at timestamptz, last_failure_at timestamptz, locked_until timestamptz)
-LANGUAGE sql STABLE SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp
-BEGIN ATOMIC
-  SELECT a.failures, a.window_started_at, a.last_failure_at, a.locked_until
-  FROM access.attempt_counters AS a
-  WHERE a.subject = attempt_counter.subject AND a.kind = attempt_counter.kind;
-END;
 
 -- Counts one failure in the subject's window of `span`, or starts a new
 -- window once the old one has passed, and gives the counter after the count
@@ -795,20 +799,24 @@ BEGIN
 END
 $complete$;
 
--- Stores the check value of a key id when there is none, and gives the one
--- that is stored. Of two starts at once, the second waits for the first's
--- row and gets its value.
-CREATE FUNCTION access.install_key(key_id integer, check_value bytea) RETURNS bytea
+-- Stores the check value of a key id on an install that has none, and gives
+-- every stored key id with its check value. Only the first start of an
+-- install stores one: the server cannot yet open a value that another key
+-- sealed, so a start whose key id is not the stored one refuses to start,
+-- and stores nothing. The function takes the install keys' table lock, so of
+-- two first starts at once, with one key id or two, the second waits for
+-- the first and gets its value.
+CREATE FUNCTION access.install_key(key_id integer, check_value bytea)
+RETURNS TABLE (kept_key_id integer, kept bytea)
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $key$
-DECLARE
-  kept bytea;
 BEGIN
-  INSERT INTO access.install_keys AS k (key_id, check_value) VALUES (install_key.key_id, install_key.check_value)
-  ON CONFLICT ON CONSTRAINT install_keys_pkey DO NOTHING;
-  SELECT k.check_value INTO kept FROM access.install_keys AS k WHERE k.key_id = install_key.key_id;
-  RETURN kept;
+  LOCK TABLE access.install_keys IN SHARE ROW EXCLUSIVE MODE;
+  IF NOT EXISTS (SELECT FROM access.install_keys) THEN
+    INSERT INTO access.install_keys (key_id, check_value) VALUES (install_key.key_id, install_key.check_value);
+  END IF;
+  RETURN QUERY SELECT k.key_id::integer, k.check_value FROM access.install_keys AS k ORDER BY k.key_id;
 END
 $key$;
 
@@ -851,7 +859,6 @@ GRANT EXECUTE ON FUNCTION
   access.claim_attempt(uuid, timestamptz),
   access.use_challenge(uuid, timestamptz),
   access.use_totp_step(uuid, uuid, bigint, timestamptz),
-  access.attempt_counter(text, text),
   access.count_failure(text, text, interval, timestamptz),
   access.give_back_failure(text, text),
   access.lock_attempts(text, text, timestamptz),

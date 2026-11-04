@@ -14,7 +14,9 @@
 //    get ten in 15 minutes in all (limits.ts).
 // 2. The code is checked against the person's active TOTP secret, or the
 //    pending one of a new identity, opened with the install key, in the
-//    window of one step on each side.
+//    window of one step on each side. A secret that does not open is the
+//    server's fault, not a wrong code: the attempt gives its count back, the
+//    error goes to the report, and the answer is 500.
 // 3. A wrong code has counted already. The tenth in 15 minutes locks the step
 //    for 15 minutes. Each wrong code, and the lock once, is written to
 //    Kontoaktivitet after the answer.
@@ -30,7 +32,8 @@
 //    this person, such as one that someone else put in the browser, never
 //    becomes the person's known device.
 //
-// Every failure but the lock gets the one answer, 422 sign-in-failed.
+// Every failure of the person's but the lock gets the one answer, 422
+// sign-in-failed.
 
 import { verifyTotp } from "@nortfox/contract";
 import type { SignInMethod } from "../../api/context.ts";
@@ -73,15 +76,35 @@ async function deviceOf(tx: Queryable, person: string, challengeDevice: Buffer |
   return { hash: tokenHash(token), token };
 }
 
-/** The person's TOTP secret in clear, with its row's id; undefined when there is none or it does not open. */
-function secretOf(challenge: ChallengeRow, call: NoneCall): { readonly id: string; readonly secret: Buffer } | undefined {
+/** The person's TOTP secret: in clear, with its row's id; sealed, when it does not open with the install key; or none. */
+type TotpSecret = { readonly id: string; readonly secret: Buffer } | { readonly id: string; readonly unopened: Buffer } | undefined;
+
+function secretOf(challenge: ChallengeRow, call: NoneCall): TotpSecret {
   // A challenge gives both, or neither when the person has no secret.
   const { totp_secret_id: id, totp_secret: sealed } = challenge;
   if (id === null || sealed === null) {
     return undefined;
   }
   const secret = open(call.services.installKey, "totp-secret v1", sealed, [challenge.identity_id, id]);
-  return secret === undefined ? undefined : { id, secret };
+  return secret === undefined ? { id, unopened: sealed } : { id, secret };
+}
+
+/**
+ * A secret that does not open is the server's fault, not the person's: a
+ * value sealed under another install secret, or changed bytes. The attempt
+ * gives its count back, nothing goes to Kontoaktivitet, and the error goes
+ * to the report, with the secret's id and the key id that its sealed form
+ * names, never the secret: the answer is 500.
+ */
+async function unopened(call: NoneCall, person: string, secret: { readonly id: string; readonly unopened: Buffer }): Promise<never> {
+  await call.database.write({ channel: call.channel }, async (tx) => {
+    await giveBackFailure(tx, person, "totp");
+    return commit(undefined);
+  });
+  throw new Error(
+    `The TOTP secret ${secret.id} does not open with the install secret of key id ${String(call.services.installKey.keyId)}. ` +
+      `Its sealed form names key id ${String(secret.unopened[1])}. Its person cannot pass the TOTP step.`,
+  );
 }
 
 /** A wrong code, which counted before its check: the tenth locks the step, and both go to Kontoaktivitet after the answer. */
@@ -134,6 +157,9 @@ export const verifyTotpHandler = handleNone(verifyTotp, async (call, { body }): 
   }
   const { claimed: challenge, counted } = found;
   const secret = secretOf(challenge, call);
+  if (secret !== undefined && "unopened" in secret) {
+    return unopened(call, challenge.identity_id, secret);
+  }
   const step = secret === undefined ? undefined : matchingStep(secret.secret, body.code, at);
   if (secret === undefined || step === undefined) {
     return wrongCode(call, challenge, counted, at);

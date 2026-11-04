@@ -3,8 +3,9 @@
 // The key check at start, on PostgreSQL as nortfox_app. The first start of
 // an install stores, in access.install_keys, the key id and a fixed text
 // sealed under the install secret. Each later start opens it with its own
-// key, and refuses to start when it cannot: a key made again by mistake
-// fails loudly, before it writes anything the old key cannot read.
+// key, and refuses to start when it cannot, or when its key id is not the
+// one stored: a key made again by mistake, with any key id, fails loudly,
+// before it writes anything the old key cannot read.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -64,11 +65,22 @@ describe("the key check at start", () => {
     expect(await stored()).toEqual(before);
   });
 
-  it("stores the check value of another key id beside the first", async () => {
-    await checkInstallKey(pool.database, new InstallKey(2, OTHER_SECRET));
-    expect((await stored()).map((row) => row.key_id)).toEqual([1, 2]);
-    await checkInstallKey(pool.database, new InstallKey(2, OTHER_SECRET));
-    await expect(checkInstallKey(pool.database, new InstallKey(2, SECRET))).rejects.toThrow("check value that this install stored for key id 2");
+  it("stops a start with another key id, while the install has the check value of its first key, names that key id, and stores nothing", async () => {
+    // A key made again by mistake with the next key id: the server cannot open what the first key sealed.
+    const before = await stored();
+    for (const key of [new InstallKey(2, OTHER_SECRET), new InstallKey(2, SECRET)]) {
+      const failure = checkInstallKey(pool.database, key);
+      await expect(failure).rejects.toThrow(
+        "The install secret has key id 2, but this install stored the check value of key id 1 at its first start. " +
+          "It is not the key that the install was set up with. Start the server with that key, from your backup of it.",
+      );
+      const message = await failure.catch((error: unknown) => String(error));
+      expect(message).not.toContain(OTHER_SECRET.toString("hex"));
+      expect(message).not.toContain(SECRET.toString("hex"));
+    }
+    expect(await stored()).toEqual(before);
+    // The first key still starts.
+    await checkInstallKey(pool.database, new InstallKey(1, SECRET));
   });
 
   it("leaves the app no way to change a stored check value", async () => {

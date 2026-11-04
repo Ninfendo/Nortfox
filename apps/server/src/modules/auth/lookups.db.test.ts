@@ -9,8 +9,8 @@
 // once does it with one conditional update, so two parallel calls use it
 // once. The times are the server's clock, which the server passes in, so a
 // test moves it. The set-once columns never change once they are set. The
-// setup functions take the setup links' table lock, so two at once come one
-// after the other.
+// setup functions take the setup links' table lock, and the key check the
+// install keys', so two at once come one after the other.
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -145,7 +145,7 @@ describe("the setup link", () => {
   });
 });
 
-describe("the setup links' table lock", () => {
+describe("the table locks of the setup links and the install keys", () => {
   let db: TestDatabase;
   let first: Client;
   let second: Client;
@@ -216,6 +216,16 @@ describe("the setup links' table lock", () => {
   async function identityCount(): Promise<number> {
     return (await owner.query("SELECT 1 FROM access.identities")).rowCount ?? 0;
   }
+
+  it("stores one key id's check value when two first starts with two key ids run at once, and the second gets the first's", async () => {
+    const [one, two] = [randomBytes(44), randomBytes(44)];
+    const kept = await overlapping("SELECT kept_key_id, kept FROM access.install_key($1, $2)", [
+      [1, one],
+      [2, two],
+    ]);
+    expect(kept).toEqual([{ rows: [{ kept_key_id: 1, kept: one }] }, { rows: [{ kept_key_id: 1, kept: one }] }]);
+    expect((await owner.query("SELECT key_id FROM access.install_keys")).rows).toEqual([{ key_id: 1 }]);
+  });
 
   it("leaves one live link when two setup commands make links at once", async () => {
     const [older, newer] = [tokenHash(), tokenHash()];
@@ -410,8 +420,13 @@ describe("the lookup functions", () => {
       return first(anonymously(client, "SELECT * FROM access.count_failure($1, $2, '1 hour', $3)", [subject, kind, at]));
     }
 
-    function counter(subject: string, kind = "password") {
-      return anonymously(app, "SELECT * FROM access.attempt_counter($1, $2)", [subject, kind]);
+    /** A subject's counter of one kind, or none, as the owner reads it: the app has no read of a counter but a count. */
+    async function counter(subject: string, kind = "password"): Promise<Record<string, unknown>[]> {
+      const found = await owner.query<Record<string, unknown>>(
+        "SELECT failures, window_started_at, last_failure_at, locked_until FROM access.attempt_counters WHERE subject = $1 AND kind = $2",
+        [subject, kind],
+      );
+      return found.rows;
     }
 
     /** The counter before a subject's first failure of a kind: nothing. */
@@ -478,9 +493,25 @@ describe("the lookup functions", () => {
       }
     });
 
+    it("gives a letter and its capitals in NFC one form, for every code point but the dotless i", async () => {
+      // The server writes an address in NFC. The capital of ΐ in NFC is Ϊ and an acute, whose fold is not the fold
+      // of ΐ as text, though both are the same letters: the form must be normalised after the fold too.
+      expect(await formOf("\u03aa\u0301RENE@EXAMPLE.COM")).toBe(await formOf("\u0390rene@example.com"));
+      expect(await formOf("A\u030asa@example.com")).toBe(await formOf("åsa@example.com"));
+      // Standard case folding keeps the dotless i apart from I on purpose, and nothing else splits.
+      const split = await anonymously<{ c: number }>(
+        app,
+        `SELECT c FROM generate_series(65, 131071) AS c
+         WHERE c NOT BETWEEN 55296 AND 57343
+           AND access.identifier_form(chr(c)) IS DISTINCT FROM access.identifier_form(normalize(upper(chr(c) COLLATE pg_catalog.pg_unicode_fast), NFC))`,
+      );
+      expect(split).toEqual([{ c: 0x131 }]);
+    });
+
     it("gives two spellings one form exactly when find_login finds the one's identity by the other", async () => {
       // Letters that casefold() and lower case fold in different ways: the long s, the sharp s, the ligatures, the sigmas and the Kelvin sign.
-      const letters = ["a", "A", "s", "S", "ss", "ſ", "ß", "fi", "ﬁ", "st", "ﬆ", "σ", "ς", "Σ", "k", "K", String.fromCodePoint(0x212a)];
+      // And ΐ, in NFC, in its capitals in NFC, and decomposed: one letter in canonical terms.
+      const letters = ["a", "A", "s", "S", "ss", "ſ", "ß", "fi", "ﬁ", "st", "ﬆ", "σ", "ς", "Σ", "k", "K", String.fromCodePoint(0x212a), "\u0390", "\u03aa\u0301", "\u03b9\u0308\u0301"];
       const spelling = fc.array(fc.constantFrom(...letters), { minLength: 1, maxLength: 4 }).map((parts) => parts.join(""));
       let run = 0;
       await fc.assert(
@@ -631,25 +662,30 @@ describe("the lookup functions", () => {
   });
 
   describe("the install key", () => {
-    function keep(client: Client, keyId: number, value: Buffer): Promise<Buffer | undefined> {
-      return client.query<{ kept: Buffer }>("SELECT access.install_key($1, $2) AS kept", [keyId, value]).then((found) => found.rows[0]?.kept);
+    /** Every stored key id with its check value, after the call. */
+    function keep(client: Client, keyId: number, value: Buffer): Promise<{ kept_key_id: number; kept: Buffer }[]> {
+      return client.query<{ kept_key_id: number; kept: Buffer }>("SELECT kept_key_id, kept FROM access.install_key($1, $2)", [keyId, value]).then((found) => found.rows);
     }
 
-    it("keeps each key id's check value as the first start stored it, also when two start at once", async () => {
-      const [a, b, c, d] = [randomBytes(44), randomBytes(44), randomBytes(44), randomBytes(44)];
-      expect(await keep(app, 1, a)).toEqual(a);
-      expect(await keep(app, 1, b)).toEqual(a);
-      expect(await keep(app, 2, b)).toEqual(b);
-      const kept = await Promise.all([keep(parallel[0] ?? app, 3, c), keep(parallel[1] ?? app, 3, d)]);
-      expect(kept[0]).toEqual(kept[1]);
+    it("stores a check value only on an install that has none, also when two start at once, and gives every stored one", async () => {
+      const [a, b, c] = [randomBytes(44), randomBytes(44), randomBytes(44)];
+      // Only a key id from 1 to 255.
       await expectError(keep(app, 0, a), CHECK_VIOLATION, /install_keys_key_id_range/);
       await expectError(keep(app, 256, a), CHECK_VIOLATION, /install_keys_key_id_range/);
+      // Two first starts at once with one key id: one stores, and both get its value.
+      const kept = await Promise.all([keep(parallel[0] ?? app, 1, a), keep(parallel[1] ?? app, 1, b)]);
+      expect(kept[0]).toEqual(kept[1]);
+      expect(kept[0]).toHaveLength(1);
+      const first = kept[0][0]?.kept ?? Buffer.alloc(0);
+      expect(await keep(app, 1, c)).toEqual([{ kept_key_id: 1, kept: first }]);
+      // Another key id stores nothing, and gets the first key id's value, so the start can name it.
+      expect(await keep(app, 2, c)).toEqual([{ kept_key_id: 1, kept: first }]);
       await expectRefusal(owner.query("UPDATE access.install_keys SET check_value = $1 WHERE key_id = 1", [b]), "append_only", {
         table: "access.install_keys",
         operation: "UPDATE",
       });
       await expectRefusal(owner.query("DELETE FROM access.install_keys WHERE key_id = 1"), "append_only", { table: "access.install_keys", operation: "DELETE" });
-      expect(await keep(app, 1, b)).toEqual(a);
+      expect(await keep(app, 1, c)).toEqual([{ kept_key_id: 1, kept: first }]);
     });
   });
 

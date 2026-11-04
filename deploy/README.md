@@ -119,7 +119,7 @@ The install secret protects what the database keeps but must never hold in clear
 chmod 0644 secrets/install-key
 ```
 
-**The key check.** The first start stores, in `access.install_keys`, a fixed text sealed under the key, with its key id. Each later start opens it with its own key, and refuses to start when it cannot: "The install secret does not open the check value that this install stored for key id 1 at its first start." So a key that was made again by mistake stops the server before it writes anything that the old key cannot read. Start the server with the first key again.
+**The key check.** The first start stores, in `access.install_keys`, a fixed text sealed under the key, with its key id. Each later start opens it with its own key, and refuses to start when it cannot: "The install secret does not open the check value that this install stored for key id 1 at its first start." A start with another key id refuses too: "The install secret has key id 2, but this install stored the check value of key id 1 at its first start." So a key that was made again by mistake, with the same key id or another, stops the server before it writes anything that the old key cannot read. Start the server with the first key again. The server cannot change its install secret yet.
 
 **Keep a copy of the file**, apart from the database and its backups: a backup of the database holds the sealed TOTP secrets, and the key must not be beside them. Without the key, the sealed secrets cannot be opened, and every person needs a new TOTP device.
 

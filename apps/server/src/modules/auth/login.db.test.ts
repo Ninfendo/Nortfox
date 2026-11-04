@@ -111,6 +111,18 @@ describe("the password sign-in", () => {
     expect(methods.rows).toEqual([{ method: "password-email" }]);
   });
 
+  it("logs in with an address of Greek letters typed in capitals, whose capitals in NFC fold to another text", async () => {
+    // Each of these letters folds to a decomposed text, and its capital, in NFC, folds to a text that is
+    // canonically the same but not the same: so the database must normalise after the fold as well.
+    for (const letter of ["\u0390", "\u03b0", "\u1fd2", "\u1fd7", "\u1fe2", "\u1fe7"]) {
+      const email = `${letter}rene.${String(letter.codePointAt(0))}@example.com`;
+      const person = await addPerson({ email });
+      const capitals = email.toUpperCase();
+      expect(capitals.normalize("NFC")).not.toBe(capitals);
+      await challengeFor(capitals, person.password);
+    }
+  });
+
   it("logs in with the personnummer, in 12 digits with or without the hyphen and in 10 digits", async () => {
     const [, number] = PERSONAL_IDENTITY_NUMBERS;
     const person = await addPerson({ personalIdentityNumber: number });

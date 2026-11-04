@@ -188,7 +188,7 @@ describe("one transaction per request", () => {
     // Its writes commit, or roll back.
     const kept = Buffer.from("a made-up check value");
     const keep = (value: Buffer) => async (tx: Queryable) =>
-      (await tx.query<{ kept: Buffer }>("SELECT access.install_key(9, $1) AS kept", [value])).rows[0]?.kept;
+      (await tx.query<{ kept: Buffer }>("SELECT kept FROM access.install_key(9, $1)", [value])).rows[0]?.kept;
     expect(await database.lookup("rest", async (tx) => rollBack(await keep(Buffer.from("rolled back"))(tx)))).toEqual(Buffer.from("rolled back"));
     expect(await database.lookup("rest", async (tx) => commit(await keep(kept)(tx)))).toEqual(kept);
     expect(await database.lookup("rest", async (tx) => commit(await keep(Buffer.from("later"))(tx)))).toEqual(kept);
