@@ -19,6 +19,16 @@ function getOperation(schema: unknown, extra: Record<string, unknown> = {}): unk
   };
 }
 
+/** The scheme of a browser's session: a cookie, which the browser sends by itself. */
+const SESSION_SCHEME: Record<string, unknown> = {
+  sessionCookie: { type: "apiKey", in: "cookie", name: "__Host-x", description: "The session." },
+};
+
+/** A description with these security schemes and one path, /v1/x. */
+function withSchemes(securitySchemes: unknown, item: unknown): unknown {
+  return { openapi: "3.1.0", components: { securitySchemes }, paths: { "/v1/x": item } };
+}
+
 function refusal(input: unknown): string {
   try {
     generateClient(input);
@@ -498,8 +508,44 @@ describe("generateClient", () => {
     [documentWith({}, { "/v1/x": getOperation({ type: "string" }, { parameters: null }) }), 'paths["/v1/x"].get.parameters must be a list.'],
     [
       documentWith({}, { "/v1/x": getOperation({ type: "string" }, { security: [{ bearer: [] }] }) }),
-      'paths["/v1/x"].get uses "security", which the generator does not support yet.',
+      'paths["/v1/x"].get.security[0] names the security scheme "bearer", which components.securitySchemes does not hold.',
     ],
+    [
+      withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: { sessionCookie: [] } })),
+      'paths["/v1/x"].get.security must be a list.',
+    ],
+    [withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: [1] })), 'paths["/v1/x"].get.security[0] must be an object.'],
+    [withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: [{}] })), 'paths["/v1/x"].get.security[0] must name one security scheme.'],
+    [
+      withSchemes({ ...SESSION_SCHEME, other: SESSION_SCHEME["sessionCookie"] }, getOperation({ type: "string" }, { security: [{ sessionCookie: [], other: [] }] })),
+      'paths["/v1/x"].get.security[0] must name one security scheme.',
+    ],
+    [
+      withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: [{ sessionCookie: ["read"] }] })),
+      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: a cookie takes no scopes.',
+    ],
+    [
+      withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: [{ sessionCookie: {} }] })),
+      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: a cookie takes no scopes.',
+    ],
+    [
+      withSchemes({ bearer: { type: "http", scheme: "bearer" } }, getOperation({ type: "string" })),
+      "components.securitySchemes.bearer is not an apiKey in a cookie, the one kind of scheme the generator supports yet.",
+    ],
+    [
+      withSchemes({ key: { type: "apiKey", in: "header", name: "X-Key" } }, getOperation({ type: "string" })),
+      "components.securitySchemes.key is not an apiKey in a cookie, the one kind of scheme the generator supports yet.",
+    ],
+    [
+      withSchemes({ sessionCookie: { type: "apiKey", in: "cookie", name: "__Host-x", scheme: "x" } }, getOperation({ type: "string" })),
+      'components.securitySchemes.sessionCookie uses "scheme", which the generator does not support yet.',
+    ],
+    [
+      withSchemes({ sessionCookie: { type: "apiKey", in: "cookie", name: 7 } }, getOperation({ type: "string" })),
+      "components.securitySchemes.sessionCookie.name must be a string.",
+    ],
+    [withSchemes({ sessionCookie: "cookie" }, getOperation({ type: "string" })), "components.securitySchemes.sessionCookie must be an object."],
+    [withSchemes([], getOperation({ type: "string" })), "components.securitySchemes must be an object."],
     [
       documentWith({}, { "/v1/x": getOperation({ type: "string" }, { servers: [{ url: "https://x.example" }] }) }),
       'paths["/v1/x"].get uses "servers", which the generator does not support yet.',
@@ -580,6 +626,22 @@ describe("generateClient", () => {
     ],
   ])("refuses %j", (input, message) => {
     expect(refusal(input)).toBe(message);
+  });
+
+  it("writes an operation's credential, a cookie, into its doc comment, and none for an operation that names none", () => {
+    const source = generateClient({
+      openapi: "3.1.0",
+      components: { securitySchemes: SESSION_SCHEME },
+      paths: {
+        "/v1/x": getOperation({ type: "string" }, { security: [{ sessionCookie: [] }] }),
+        "/v1/y": { get: { operationId: "getY", responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } }, security: [] } },
+        "/v1/z": { get: { operationId: "getZ", responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } } } },
+      },
+    });
+    expect(source).toContain(["   * `GET /v1/x`", "   *", "   * Credential: the cookie `__Host-x`.", "   */", "  getThing("].join("\n"));
+    expect(source).toContain(["   * `GET /v1/y`", "   */", "  getY("].join("\n"));
+    expect(source).toContain(["   * `GET /v1/z`", "   */", "  getZ("].join("\n"));
+    expect(source.match(/Credential:/g)).toHaveLength(1);
   });
 
   it("names its error", () => {

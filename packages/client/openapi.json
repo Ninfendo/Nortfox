@@ -10,6 +10,14 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-nortfox-session",
+        "description": "The browser's session, which a sign-in sets: verifyTotp, or loginWithPassword on a known device. The browser sends it by itself."
+      }
+    },
     "schemas": {
       "Health": {
         "type": "object",
@@ -359,6 +367,11 @@
           "session": null,
           "company": "credential"
         },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "The company the request works in. Every data request works in exactly one company.",
@@ -884,6 +897,11 @@
           "session": "flow",
           "company": "none"
         },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
         "parameters": [
           {
             "schema": {
@@ -989,6 +1007,11 @@
           "session": "flow",
           "company": "none"
         },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "The browser's session: the person it signed in. A session works in no company until one is chosen.",
@@ -1068,6 +1091,11 @@
           "session": null,
           "company": "none"
         },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "The signed-in person, with their own login data.",

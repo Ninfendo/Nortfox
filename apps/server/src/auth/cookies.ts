@@ -18,7 +18,12 @@
 // makes a browser refuse it otherwise.
 //
 // The cross-site check of /v1 and the resolver read them from a request's
-// Cookie header.
+// Cookie header. The session cookie's name comes from the contract, which
+// names it in openapi.json as the credential sessionCookie.
+
+import { SESSION_COOKIE } from "@nortfox/contract";
+
+export { SESSION_COOKIE };
 
 /** What a handler asks of the browser's cookies. */
 export type CookieEffect =
@@ -28,7 +33,6 @@ export type CookieEffect =
   | { readonly kind: "set-login"; readonly token: string }
   | { readonly kind: "clear-login" };
 
-export const SESSION_COOKIE = "__Host-nortfox-session";
 export const DEVICE_COOKIE = "__Host-nortfox-device";
 export const LOGIN_COOKIE = "__Host-nortfox-login";
 

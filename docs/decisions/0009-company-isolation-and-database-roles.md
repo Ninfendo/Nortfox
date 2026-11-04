@@ -1,6 +1,6 @@
 # 9. Company isolation and database roles
 
-Status: accepted, 2026-11-01. Amended 2026-11-03, in slice 2a: no company table keeps planner statistics or has a partial index, a key of one column holds only random ids or ids that order the changes, no role of ours reads the locks that other backends hold, and a reader can still set its own role settings, its password and its default privileges.
+Status: accepted, 2026-11-01. Amended 2026-11-03, in slice 2a: no company table keeps planner statistics or has a partial index, a key of one column holds only random ids or ids that order the changes, no role of ours reads the locks that other backends hold, and a reader can still set its own role settings, its password and its default privileges. Amended 2026-11-04, in slice 2c: the install-wide tables of the schema `access`, with their classes, and the lookup functions.
 
 ## Context
 
@@ -10,7 +10,7 @@ One NortFox install holds many companies, for example all the clients of an acco
 
 - Every table with company data has a `company_id` column, row level security that is enabled and FORCED, and a policy that matches `company_id` to the company for the transaction.
 - For the app role, the company for the transaction is a setting. The server sets the company and the actor with `SET LOCAL` at the start of each transaction, so a pooled connection never carries them over.
-- Tables that do not belong to one company, such as users and memberships, have their own policies, by user.
+- Tables that do not belong to one company, such as the login identities, are install-wide tables in the schema `access`. Each has one of four classes, which sets its policies: a person's own rows, by the person the transaction acts as; rows of one company, by the transaction's company; rows any request may read; or secret rows, which the app reaches only through lookup functions ([db/README.md](../../db/README.md#the-schema-access)).
 - The database roles:
   - **owner** owns the schema and runs the migrations. The server never uses it. Only the owner role records a void range in a voucher series ([decision 2](0002-ledger-law-in-postgresql.md)).
   - **app** is the server's role. It reads and writes rows, nothing more. It cannot change the schema, disable a trigger or bypass row level security.
@@ -27,4 +27,6 @@ One NortFox install holds many companies, for example all the clients of an acco
 - No role of ours reads `pg_locks`, the owner neither. Each company's transactions take the company's turn, an advisory lock on the hash of its id, and `pg_locks` would show that lock to every role: when each other company books or changes its locks, and, by the transaction's id, whether each change committed. PostgreSQL cannot hide the rest: every role sees in `pg_stat_activity` when the install's transactions run, with their ids, and `pg_xact_status()` tells whether each committed, over all the companies ([db/README.md](../../db/README.md)).
 - A reader, like any role, can still set its own role settings and its password, which the cluster's catalog keeps, and its own default privileges, which the database's catalog keeps. PostgreSQL has no privilege to stop it. A superuser sees them and clears them, and runs `DROP OWNED BY` before it drops a reader ([db/README.md](../../db/README.md)).
 - Work that spans companies, such as the doctor's checks, runs company by company.
+- A secret install-wide table, such as the password hashes and the sessions, has no policy and no privilege for the app. The app reaches its rows only through the lookup functions, each owned by the owner, `SECURITY DEFINER` and with its `search_path` pinned. Each takes a hash or an identifier and gives the one row its caller needs. So no query of the app can list the sessions, the hashes or the sealed TOTP secrets. A reader has no use of the schema `access` until it holds a company table.
+- The table guard checks each install-wide table against its class, from the catalog, as it checks each company table, and fails a table in `access` that is on neither list.
 - Tests run as the app role and as a reader role against real PostgreSQL. A guard fails if a table lacks FORCE RLS or its policy.

@@ -195,6 +195,8 @@ export interface Operations {
    *
    * Needs a signed-in person, and works in no company.
    *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
    * Serves the browser's session: its MCP tool refuses every call.
    */
   logout(options: WriteOptions): Promise<void>;
@@ -257,6 +259,8 @@ export interface Operations {
    * `GET /v1/company`
    *
    * Needs the permission `company:read`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
    */
   getCompany(options?: CallOptions): Promise<Company>;
 
@@ -279,6 +283,8 @@ export interface Operations {
    * `GET /v1/me`
    *
    * Needs a signed-in person, and works in no company.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
    */
   getMe(options?: CallOptions): Promise<Me>;
 
@@ -290,6 +296,8 @@ export interface Operations {
    * `GET /v1/session`
    *
    * Needs a signed-in person, and works in no company.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
    *
    * Serves the browser's session: its MCP tool refuses every call.
    */

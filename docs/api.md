@@ -24,7 +24,7 @@ Each operation is one entry in the registry in `packages/contract` ([decision 3]
 - whether it serves the browser's session (`session`);
 - where its company comes from (`company`).
 
-`openapi.json` shows these facts on each operation, under `x-nortfox`. So the diff of `openapi.json` in a pull request shows a reviewer every change, a changed permission too.
+`openapi.json` shows these facts on each operation, under `x-nortfox`, and names the credential of each operation that needs an actor under OpenAPI's own `security` (Who acts, below). So the diff of `openapi.json` in a pull request shows a reviewer every change, a changed permission too.
 
 ### The marks
 
@@ -39,7 +39,7 @@ Each operation is one entry in the registry in `packages/contract` ([decision 3]
 | `company` | `none` | Works in no company: every `public`, `none` and `signed-in` operation. |
 | | `credential` | Works in the company that the request's credential names: every operation with a permission. |
 
-The registry guard holds these together. An operation that runs before sign-in serves the browser's session. Only a `none` or a `signed-in` operation may serve it. An operation with a permission takes its company from the credential, and no other operation does. A write takes an idempotency key, unless it runs before sign-in. A `GET` writes only when it runs before sign-in and answers 303. Two operations of one method never answer the same path, so `/v1/users/{userId}` and `/v1/users/me` cannot both be `GET`.
+The registry guard holds these together. An operation that runs before sign-in serves the browser's session. Only a `none` or a `signed-in` operation may serve it. An operation with a permission takes its company from the credential, and no other operation does. A write takes an idempotency key, unless it runs before sign-in. A `GET` writes only when it runs before sign-in and answers 303. Two operations of one method never answer the same path, so `/v1/users/{userId}` and `/v1/users/me` cannot both be `GET`. An operation that needs an actor, `signed-in` or with a permission, names its credential in `security`, and a `public` or `none` operation names none.
 
 The server serves only what the registry holds. It refuses to start when a route under `/v1` is not in the registry.
 
@@ -62,7 +62,7 @@ Field names are camelCase. An answer is the object itself, with no wrapper aroun
 
 Every operation with a permission acts as one actor in one company. The company comes from the request's credential, never from the path or the body. A path holds no company id. A `signed-in` operation acts as the signed-in person in no company. A `none` operation runs before there is an actor.
 
-A browser signs in with a password and a TOTP code, and then sends its session in a cookie (Signing in, below). The server looks the session up on every request. A session acts as its person, with the actor kind `user`, and works in no company yet. On `/v1`, a request with a bearer token ignores the cookie; API tokens come in a later part of slice 2c, so until then a bearer token names no actor. `/mcp` never reads the cookie: an MCP client signs in through OAuth, which comes in a later part of slice 2c, so until then every tool that needs an actor answers 401. An operation that needs an actor answers 401 without one, by REST with the challenge `WWW-Authenticate: Bearer`, and by MCP in a tool result marked `isError`. `GET /v1/health` and `/openapi.json` need no actor.
+A browser signs in with a password and a TOTP code, and then sends its session in a cookie (Signing in, below). `openapi.json` names that cookie as the security scheme `sessionCookie`, an API key in the cookie `__Host-nortfox-session`, on every operation that needs an actor. The browser sends it by itself, and no script reads it, so the generated client takes no option for it. The server looks the session up on every request. A session acts as its person, with the actor kind `user`, and works in no company yet. On `/v1`, a request with a bearer token ignores the cookie; API tokens come in a later part of slice 2c, so until then a bearer token names no actor. `/mcp` never reads the cookie: an MCP client signs in through OAuth, which comes in a later part of slice 2c, so until then every tool that needs an actor answers 401. An operation that needs an actor answers 401 without one, by REST with the challenge `WWW-Authenticate: Bearer`, and by MCP in a tool result marked `isError`. `GET /v1/health` and `/openapi.json` need no actor.
 
 The server checks the actor and the permission before it reads the rest of the request: on REST before the path parameters, the query and the body, on MCP before the tool's arguments. So a request with no actor gets 401, a credential that names no company gets 403 `company-required` for an operation that works in a company, and an actor without the permission gets 403 `permission-missing`, even when the rest of the request is wrong. None of them touches the database.
 
@@ -100,7 +100,7 @@ The person's two-step choice, `twoStep` in `getMe`, says how often the TOTP step
 | `__Host-nortfox-session` | the session | `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and no `Max-Age`, so it ends with the browser |
 | `__Host-nortfox-device` | the known device | `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and `Max-Age` 400 days |
 
-No answer body holds a session's token, and the server keeps every token only as its hash. A session ends at `logout`, 12 hours after it began, and, while it has no company, after 120 minutes without a request. From the next request on, its cookie gets 401.
+No answer body holds a session's token, and the server keeps every token only as its hash. `getSession` gives the session's person, and `getMe` the person's own login data. A session ends at `logout`, 12 hours after it began, and, while it has no company, after 120 minutes without a request. The server notes a request at most once a minute, so that end can come up to a minute early. From the next request on, its cookie gets 401. `logout` ends the session at once and clears its cookie. The browser stays a known device.
 
 **One answer for every failure.** Every failed password step gets 422 `sign-in-failed`: an unknown identifier, a deleted identity, an identity without a password and a wrong password. With no identity or no password, the server checks the password against a dummy hash, so the time tells nothing either. Every failed TOTP step gets 422 `sign-in-failed` too: a wrong code, a code used before, and a challenge that is used, past its 20 minutes or out of codes.
 
@@ -206,8 +206,8 @@ The registry keeps the names apart, so a pointer is never ambiguous. The same re
 | 422 | `idempotency-key-reused` | The idempotency key belongs to another request. |
 | 422 | `sign-in-failed` | A sign-in step failed. The answer is the same for every cause (Signing in). |
 | 422 | `setup-link-invalid` | The setup link is unknown, used, stopped by a newer link, or past its end. |
+| 422 | a rule's code | A rule refuses the request, such as `period-locked-manual`, or `install-not-empty` for a setup link on an install that has an identity. |
 | 429 | `too-many-attempts` | An attempt came too soon after failed ones, or while its step is locked. `Retry-After` gives the seconds to wait. |
-| 422 | a rule's code | A rule refuses the request, such as `period-locked-manual`. |
 | 500 | `internal-error` | The server failed. |
 | 503 | `server-busy` | The server checks as many passwords as it can at once. `Retry-After` gives the seconds to wait. |
 

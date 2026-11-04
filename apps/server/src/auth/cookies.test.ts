@@ -7,12 +7,17 @@
 // other site's request carries them. The login cookie is SameSite=Lax, since
 // an identity provider brings the browser back with a top-level GET.
 
+import { SECURITY_SCHEMES } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
 import { DEVICE_COOKIE, LOGIN_COOKIE, SESSION_COOKIE, carriesCookie, cookieValues, readCookie, setCookieHeader, type CookieEffect } from "./cookies.ts";
 
 describe("the cookies", () => {
   it("have the __Host- prefix", () => {
     expect([SESSION_COOKIE, DEVICE_COOKIE, LOGIN_COOKIE]).toEqual(["__Host-nortfox-session", "__Host-nortfox-device", "__Host-nortfox-login"]);
+  });
+
+  it("set the session in the cookie that openapi.json names as the session's credential", () => {
+    expect(setCookieHeader({ kind: "set-session", token: "nfs_x" }).startsWith(`${SECURITY_SCHEMES.sessionCookie.name}=nfs_x;`)).toBe(true);
   });
 
   it.each([

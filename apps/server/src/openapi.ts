@@ -6,7 +6,7 @@
 // shows in the file's diff (docs/decisions/0003-contract-first-rest-and-mcp.md).
 
 import { OpenAPIHono } from "@hono/zod-openapi";
-import type { Operation } from "@nortfox/contract";
+import { SECURITY_SCHEMES, type Operation } from "@nortfox/contract";
 
 function documentConfig(version: string) {
   return {
@@ -21,9 +21,15 @@ function documentConfig(version: string) {
   };
 }
 
-/** The API description of the operations in `registry`. */
+/**
+ * The API description of the operations in `registry`, with the credentials
+ * that an operation's security names (docs/api.md, Who acts).
+ */
 export function openApiDocument(registry: readonly Operation[], version: string): unknown {
   const describer = new OpenAPIHono();
+  for (const [name, scheme] of Object.entries(SECURITY_SCHEMES)) {
+    describer.openAPIRegistry.registerComponent("securitySchemes", name, { ...scheme });
+  }
   for (const operation of registry) {
     describer.openAPIRegistry.registerPath(operation);
   }

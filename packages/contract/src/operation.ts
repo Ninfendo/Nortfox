@@ -7,7 +7,8 @@
  * from it. NortFox's own parts of an entry sit in the OpenAPI extension
  * x-nortfox, so openapi.json shows each operation's permission, its MCP tool
  * text, whether it writes, is a list or is open to the assistant, whether it
- * serves the browser's session, and where its company comes from.
+ * serves the browser's session, and where its company comes from. OpenAPI's
+ * own `security` names the credentials that can name its actor.
  */
 
 import { createRoute, type RouteConfig } from "@hono/zod-openapi";
@@ -15,6 +16,7 @@ import { z } from "zod";
 import { IDEMPOTENCY_KEY_DESCRIPTION, IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
 import { Cursor, Limit, pageOf } from "./paging.ts";
 import { Problem } from "./problem.ts";
+import type { SecurityScheme } from "./security.ts";
 
 /**
  * The permissions an operation can need, each with what it allows. Which
@@ -115,6 +117,8 @@ export interface Operation<
   readonly [extension: `x-${string}`]: unknown;
   readonly request: OperationRequest<Query, Body, Params>;
   readonly responses: Readonly<Record<string, ResponseConfig>>;
+  /** The credentials that can name the actor, for an operation that needs one (securityOf). */
+  readonly security?: SecurityRequirement[];
   /** Never set: only the type of the output schema, which the success answer holds. */
   readonly "~output"?: Output;
   /** The path as Hono routes it, with each path parameter as :name. */
@@ -212,6 +216,19 @@ function refusal(status: RefusalStatus): ResponseConfig {
     };
   }
   return response;
+}
+
+/** One way for a request to name its actor, as OpenAPI writes it: each scheme it needs, with no scopes. */
+export type SecurityRequirement = Partial<Record<SecurityScheme, string[]>>;
+
+/**
+ * The credentials an operation takes, by its permission: the browser's
+ * session for every operation that needs an actor, and none for a public one
+ * or one that runs before sign-in. A new list each time, so no entry shares
+ * one with another.
+ */
+export function securityOf(permission: string): SecurityRequirement[] | undefined {
+  return permission === PUBLIC || permission === NONE ? undefined : [{ sessionCookie: [] }];
 }
 
 /** Whether a call of an operation takes an idempotency key: a write does, unless it runs before sign-in. */
@@ -323,6 +340,7 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
   for (const code of refusals(permission, writes, body !== undefined)) {
     responses[code] = refusal(code);
   }
+  const security = securityOf(permission);
   const route = createRoute({
     operationId: definition.id,
     method: definition.method,
@@ -333,6 +351,7 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
     "x-nortfox": meta,
     request,
     responses,
+    ...(security === undefined ? {} : { security }),
   });
   return route as unknown as Operation<Query, Body, Output, Params>;
 }

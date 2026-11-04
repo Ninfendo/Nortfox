@@ -310,6 +310,53 @@ describe("registryProblems", () => {
     });
   });
 
+  describe("the credential in security", () => {
+    const SESSION = '[{"sessionCookie":[]}]';
+
+    it.each([
+      ["none", undefined],
+      ["an empty list", []],
+      ["another scheme", [{ bearer: [] }]],
+      ["the session with a scope", [{ sessionCookie: ["read"] }]],
+      ["the session twice", [{ sessionCookie: [] }, { sessionCookie: [] }]],
+      ["the session and another scheme at once", [{ sessionCookie: [], bearer: [] }]],
+      ["the session as an object, not a list", { sessionCookie: [] }],
+    ])("fails an operation that needs an actor and names %s", (_what, security) => {
+      for (const [entry, name] of [
+        [readThing, "getThing"],
+        [bookThing, "bookThing"],
+        [getPerson, "getPerson"],
+        [endSession, "endSession"],
+      ] as const) {
+        const bad = security === undefined ? without(entry, "security") : changed(entry, { security });
+        expect(problemsOf(bad)).toEqual([`${name} needs an actor, so its security is ${SESSION}, not ${security === undefined ? "undefined" : JSON.stringify(security)}.`]);
+      }
+    });
+
+    it.each([
+      ["the session", [{ sessionCookie: [] }]],
+      ["an empty list", []],
+      ["another scheme", [{ bearer: [] }]],
+    ])("fails an operation that needs no actor and names %s", (_what, security) => {
+      for (const [entry, name] of [
+        [health, "getStatus"],
+        [signIn, "signIn"],
+        [startRedirect, "startRedirect"],
+      ] as const) {
+        expect(problemsOf(changed(entry, { security }))).toEqual([`${name} needs no actor, so it has no security, not ${JSON.stringify(security)}.`]);
+      }
+    });
+
+    it("reads the credential only once the marks are right, so a wrong mark gives one problem", () => {
+      expect(problemsOf(withMeta(readThing, { permission: "company:delete" }))).toEqual([
+        'getThing needs the permission "company:delete", which is not on the list.',
+      ]);
+      expect(problemsOf(withMeta(bookThing, { permission: "public", company: "none" }))).toEqual([
+        "bookThing is public and writes. A public operation reads and writes no data.",
+      ]);
+    });
+  });
+
   describe("path parameters", () => {
     it("fails a {name} in the path without its parameter, and a parameter that the path does not name", () => {
       expect(problemsOf(changed(removeOne, { path: "/v1/things/{otherId}" }))).toEqual([
@@ -398,7 +445,8 @@ describe("registryProblems", () => {
       expect(problemsOf(changed(startRedirect, { method: "post" }))).toEqual([
         "startRedirect answers 303, which only a GET operation that runs before sign-in may do.",
       ]);
-      expect(problemsOf(withMeta(changed(startRedirect, { request: { ...startRedirect.request, headers: bookThing.request.headers } }), { permission: "signed-in" }))).toEqual([
+      const signedIn = changed(startRedirect, { request: { ...startRedirect.request, headers: bookThing.request.headers }, security: getPerson.security });
+      expect(problemsOf(withMeta(signedIn, { permission: "signed-in" }))).toEqual([
         "startRedirect answers 303, which only a GET operation that runs before sign-in may do.",
       ]);
     });

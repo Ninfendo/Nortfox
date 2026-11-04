@@ -13,12 +13,14 @@ import {
   outputSchema,
   paramsSchema,
   querySchema,
+  securityOf,
   successStatus,
   takesIdempotencyKey,
   type Shape,
 } from "./operation.ts";
 import { Limit, Cursor } from "./paging.ts";
 import { Problem } from "./problem.ts";
+import { SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
 
 const Item = z.strictObject({ id: z.uuid() });
 
@@ -380,6 +382,66 @@ describe("a signed-in operation", () => {
       writes: false,
     });
     expect(inCompany["x-nortfox"].company).toBe("none");
+  });
+});
+
+describe("the credential an operation takes", () => {
+  it("is the browser's session cookie, which openapi.json names as the scheme sessionCookie", () => {
+    expect(SESSION_COOKIE).toBe("__Host-nortfox-session");
+    expect(SECURITY_SCHEMES).toEqual({
+      sessionCookie: {
+        type: "apiKey",
+        in: "cookie",
+        name: "__Host-nortfox-session",
+        description: "The browser's session, which a sign-in sets: verifyTotp, or loginWithPassword on a known device. The browser sends it by itself.",
+      },
+    });
+  });
+
+  it("is named on every operation that needs an actor: a read, a write and a list with a permission, and a signed-in one", () => {
+    const signedIn = defineOperation({
+      id: "getItemPerson",
+      method: "get",
+      path: "/v1/item-people",
+      tags: ["items"],
+      summary: "Read",
+      description: "Reads.",
+      output: Item,
+      permission: "signed-in",
+      tool: "Reads.",
+      writes: false,
+    });
+    for (const entry of [read, write, list, signedIn]) {
+      expect(entry.security, entry.operationId).toEqual([{ sessionCookie: [] }]);
+    }
+  });
+
+  it("is named on no operation that needs no actor: a public one, and one that runs before sign-in", () => {
+    const signIn = defineOperation({
+      id: "signInItem",
+      method: "post",
+      path: "/v1/item-sign-ins",
+      tags: ["items"],
+      summary: "Sign in",
+      description: "Signs in.",
+      body: Body,
+      output: Item,
+      permission: "none",
+      session: "flow",
+      tool: "Signs in.",
+      writes: true,
+    });
+    for (const entry of [publicRead, signIn]) {
+      expect("security" in entry, entry.operationId).toBe(false);
+    }
+  });
+
+  it("comes from the permission, a new list each time", () => {
+    expect(securityOf("public")).toBeUndefined();
+    expect(securityOf("none")).toBeUndefined();
+    expect(securityOf("signed-in")).toEqual([{ sessionCookie: [] }]);
+    expect(securityOf("company:read")).toEqual([{ sessionCookie: [] }]);
+    expect(securityOf("signed-in")).not.toBe(securityOf("signed-in"));
   });
 });
 

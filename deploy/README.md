@@ -36,6 +36,8 @@ Each password is the whole file, without one line break at its end. The files mu
 
 The first start sets the passwords. Changing a file later changes no password.
 
+The server's install secret goes in this folder too, as `install-key`, before the server's first start (The install secret, below). This compose file does not read it yet.
+
 ### The off-site repository
 
 pgBackRest writes every backup and every WAL segment to two repositories. `repo1` is the local one, on the volume `backups`. `repo2` is the off-site one, and you choose where it is. The stack does not start until you set it.

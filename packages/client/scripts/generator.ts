@@ -11,7 +11,9 @@
 // parameters, the query's fields and the body's fields. A write that takes an
 // idempotency key requires it as a call option. A method gives the JSON
 // answer, nothing for 202 and 204, and the location of a 303, which a program
-// reads and a browser follows itself.
+// reads and a browser follows itself. An operation's credential is a cookie,
+// which the browser sends by itself, so a method takes no option for it; its
+// doc comment names the cookie.
 
 export class GeneratorError extends Error {
   override readonly name = "GeneratorError";
@@ -42,8 +44,12 @@ const OPERATION_KEYS = new Set([
   "parameters",
   "requestBody",
   "responses",
+  "security",
   "x-nortfox",
 ]);
+
+/** The keys of a security scheme: an API key in a cookie, the one kind the API uses so far. */
+const SECURITY_SCHEME_KEYS = new Set(["type", "in", "name", "description"]);
 
 /**
  * The keys of x-nortfox, NortFox's own parts of an operation. The generator
@@ -278,6 +284,53 @@ interface Operation {
   readonly key: boolean;
   readonly answer: AnswerKind;
   readonly result: string;
+  /** The credentials it takes, each as its doc comment names it; none for an operation that needs no actor. */
+  readonly credentials: readonly string[];
+}
+
+/** Each security scheme of the description, by its name, as a doc comment names it. */
+type Schemes = ReadonlyMap<string, string>;
+
+/** The security schemes of components.securitySchemes: each an API key in a cookie. */
+function securitySchemes(value: unknown): Schemes {
+  const schemes = new Map<string, string>();
+  for (const [name, item] of Object.entries(record(value ?? {}, "components.securitySchemes"))) {
+    const where = `components.securitySchemes.${name}`;
+    const scheme = record(item, where);
+    if (scheme["type"] !== "apiKey" || scheme["in"] !== "cookie") {
+      throw new GeneratorError(`${where} is not an apiKey in a cookie, the one kind of scheme the generator supports yet.`);
+    }
+    refuseOtherKeys(scheme, SECURITY_SCHEME_KEYS, where);
+    schemes.set(name, `the cookie \`${text(scheme["name"], `${where}.name`)}\``);
+  }
+  return schemes;
+}
+
+/** The credentials an operation's security names, each as its doc comment names it. */
+function credentialsOf(value: unknown, where: string, schemes: Schemes): string[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new GeneratorError(`${where}.security must be a list.`);
+  }
+  return value.map((item, index) => {
+    const at = `${where}.security[${String(index)}]`;
+    const names = Object.keys(record(item, at));
+    const [name] = names;
+    if (name === undefined || names.length > 1) {
+      throw new GeneratorError(`${at} must name one security scheme.`);
+    }
+    const scheme = schemes.get(name);
+    if (scheme === undefined) {
+      throw new GeneratorError(`${at} names the security scheme "${name}", which components.securitySchemes does not hold.`);
+    }
+    const scopes: unknown = (item as Json)[name];
+    if (!Array.isArray(scopes) || scopes.length > 0) {
+      throw new GeneratorError(`${at}.${name} must be an empty list: a cookie takes no scopes.`);
+    }
+    return scheme;
+  });
 }
 
 /** A value of x-nortfox that must be one of `known`, or absent. */
@@ -435,7 +488,7 @@ function successOf(responses: Json, where: string): Pick<Operation, "answer" | "
   }
 }
 
-function operation(path: string, method: string, value: unknown, schemas: Json): Operation {
+function operation(path: string, method: string, value: unknown, schemas: Json, schemes: Schemes): Operation {
   const where = `paths["${path}"].${method}`;
   const entry = record(value, where);
   refuseOtherKeys(entry, OPERATION_KEYS, where);
@@ -450,10 +503,11 @@ function operation(path: string, method: string, value: unknown, schemas: Json):
     ...parametersOf(entry["parameters"], path, where),
     body: bodyOf(entry["requestBody"], where, schemas),
     ...successOf(record(entry["responses"], `${where}.responses`), `${where}.responses`),
+    credentials: credentialsOf(entry["security"], where, schemes),
   };
 }
 
-function operations(document: Json, schemas: Json): Operation[] {
+function operations(document: Json, schemas: Json, schemes: Schemes): Operation[] {
   const paths = record(document["paths"], "paths");
   const found: Operation[] = [];
   for (const path of Object.keys(paths).sort()) {
@@ -468,7 +522,7 @@ function operations(document: Json, schemas: Json): Operation[] {
     refuseOtherKeys(item, PATH_ITEM_KEYS, where);
     for (const method of SUPPORTED_METHODS) {
       if (item[method] !== undefined) {
-        found.push(operation(path, method, item[method], schemas));
+        found.push(operation(path, method, item[method], schemas, schemes));
       }
     }
   }
@@ -500,7 +554,8 @@ function operationDocs(operation: Operation): string[] {
   );
   const lines = [...parts.flatMap((part) => [part, ""]), `\`${operation.method} ${operation.path}\``];
   const session = operation.meta.session === "flow" ? "Serves the browser's session: its MCP tool refuses every call." : undefined;
-  for (const line of [permissionLine(operation.meta), session]) {
+  const credential = operation.credentials.length === 0 ? undefined : `Credential: ${operation.credentials.join(", or ")}.`;
+  for (const line of [permissionLine(operation.meta), credential, session]) {
     if (line !== undefined) {
       lines.push("", line);
     }
@@ -589,7 +644,7 @@ export function generateClient(input: unknown): string {
   }
   const components = record(document["components"] ?? {}, "components");
   const schemas = record(components["schemas"] ?? {}, "components.schemas");
-  const found = operations(document, schemas);
+  const found = operations(document, schemas, securitySchemes(components["securitySchemes"]));
 
   // Each type the methods use, and no other: an unused import does not compile.
   const runtimeTypes = [

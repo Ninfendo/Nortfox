@@ -75,6 +75,45 @@ describe("the shapes of slice 2c in the API description", () => {
   });
 });
 
+describe("the credentials in the API description", () => {
+  interface Described {
+    readonly components: { readonly securitySchemes?: Record<string, unknown> };
+    readonly paths: Record<string, Record<string, { readonly operationId: string; readonly security?: unknown }>>;
+  }
+  const document = openApiDocument(REGISTRY, "0.0.0") as Described;
+  const security = Object.fromEntries(
+    Object.values(document.paths).flatMap((item) => Object.values(item).map((operation) => [operation.operationId, operation.security])),
+  );
+
+  it("names the session cookie as the scheme sessionCookie", () => {
+    expect(document.components.securitySchemes).toEqual({
+      sessionCookie: {
+        type: "apiKey",
+        in: "cookie",
+        name: "__Host-nortfox-session",
+        description: "The browser's session, which a sign-in sets: verifyTotp, or loginWithPassword on a known device. The browser sends it by itself.",
+      },
+    });
+  });
+
+  it("names it on each operation that needs an actor, and on no other", () => {
+    expect(security).toEqual({
+      getHealth: undefined,
+      getCompany: [{ sessionCookie: [] }],
+      completeSetup: undefined,
+      loginWithPassword: undefined,
+      verifyTotp: undefined,
+      logout: [{ sessionCookie: [] }],
+      getSession: [{ sessionCookie: [] }],
+      getMe: [{ sessionCookie: [] }],
+    });
+  });
+
+  it("names no credential for the whole description, so an operation without one needs none", () => {
+    expect("security" in document).toBe(false);
+  });
+});
+
 describe("openApiDrift", () => {
   it("passes the same text, also with Windows line ends", () => {
     expect(openApiDrift('{\n  "a": 1\n}\n', '{\n  "a": 1\n}\n')).toBeUndefined();

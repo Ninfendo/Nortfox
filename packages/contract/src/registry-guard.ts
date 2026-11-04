@@ -4,13 +4,14 @@
  * The registry guard reads each entry as data and names what is wrong with
  * it. The registry's test runs it on the registry. It fails an entry with no
  * permission or no MCP tool text, a write without a required
- * Idempotency-Key header, a mark it does not know, and every other entry
- * that REST and MCP could not serve the same way.
+ * Idempotency-Key header, a mark it does not know, credentials in security
+ * that its permission does not ask for, and every other entry that REST and
+ * MCP could not serve the same way.
  */
 
 import { z } from "zod";
 import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
-import { COMPANY_SOURCES, METHODS, NONE, OPEN_PERMISSIONS, PUBLIC, SIGNED_IN } from "./operation.ts";
+import { COMPANY_SOURCES, METHODS, NONE, OPEN_PERMISSIONS, PUBLIC, SIGNED_IN, securityOf } from "./operation.ts";
 import { jsonSchemaOf, type JsonSchema } from "./tool-schema.ts";
 
 const ID = /^[a-z][A-Za-z0-9]{0,63}$/;
@@ -160,6 +161,22 @@ function metaProblems(name: string, meta: Entry, permissions: ReadonlySet<string
   return problems.length > 0 ? problems : pairingProblems(name, meta);
 }
 
+/**
+ * What is wrong with the credentials in OpenAPI's security: an operation that
+ * needs an actor names the ones that can name it, and an operation that needs
+ * none names none, so openapi.json says what the permission asks.
+ */
+function securityProblems(name: string, entry: Entry, meta: Entry): string[] {
+  const wanted = securityOf(String(meta["permission"]));
+  const security = entry["security"];
+  if (JSON.stringify(security) === JSON.stringify(wanted)) {
+    return [];
+  }
+  return wanted === undefined
+    ? [`${name} needs no actor, so it has no security, not ${shown(security)}.`]
+    : [`${name} needs an actor, so its security is ${JSON.stringify(wanted)}, not ${shown(security)}.`];
+}
+
 /** What is wrong with a write's key: a write takes one, unless it runs before sign-in, which takes none. */
 function keyProblems(name: string, entry: Entry, meta: unknown): string[] {
   const header = keyHeader(field(entry, "request", "headers"));
@@ -290,7 +307,9 @@ function entryProblems(entry: Entry, name: string, permissions: ReadonlySet<stri
       `${name} declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark and company source.`,
     );
   } else {
-    problems.push(...metaProblems(name, meta, permissions));
+    const marks = metaProblems(name, meta, permissions);
+    // The credentials follow from the permission, so they are read only once the marks are right.
+    problems.push(...(marks.length > 0 ? marks : securityProblems(name, entry, meta)));
   }
   problems.push(...keyProblems(name, entry, meta));
   const path = pathProblems(name, entry["path"], field(entry, "request", "params"));
