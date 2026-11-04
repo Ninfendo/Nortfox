@@ -11,7 +11,7 @@ import type { Client as McpClient } from "@modelcontextprotocol/client";
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { MCP_ERAS, TEST_VERSION, appPool, buildTestApp, callTool, mcpClient, principalOf, testResolver, voucherBody, type AppPool } from "../../test/api.ts";
+import { MCP_ERAS, TEST_REGISTRY, TEST_VERSION, appPool, buildTestApp, callTool, mcpClient, principalOf, testResolver, voucherBody, type AppPool } from "../../test/api.ts";
 import { freshDatabase, inTransaction, type TestDatabase } from "../../test/database.ts";
 import { addBooks, someUser } from "../../test/ledger.ts";
 import type { ServerApp } from "../app.ts";
@@ -63,7 +63,7 @@ describe("/mcp on the database", () => {
     beforeAll(async () => {
       client = await mcpClient(server, { token: "writer", era });
       // The client keeps each tool's output schema from the list, and checks every answer against it.
-      expect((await client.listTools()).tools).toHaveLength(4);
+      expect((await client.listTools()).tools).toHaveLength(TEST_REGISTRY.length);
     });
 
     afterAll(async () => {

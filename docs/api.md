@@ -47,6 +47,14 @@ The server serves only what the registry holds. It refuses to start when a route
 | --- | --- | --- | --- | --- |
 | `getHealth` | `GET /v1/health` | `Health`: `status` and `version` | `public` | no |
 | `getCompany` | `GET /v1/company` | `Company`: `id`, `name`, `organizationNumber` and `databaseNumber` | `company:read` | yes |
+| `completeSetup` | `POST /v1/setup/{token}` | `SetupResult`: `user` and `totpEnrolment` | `none` | no |
+| `loginWithPassword` | `POST /v1/auth/password` | `PasswordSignIn`: `outcome` and, for the TOTP step, `challenge` | `none` | no |
+| `verifyTotp` | `POST /v1/auth/totp` | none (204) | `none` | no |
+| `logout` | `POST /v1/auth/logout` | none (204) | `signed-in` | no |
+| `getSession` | `GET /v1/session` | `Session`: `user` | `signed-in` | no |
+| `getMe` | `GET /v1/me` | `Me`: `user`, `personalIdentityNumber`, `mobile` and `twoStep` | `signed-in` | no |
+
+`User` is a person: `id`, `name`, `email` and `language` (`sv` or `en`).
 
 Field names are camelCase. An answer is the object itself, with no wrapper around it.
 
@@ -54,7 +62,7 @@ Field names are camelCase. An answer is the object itself, with no wrapper aroun
 
 Every operation with a permission acts as one actor in one company. The company comes from the request's credential, never from the path or the body. A path holds no company id. A `signed-in` operation acts as the signed-in person in no company. A `none` operation runs before there is an actor.
 
-Login and API tokens come in slice 2c. Until its sessions are built the server knows no actor: every operation that needs one answers 401, by REST with the challenge `WWW-Authenticate: Bearer`, and by MCP in a tool result marked `isError`. `GET /v1/health` and `/openapi.json` need no actor.
+A browser signs in with a password and a TOTP code, and then sends its session in a cookie (Signing in, below). The server looks the session up on every request. A session acts as its person, with the actor kind `user`, and works in no company yet. On `/v1`, a request with a bearer token ignores the cookie; API tokens come in a later part of slice 2c, so until then a bearer token names no actor. `/mcp` never reads the cookie: an MCP client signs in through OAuth, which comes in a later part of slice 2c, so until then every tool that needs an actor answers 401. An operation that needs an actor answers 401 without one, by REST with the challenge `WWW-Authenticate: Bearer`, and by MCP in a tool result marked `isError`. `GET /v1/health` and `/openapi.json` need no actor.
 
 The server checks the actor and the permission before it reads the rest of the request: on REST before the path parameters, the query and the body, on MCP before the tool's arguments. So a request with no actor gets 401, a credential that names no company gets 403 `company-required` for an operation that works in a company, and an actor without the permission gets 403 `permission-missing`, even when the rest of the request is wrong. None of them touches the database.
 
@@ -77,6 +85,36 @@ A browser's session comes in the cookie `__Host-nortfox-session`, which is `Same
 - A request with a bearer token is a program's. It ignores the cookie, so the first rule does not touch it.
 
 The install's own origin is the one it is set up with, `NORTFOX_PUBLIC_ORIGIN` ([deploy/README.md](../deploy/README.md)). `/mcp` allows the same one. A `public` operation reads nothing of anyone's, so neither rule touches it. A body is `application/json` only, which a form on another site cannot send without a preflight, and `/v1` answers no preflight.
+
+## Signing in
+
+A browser signs in in two steps. Each serves the browser's session, so its MCP tool refuses every call.
+
+1. `loginWithPassword` takes an identifier and the password. The identifier is the e-mail address, in any letter case, or the personnummer: in 12 digits, with or without the hyphen, or in 10, `YYMMDD-NNNN`, with `+` in place of `-` from the year the person turns 100. A right password gives `{ "outcome": "totp-required", "challenge": "..." }`. The challenge works for 20 minutes and for five codes.
+2. `verifyTotp` takes the challenge and the six digits of the person's authenticator app (RFC 6238). A right code answers 204, sets the session cookie, and makes the browser a known device. A code works once, also when it is sent twice at once.
+
+The person's two-step choice, `twoStep` in `getMe`, says how often the TOTP step comes. With `new_device_90_days`, which a new identity starts with, it comes on a new device, and on a known device 90 days after the device's last TOTP step. Inside those 90 days, on a known device, `loginWithPassword` answers `{ "outcome": "signed-in" }` and sets the session cookie itself. With `every_login` it comes at every sign-in.
+
+| Cookie | Holds | Attributes |
+| --- | --- | --- |
+| `__Host-nortfox-session` | the session | `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and no `Max-Age`, so it ends with the browser |
+| `__Host-nortfox-device` | the known device | `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and `Max-Age` 400 days |
+
+No answer body holds a session's token, and the server keeps every token only as its hash. A session ends at `logout`, 12 hours after it began, and, while it has no company, after 120 minutes without a request. From the next request on, its cookie gets 401.
+
+**One answer for every failure.** Every failed password step gets 422 `sign-in-failed`: an unknown identifier, a deleted identity, an identity without a password and a wrong password. With no identity or no password, the server checks the password against a dummy hash, so the time tells nothing either. Every failed TOTP step gets 422 `sign-in-failed` too: a wrong code, a code used before, and a challenge that is used, past its 20 minutes or out of codes.
+
+**The limits.**
+
+- The failures of the password step count per account, for an hour from the first: the identity's, or, for an identifier that names none, the identifier's, so both are limited the same way. After the nth failure from the fifth on, the next attempt waits 2^(n-5) seconds, at most 60. At 100 failures the step is locked until the hour has passed. An attempt that comes too soon gets 429 `too-many-attempts` with `Retry-After`, and its password is not checked. A right password clears the count.
+- A challenge takes five codes in all, also from parallel calls. Ten wrong codes of one identity in 15 minutes lock its TOTP step for 15 minutes, with 429 `too-many-attempts` and `Retry-After`.
+- The server checks at most as many passwords at once as it has cores, with a queue of as many. When both are full, a request gets 503 `server-busy` with `Retry-After: 1`.
+
+**Kontoaktivitet** holds the person's own events: each sign-in and each failed one, with the method, the second step, the application and the IP address; the lock of a step; and each logout. The entries of a failure are written after the answer.
+
+**The first identity.** An empty install gets its first identity from a setup link that the install's setup command prints ([deploy/README.md](../deploy/README.md)). `completeSetup` takes the link's token in its path, with a name, an e-mail address and a password. The link works once, for 28 days, and a newer link stops it. Any other link gets 422 `setup-link-invalid`, and an install that has an identity 422 `install-not-empty`. The answer gives the new TOTP secret as an `otpauth` URI, and sets no session: the person signs in next, and the first right code confirms the secret.
+
+**Passwords.** A new password is 12 to 1024 characters, counted in code points after NFC normalisation. One that is too short or too long is a field problem at `/password`, `too-short` or `too-long`. The server keeps a password only as an Argon2id hash.
 
 ## Answers on `/v1`
 
@@ -133,6 +171,7 @@ Every error on `/v1` is problem details (RFC 9457), as `application/problem+json
 - `errors` lists every field problem of a 400 `invalid-request`. Each has its own `code`, a `detail`, a `pointer` and, when there are any, its facts in `data`: `expected` (the JSON type the field takes), `minimum`, `maximum` and `allowed` (the values it takes).
 - `permission` names the permission a 403 `permission-missing` lacks.
 - A rule's refusal, 422, has the rule's `code`, its facts in `data`, and a `pointer` when it is about one field, so a screen can show it on that field.
+- A 429 and a 503 carry `Retry-After`, in whole seconds.
 - A 500 `internal-error` holds nothing of the error. The server logs it, but only the error's class, its code, the constraint, schema, table and column it names, its message and its stack, with every token, personnummer and e-mail address taken out. The log never holds a database error's detail, which can hold a row, nor the parameters of a statement.
 - An answer never repeats the values the request sent.
 
@@ -165,8 +204,12 @@ The registry keeps the names apart, so a pointer is never ambiguous. The same re
 | 413 | `payload-too-large` | The body is over 1 MiB. |
 | 415 | `unsupported-media-type` | The body is not `application/json`. |
 | 422 | `idempotency-key-reused` | The idempotency key belongs to another request. |
+| 422 | `sign-in-failed` | A sign-in step failed. The answer is the same for every cause (Signing in). |
+| 422 | `setup-link-invalid` | The setup link is unknown, used, stopped by a newer link, or past its end. |
+| 429 | `too-many-attempts` | An attempt came too soon after failed ones, or while its step is locked. `Retry-After` gives the seconds to wait. |
 | 422 | a rule's code | A rule refuses the request, such as `period-locked-manual`. |
 | 500 | `internal-error` | The server failed. |
+| 503 | `server-busy` | The server checks as many passwords as it can at once. `Retry-After` gives the seconds to wait. |
 
 The field problems:
 
@@ -199,7 +242,7 @@ A write takes an idempotency key: the `Idempotency-Key` header on REST, and the 
 - The key and the first answer are stored in the write's own transaction. A write that is refused or fails stores no key, so a retry with the key runs again.
 - The server keeps a request's fingerprint, never the request: an HMAC-SHA256 of it, under a key from the install secret. A body can hold a password, and without the install secret a stored fingerprint tells nothing of it.
 - REST and MCP share the keys: the same input by either gives the same answer.
-- Keys do not expire yet.
+- A signed-in person's own keys are purged 24 hours after they were stored. The keys of a write in a company do not expire yet.
 
 ## Lists
 

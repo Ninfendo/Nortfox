@@ -78,6 +78,7 @@ export default defineConfig({
         // Entry points: each only wires the tested parts together and starts
         // them. The tests start the same parts directly.
         "apps/server/src/main.ts",
+        "apps/server/src/setup-main.ts",
         "apps/server/src/db/migrate-main.ts",
         "apps/web/src/main.tsx",
         "packages/client/scripts/generate.ts",

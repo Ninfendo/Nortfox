@@ -54,7 +54,7 @@ import { IDEMPOTENCY_KEY_HEADER, PUBLIC, bodySchema, jsonPointer, jsonSchemaOf, 
 import type { Context, Hono, Handler as RouteHandler, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { z } from "zod";
-import { setCookieHeader } from "../auth/cookies.ts";
+import { DEVICE_COOKIE, readCookie, setCookieHeader } from "../auth/cookies.ts";
 import { crossSiteRefused } from "../auth/origin.ts";
 import type { AfterAnswerQueue } from "./after-answer.ts";
 import type { ContextResolver, Principal, RequestContext } from "./context.ts";
@@ -191,11 +191,17 @@ function ipAddressOf(env: unknown): string | undefined {
   return bindings?.incoming?.socket.remoteAddress;
 }
 
-/** What /v1 knows of a request besides its input. */
+/** What /v1 knows of a request besides its input: its Origin, its address and its device cookie. */
 function factsOf(c: Context<V1Env>): RequestFacts {
-  const origin = c.req.raw.headers.get("origin");
+  const { headers } = c.req.raw;
+  const origin = headers.get("origin");
   const ipAddress = ipAddressOf(c.env);
-  return { ...(origin === null ? {} : { origin }), ...(ipAddress === undefined ? {} : { ipAddress }) };
+  const device = readCookie(headers, DEVICE_COOKIE);
+  return {
+    ...(origin === null ? {} : { origin }),
+    ...(ipAddress === undefined ? {} : { ipAddress }),
+    ...(device === undefined ? {} : { device }),
+  };
 }
 
 /**
@@ -210,7 +216,7 @@ function authorizeRequest(operation: Operation, deps: V1Deps): MiddlewareHandler
     if (!isPublic && crossSiteRefused(operation, c.req.raw, deps.allowedOrigins)) {
       return problemResponse(crossSiteRequest());
     }
-    const principal = isPublic ? undefined : await deps.resolve(c.req.raw);
+    const principal = isPublic ? undefined : await deps.resolve(c.req.raw, "rest");
     const refusal = authorize(operation, principal);
     if (refusal !== undefined) {
       return problemResponse(problemOf(refusal));

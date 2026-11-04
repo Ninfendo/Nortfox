@@ -90,7 +90,18 @@ describe("GET /openapi.json", () => {
     expect(company?.responses?.["401"]?.headers).toEqual({
       "WWW-Authenticate": { description: "The challenge, as RFC 9110 asks of every 401: Bearer.", schema: { type: "string" } },
     });
-    expect(Object.keys(document.components.schemas).sort()).toEqual(["Company", "FieldProblem", "Health", "Problem"]);
+    expect(Object.keys(document.components.schemas).sort()).toEqual([
+      "Company",
+      "FieldProblem",
+      "Health",
+      "Me",
+      "PasswordSignIn",
+      "Problem",
+      "Session",
+      "SetupResult",
+      "TotpEnrolment",
+      "User",
+    ]);
   });
 
   it("describes the operations under /v1, under the MIT licence", () => {
@@ -139,7 +150,7 @@ describe("createApp", () => {
       writes: false,
     });
     const handler = handleData(lookalike, () => Promise.resolve(ok({})));
-    expect(() => createApp(defaults({ handlers: [healthHandler("1.2.3"), handler] }))).toThrow(
+    expect(() => createApp(defaults({ registry: [getHealth, getCompany], handlers: [healthHandler("1.2.3"), handler] }))).toThrow(
       "The app cannot serve its registry:\n- getCompany has no handler.\n- The handler of getCompany serves an operation that is not in the registry.",
     );
   });

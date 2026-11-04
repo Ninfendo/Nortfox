@@ -22,9 +22,9 @@ function countingResolver(): { readonly resolve: ContextResolver; readonly calls
   let calls = 0;
   const inner = testResolver(TOKENS);
   return {
-    resolve: (request) => {
+    resolve: (request, surface) => {
       calls += 1;
-      return inner(request);
+      return inner(request, surface);
     },
     calls: () => calls,
   };

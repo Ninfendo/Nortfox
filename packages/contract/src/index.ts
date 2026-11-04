@@ -45,7 +45,10 @@ export type {
   Shape,
   SuccessStatus,
 } from "./operation.ts";
+export { PasswordSignIn, SetupResult, TotpEnrolment, completeSetup, loginWithPassword, logout, verifyTotp } from "./operations/auth.ts";
 export { Company, getCompany } from "./operations/companies.ts";
+export { LANGUAGES, Me, TWO_STEP_CHOICES, User, getMe } from "./operations/me.ts";
+export { Session, getSession } from "./operations/session.ts";
 export { Health, getHealth } from "./operations/status.ts";
 export { Cursor, LIMIT, Limit, effectiveLimit, pageOf } from "./paging.ts";
 export { FIELD_PROBLEM_CODES, FieldProblem, PROBLEM_CODES, Problem, fieldIssues, jsonPointer } from "./problem.ts";

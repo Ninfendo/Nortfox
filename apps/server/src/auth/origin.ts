@@ -45,7 +45,7 @@ export function allowedOrigins(list: readonly string[]): ReadonlySet<string> {
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 
 /** Whether a request carries a bearer token (RFC 6750): the scheme in any case, then a space and the token. */
-function carriesBearer(headers: Headers): boolean {
+export function carriesBearer(headers: Headers): boolean {
   return /^bearer +\S/i.test(headers.get("authorization") ?? "");
 }
 

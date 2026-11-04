@@ -109,6 +109,41 @@ describe("createClient", () => {
     }
   });
 
+  it("sends each operation of the browser's sign-in and of the person as its operation takes it", async () => {
+    const user = { id: "8a9b0c1d-2e3f-4a5b-8c7d-6e5f4a3b2c1d", name: "Alva Berg", email: "alva.berg@example.com", language: "sv" };
+    const answers: Response[] = [
+      Response.json({ user, totpEnrolment: { otpauthUri: "otpauth://totp/NortFox:alva.berg%40example.com?secret=AAAA" } }, { status: 201 }),
+      Response.json({ outcome: "totp-required", challenge: "the-challenge" }),
+      new Response(null, { status: 204 }),
+      new Response(null, { status: 204 }),
+      Response.json({ user }),
+      Response.json({ user, twoStep: "new_device_90_days" }),
+    ];
+    const calls: [string, RequestInit][] = [];
+    const client = createClient({
+      baseUrl: "https://nortfox.example",
+      fetch: (input, init) => {
+        calls.push([input, init]);
+        return Promise.resolve(answers.shift() ?? Response.json({}));
+      },
+    });
+    await expect(client.completeSetup({ token: "the-setup-token", name: "Alva Berg", email: "alva.berg@example.com", password: "tolv-tecken!" })).resolves.toMatchObject({ user });
+    await expect(client.loginWithPassword({ identifier: "alva.berg@example.com", password: "tolv-tecken!" })).resolves.toEqual({ outcome: "totp-required", challenge: "the-challenge" });
+    await expect(client.verifyTotp({ challenge: "the-challenge", code: "123456" })).resolves.toBeUndefined();
+    await expect(client.logout({ idempotencyKey: "logout-1" })).resolves.toBeUndefined();
+    await expect(client.getSession()).resolves.toEqual({ user });
+    await expect(client.getMe()).resolves.toEqual({ user, twoStep: "new_device_90_days" });
+    const json = { accept: "application/json", "content-type": "application/json" };
+    expect(calls).toEqual([
+      ["https://nortfox.example/v1/setup/the-setup-token", { method: "POST", headers: json, body: '{"name":"Alva Berg","email":"alva.berg@example.com","password":"tolv-tecken!"}' }],
+      ["https://nortfox.example/v1/auth/password", { method: "POST", headers: json, body: '{"identifier":"alva.berg@example.com","password":"tolv-tecken!"}' }],
+      ["https://nortfox.example/v1/auth/totp", { method: "POST", headers: json, body: '{"challenge":"the-challenge","code":"123456"}' }],
+      ["https://nortfox.example/v1/auth/logout", { method: "POST", headers: { accept: "application/json", "idempotency-key": "logout-1" } }],
+      ["https://nortfox.example/v1/session", { method: "GET", headers: { accept: "application/json" } }],
+      ["https://nortfox.example/v1/me", { method: "GET", headers: { accept: "application/json" } }],
+    ]);
+  });
+
   it("uses the global fetch when none is given", async () => {
     const server = answering(200, { status: "ok", version: "2.0.0" });
     vi.stubGlobal("fetch", server.fetch);

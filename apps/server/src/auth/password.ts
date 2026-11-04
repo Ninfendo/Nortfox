@@ -16,7 +16,9 @@
 //   are compared with timingSafeEqual.
 // - With no stored hash, as for an unknown identifier or an identity without
 //   a password, the check runs against a fixed dummy string at the hasher's
-//   own cost, and gives false. So the time does not tell the cases apart.
+//   own cost, and gives false. So the time does not tell the cases apart. A
+//   password longer than 1024 characters is never right, and is checked as
+//   an empty one against the dummy, so a sign-in never hashes a megabyte.
 // - At most as many hashes run at once as the host has cores, with a queue
 //   of the same length. 19 MiB each would otherwise let a few hundred
 //   requests take gigabytes. When both are full, the hasher refuses with
@@ -201,12 +203,19 @@ export class PasswordHasher {
     return { ok: true, hash: phcString(this.cost, salt, hash) };
   }
 
-  /** Whether `password` is the one that `stored` holds. With no stored hash, it runs against the dummy and gives false. */
+  /**
+   * Whether `password` is the one that `stored` holds. With no stored hash,
+   * it runs against the dummy and gives false. A password longer than any new
+   * one can be is never right: it runs as an empty one against the dummy, so
+   * no request makes the server hash more than a new password may hold.
+   */
   async verify(password: string, stored: string | undefined): Promise<boolean> {
-    const known = parsePhc(stored ?? this.#dummy);
-    const derived = await this.#derive(password, known.cost, known.salt, known.hash.length);
+    const possible = passwordLength(password) <= PASSWORD_MAX_LENGTH;
+    const against = possible ? stored : undefined;
+    const known = parsePhc(against ?? this.#dummy);
+    const derived = await this.#derive(possible ? password : "", known.cost, known.salt, known.hash.length);
     const same = timingSafeEqual(derived, known.hash);
-    return same && stored !== undefined;
+    return same && against !== undefined;
   }
 
   #derive(password: string, cost: PasswordCost, salt: Uint8Array, tagLength: number): Promise<Buffer> {

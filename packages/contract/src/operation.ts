@@ -189,7 +189,9 @@ const REFUSALS = {
   413: "The body is larger than 1 MiB.",
   415: "The body is not application/json.",
   422: "A rule refused the request, or a write's idempotency key belongs to another request.",
+  429: "Too many attempts: wait the seconds that Retry-After gives before the next one.",
   500: "The server failed. The answer holds no detail of the error.",
+  503: "The server checks as many passwords as it can at once: send the request again after the seconds that Retry-After gives.",
 } as const;
 
 type RefusalStatus = keyof typeof REFUSALS;
@@ -202,6 +204,11 @@ function refusal(status: RefusalStatus): ResponseConfig {
   if (status === 401) {
     response.headers = {
       "WWW-Authenticate": { description: "The challenge, as RFC 9110 asks of every 401: Bearer.", schema: { type: "string" } },
+    };
+  }
+  if (status === 429 || status === 503) {
+    response.headers = {
+      "Retry-After": { description: "The whole seconds to wait before the next attempt.", schema: { type: "string" } },
     };
   }
   return response;
@@ -217,7 +224,8 @@ export function takesIdempotencyKey(operation: Pick<Operation, "x-nortfox">): bo
  * The refusals an operation can give. They depend on who may call it, whether
  * it writes and takes a key, and whether it takes a body. An operation that
  * runs before sign-in can be refused by a rule even when it only reads, such
- * as a link that has ended.
+ * as a link that has ended. It can also be refused for too many attempts, or
+ * because the server checks as many passwords as it can at once.
  */
 function refusals(permission: string, writes: boolean, hasBody: boolean): RefusalStatus[] {
   const anyone = permission === PUBLIC || permission === NONE;
@@ -228,7 +236,9 @@ function refusals(permission: string, writes: boolean, hasBody: boolean): Refusa
     ...(key ? ([409] as const) : []),
     ...(writes || permission === NONE ? ([422] as const) : []),
     ...(hasBody ? ([413, 415] as const) : []),
+    ...(permission === NONE ? ([429] as const) : []),
     500,
+    ...(permission === NONE ? ([503] as const) : []),
   ];
 }
 

@@ -16,6 +16,7 @@ import { z } from "zod";
 import { CURSOR_KEY, FINGERPRINT_KEY, TEST_NOW, personOf, principalOf, runnerDeps, testListAccounts, testListAccountsHandler } from "../../test/api.ts";
 import { testEndSession, testGetPerson, testGetThing, testSignIn } from "../../test/shapes.ts";
 import type { CookieEffect } from "../auth/cookies.ts";
+import { ServerBusy } from "../auth/password.ts";
 import type { Ending, Queryable, TransactionSettings, Work } from "../db/database.ts";
 import { codeOf } from "../db/refusals.ts";
 import { getCompanyHandler } from "../modules/companies/get-company.ts";
@@ -31,9 +32,11 @@ import {
   handleNone,
   handlePerson,
   handlePublic,
+  invalidInput,
   ok,
   refused,
   runOperation,
+  tooManyAttempts,
   type Answer,
   type Handler,
   type ListCall,
@@ -684,6 +687,43 @@ describe("runOperation for an operation that runs before sign-in", () => {
     expect(call?.later).toBe(later);
   });
 
+  it("gives its handler the services: the password wrapper and the install key", async () => {
+    const { database } = recordingDatabase();
+    const { seen, handler } = recording();
+    const deps = runnerDeps(database);
+    await runOperation(handler, signingIn(undefined), deps);
+    expect(seen[0]?.services).toBe(deps.services);
+    expect(seen[0]?.services.installKey.keyId).toBe(9);
+  });
+
+  it("gives its handler's own field problems as one 400, and its refusal of an attempt that comes too soon as 429 with the seconds to wait", async () => {
+    const { database } = recordingDatabase();
+    const problem: FieldIssue = { code: "too-short", detail: "The field /password must be at least 12 characters long.", pointer: "/password", data: { minimum: 12 } };
+    expect(await runOperation(recording(() => Promise.resolve(invalidInput([problem]))).handler, signingIn(undefined), runnerDeps(database))).toEqual({
+      ok: false,
+      refusal: { kind: "invalid", problems: [problem] },
+    });
+    expect(await runOperation(recording(() => Promise.resolve(tooManyAttempts(30))).handler, signingIn(undefined), runnerDeps(database))).toEqual({
+      ok: false,
+      refusal: { kind: "too-many-attempts", retryAfterSeconds: 30 },
+    });
+  });
+
+  it("refuses to wait anything but whole seconds, at least one", () => {
+    for (const seconds of [0, -1, 1.5, Number.NaN]) {
+      expect(() => tooManyAttempts(seconds)).toThrow("The seconds to wait are a whole number of at least 1.");
+    }
+    expect(tooManyAttempts(1)).toEqual({ ok: false, refusal: { kind: "too-many-attempts", retryAfterSeconds: 1 } });
+  });
+
+  it("answers a password wrapper whose queue is full with server-busy and its seconds to wait", async () => {
+    const { database } = recordingDatabase();
+    expect(await runOperation(recording(() => Promise.reject(new ServerBusy())).handler, signingIn(undefined), runnerDeps(database))).toEqual({
+      ok: false,
+      refusal: { kind: "server-busy", retryAfterSeconds: 1 },
+    });
+  });
+
   it("gives its handler the principal of a session, and empty facts when the surface gives none", async () => {
     const { database } = recordingDatabase();
     const { seen, handler } = recording();
@@ -884,6 +924,23 @@ describe("runOperation for a signed-in person's operation", () => {
     const handler = handlePerson(testGetPerson, () => Promise.resolve(refused({ code: "person-gone", detail: "Gone." })));
     expect(await runOperation(handler, call(PERSON), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "rule", refusal: { code: "person-gone", detail: "Gone." } } });
     expect(transactions.map((transaction) => transaction.ended)).toEqual(["rollback"]);
+  });
+
+  it("rolls back a keyed write's refusal of fields or of an attempt, stores no key, and answers server-busy from inside its transaction", async () => {
+    const problem: FieldIssue = { code: "too-short", detail: "The field /password must be at least 12 characters long.", pointer: "/password", data: { minimum: 12 } };
+    const answers: [() => Promise<Answer<Record<string, never>>>, unknown][] = [
+      [() => Promise.resolve(invalidInput([problem])), { kind: "invalid", problems: [problem] }],
+      [() => Promise.resolve(tooManyAttempts(4)), { kind: "too-many-attempts", retryAfterSeconds: 4 }],
+      [() => Promise.reject(new ServerBusy()), { kind: "server-busy", retryAfterSeconds: 1 }],
+    ];
+    for (const [answer, refusal] of answers) {
+      const { database, transactions, queries } = recordingDatabase(personKeyAnswers([[]]));
+      const handler = handlePerson(testEndSession, answer);
+      const sent: OperationCall = { context: PERSON, input: { query: {}, body: undefined }, idempotency: { key: "k-9" } };
+      expect(await runOperation(handler, sent, runnerDeps(database))).toEqual({ ok: false, refusal });
+      expect(transactions.map((transaction) => transaction.ended)).toEqual([refusal === answers[2]?.[1] ? "throw" : "rollback"]);
+      expect(queries.some((query) => query.text.startsWith("INSERT"))).toBe(false);
+    }
   });
 });
 

@@ -7,7 +7,8 @@
 // slice 2d. A field problem leaves out the value received, so an answer
 // never echoes its input; the runner's refusal keeps it for a surface that
 // names it in its own message. Every problem answer carries
-// Cache-Control: no-store, as every /v1 answer does.
+// Cache-Control: no-store, as every /v1 answer does. A refusal that may be
+// sent again later, 429 and 503, carries Retry-After in whole seconds.
 
 import type { FieldIssue, FieldProblem, Problem, ProblemCode } from "@nortfox/contract";
 import type { Refusal } from "./operation.ts";
@@ -22,9 +23,9 @@ export interface ProblemAnswer {
 }
 
 /** The statuses of the problems the surfaces answer with. */
-type Status = 400 | 401 | 403 | 404 | 405 | 409 | 413 | 415 | 422 | 500;
+type Status = 400 | 401 | 403 | 404 | 405 | 409 | 413 | 415 | 422 | 429 | 500 | 503;
 
-/** The phrase of each status, from RFC 9110. */
+/** The phrase of each status, from RFC 9110, and RFC 6585 for 429. */
 const TITLES: Readonly<Record<Status, string>> = {
   400: "Bad Request",
   401: "Unauthorized",
@@ -35,7 +36,9 @@ const TITLES: Readonly<Record<Status, string>> = {
   413: "Content Too Large",
   415: "Unsupported Media Type",
   422: "Unprocessable Content",
+  429: "Too Many Requests",
   500: "Internal Server Error",
+  503: "Service Unavailable",
 };
 
 /** Every /v1 answer may hold the request's own data, so no cache keeps it. */
@@ -77,7 +80,14 @@ const CODES = {
   keyReused: "idempotency-key-reused",
   internal: "internal-error",
   origin: "origin-not-allowed",
+  attempts: "too-many-attempts",
+  busy: "server-busy",
 } as const satisfies Record<string, ProblemCode>;
+
+/** The header of a refusal that the caller may send again later: its whole seconds. */
+function retryAfter(seconds: number): Readonly<Record<string, string>> {
+  return { "Retry-After": String(seconds) };
+}
 
 /** A refusal of the runner as problem details. */
 export function problemOf(refusal: Refusal): ProblemAnswer {
@@ -86,7 +96,7 @@ export function problemOf(refusal: Refusal): ProblemAnswer {
       return answer(
         401,
         CODES.authentication,
-        "The request names no actor. Send a credential in the Authorization header.",
+        "The request names no actor. Sign in first: a browser sends its session cookie, and a program its token in the Authorization header.",
         {},
         { "WWW-Authenticate": "Bearer" },
       );
@@ -108,6 +118,22 @@ export function problemOf(refusal: Refusal): ProblemAnswer {
       return answer(409, CODES.keyInUse, "Another request with this idempotency key is still running. Send the request again when it has ended.");
     case "idempotency-key-reused":
       return answer(422, CODES.keyReused, "This idempotency key belongs to another request. A new request takes a new key.");
+    case "too-many-attempts":
+      return answer(
+        429,
+        CODES.attempts,
+        "Too many failed attempts. Wait the seconds that Retry-After gives before the next one.",
+        {},
+        retryAfter(refusal.retryAfterSeconds),
+      );
+    case "server-busy":
+      return answer(
+        503,
+        CODES.busy,
+        "The server checks as many passwords as it can at once. Send the request again after the seconds that Retry-After gives.",
+        {},
+        retryAfter(refusal.retryAfterSeconds),
+      );
   }
 }
 

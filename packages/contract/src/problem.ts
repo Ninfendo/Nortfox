@@ -114,7 +114,11 @@ export const PROBLEM_CODES = {
   "payload-too-large": 413,
   "unsupported-media-type": 415,
   "idempotency-key-reused": 422,
+  "sign-in-failed": 422,
+  "setup-link-invalid": 422,
+  "too-many-attempts": 429,
   "internal-error": 500,
+  "server-busy": 503,
   ...(Object.fromEntries(LEDGER_RULES.map((code) => [code, 422])) as Record<(typeof LEDGER_RULES)[number], 422>),
 } as const;
 

@@ -62,7 +62,8 @@ describe("the ledger's refusals", () => {
 
   it("are every ledger code that PROBLEM_CODES lists, and no other", () => {
     const listed = Object.entries(PROBLEM_CODES)
-      .filter(([code, status]) => status === 422 && code !== "idempotency-key-reused")
+      // The surface's own 422 and the sign-in's refusals are no rule of the ledger.
+      .filter(([code, status]) => status === 422 && !["idempotency-key-reused", "sign-in-failed", "setup-link-invalid"].includes(code))
       .map(([code]) => code)
       .sort();
     expect(listed).toEqual(RULES.map((reason) => reason.replaceAll("_", "-")).sort());

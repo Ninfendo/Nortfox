@@ -40,7 +40,7 @@ describe("problemOf", () => {
         type: "about:blank",
         title: "Unauthorized",
         status: 401,
-        detail: "The request names no actor. Send a credential in the Authorization header.",
+        detail: "The request names no actor. Sign in first: a browser sends its session cookie, and a program its token in the Authorization header.",
         code: "authentication-required",
       },
     });
@@ -156,6 +156,38 @@ describe("problemOf", () => {
         status: 422,
         detail: "This idempotency key belongs to another request. A new request takes a new key.",
         code: "idempotency-key-reused",
+      },
+    });
+  });
+
+  it("answers too many attempts with 429 too-many-attempts and the seconds to wait in Retry-After", () => {
+    const answer = problemOf({ kind: "too-many-attempts", retryAfterSeconds: 32 });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 429,
+      headers: { ...JSON_PROBLEM, "Retry-After": "32" },
+      body: {
+        type: "about:blank",
+        title: "Too Many Requests",
+        status: 429,
+        detail: "Too many failed attempts. Wait the seconds that Retry-After gives before the next one.",
+        code: "too-many-attempts",
+      },
+    });
+  });
+
+  it("answers a full queue of password checks with 503 server-busy and Retry-After", () => {
+    const answer = problemOf({ kind: "server-busy", retryAfterSeconds: 1 });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 503,
+      headers: { ...JSON_PROBLEM, "Retry-After": "1" },
+      body: {
+        type: "about:blank",
+        title: "Service Unavailable",
+        status: 503,
+        detail: "The server checks as many passwords as it can at once. Send the request again after the seconds that Retry-After gives.",
+        code: "server-busy",
       },
     });
   });

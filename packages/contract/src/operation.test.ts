@@ -306,11 +306,22 @@ describe("an operation that runs before sign-in", () => {
     writes: true,
   });
 
-  it("takes no idempotency key, has no company, and is refused only by its input and its rules", () => {
+  it("takes no idempotency key, has no company, and is refused only by its input, its rules and its limits", () => {
     expect(signIn.request.headers).toBeUndefined();
     expect(takesIdempotencyKey(signIn)).toBe(false);
     expect(signIn["x-nortfox"]).toMatchObject({ permission: "none", session: "flow", company: "none", writes: true });
-    expect(statuses(signIn)).toEqual(["200", "400", "413", "415", "422", "500"]);
+    expect(statuses(signIn)).toEqual(["200", "400", "413", "415", "422", "429", "500", "503"]);
+  });
+
+  it("names Retry-After on its 429 and its 503, and on no other answer", () => {
+    for (const status of ["429", "503"]) {
+      expect(signIn.responses[status]?.headers).toEqual({
+        "Retry-After": { description: "The whole seconds to wait before the next attempt.", schema: { type: "string" } },
+      });
+    }
+    for (const status of ["200", "400", "422", "500"]) {
+      expect(signIn.responses[status]?.headers).toBeUndefined();
+    }
   });
 
   it("is refused by a rule also when it only reads, such as a link that has ended", () => {
@@ -327,7 +338,7 @@ describe("an operation that runs before sign-in", () => {
       tool: "Reads a link.",
       writes: false,
     });
-    expect(statuses(readLink)).toEqual(["200", "400", "422", "500"]);
+    expect(statuses(readLink)).toEqual(["200", "400", "422", "429", "500", "503"]);
   });
 });
 

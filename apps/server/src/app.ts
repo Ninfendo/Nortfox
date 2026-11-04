@@ -12,7 +12,9 @@
 // keys in flight, so a key that a REST request holds gives 409 to an MCP
 // call, and the other way round. They share the allowed origins too: /v1's
 // cross-site check and /mcp's Origin check take the same list. The install
-// secret gives the key of each write's request fingerprint.
+// secret gives the key of each write's request fingerprint, and the sign-in
+// seals each TOTP secret with it. The one password wrapper hashes and checks
+// every password, at most as many at once as the host has cores.
 //
 // An error that the server did not expect goes to the reporter. The default
 // one logs only what api/report.ts lets through: never a database error's
@@ -30,6 +32,7 @@ import { reportSafely } from "./api/report.ts";
 import { mountV1, problemResponse, type V1Env } from "./api/v1.ts";
 import type { InstallKey } from "./auth/install-key.ts";
 import { allowedOrigins } from "./auth/origin.ts";
+import { PasswordHasher } from "./auth/password.ts";
 import type { Database } from "./db/database.ts";
 import { serverHandlers } from "./handlers.ts";
 import { openApiDocument } from "./openapi.ts";
@@ -54,6 +57,12 @@ export interface AppOptions {
   readonly report?: (error: unknown) => void;
   /** The server's clock. By default the system's. */
   readonly now?: () => Date;
+  /**
+   * The one wrapper of passwords. By default one at the production cost
+   * (auth/password.ts). The tests that only need some password pass a small
+   * cost; the production cost has its own test.
+   */
+  readonly passwordHasher?: PasswordHasher;
   /**
    * The browser origins of the install, such as https://nortfox.example: the
    * origins that may call /mcp, and that /v1's writes with the session
@@ -128,6 +137,7 @@ export function createApp(options: AppOptions): ServerApp {
     fingerprintKey: options.installKey.key("idempotency-fingerprint v1"),
     keysInFlight: new KeysInFlight(),
     now: options.now ?? systemClock,
+    services: { passwords: options.passwordHasher ?? new PasswordHasher(), installKey: options.installKey },
     report,
     afterAnswer,
     allowedOrigins: allowedOrigins(options.allowedOrigins ?? []),

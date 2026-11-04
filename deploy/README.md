@@ -1,6 +1,6 @@
 # Running NortFox yourself
 
-One Docker Compose file runs an install ([decision 7](../docs/decisions/0007-self-hosting-and-backups.md)). Today it runs PostgreSQL with pgBackRest and the one-shot migrate step. The server image holds the server too, but this file starts it only from slice 2c on, with Caddy in front of it: until 2c brings login, the server knows no actor, so it would answer 401 to every request for data.
+One Docker Compose file runs an install ([decision 7](../docs/decisions/0007-self-hosting-and-backups.md)). Today it runs PostgreSQL with pgBackRest and the one-shot migrate step. The server image holds the server too, but this file starts it only in a later part of slice 2c, with Caddy in front of it.
 
 | Service | What it does |
 | --- | --- |
@@ -120,6 +120,21 @@ chmod 0644 secrets/install-key
 **The key check.** The first start stores, in `access.install_keys`, a fixed text sealed under the key, with its key id. Each later start opens it with its own key, and refuses to start when it cannot: "The install secret does not open the check value that this install stored for key id 1 at its first start." So a key that was made again by mistake stops the server before it writes anything that the old key cannot read. Start the server with the first key again.
 
 **Keep a copy of the file**, apart from the database and its backups: a backup of the database holds the sealed TOTP secrets, and the key must not be beside them. Without the key, the sealed secrets cannot be opened, and every person needs a new TOTP device.
+
+### The first identity
+
+An empty install has no identity, so nobody can sign in. The setup command makes the link that makes the first one. Run it with the server's database settings and `NORTFOX_PUBLIC_ORIGIN`, from the server image or, while you develop, from the repository:
+
+```sh
+node apps/server/dist/setup-main.js
+pnpm --filter @nortfox/server setup-link
+```
+
+It prints a link to the install's own origin, such as `https://nortfox.example/v1/setup/nfu_...`. The link works once, for 28 days, and a newer link stops the older one. On an install that has an identity, the command makes no link and says so: every other person is invited. Keep the link to yourself, as you would a password: whoever uses it first becomes the install's first person. The database keeps only its hash.
+
+Send the link a `POST` with a JSON body that holds the person's `name`, `email` and `password`, of 12 to 1024 characters. The answer holds the person's TOTP secret as an `otpauth` URI: add it to an authenticator app. The answer sets no session. Then sign in with the e-mail address, the password and the app's code ([docs/api.md](../docs/api.md), Signing in).
+
+The server purges the login rows that have passed every 10 minutes ([db/README.md](../db/README.md)).
 
 ## The backup settings
 

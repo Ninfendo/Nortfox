@@ -32,7 +32,8 @@ export interface ServerConfig {
 /** The hosts that a browser treats as this machine, where http keeps a Secure cookie. */
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-function publicOriginOf(env: Environment): string {
+/** The install's public origin, from NORTFOX_PUBLIC_ORIGIN. Throws when it is missing or wrong. */
+export function publicOriginOf(env: Environment): string {
   const origin = env["NORTFOX_PUBLIC_ORIGIN"];
   if (origin === undefined || origin === "") {
     throw new Error("NORTFOX_PUBLIC_ORIGIN is not set. Set it to the origin people open NortFox at, such as https://nortfox.example.");

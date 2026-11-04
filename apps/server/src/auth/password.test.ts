@@ -201,6 +201,20 @@ describe("checking a password", () => {
     expect(Buffer.from(calls[0]?.message as Uint8Array).toString("utf8")).toBe("vilket-lösenord-som-helst");
   });
 
+  it("checks a password longer than any new one can be against the dummy, without hashing it, and gives false", async () => {
+    const { hasher, calls } = watched();
+    const long = "å".repeat(PASSWORD_MAX_LENGTH + 1);
+    // Even a stored hash of that password, made elsewhere, is not checked against it.
+    const stored = phcString(SMALL, Buffer.alloc(SALT_BYTES, 1), await nodeArgon2id({ message: Buffer.from(long), nonce: Buffer.alloc(SALT_BYTES, 1), ...SMALL, tagLength: HASH_BYTES }));
+    expect(await hasher.verify(long, stored)).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(Buffer.from(calls[0]?.message as Uint8Array).length).toBe(0);
+    expect(Buffer.from(calls[0]?.nonce as Uint8Array)).toEqual(Buffer.alloc(SALT_BYTES));
+    // 1024 characters is checked as it is.
+    const longest = "å".repeat(PASSWORD_MAX_LENGTH);
+    expect(await hasher.verify(longest, hashOf(await hasher.hash(longest, "/password")))).toBe(true);
+  });
+
   it("gives false for the dummy hash even when the password gives its hash", async () => {
     const zeros: Argon2id = () => Promise.resolve(Buffer.alloc(HASH_BYTES));
     const hasher = new PasswordHasher({ cost: SMALL, argon2id: zeros });

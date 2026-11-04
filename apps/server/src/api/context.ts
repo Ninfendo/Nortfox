@@ -10,20 +10,25 @@
 // principal: the person, the actor's kind, the credential, and the company
 // with the permissions held there when the credential names one. It gives
 // nothing when the request names no actor. It never reads the body. The
-// surface adds the channel, since it knows whether the request came by REST
-// or by MCP. Until the sessions of slice 2c are built, the server's resolver
-// knows no actor, so every operation that needs one answers 401, and the
-// tests pass their own resolver. No setting turns on a fixed actor.
+// surface tells the resolver which surface asks, and adds the channel to the
+// principal. The server's resolver (auth/resolver.ts) reads the session
+// cookie on /v1, and knows no credential on /mcp yet, so a tool that needs an
+// actor answers 401 there. The tests pass their own resolver. No setting
+// turns on a fixed actor.
 
 import type { ActorKind, Channel } from "../db/database.ts";
 
 /** The kinds of actor a credential can name. A session acts as its user (decision 2); the system user is never a request's actor. */
 export type PrincipalKind = Exclude<ActorKind, "system">;
 
+/** How a session signed in: the login methods of slice 2c. */
+export type SignInMethod = "password-email" | "password-personnummer" | "bankid" | "oidc";
+
 /** A browser session, from the session cookie. API tokens and MCP tokens come later in slice 2c. */
 export interface SessionCredential {
   readonly kind: "session";
   readonly sessionId: string;
+  readonly method: SignInMethod;
 }
 
 /** What the request's credential is. */
@@ -55,8 +60,12 @@ export interface CompanyContext extends RequestContext {
   readonly company: CompanyAccess;
 }
 
-/** Reads the principal from a request's headers, or gives undefined when the request names no actor. */
-export type ContextResolver = (request: Request) => Promise<Principal | undefined>;
+/**
+ * Reads the principal from a request's headers, or gives undefined when the
+ * request names no actor. `surface` is the surface that asks: rest for /v1,
+ * mcp for /mcp, which take different credentials.
+ */
+export type ContextResolver = (request: Request, surface: Channel) => Promise<Principal | undefined>;
 
-/** The server's resolver until the sessions of slice 2c are built: it knows no actor. */
+/** A resolver that knows no actor, for the tests of a request with none. */
 export const resolveNoActor: ContextResolver = () => Promise.resolve(undefined);

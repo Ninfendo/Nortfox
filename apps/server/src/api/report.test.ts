@@ -143,7 +143,7 @@ describe("the default reporter", () => {
     const database = { ...untouchedDatabase(), read: () => Promise.reject(databaseError()) };
     const { hono } = createApp({
       version: TEST_VERSION,
-      resolve: testResolver({ t: { personId: "8a9b0c1d-2e3f-4a5b-8c7d-6e5f4a3b2c1d", actorKind: "user", credential: { kind: "session", sessionId: "s" }, company: { companyId: "c", permissions: new Set(["company:read"]) } } }),
+      resolve: testResolver({ t: { personId: "8a9b0c1d-2e3f-4a5b-8c7d-6e5f4a3b2c1d", actorKind: "user", credential: { kind: "session", sessionId: "s", method: "password-email" }, company: { companyId: "c", permissions: new Set(["company:read"]) } } }),
       database,
       cursorKey: CURSOR_KEY,
       installKey: TEST_INSTALL_KEY,

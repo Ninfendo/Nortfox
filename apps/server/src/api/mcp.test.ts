@@ -71,7 +71,179 @@ const MONEY = {
 
 const NO_INPUT = { type: "object", properties: {}, additionalProperties: false };
 
-/** The tools of the test app, as tools/list gives them: the registry's two, then the test-only write and list. */
+const NO_OUTPUT = { type: "object", properties: {}, additionalProperties: false, description: "Nothing: REST answers with no body, MCP with an empty object." };
+
+const USER = {
+  type: "object",
+  properties: {
+    id: { ...UUID, description: "The person's id. The person stays the actor of every entry they made." },
+    name: { type: "string", description: "The person's name." },
+    email: { type: "string", description: "The person's personal e-mail address. A password sign-in takes it as the identifier, in any letter case." },
+    language: { type: "string", enum: ["sv", "en"], description: "Språk: sv (Svenska) or en (English). It applies in every company." },
+  },
+  required: ["id", "name", "email", "language"],
+  additionalProperties: false,
+  description: "A person: their NortFox ID, the one login identity they use for every company.",
+};
+
+const CHALLENGE_PATTERN = "^nfc_[A-Za-z0-9_-]{43}$";
+
+/** The tools of the browser's sign-in and of the person's own operations, as tools/list gives them. */
+const SIGN_IN_TOOLS = [
+  {
+    name: "completeSetup",
+    title: "Make the first identity",
+    description: "Makes the first identity of an empty install. It serves the browser's sign-in, so this tool refuses every call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: { type: "string", pattern: "^nfu_[A-Za-z0-9_-]{43}$", description: "The setup link's token, which the install's setup command printed." },
+        name: { type: "string", minLength: 1, maxLength: 200, description: "The person's name." },
+        email: { type: "string", maxLength: 254, format: "email", pattern: '^[^\\s@"]{1,64}@[^\\s@]{1,255}$', description: "The person's personal e-mail address." },
+        password: { type: "string", description: "The password: 12 to 1024 characters." },
+      },
+      required: ["token", "name", "email", "password"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        user: USER,
+        totpEnrolment: {
+          type: "object",
+          properties: {
+            otpauthUri: {
+              type: "string",
+              description: "The TOTP secret as an otpauth URI, for an authenticator app: show it as a QR code. The first right code of it confirms it.",
+            },
+          },
+          required: ["otpauthUri"],
+          additionalProperties: false,
+          description: "A new TOTP secret, which the person adds to an authenticator app.",
+        },
+      },
+      required: ["user", "totpEnrolment"],
+      additionalProperties: false,
+      description: "The first identity of the install, with its TOTP enrolment. The person signs in next, with the password and a code.",
+    },
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "loginWithPassword",
+    title: "Sign in with a password",
+    description: "Signs a browser in with a password. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        identifier: { type: "string", minLength: 1, maxLength: 254, description: "The e-mail address, or the personnummer in 10 or 12 digits." },
+        password: { type: "string", minLength: 1, description: "The password." },
+      },
+      required: ["identifier", "password"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        outcome: {
+          type: "string",
+          enum: ["signed-in", "totp-required"],
+          description: "signed-in: the session cookie is set, on a known device inside its 90 days. totp-required: verifyTotp comes next, with the challenge.",
+        },
+        challenge: {
+          type: "string",
+          pattern: CHALLENGE_PATTERN,
+          description: "The login challenge, for verifyTotp, when the outcome is totp-required. It works for 20 minutes and for five codes.",
+        },
+      },
+      required: ["outcome"],
+      additionalProperties: false,
+      description: "What a right password gives: a session, or the TOTP step.",
+    },
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "verifyTotp",
+    title: "Give the TOTP code",
+    description: "Gives the TOTP code of a browser's sign-in. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        challenge: { type: "string", pattern: CHALLENGE_PATTERN, description: "The login challenge that loginWithPassword gave." },
+        code: { type: "string", pattern: "^[0-9]{6}$", description: "The six digits of the authenticator app." },
+      },
+      required: ["challenge", "code"],
+      additionalProperties: false,
+    },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "logout",
+    title: "Sign out",
+    description: "Signs a browser out. It serves the browser's session, so this tool refuses every call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        idempotencyKey: {
+          type: "string",
+          minLength: 1,
+          maxLength: 255,
+          pattern: "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+          description:
+            'A key you choose for this write, 1 to 255 characters of visible ASCII without " and \\. Send the same key with the same input again, and you get the first answer back instead of a second write.',
+        },
+      },
+      required: ["idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "getSession",
+    title: "Read the session",
+    description: "Reads the browser's session. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+    inputSchema: NO_INPUT,
+    outputSchema: {
+      type: "object",
+      properties: { user: USER },
+      required: ["user"],
+      additionalProperties: false,
+      description: "The browser's session: the person it signed in. A session works in no company until one is chosen.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "getMe",
+    title: "Read yourself",
+    description:
+      "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code.",
+    inputSchema: NO_INPUT,
+    outputSchema: {
+      type: "object",
+      properties: {
+        user: USER,
+        personalIdentityNumber: {
+          description: "The person's personnummer, in twelve digits with a hyphen. Absent until one is added.",
+          type: "string",
+          pattern: "^[0-9]{8}-[0-9]{4}$",
+        },
+        mobile: { description: "The person's mobile number. Absent when none is set.", type: "string" },
+        twoStep: {
+          type: "string",
+          enum: ["new_device_90_days", "every_login"],
+          description: "How often a password sign-in asks for a TOTP code: new_device_90_days on each new device and every 90 days on a known one, or every_login.",
+        },
+      },
+      required: ["user", "twoStep"],
+      additionalProperties: false,
+      description: "The signed-in person, with their own login data.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+];
+
+/** The tools of the test app, as tools/list gives them: the registry's, then the test-only write and list. */
 const TOOLS = [
   {
     name: "getHealth",
@@ -120,6 +292,7 @@ const TOOLS = [
     },
     annotations: { readOnlyHint: true },
   },
+  ...SIGN_IN_TOOLS,
   {
     name: "testBookVoucher",
     title: "Book a voucher",
@@ -428,7 +601,7 @@ describe("/mcp on the real server", () => {
         era === "2025" ? {} : { versionNegotiation: { mode: { pin: "2026-07-28" } } },
       );
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(server.port)}/mcp`)));
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany"]);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...SIGN_IN_TOOLS.map((tool) => tool.name)]);
       expect(await callTool(client, "getHealth")).toEqual({ isError: false, structured: { status: "ok", version: TEST_VERSION } });
       await client.close();
     } finally {

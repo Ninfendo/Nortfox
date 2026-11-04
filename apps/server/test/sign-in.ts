@@ -1,0 +1,338 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// What the sign-in tests share: an app with the server's session resolver
+// and a clock the test moves, identities with a real password hash and a
+// real sealed TOTP secret, the steps of a sign-in as a browser sends them,
+// and the cookies an answer sets. Every value is made up: the addresses are
+// at example.com, and a personnummer comes only from the fixture guard's
+// list. The passwords are hashed at the tests' small cost (test/api.ts),
+// unless a test asks for the production cost.
+
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import type { Client } from "pg";
+import { buildTestApp, gate, testPasswords, TEST_INSTALL_KEY, TEST_NOW, type Gate, type ProblemBody } from "./api.ts";
+import { addIdentity, addPassword, someEmail } from "./identities.ts";
+import type { AppOptions, ServerApp } from "../src/app.ts";
+import { sessionResolver } from "../src/auth/resolver.ts";
+import { seal } from "../src/auth/secret-box.ts";
+import { newTotpSecret, totpCode } from "../src/auth/totp.ts";
+import type { PasswordHasher } from "../src/auth/password.ts";
+import type { Database, TransactionSettings } from "../src/db/database.ts";
+
+/** The install's own origin in the sign-in tests: the one a browser sends. */
+export const TEST_ORIGIN = "https://nortfox.example";
+
+/** The server's clock as a test moves it: only forwards. */
+export interface TestClock {
+  readonly now: () => Date;
+  /** Moves the clock on by `ms` milliseconds. */
+  advance(ms: number): void;
+}
+
+export const SECOND = 1000;
+export const MINUTE = 60 * SECOND;
+export const HOUR = 60 * MINUTE;
+export const DAY = 24 * HOUR;
+
+export function testClock(start: Date = TEST_NOW): TestClock {
+  let at = start.getTime();
+  return {
+    now: () => new Date(at),
+    advance: (ms) => {
+      if (ms < 0) {
+        throw new Error("The tests move the server's clock only forwards.");
+      }
+      at += ms;
+    },
+  };
+}
+
+/** The test app with the server's session resolver and a clock of its own, and what it reported. */
+export interface SignInApp {
+  readonly app: ServerApp;
+  readonly clock: TestClock;
+  /** Every error the app reported, for the secret scan. */
+  readonly reports: unknown[];
+  /** The body of every answer that send gave, as text, for the secret scan. */
+  readonly bodies: string[];
+  /** Sends a request to the app, as app.request does, and keeps the answer's body. */
+  send(path: string, init: RequestInit, bindings?: unknown): Promise<Response>;
+}
+
+export interface SignInAppOptions {
+  readonly clock?: TestClock;
+  readonly passwords?: PasswordHasher;
+  readonly options?: Partial<AppOptions>;
+}
+
+export function signInApp(database: Database, options: SignInAppOptions = {}): SignInApp {
+  const clock = options.clock ?? testClock();
+  const reports: unknown[] = [];
+  const bodies: string[] = [];
+  const app = buildTestApp({
+    database,
+    resolve: sessionResolver({ database, now: clock.now }),
+    now: clock.now,
+    allowedOrigins: [TEST_ORIGIN],
+    passwordHasher: options.passwords ?? testPasswords(),
+    report: (error) => reports.push(error),
+    ...options.options,
+  });
+  return {
+    app,
+    clock,
+    reports,
+    bodies,
+    async send(path, init, bindings) {
+      const response = await app.hono.request(path, init, bindings);
+      // The answer keeps its own body: the scan reads a copy.
+      bodies.push(await response.clone().text());
+      return response;
+    },
+  };
+}
+
+/** An identity that can sign in: its password and, unless it has none, its TOTP secret in clear, as only the test knows them. */
+export interface TestIdentity {
+  readonly id: string;
+  readonly email: string;
+  readonly password: string;
+  readonly personalIdentityNumber?: string;
+  readonly totpSecret?: Buffer;
+  readonly totpSecretId?: string;
+}
+
+export interface NewSignInIdentity {
+  readonly email?: string;
+  readonly password?: string;
+  readonly personalIdentityNumber?: string;
+  readonly twoStep?: "new_device_90_days" | "every_login";
+  /** The state of its TOTP secret, or none. By default active. */
+  readonly totp?: "active" | "pending" | "none";
+  readonly passwords?: PasswordHasher;
+}
+
+/** A made-up password of 20 characters. */
+export function somePassword(): string {
+  return `lösen-${randomUUID().slice(0, 14)}`;
+}
+
+/**
+ * Adds an identity as the owner, as the database's own functions do, with a
+ * password hashed by the server's wrapper and a TOTP secret sealed with the
+ * test install key, as completeSetup keeps them.
+ */
+export async function addSignInIdentity(owner: Client, wanted: NewSignInIdentity = {}): Promise<TestIdentity> {
+  const email = wanted.email ?? someEmail();
+  const password = wanted.password ?? somePassword();
+  const id = await addIdentity(owner, {
+    email,
+    ...(wanted.personalIdentityNumber === undefined ? {} : { personalIdentityNumber: wanted.personalIdentityNumber }),
+    ...(wanted.twoStep === undefined ? {} : { twoStep: wanted.twoStep }),
+  });
+  const hashed = await (wanted.passwords ?? testPasswords()).hash(password, "/password");
+  if (!hashed.ok) {
+    throw new Error("The test's password is not a password the server takes.");
+  }
+  await addPassword(owner, id, hashed.hash);
+  const base = { id, email, password, ...(wanted.personalIdentityNumber === undefined ? {} : { personalIdentityNumber: wanted.personalIdentityNumber }) };
+  const state = wanted.totp ?? "active";
+  if (state === "none") {
+    return base;
+  }
+  const totpSecret = newTotpSecret();
+  const totpSecretId = randomUUID();
+  await owner.query(
+    `INSERT INTO access.totp_secrets (id, identity_id, secret, state, created_at, confirmed_at)
+     VALUES ($1, $2, $3, $4, pg_catalog.clock_timestamp(), CASE WHEN $4 = 'active' THEN pg_catalog.clock_timestamp() END)`,
+    [totpSecretId, id, seal(TEST_INSTALL_KEY, "totp-secret v1", totpSecret, [id, totpSecretId]), state],
+  );
+  return { ...base, totpSecret, totpSecretId };
+}
+
+/** The TOTP code of an identity's secret at the server's time. */
+export function codeOf(identity: TestIdentity, at: Date): string {
+  if (identity.totpSecret === undefined) {
+    throw new Error("The identity has no TOTP secret.");
+  }
+  return totpCode(identity.totpSecret, at);
+}
+
+/** A wrong code at `at`: the right one with its last digit moved on. */
+export function wrongCodeOf(identity: TestIdentity, at: Date): string {
+  const right = codeOf(identity, at);
+  return `${right.slice(0, 5)}${String((Number(right.slice(5)) + 1) % 10)}`;
+}
+
+/** The cookies a browser holds, by name. */
+export interface Cookies {
+  readonly session?: string;
+  readonly device?: string;
+}
+
+/** The Cookie header of the browser's cookies. */
+export function cookieHeader(cookies: Cookies): Record<string, string> {
+  const parts = [
+    ...(cookies.session === undefined ? [] : [`__Host-nortfox-session=${cookies.session}`]),
+    ...(cookies.device === undefined ? [] : [`__Host-nortfox-device=${cookies.device}`]),
+  ];
+  return parts.length === 0 ? {} : { cookie: parts.join("; ") };
+}
+
+/** A cookie as an answer sets it: its value and each of its attributes. */
+export interface SetCookie {
+  readonly value: string;
+  readonly attributes: readonly string[];
+}
+
+/** The cookies an answer sets, by name. */
+export function setCookiesOf(response: Response): Readonly<Record<string, SetCookie>> {
+  return Object.fromEntries(
+    response.headers.getSetCookie().map((line) => {
+      const [pair = "", ...attributes] = line.split("; ");
+      const equals = pair.indexOf("=");
+      return [pair.slice(0, equals), { value: pair.slice(equals + 1), attributes }];
+    }),
+  );
+}
+
+/** What a browser sends with a sign-in: its own origin and its cookies. */
+export interface Browser {
+  readonly cookies?: Cookies;
+  /** The request's address, as Node gives it to the server. */
+  readonly ipAddress?: string;
+}
+
+/** The bindings that give the server a request's address, as @hono/node-server does. */
+function addressOf(browser: Browser): { incoming: { socket: { remoteAddress: string } } } | undefined {
+  return browser.ipAddress === undefined ? undefined : { incoming: { socket: { remoteAddress: browser.ipAddress } } };
+}
+
+/** Posts JSON to `path` as a browser on the install's own site does. */
+export function postAsBrowser(app: SignInApp, path: string, body: unknown, browser: Browser = {}, headers: Record<string, string> = {}): Promise<Response> {
+  return app.send(
+    path,
+    {
+      method: "POST",
+      headers: { origin: TEST_ORIGIN, "content-type": "application/json", ...cookieHeader(browser.cookies ?? {}), ...headers },
+      body: JSON.stringify(body),
+    },
+    addressOf(browser),
+  );
+}
+
+/** Sends a request that carries the browser's cookies, from its own site. */
+export function sendAsBrowser(app: SignInApp, method: string, path: string, browser: Browser = {}, headers: Record<string, string> = {}): Promise<Response> {
+  return app.send(path, { method, headers: { origin: TEST_ORIGIN, ...cookieHeader(browser.cookies ?? {}), ...headers } }, addressOf(browser));
+}
+
+export function passwordStep(app: SignInApp, identifier: string, password: string, browser: Browser = {}): Promise<Response> {
+  return postAsBrowser(app, "/v1/auth/password", { identifier, password }, browser);
+}
+
+export function totpStep(app: SignInApp, challenge: string, code: string, browser: Browser = {}): Promise<Response> {
+  return postAsBrowser(app, "/v1/auth/totp", { challenge, code }, browser);
+}
+
+/** The answer of loginWithPassword. */
+export interface PasswordAnswer {
+  readonly outcome: "signed-in" | "totp-required";
+  readonly challenge?: string;
+}
+
+/** The challenge of a right password's answer, after checking that the TOTP step comes next. */
+export async function challengeOf(response: Response): Promise<string> {
+  const answer = (await response.json()) as PasswordAnswer;
+  if (response.status !== 200 || answer.outcome !== "totp-required" || answer.challenge === undefined) {
+    throw new Error(`The password step answered ${String(response.status)} ${JSON.stringify(answer)}, not the TOTP step.`);
+  }
+  return answer.challenge;
+}
+
+/** A browser after a sign-in: the cookies it holds. */
+export interface SignedIn extends Cookies {
+  readonly session: string;
+  readonly device: string;
+}
+
+/**
+ * Signs `identity` in with its e-mail, its password and the TOTP code of the
+ * server's time, as a browser on the install's own site does, and gives the
+ * cookies the browser then holds.
+ */
+export async function signIn(app: SignInApp, identity: TestIdentity, browser: Browser = {}): Promise<SignedIn> {
+  const challenge = await challengeOf(await passwordStep(app, identity.email, identity.password, browser));
+  const answer = await totpStep(app, challenge, codeOf(identity, app.clock.now()), browser);
+  if (answer.status !== 204) {
+    throw new Error(`The TOTP step answered ${String(answer.status)}: ${await answer.text()}`);
+  }
+  const set = setCookiesOf(answer);
+  const session = set["__Host-nortfox-session"]?.value;
+  const device = set["__Host-nortfox-device"]?.value ?? browser.cookies?.device;
+  if (session === undefined || device === undefined) {
+    throw new Error("The TOTP step set no session cookie, or the browser has no device cookie.");
+  }
+  return { session, device };
+}
+
+/**
+ * A database whose next write that `holds` picks waits at a gate until the
+ * test opens it: at its start, before its work runs, or before its commit,
+ * after its work, with its row locks held. Every other transaction runs as
+ * it is.
+ */
+export function holdingWrites(
+  database: Database,
+  holds: (settings: TransactionSettings) => boolean,
+  where: "start" | "commit",
+): { readonly database: Database; readonly gate: Gate } {
+  const held = gate();
+  let armed = true;
+  const picks = (settings: TransactionSettings): boolean => {
+    const picked = armed && holds(settings);
+    armed &&= !picked;
+    return picked;
+  };
+  return {
+    gate: held,
+    database: {
+      ...database,
+      write: (settings, work) =>
+        database.write(settings, async (tx) => {
+          const picked = picks(settings);
+          if (picked && where === "start") {
+            await held.pass();
+          }
+          const ending = await work(tx);
+          if (picked && where === "commit") {
+            await held.pass();
+          }
+          return ending;
+        }),
+    },
+  };
+}
+
+/** Waits until a backend of the test's database waits for a lock that another holds. `observer` logs in as the role whose backends it watches. */
+export async function untilSomeoneWaitsForLock(observer: Client): Promise<void> {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const found = await observer.query("SELECT 1 FROM pg_catalog.pg_stat_activity WHERE datname = pg_catalog.current_database() AND wait_event_type = 'Lock'");
+    if ((found.rowCount ?? 0) > 0) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error("No backend ever waited for a lock.");
+}
+
+/** The problem details of a 422 sign-in-failed, the one answer of every failed sign-in step. */
+export function signInFailed(detail: string): ProblemBody {
+  return { type: "about:blank", title: "Unprocessable Content", status: 422, detail, code: "sign-in-failed" };
+}
+
+/** The detail of a failed password step. */
+export const PASSWORD_FAILED = "The sign-in failed: the identifier or the password is wrong.";
+
+/** The detail of a failed TOTP step. */
+export const CODE_FAILED = "The sign-in failed: the code is wrong, or the sign-in has ended. Start again with the password when it has ended.";

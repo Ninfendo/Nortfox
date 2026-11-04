@@ -14,8 +14,9 @@
 //   database.
 // - none: runs before there is an actor, such as a sign-in. Anyone may call
 //   it. Its handler gets the database and opens its own transactions, the
-//   request's facts, the clock, the queue for work after the answer, and the
-//   principal when the request has one. It takes no idempotency key.
+//   services (the password wrapper and the install secret), the request's
+//   facts, the clock, the queue for work after the answer, and the principal
+//   when the request has one. It takes no idempotency key.
 // - person: a signed-in person's operation in no company. One transaction as
 //   the person, with no company set.
 // - data and list: an operation with a permission, in the credential's
@@ -60,11 +61,15 @@
 //    the output passed its check. When another process stored the key first,
 //    the write rolls back, and the stored key is read in a new transaction.
 //    A replay gives the stored answer and no cookie effects.
-// 9. A handler's refusal rolls back and is a rule's refusal (422). A refusal
+// 9. A handler's refusal rolls back: a rule's refusal (422), fields that the
+//    handler's own check refused (400, such as a new password that is too
+//    short), or too many attempts (429, with the seconds to wait). A refusal
 //    of the ledger that is a rule a request can break, from a statement or
-//    from the commit, is one too, with its facts (ledger-refusals.ts). Any
-//    other throw rolls back and is thrown again, and the surface answers 500.
-//    A refused or failed write stores no key, so a retry with it runs again.
+//    from the commit, is a rule's refusal too, with its facts
+//    (ledger-refusals.ts). A password wrapper whose queue is full gives 503
+//    server-busy. Any other throw rolls back and is thrown again, and the
+//    surface answers 500. A refused or failed write stores no key, so a retry
+//    with it runs again.
 //
 // The key policy is the surface's. /v1 and MCP pass the key they read for
 // every write, so a write without one is 400 there. The compatible surface
@@ -95,6 +100,8 @@ import {
 } from "@nortfox/contract";
 import { z } from "zod";
 import type { CookieEffect } from "../auth/cookies.ts";
+import type { InstallKey } from "../auth/install-key.ts";
+import { ServerBusy, type PasswordHasher } from "../auth/password.ts";
 import { commit, rollBack, type Channel, type Database, type Ending, type Queryable, type TransactionSettings, type Work } from "../db/database.ts";
 import type { AfterAnswerTask } from "./after-answer.ts";
 import type { CompanyContext, Principal, RequestContext } from "./context.ts";
@@ -112,10 +119,20 @@ export interface RuleRefusal {
   readonly data?: Readonly<Record<string, JsonValue>>;
 }
 
+/**
+ * How a handler refuses: by a rule (422); for a field that its own check
+ * refused, such as a new password that is too short (400); or for too many
+ * attempts, with the whole seconds to wait (429).
+ */
+export type HandlerRefusal =
+  | { readonly kind: "rule"; readonly refusal: RuleRefusal }
+  | { readonly kind: "invalid"; readonly problems: readonly FieldIssue[] }
+  | { readonly kind: "too-many-attempts"; readonly retryAfterSeconds: number };
+
 /** What a handler gives: its output and, for an operation that serves the browser's session, its cookie effects; or its refusal. */
 export type Answer<Output> =
   | { readonly ok: true; readonly output: Output; readonly effects?: readonly CookieEffect[] }
-  | { readonly ok: false; readonly refusal: RuleRefusal };
+  | { readonly ok: false; readonly refusal: HandlerRefusal };
 
 /** A handler's output, with the cookie effects of an operation that serves the browser's session. */
 export function ok<Output>(output: Output, effects?: readonly CookieEffect[]): Answer<Output> {
@@ -124,7 +141,20 @@ export function ok<Output>(output: Output, effects?: readonly CookieEffect[]): A
 
 /** A handler's refusal by a rule. */
 export function refused(refusal: RuleRefusal): Answer<never> {
-  return { ok: false, refusal };
+  return { ok: false, refusal: { kind: "rule", refusal } };
+}
+
+/** A handler's refusal of fields that its own check found wrong. Each problem names its field, and none holds the value. */
+export function invalidInput(problems: readonly FieldIssue[]): Answer<never> {
+  return { ok: false, refusal: { kind: "invalid", problems } };
+}
+
+/** A handler's refusal of an attempt that comes too soon: the caller waits `retryAfterSeconds`, a whole number of at least 1. */
+export function tooManyAttempts(retryAfterSeconds: number): Answer<never> {
+  if (!Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 1) {
+    throw new Error("The seconds to wait are a whole number of at least 1.");
+  }
+  return { ok: false, refusal: { kind: "too-many-attempts", retryAfterSeconds } };
 }
 
 type ParamsOf<Op> =
@@ -157,12 +187,22 @@ export type Later = (task: AfterAnswerTask) => void;
 
 /**
  * What the surface knows of a request besides its input: the Origin it came
- * with and the address it came from. Only an operation that runs before
- * sign-in reads them.
+ * with, the address it came from, and the known device's token from its
+ * device cookie. Only an operation that runs before sign-in reads them.
  */
 export interface RequestFacts {
   readonly origin?: string;
   readonly ipAddress?: string;
+  /** The value of the device cookie, when the request carries it once and in the form NortFox writes. */
+  readonly device?: string;
+}
+
+/** What the server's own handlers use besides the database: the password wrapper and the install secret. */
+export interface Services {
+  /** The one wrapper of passwords (auth/password.ts). */
+  readonly passwords: PasswordHasher;
+  /** The install secret, which seals the TOTP secrets and keys the HMACs (auth/install-key.ts). */
+  readonly installKey: InstallKey;
 }
 
 /** What a handler of an operation that runs before sign-in gets besides its input. It opens its own transactions. */
@@ -170,6 +210,7 @@ export interface NoneCall {
   /** The principal, when the request carries a credential. */
   readonly principal: Principal | undefined;
   readonly database: Database;
+  readonly services: Services;
   /**
    * The channel of the transactions it opens. Such an operation serves the
    * browser's session, and its MCP tool refuses every call, so only /v1 runs
@@ -338,7 +379,11 @@ export type Refusal =
   /** A running request of the actor holds the idempotency key. */
   | { readonly kind: "idempotency-key-in-use" }
   /** The actor's idempotency key belongs to another request. */
-  | { readonly kind: "idempotency-key-reused" };
+  | { readonly kind: "idempotency-key-reused" }
+  /** An attempt that comes too soon after failed ones: the caller waits `retryAfterSeconds`. */
+  | { readonly kind: "too-many-attempts"; readonly retryAfterSeconds: number }
+  /** The server checks as many passwords as it can at once, and its queue is full. */
+  | { readonly kind: "server-busy"; readonly retryAfterSeconds: number };
 
 /**
  * The answer to a call: its success status and output, with the cookie
@@ -386,6 +431,8 @@ export interface RunnerDeps {
   readonly keysInFlight: KeysInFlight;
   /** The server's clock. */
   readonly now: () => Date;
+  /** What the handlers of the operations that run before sign-in use. */
+  readonly services: Services;
 }
 
 /**
@@ -508,14 +555,14 @@ function success(operation: Operation, answer: { readonly output: unknown; reado
   return effects === undefined ? { ok: true, status, output } : { ok: true, status, output, effects };
 }
 
-/** A handler's refusal as the runner's. */
+/** A rule's refusal as the runner's. */
 function ruleOf(refusal: RuleRefusal): Outcome {
   return refuse({ kind: "rule", refusal });
 }
 
 /** How a handler's answer ends its transaction: a refusal rolls back; an output is checked, then commits. */
 function ending(operation: Operation, answer: Answer<unknown>): Ending<Outcome> {
-  return answer.ok ? commit(success(operation, answer)) : rollBack(ruleOf(answer.refusal));
+  return answer.ok ? commit(success(operation, answer)) : rollBack(refuse(answer.refusal));
 }
 
 /** A handler's page as the wire holds it: the next page's sort key becomes a signed cursor. */
@@ -526,12 +573,16 @@ function wirePage(page: PageResult<unknown>, scope: CursorScope, key: Uint8Array
 
 /**
  * Runs a transaction, and gives a refusal of the ledger that is a rule a
- * request can break as the rule's refusal. Every other error is thrown again.
+ * request can break as the rule's refusal. A password wrapper whose queue is
+ * full gives server-busy. Every other error is thrown again.
  */
 async function answered<T>(transaction: () => Promise<T>): Promise<T | Outcome> {
   try {
     return await transaction();
   } catch (error) {
+    if (error instanceof ServerBusy) {
+      return refuse({ kind: "server-busy", retryAfterSeconds: error.retryAfterSeconds });
+    }
     const rule = ledgerRule(error);
     if (rule === undefined) {
       throw error;
@@ -582,7 +633,7 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
         }
         const answer = await write.run(tx);
         if (!answer.ok) {
-          return rollBack(ruleOf(answer.refusal));
+          return rollBack(refuse(answer.refusal));
         }
         const outcome = success(operation, answer) as Extract<Outcome, { readonly ok: true }>;
         const kept = await store.store(tx, { key, operationId: operation.operationId, hash, status: outcome.status, body: outcome.output });
@@ -636,6 +687,7 @@ async function runNone(handler: NoneHandler, call: OperationCall, input: AnyInpu
   const noneCall: NoneCall = {
     principal: call.context,
     database: deps.database,
+    services: deps.services,
     channel: "rest",
     request: call.request ?? {},
     now: deps.now,
@@ -643,7 +695,7 @@ async function runNone(handler: NoneHandler, call: OperationCall, input: AnyInpu
   };
   return answered(async () => {
     const answer = await handler.run(noneCall, input);
-    return answer.ok ? success(handler.operation, answer) : ruleOf(answer.refusal);
+    return answer.ok ? success(handler.operation, answer) : refuse(answer.refusal);
   });
 }
 

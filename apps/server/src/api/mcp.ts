@@ -245,7 +245,7 @@ export function mountMcp(app: Hono<V1Env>, handlers: readonly Handler[], deps: M
     if (origin !== null && !deps.allowedOrigins.has(origin)) {
       return problemResponse(originNotAllowed());
     }
-    const principal = await deps.resolve(c.req.raw);
+    const principal = await deps.resolve(c.req.raw, "mcp");
     return mcp.fetch(c.req.raw, { authInfo: new Caller(principal) });
   });
 }

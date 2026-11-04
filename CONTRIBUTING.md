@@ -19,7 +19,8 @@ Other commands:
 
 | Command | What it does |
 | --- | --- |
-| `pnpm --filter @nortfox/server dev` | Runs the server on port 4100 (`PORT` changes it): the API under `/v1` and MCP at `/mcp` ([docs/api.md](docs/api.md)). It reads the database from `NORTFOX_DATABASE_URL` and `NORTFOX_DATABASE_PASSWORD_FILE`, as the migrate step does ([db/README.md](db/README.md)), its own origin from `NORTFOX_PUBLIC_ORIGIN`, such as `http://localhost:5173`, and the install secret from the file that `NORTFOX_SECRET_KEY_FILE` names ([deploy/README.md](deploy/README.md)). It connects at start, for the key check. Until login comes, every data operation answers 401. |
+| `pnpm --filter @nortfox/server dev` | Runs the server on port 4100 (`PORT` changes it): the API under `/v1` and MCP at `/mcp` ([docs/api.md](docs/api.md)). It reads the database from `NORTFOX_DATABASE_URL` and `NORTFOX_DATABASE_PASSWORD_FILE`, as the migrate step does ([db/README.md](db/README.md)), its own origin from `NORTFOX_PUBLIC_ORIGIN`, such as `http://localhost:5173`, and the install secret from the file that `NORTFOX_SECRET_KEY_FILE` names ([deploy/README.md](deploy/README.md)). It connects at start, for the key check. A browser signs in through `/v1/auth`; the setup link makes the first identity. |
+| `pnpm --filter @nortfox/server setup-link` | Prints the setup link that makes the first identity of an empty install. It reads the database and `NORTFOX_PUBLIC_ORIGIN` as `dev` does ([deploy/README.md](deploy/README.md)). |
 | `pnpm --filter @nortfox/web dev` | Runs the web app. It passes `/v1` to the server on port 4100. |
 | `pnpm test` | Runs every test suite once, the database tests too. `pnpm test:coverage` also checks the coverage floors. |
 | `pnpm db:test` | Starts the test database: PostgreSQL in Docker, on 127.0.0.1:55433, with its data in memory. `pnpm db:test:stop` stops it. |
