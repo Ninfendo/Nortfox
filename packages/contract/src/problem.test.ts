@@ -260,7 +260,7 @@ describe("the problem codes", () => {
   it("are stable kebab-case, each with its status", () => {
     for (const [code, status] of Object.entries(PROBLEM_CODES)) {
       expect(code).toMatch(/^[a-z]+(-[a-z]+)*$/);
-      expect([400, 401, 403, 404, 405, 409, 413, 415, 422, 500]).toContain(status);
+      expect([400, 401, 403, 404, 405, 409, 413, 415, 422, 429, 500, 503]).toContain(status);
     }
     for (const code of FIELD_PROBLEM_CODES) {
       expect(code).toMatch(/^[a-z]+(-[a-z]+)*$/);
@@ -273,7 +273,9 @@ describe("the problem codes", () => {
       "malformed-json": 400,
       "authentication-required": 401,
       "permission-missing": 403,
+      "company-required": 403,
       "origin-not-allowed": 403,
+      "browser-only": 403,
       "not-found": 404,
       "method-not-allowed": 405,
       "idempotency-key-in-use": 409,
@@ -281,6 +283,15 @@ describe("the problem codes", () => {
       "unsupported-media-type": 415,
       "idempotency-key-reused": 422,
       "internal-error": 500,
+    });
+  });
+
+  it("list the refusals of the browser's sign-in, each with its status", () => {
+    expect(PROBLEM_CODES).toMatchObject({
+      "sign-in-failed": 422,
+      "setup-link-invalid": 422,
+      "too-many-attempts": 429,
+      "server-busy": 503,
     });
   });
 
@@ -306,11 +317,12 @@ describe("the problem codes", () => {
       "series-code-duplicate",
       "series-code-changed",
       "immutable-field",
+      "install-not-empty",
       "period-outside-fiscal-year",
       "fiscal-year-strands-rows",
     ];
     expect(Object.entries(PROBLEM_CODES).filter(([, status]) => status === 422).map(([code]) => code).sort()).toEqual(
-      [...rules, "idempotency-key-reused"].sort(),
+      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid"].sort(),
     );
   });
 

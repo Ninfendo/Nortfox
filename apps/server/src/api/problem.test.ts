@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { PROBLEM_CODES, Problem } from "@nortfox/contract";
+import { CHALLENGES, PROBLEM_CODES, Problem } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
 import {
+  browserOnly,
   fieldProblemOf,
   internalError,
   malformedJson,
@@ -15,7 +16,11 @@ import {
   type ProblemAnswer,
 } from "./problem.ts";
 
-const JSON_PROBLEM = { "Content-Type": "application/problem+json" };
+/** Every problem answer is application/problem+json, and no cache keeps it. */
+/** The challenge of the session cookie, the one credential in this part. */
+const CHALLENGE = CHALLENGES.sessionCookie;
+
+const JSON_PROBLEM = { "Content-Type": "application/problem+json", "Cache-Control": "no-store" };
 
 /** Every answer is problem details that the contract's schema takes, with a code it lists at its status. */
 function expectProblem(answer: ProblemAnswer): void {
@@ -28,17 +33,17 @@ function expectProblem(answer: ProblemAnswer): void {
 }
 
 describe("problemOf", () => {
-  it("answers no actor with 401, the Bearer challenge and authentication-required", () => {
-    const answer = problemOf({ kind: "authentication-required" });
+  it("answers no actor with 401, the operation's challenge and authentication-required", () => {
+    const answer = problemOf({ kind: "authentication-required", challenge: CHALLENGE });
     expectProblem(answer);
     expect(answer).toEqual({
       status: 401,
-      headers: { ...JSON_PROBLEM, "WWW-Authenticate": "Bearer" },
+      headers: { ...JSON_PROBLEM, "WWW-Authenticate": CHALLENGE },
       body: {
         type: "about:blank",
         title: "Unauthorized",
         status: 401,
-        detail: "The request names no actor. Send a credential in the Authorization header.",
+        detail: "The request names no actor. Sign in first: a browser sends its session cookie, and a program its token in the Authorization header.",
         code: "authentication-required",
       },
     });
@@ -57,6 +62,22 @@ describe("problemOf", () => {
         detail: "The actor lacks the permission company:read, which this operation needs.",
         code: "permission-missing",
         permission: "company:read",
+      },
+    });
+  });
+
+  it("answers a credential that names no company with 403 company-required, for an operation in the credential's company", () => {
+    const answer = problemOf({ kind: "company-required" });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 403,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Forbidden",
+        status: 403,
+        detail: "The operation works in a company, and the request's credential names none. Choose a company first.",
+        code: "company-required",
       },
     });
   });
@@ -138,6 +159,38 @@ describe("problemOf", () => {
         status: 422,
         detail: "This idempotency key belongs to another request. A new request takes a new key.",
         code: "idempotency-key-reused",
+      },
+    });
+  });
+
+  it("answers too many attempts with 429 too-many-attempts and the seconds to wait in Retry-After", () => {
+    const answer = problemOf({ kind: "too-many-attempts", retryAfterSeconds: 32 });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 429,
+      headers: { ...JSON_PROBLEM, "Retry-After": "32" },
+      body: {
+        type: "about:blank",
+        title: "Too Many Requests",
+        status: 429,
+        detail: "Too many failed attempts. Wait the seconds that Retry-After gives before the next one.",
+        code: "too-many-attempts",
+      },
+    });
+  });
+
+  it("answers a full queue of password checks with 503 server-busy and Retry-After", () => {
+    const answer = problemOf({ kind: "server-busy", retryAfterSeconds: 1 });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 503,
+      headers: { ...JSON_PROBLEM, "Retry-After": "1" },
+      body: {
+        type: "about:blank",
+        title: "Service Unavailable",
+        status: 503,
+        detail: "The server checks as many passwords as it can at once. Send the request again after the seconds that Retry-After gives.",
+        code: "server-busy",
       },
     });
   });
@@ -255,6 +308,22 @@ describe("the answers of the surface itself", () => {
         status: 403,
         detail: "The Origin header names a site that may not call /mcp. A program that is not a browser sends no Origin.",
         code: "origin-not-allowed",
+      },
+    });
+  });
+
+  it("answers an MCP call of an operation that serves the browser's session with 403 browser-only", () => {
+    const answer = browserOnly();
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 403,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Forbidden",
+        status: 403,
+        detail: "This operation serves the browser's sign-in. An MCP client signs in through OAuth.",
+        code: "browser-only",
       },
     });
   });

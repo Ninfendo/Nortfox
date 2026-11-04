@@ -35,6 +35,30 @@
 // REFERENCES or TRIGGER) and for the readers (only SELECT). A view reads with
 // the caller's rights (security_invoker). A materialized view is refused.
 //
+// An install-wide table holds what belongs to no company, such as a login
+// identity (db/README.md, the schema access). Each is on INSTALL_TABLES with
+// its class and a reason, and must have:
+// - its place in the schema access, and no column named company_id, which
+//   would make it a company table;
+// - row level security, enabled and forced;
+// - exactly the owner's one policy over every row, which the lookup
+//   functions read and write through, and the app policies of its class,
+//   and no other permissive policy: a person table's compare the person's
+//   column with access.current_person_id(), a company table's compare its
+//   company column with ledger.current_company_id(), each for the commands
+//   it lists; a public table's let the app read every row; a secret table has
+//   none;
+// - the refuse_truncate trigger;
+// - a company column paired with company_id in every foreign key to a
+//   company table but ledger.companies, so a row can never name company A and
+//   a row of company B: the table's own company column, or for another class
+//   a column whose name ends in _company_id;
+// - nortfox_owner as its owner;
+// - no privilege for a reader, and none for the app on a secret table.
+// No reader reads such a table, so its statistics and partial indexes show
+// no reader anything, and both are allowed. A table in the schema access
+// that is neither a company table nor on the list fails.
+//
 // The expected policy texts are written with ledger. in front, so the guard
 // can never pass a policy that calls a function of the same name in another
 // schema. With ledger on the search path, pg_get_expr leaves the schema out
@@ -45,6 +69,9 @@ import type { ClientBase } from "pg";
 const OWNER = "nortfox_owner";
 const APP = "nortfox_app";
 const READER = "nortfox_reader";
+
+/** The schema of the install-wide tables. */
+const INSTALL_SCHEMA = "access";
 
 const COMPANY_CHECK = "(company_id = ledger.current_company_id())";
 
@@ -58,7 +85,7 @@ const OWN_BINDING = `(${READER_ROLE} AND ${READER_ROLE} AND (role_name = CURRENT
 interface Policy {
   readonly role: string;
   readonly command: string;
-  readonly using: string;
+  readonly using: string | null;
   readonly check: string | null;
 }
 
@@ -104,6 +131,78 @@ export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<str
   ],
 ]);
 
+/** A command an app policy of an install-wide table is for. */
+export type AppCommand = "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+
+/** An install-wide table's class, and why it is on the list. */
+export type InstallTable =
+  | { readonly class: "person"; readonly column: string; readonly commands: readonly AppCommand[]; readonly why: string }
+  | { readonly class: "company"; readonly column: string; readonly commands: readonly AppCommand[]; readonly why: string }
+  | { readonly class: "public"; readonly why: string }
+  | { readonly class: "secret"; readonly why: string };
+
+/** The install-wide tables, each with its class and why it belongs to no company. A test pins the list. */
+export const INSTALL_TABLES: ReadonlyMap<string, InstallTable> = new Map<string, InstallTable>([
+  [
+    "access.identities",
+    {
+      class: "person",
+      column: "id",
+      commands: ["SELECT", "UPDATE"],
+      why: "A login identity is one person's, for every company. The app reads and changes only the person's own, and only the database's own functions make one.",
+    },
+  ],
+  [
+    "access.account_events",
+    {
+      class: "person",
+      column: "identity_id",
+      commands: ["SELECT", "INSERT"],
+      why: "Kontoaktivitet is the person's own events, across companies. The app reads and adds only the person's own.",
+    },
+  ],
+  [
+    "access.idempotency_keys",
+    {
+      class: "person",
+      column: "actor_id",
+      commands: ["SELECT", "INSERT"],
+      why: "The keys of a person's own writes keep no company's answer in a company table. The app reads and adds only the person's own.",
+    },
+  ],
+  ["access.password_credentials", { class: "secret", why: "It holds each identity's password hash. Only the lookup functions read it." }],
+  ["access.totp_secrets", { class: "secret", why: "It holds each identity's sealed TOTP secrets. Only the lookup functions read it." }],
+  ["access.known_devices", { class: "secret", why: "It holds the hashes of the device cookies. Only the lookup functions read it." }],
+  ["access.sessions", { class: "secret", why: "It holds the hashes of the session cookies. Only the lookup functions read it." }],
+  ["access.login_challenges", { class: "secret", why: "It holds the hashes of the login challenges. Only the lookup functions read it." }],
+  ["access.setup_tokens", { class: "secret", why: "It holds the hashes of the setup links. Only the lookup functions read it." }],
+  ["access.attempt_counters", { class: "secret", why: "It counts each account's failed guesses. Only the lookup functions read it." }],
+  ["access.install_keys", { class: "secret", why: "It holds the install key's check value of each key id. Only the lookup functions read it." }],
+]);
+
+/** The owner's one policy on every install-wide table: every row, which the lookup functions read and write through. */
+const INSTALL_OWNER_POLICY: Policy = { role: OWNER, command: "ALL", using: "true", check: "true" };
+
+/** The policies an install-wide table of its class must have. */
+function installPolicies(entry: InstallTable): Policy[] {
+  if (entry.class === "secret") {
+    return [INSTALL_OWNER_POLICY];
+  }
+  if (entry.class === "public") {
+    return [INSTALL_OWNER_POLICY, { role: APP, command: "SELECT", using: "true", check: null }];
+  }
+  const rule = entry.class === "person" ? `(${entry.column} = access.current_person_id())` : `(${entry.column} = ledger.current_company_id())`;
+  return [
+    INSTALL_OWNER_POLICY,
+    ...entry.commands.map((command) => ({
+      role: APP,
+      command,
+      using: command === "INSERT" ? null : rule,
+      check: command === "INSERT" || command === "UPDATE" ? rule : null,
+    })),
+  ];
+}
+
 /**
  * The unique indexes of company tables that may leave company_id out, by
  * schema-qualified name, and why their checks tell no company anything about
@@ -140,7 +239,7 @@ const SECURITY_INVOKER = /^security_invoker=(?:true|on|yes|1)$/i;
 
 /** The relations the guard reads: every table and view outside PostgreSQL's own schemas and the extensions. */
 const RELATIONS = `
-  SELECT c.oid, n.nspname || '.' || c.relname AS relation
+  SELECT c.oid, n.nspname || '.' || c.relname AS relation, n.nspname AS schema
   FROM pg_catalog.pg_class AS c
   JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
@@ -155,6 +254,7 @@ const RELATIONS = `
 
 interface RelationRow {
   readonly relation: string;
+  readonly schema: string;
   readonly kind: string;
   readonly owner: string;
   readonly rls: boolean;
@@ -236,7 +336,7 @@ export async function guardedRelations(client: ClientBase): Promise<string[]> {
 
 async function read(client: ClientBase) {
   const relations = await client.query<RelationRow>(`
-    SELECT r.relation, c.relkind AS kind, pg_catalog.pg_get_userbyid(c.relowner) AS owner,
+    SELECT r.relation, r.schema, c.relkind AS kind, pg_catalog.pg_get_userbyid(c.relowner) AS owner,
       c.relrowsecurity AS rls, c.relforcerowsecurity AS forced, COALESCE(c.reloptions, '{}') AS options,
       EXISTS (
         SELECT FROM pg_catalog.pg_attribute AS a
@@ -379,8 +479,8 @@ function uniqueProblem(row: UniqueRow): string | undefined {
 }
 
 function describePolicy(policy: Policy): string {
-  const check = policy.check === null ? "" : ` and WITH CHECK ${policy.check}`;
-  return `has no permissive policy for ${policy.role} on ${policy.command} with USING ${policy.using}${check}.`;
+  const parts = [...(policy.using === null ? [] : [`USING ${policy.using}`]), ...(policy.check === null ? [] : [`WITH CHECK ${policy.check}`])];
+  return `has no permissive policy for ${policy.role} on ${policy.command} with ${parts.join(" and ")}.`;
 }
 
 function matches(found: PolicyRow, wanted: Policy): boolean {
@@ -425,15 +525,114 @@ function privilegeProblem(row: PrivilegeRow): string | undefined {
   return `${row.grantee} has ${what}. Only ${APP} and ${READER} get privileges on a table.`;
 }
 
-/** What each table and view lacks, in plain words, as "schema.name: problem"; empty when nothing does. */
-export async function tableGuardProblems(client: ClientBase): Promise<string[]> {
+/** The problem of a privilege on an install-wide table, or undefined: a reader gets none, and the app none on a secret table. */
+function installPrivilegeProblem(row: PrivilegeRow, entry: InstallTable): string | undefined {
+  const what = row.column === null ? row.privilege : `${row.privilege} on ${row.column}`;
+  if (row.grantee === READER) {
+    return `${READER} has ${what}. A reader gets nothing on an install-wide table.`;
+  }
+  if (row.grantee === APP && entry.class === "secret") {
+    return `${APP} has ${what}, but the app reaches a secret table only through the lookup functions.`;
+  }
+  return privilegeProblem(row);
+}
+
+type Catalog = Awaited<ReturnType<typeof read>>;
+
+/** Whether a foreign key from an install-wide table pairs a company column with company_id: the table's own, or one whose name ends in _company_id. */
+function pairsCompany(key: ForeignKeyRow, entry: InstallTable): boolean {
+  return key.columns.some(
+    (column, place) => key.referencedColumns[place] === "company_id" && (entry.class === "company" ? column === entry.column : column.endsWith("_company_id")),
+  );
+}
+
+/** What an install-wide table lacks. */
+function installTableProblems(row: RelationRow, entry: InstallTable, catalog: Catalog, isCompanyTable: ReadonlyMap<string, boolean>): string[] {
+  const of = <T extends { relation: string }>(rows: readonly T[]): T[] => rows.filter((found) => found.relation === row.relation);
+  const own: string[] = [];
+  if (row.schema !== INSTALL_SCHEMA) {
+    own.push(`is on the install-wide list, but is not in the schema ${INSTALL_SCHEMA}.`);
+  }
+  if (row.company) {
+    own.push("is on the install-wide list, but has a company_id column, which makes a company table.");
+  }
+  if (!row.rls) {
+    own.push("row level security is not enabled.");
+  }
+  if (!row.forced) {
+    own.push("row level security is not forced.");
+  }
+  own.push(...policyProblems(installPolicies(entry), of(catalog.policies)));
+  own.push(...triggerProblems(false, null, of(catalog.triggers)));
+  for (const key of of(catalog.keys)) {
+    if (isCompanyTable.get(key.referenced) === true && key.referenced !== "ledger.companies" && !pairsCompany(key, entry)) {
+      own.push(`the foreign key ${key.name} to ${key.referenced} does not pair a company column with company_id.`);
+    }
+  }
+  return own;
+}
+
+/** What a company table, or a table the guard excepts, lacks. */
+function companyTableProblems(row: RelationRow, catalog: Catalog, isCompanyTable: ReadonlyMap<string, boolean>): string[] {
+  const of = <T extends { relation: string }>(rows: readonly T[]): T[] => rows.filter((found) => found.relation === row.relation);
+  const exception = GUARD_EXCEPTIONS.get(row.relation);
+  const needsHistory = exception?.kind !== "no history trigger";
+  const own: string[] = [];
+  if (exception?.kind === "not a company table") {
+    return own;
+  }
+  if (!row.company) {
+    own.push(
+      row.schema === INSTALL_SCHEMA
+        ? `is in the schema ${INSTALL_SCHEMA}, but is neither a company table nor on the install-wide list.`
+        : "has no company_id column.",
+    );
+    return own;
+  }
+  if (!row.rls) {
+    own.push("row level security is not enabled.");
+  }
+  if (!row.forced) {
+    own.push("row level security is not forced.");
+  }
+  own.push(...policyProblems(exception?.kind === "own policies" ? exception.policies : COMPANY_POLICIES, of(catalog.policies)));
+  if (row.key === null && needsHistory) {
+    own.push("has no primary key of one uuid column, which the history needs as the row's id.");
+  }
+  own.push(...triggerProblems(needsHistory, row.key, of(catalog.triggers)));
+  for (const key of of(catalog.keys)) {
+    const paired = key.columns.some((column, place) => column === "company_id" && key.referencedColumns[place] === "company_id");
+    if (isCompanyTable.get(key.referenced) === true && !paired) {
+      own.push(`the foreign key ${key.name} to ${key.referenced} does not include company_id on both sides.`);
+    }
+  }
+  for (const unique of of(catalog.uniques)) {
+    const problem = uniqueProblem(unique);
+    if (problem !== undefined) {
+      own.push(problem);
+    }
+  }
+  own.push(...of(catalog.partialIndexes).map((found) => `has the partial index ${found.name}: ${COUNTS_BY_VALUE}`));
+  const kept = of(catalog.statistics).map((found) => found.what);
+  if (kept.length > 0) {
+    own.push(`keeps planner statistics of ${kept.join(", ")}, ${KEEPS_VALUES}`);
+  }
+  own.push(...of(catalog.extendedStatistics).map((found) => `has the extended statistics ${found.name}, ${KEEPS_VALUES}`));
+  return own;
+}
+
+/**
+ * What each table and view lacks, in plain words, as "schema.name: problem";
+ * empty when nothing does. `install` is the list of install-wide tables,
+ * which a test gives with probe tables of its own.
+ */
+export async function tableGuardProblems(client: ClientBase, install: ReadonlyMap<string, InstallTable> = INSTALL_TABLES): Promise<string[]> {
   const catalog = await read(client);
   const problems: string[] = [];
   const isCompanyTable = new Map(catalog.relations.map((row) => [row.relation, row.company]));
   for (const row of catalog.relations) {
     const of = <T extends { relation: string }>(rows: readonly T[]): T[] => rows.filter((found) => found.relation === row.relation);
-    const exception = GUARD_EXCEPTIONS.get(row.relation);
-    const needsHistory = exception?.kind !== "no history trigger";
+    const entry = install.get(row.relation);
     const own: string[] = [];
     if (row.owner !== OWNER) {
       own.push(`is owned by ${row.owner}, not ${OWNER}.`);
@@ -445,43 +644,13 @@ export async function tableGuardProblems(client: ClientBase): Promise<string[]> 
       if (!row.options.some((option) => SECURITY_INVOKER.test(option))) {
         own.push("is a view without security_invoker = true, so it would read its tables with its owner's rights.");
       }
-    } else if (exception?.kind !== "not a company table") {
-      if (!row.company) {
-        own.push("has no company_id column.");
-      } else {
-        if (!row.rls) {
-          own.push("row level security is not enabled.");
-        }
-        if (!row.forced) {
-          own.push("row level security is not forced.");
-        }
-        own.push(...policyProblems(exception?.kind === "own policies" ? exception.policies : COMPANY_POLICIES, of(catalog.policies)));
-        if (row.key === null && needsHistory) {
-          own.push("has no primary key of one uuid column, which the history needs as the row's id.");
-        }
-        own.push(...triggerProblems(needsHistory, row.key, of(catalog.triggers)));
-        for (const key of of(catalog.keys)) {
-          const paired = key.columns.some((column, place) => column === "company_id" && key.referencedColumns[place] === "company_id");
-          if (isCompanyTable.get(key.referenced) === true && !paired) {
-            own.push(`the foreign key ${key.name} to ${key.referenced} does not include company_id on both sides.`);
-          }
-        }
-        for (const unique of of(catalog.uniques)) {
-          const problem = uniqueProblem(unique);
-          if (problem !== undefined) {
-            own.push(problem);
-          }
-        }
-        own.push(...of(catalog.partialIndexes).map((found) => `has the partial index ${found.name}: ${COUNTS_BY_VALUE}`));
-        const kept = of(catalog.statistics).map((found) => found.what);
-        if (kept.length > 0) {
-          own.push(`keeps planner statistics of ${kept.join(", ")}, ${KEEPS_VALUES}`);
-        }
-        own.push(...of(catalog.extendedStatistics).map((found) => `has the extended statistics ${found.name}, ${KEEPS_VALUES}`));
-      }
+    } else if (entry !== undefined) {
+      own.push(...installTableProblems(row, entry, catalog, isCompanyTable));
+    } else {
+      own.push(...companyTableProblems(row, catalog, isCompanyTable));
     }
     for (const privilege of of(catalog.privileges)) {
-      const problem = privilegeProblem(privilege);
+      const problem = entry === undefined ? privilegeProblem(privilege) : installPrivilegeProblem(privilege, entry);
       if (problem !== undefined) {
         own.push(problem);
       }

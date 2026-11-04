@@ -10,6 +10,14 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-nortfox-session",
+        "description": "The browser's session, which a sign-in sets: verifyTotp, or loginWithPassword on a known device. The browser sends it by itself."
+      }
+    },
     "schemas": {
       "Health": {
         "type": "object",
@@ -103,7 +111,7 @@
           },
           "pointer": {
             "type": "string",
-            "description": "A JSON Pointer to the field in the operation's input: the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.",
+            "description": "A JSON Pointer to the field in the operation's input: the path parameters, the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.",
             "examples": [
               "/amount/amount"
             ]
@@ -154,6 +162,138 @@
         ],
         "additionalProperties": false,
         "description": "The company the request works in. Every data request works in exactly one company."
+      },
+      "SetupResult": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "totpEnrolment": {
+            "$ref": "#/components/schemas/TotpEnrolment"
+          }
+        },
+        "required": [
+          "user",
+          "totpEnrolment"
+        ],
+        "additionalProperties": false,
+        "description": "The first identity of the install, with its TOTP enrolment. The person signs in next, with the password and a code."
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The person's id. The person stays the actor of every entry they made."
+          },
+          "name": {
+            "type": "string",
+            "description": "The person's name."
+          },
+          "email": {
+            "type": "string",
+            "description": "The person's personal e-mail address. A password sign-in takes it as the identifier, in any letter case."
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "sv",
+              "en"
+            ],
+            "description": "Språk: sv (Svenska) or en (English). It applies in every company."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "email",
+          "language"
+        ],
+        "additionalProperties": false,
+        "description": "A person: their NortFox ID, the one login identity they use for every company."
+      },
+      "TotpEnrolment": {
+        "type": "object",
+        "properties": {
+          "otpauthUri": {
+            "type": "string",
+            "description": "The TOTP secret as an otpauth URI, for an authenticator app: show it as a QR code. The first right code of it confirms it."
+          }
+        },
+        "required": [
+          "otpauthUri"
+        ],
+        "additionalProperties": false,
+        "description": "A new TOTP secret, which the person adds to an authenticator app."
+      },
+      "PasswordSignIn": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "signed-in",
+              "totp-required"
+            ],
+            "description": "signed-in: the session cookie is set, on a known device inside its 90 days. totp-required: verifyTotp comes next, with the challenge."
+          },
+          "challenge": {
+            "type": "string",
+            "pattern": "^nfc_[A-Za-z0-9_-]{43}$",
+            "description": "The login challenge, for verifyTotp, when the outcome is totp-required. It works for 20 minutes and for five codes."
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "additionalProperties": false,
+        "description": "What a right password gives: a session, or the TOTP step."
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          }
+        },
+        "required": [
+          "user"
+        ],
+        "additionalProperties": false,
+        "description": "The browser's session: the person it signed in. A session works in no company until one is chosen."
+      },
+      "Me": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "personalIdentityNumber": {
+            "type": "string",
+            "pattern": "^[0-9]{8}-[0-9]{4}$",
+            "description": "The person's personnummer, in twelve digits with a hyphen. Absent until one is added."
+          },
+          "mobile": {
+            "type": "string",
+            "description": "The person's mobile number. Absent when none is set."
+          },
+          "twoStep": {
+            "type": "string",
+            "enum": [
+              "new_device_90_days",
+              "every_login"
+            ],
+            "description": "How often a password sign-in asks for a TOTP code: new_device_90_days on each new device and every 90 days on a known one, or every_login."
+          }
+        },
+        "required": [
+          "user",
+          "twoStep"
+        ],
+        "additionalProperties": false,
+        "description": "The signed-in person, with their own login data."
       }
     },
     "parameters": {}
@@ -172,7 +312,9 @@
           "tool": "Checks that the NortFox server is up, and gives its version. It reads no data.",
           "assistant": false,
           "writes": false,
-          "list": false
+          "list": false,
+          "session": null,
+          "company": "none"
         },
         "responses": {
           "200": {
@@ -221,8 +363,15 @@
           "tool": "Gives the company you work in: its id, name, organisation number and database number. Every other tool works in this company too.",
           "assistant": true,
           "writes": false,
-          "list": false
+          "list": false,
+          "session": null,
+          "company": "credential"
         },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "The company the request works in. Every data request works in exactly one company.",
@@ -248,7 +397,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Bearer.",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
                 "schema": {
                   "type": "string"
                 }
@@ -263,7 +412,741 @@
             }
           },
           "403": {
-            "description": "The actor lacks the permission the operation needs.",
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/setup/{token}": {
+      "post": {
+        "operationId": "completeSetup",
+        "tags": [
+          "auth"
+        ],
+        "summary": "Make the first identity",
+        "description": "Makes the install's first identity from its setup link, with a name, an e-mail address and a password of 12 to 1024 characters. The link works once, for 28 days, on an install with no identity, and a newer link stops it. The answer gives the new TOTP secret. It sets no session: the person signs in next, with the password and a code.",
+        "x-nortfox": {
+          "permission": "none",
+          "tool": "Makes the first identity of an empty install. It serves the browser's sign-in, so this tool refuses every call.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": "flow",
+          "company": "none"
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^nfu_[A-Za-z0-9_-]{43}$",
+              "description": "The setup link's token, which the install's setup command printed."
+            },
+            "required": true,
+            "description": "The setup link's token, which the install's setup command printed.",
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "The person's name."
+                  },
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "format": "email",
+                    "description": "The person's personal e-mail address."
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "The password: 12 to 1024 characters."
+                  }
+                },
+                "required": [
+                  "name",
+                  "email",
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The first identity of the install, with its TOTP enrolment. The person signs in next, with the password and a code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts: wait the seconds that Retry-After gives before the next one.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server checks as many passwords as it can at once: send the request again after the seconds that Retry-After gives.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/password": {
+      "post": {
+        "operationId": "loginWithPassword",
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign in with a password",
+        "description": "Signs in with an identifier, the e-mail address in any letter case or the personnummer, and the password. A right password gives the TOTP step, or a session on a known device inside its 90 days when the person's two-step choice allows it. Every failure gets the same answer. After 5 failures in an hour each attempt waits longer, and after 100 the sign-in waits until the hour has passed.",
+        "x-nortfox": {
+          "permission": "none",
+          "tool": "Signs a browser in with a password. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": "flow",
+          "company": "none"
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "identifier": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 254,
+                    "description": "The e-mail address, or the personnummer in 10 or 12 digits."
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The password."
+                  }
+                },
+                "required": [
+                  "identifier",
+                  "password"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What a right password gives: a session, or the TOTP step.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordSignIn"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts: wait the seconds that Retry-After gives before the next one.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server checks as many passwords as it can at once: send the request again after the seconds that Retry-After gives.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/totp": {
+      "post": {
+        "operationId": "verifyTotp",
+        "tags": [
+          "auth"
+        ],
+        "summary": "Give the TOTP code",
+        "description": "Ends a password sign-in with the six digits of the person's authenticator app. A right code sets the session cookie, and makes the browser a known device. A code works once. A challenge takes five codes, and ten wrong codes in 15 minutes stop the TOTP step for 15 minutes.",
+        "x-nortfox": {
+          "permission": "none",
+          "tool": "Gives the TOTP code of a browser's sign-in. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": "flow",
+          "company": "none"
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "challenge": {
+                    "type": "string",
+                    "pattern": "^nfc_[A-Za-z0-9_-]{43}$",
+                    "description": "The login challenge that loginWithPassword gave."
+                  },
+                  "code": {
+                    "type": "string",
+                    "pattern": "^[0-9]{6}$",
+                    "description": "The six digits of the authenticator app."
+                  }
+                },
+                "required": [
+                  "challenge",
+                  "code"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Done. The answer has no body."
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts: wait the seconds that Retry-After gives before the next one.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server checks as many passwords as it can at once: send the request again after the seconds that Retry-After gives.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign out",
+        "description": "Ends the browser's session, so its cookie is refused from the next request, and clears the cookie.",
+        "x-nortfox": {
+          "permission": "signed-in",
+          "tool": "Signs a browser out. It serves the browser's session, so this tool refuses every call.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": "flow",
+          "company": "none"
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. The answer has no body."
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/session": {
+      "get": {
+        "operationId": "getSession",
+        "tags": [
+          "session"
+        ],
+        "summary": "Read the session",
+        "description": "Gives the browser's session: the person it signed in.",
+        "x-nortfox": {
+          "permission": "signed-in",
+          "tool": "Reads the browser's session. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+          "assistant": false,
+          "writes": false,
+          "list": false,
+          "session": "flow",
+          "company": "none"
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The browser's session: the person it signed in. A session works in no company until one is chosen.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "operationId": "getMe",
+        "tags": [
+          "me"
+        ],
+        "summary": "Read yourself",
+        "description": "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice.",
+        "x-nortfox": {
+          "permission": "signed-in",
+          "tool": "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code.",
+          "assistant": false,
+          "writes": false,
+          "list": false,
+          "session": null,
+          "company": "none"
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The signed-in person, with their own login data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {

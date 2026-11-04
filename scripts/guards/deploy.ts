@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Keeps the backup settings and the migrate step of an install
-// (docs/decisions/0007-self-hosting-and-backups.md) in the files that set
-// them: the compose file, pgBackRest's config, the two images and the first
+// Keeps the backup settings, the log settings and the migrate step of an
+// install (docs/decisions/0007-self-hosting-and-backups.md) in the files that
+// set them: the compose file, pgBackRest's config, the two images and the first
 // start's script that takes the first full backups. The
 // point-in-time restore test, deploy/backup-test/pitr.sh, checks the same
 // settings on a running stack. This guard makes a changed copy of a file fail
@@ -23,7 +23,12 @@ export const SERVER_IMAGE = "deploy/server/Dockerfile";
 export const DOCKERIGNORE = ".dockerignore";
 export const STANZA_SCRIPT = "deploy/postgres/initdb/20-stanza.sh";
 
-/** The postgres service's command: WAL archiving through pgBackRest, and a closed segment after at most 60 seconds. */
+/**
+ * The postgres service's command: WAL archiving through pgBackRest, a closed
+ * segment after at most 60 seconds, and a log of a failed statement with no
+ * DETAIL, which can hold the failing row, and no parameter, which can hold a
+ * secret of the request.
+ */
 export const POSTGRES_COMMAND = [
   "postgres",
   "-c",
@@ -34,6 +39,10 @@ export const POSTGRES_COMMAND = [
   "archive_command=pgbackrest --stanza=nortfox archive-push %p",
   "-c",
   "archive_timeout=60",
+  "-c",
+  "log_error_verbosity=terse",
+  "-c",
+  "log_parameter_max_length_on_error=0",
 ];
 
 /**
@@ -46,7 +55,7 @@ export const POSTGRES_HEALTHCHECK =
   '["CMD-SHELL", "test -f /var/lib/postgresql/18/docker/nortfox-first-start-done && test ! -e /var/lib/postgresql/nortfox-first-backups-pending && pg_isready --host 127.0.0.1 --username postgres --dbname nortfox"]';
 
 /** The settings that only the postgres service's command sets. */
-const ARCHIVE_SETTING = /\b(wal_level|archive_mode|archive_command|archive_timeout)\b/;
+const COMMAND_SETTING = /\b(wal_level|archive_mode|archive_command|archive_timeout|log_error_verbosity|log_parameter_max_length_on_error)\b/;
 
 interface Line {
   readonly number: number;
@@ -174,7 +183,8 @@ export function composeProblems(text: string): string[] {
         POSTGRES_COMMAND.map((part) => `- ${part}`),
       ),
     `services.postgres.command must be exactly ${POSTGRES_COMMAND.join(" ")}, one item to a line. ` +
-      "PostgreSQL archives each WAL segment through pgBackRest to both repositories, and closes a segment after at most 60 seconds.",
+      "PostgreSQL archives each WAL segment through pgBackRest to both repositories, and closes a segment after at most 60 seconds. " +
+      "Its log of a failed statement holds no DETAIL and no parameter, so no row and no secret of a request reaches the log.",
   );
   for (const [option, variable] of [
     ["PGBACKREST_REPO2_TYPE", "NORTFOX_REPO2_TYPE"],
@@ -245,9 +255,9 @@ export function composeProblems(text: string): string[] {
 
   const inCommand = new Set([command?.line, ...(command?.block.map((line) => line.number) ?? [])]);
   for (const line of lines) {
-    const setting = ARCHIVE_SETTING.exec(line.text)?.[1];
+    const setting = COMMAND_SETTING.exec(line.text)?.[1];
     if (setting !== undefined && !inCommand.has(line.number)) {
-      problems.push(`${COMPOSE}:${String(line.number)} names ${setting} outside services.postgres.command, where the archive settings are set.`);
+      problems.push(`${COMPOSE}:${String(line.number)} names ${setting} outside services.postgres.command, where the archive and log settings are set.`);
     }
   }
   return problems;

@@ -14,14 +14,32 @@ The compatible API, which follows the established system's API so that an existi
 Each operation is one entry in the registry in `packages/contract` ([decision 3](decisions/0003-contract-first-rest-and-mcp.md)). An entry declares:
 
 - its id, which is also the MCP tool's name and the client's method name;
-- its method and its path under `/v1`;
-- the shapes of its input and its output;
-- the permission it needs, or `public` for an operation that reads no data;
+- its method and its path under `/v1`, with each path parameter as `{name}`;
+- the shapes of its input and its output, and its success status;
+- who may call it (`permission`);
 - the text of its MCP tool;
 - whether it writes;
-- whether the AI assistant may call it. An operation is closed to the assistant unless it says otherwise.
+- whether it is a list;
+- whether the AI assistant may call it. An operation is closed to the assistant unless it says otherwise;
+- whether it serves the browser's session (`session`);
+- where its company comes from (`company`).
 
-`openapi.json` shows these facts on each operation, under `x-nortfox`. So the diff of `openapi.json` in a pull request shows a reviewer every change, a changed permission too.
+`openapi.json` shows these facts on each operation, under `x-nortfox`, and names the credential of each operation that needs an actor under OpenAPI's own `security` (Who acts, below). So the diff of `openapi.json` in a pull request shows a reviewer every change, a changed permission too.
+
+### The marks
+
+| Mark | Value | Meaning |
+| --- | --- | --- |
+| `permission` | `public` | Reads and writes no data. Anyone may call it, and it never asks for an actor. |
+| | `none` | Runs before there is an actor, such as a sign-in. Anyone may call it. It serves the browser's session, and it takes no idempotency key. |
+| | `signed-in` | Needs a signed-in person, and no permission in a company. |
+| | a permission, such as `company:read` | Needs that permission in the credential's company. |
+| `session` | `flow` | Serves the browser's session, such as a sign-in or a logout. Its MCP tool refuses every call. |
+| | `null` | Any other operation. |
+| `company` | `none` | Works in no company: every `public`, `none` and `signed-in` operation. |
+| | `credential` | Works in the company that the request's credential names: every operation with a permission. |
+
+The registry guard holds these together. An operation that runs before sign-in serves the browser's session. Only a `none` or a `signed-in` operation may serve it. An operation with a permission takes its company from the credential, and no other operation does. A write takes an idempotency key, unless it runs before sign-in. A `GET` writes only when it runs before sign-in and answers 303. Two operations of one method never answer the same path, so `/v1/users/{userId}` and `/v1/users/me` cannot both be `GET`. Two operations whose paths differ only in a parameter's name are one path, so they give the parameter one name: `GET /v1/users/{userId}` and `PATCH /v1/users/{id}` cannot both be in the registry. An operation that needs an actor, `signed-in` or with a permission, names its credential in `security`, and a `public` or `none` operation names none.
 
 The server serves only what the registry holds. It refuses to start when a route under `/v1` is not in the registry.
 
@@ -29,26 +47,89 @@ The server serves only what the registry holds. It refuses to start when a route
 | --- | --- | --- | --- | --- |
 | `getHealth` | `GET /v1/health` | `Health`: `status` and `version` | `public` | no |
 | `getCompany` | `GET /v1/company` | `Company`: `id`, `name`, `organizationNumber` and `databaseNumber` | `company:read` | yes |
+| `completeSetup` | `POST /v1/setup/{token}` | `SetupResult`: `user` and `totpEnrolment` | `none` | no |
+| `loginWithPassword` | `POST /v1/auth/password` | `PasswordSignIn`: `outcome` and, for the TOTP step, `challenge` | `none` | no |
+| `verifyTotp` | `POST /v1/auth/totp` | none (204) | `none` | no |
+| `logout` | `POST /v1/auth/logout` | none (204) | `signed-in` | no |
+| `getSession` | `GET /v1/session` | `Session`: `user` | `signed-in` | no |
+| `getMe` | `GET /v1/me` | `Me`: `user`, `personalIdentityNumber`, `mobile` and `twoStep` | `signed-in` | no |
+
+`User` is a person: `id`, `name`, `email` and `language` (`sv` or `en`).
 
 Field names are camelCase. An answer is the object itself, with no wrapper around it.
 
 ## Who acts
 
-Every operation that is not `public` acts as one actor in one company. The company comes from the request's credential, never from the path or the body. A path holds no company id.
+Every operation with a permission acts as one actor in one company. The company comes from the request's credential, never from the path or the body. A path holds no company id. A `signed-in` operation acts as the signed-in person in no company. A `none` operation runs before there is an actor.
 
-The credential goes in the `Authorization` header. Login and API tokens come in slice 2c. Until then the server knows no actor: every operation that reads or writes data answers 401, by REST with the challenge `WWW-Authenticate: Bearer`, and by MCP in a tool result marked `isError`. `GET /v1/health` and `/openapi.json` need no actor.
+A browser signs in with a password and a TOTP code, and then sends its session in a cookie (Signing in, below). `openapi.json` names that cookie as the security scheme `sessionCookie`, an API key in the cookie `__Host-nortfox-session`, on every operation that needs an actor. The browser sends it by itself, and no script reads it, so the generated client takes no option for it. The server looks the session up on every request. A session acts as its person, with the actor kind `user`, and works in no company yet. On `/v1`, a request with a bearer token ignores the cookie; API tokens come in a later part of slice 2c, so until then a bearer token names no actor. `/mcp` never reads the cookie: an MCP client signs in through OAuth, which comes in a later part of slice 2c, so until then every tool that needs an actor answers 401. An operation that needs an actor answers 401 without one, by REST with a challenge in `WWW-Authenticate` that names the credential the operation takes, and by MCP in a tool result marked `isError`. In this part of slice 2c that credential is the session cookie, whose challenge is `Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`. HTTP has no registered scheme for a cookie, so that scheme is NortFox's own, and a client that does not know it ignores it. `openapi.json` names the challenge on each 401. `GET /v1/health` and `/openapi.json` need no actor.
 
-The server checks the actor and the permission before it reads the rest of the request: on REST before the query and the body, on MCP before the tool's arguments. So a request with no actor gets 401, and an actor without the permission gets 403, even when the rest of the request is wrong. Neither touches the database.
+The server checks the actor and the permission before it reads the rest of the request: on REST before the path parameters, the query and the body, on MCP before the tool's arguments. So a request with no actor gets 401, a credential that names no company gets 403 `company-required` for an operation that works in a company, and an actor without the permission gets 403 `permission-missing`, even when the rest of the request is wrong. No transaction of the operation runs for them, and nothing of the input is read. Only the session's own lookup runs first: the server finds the session by its cookie's hash, ends it when it has passed its end, and notes the request.
 
-Each request runs in one database transaction, with the company, the actor, the actor's kind (`user`, `system` or `integration`) and the channel (`rest` or `mcp`) set for that transaction only. A read sees one snapshot, so a page and its total agree. The behandlingshistorik records the actor, its kind and the channel of every change ([db/README.md](../db/README.md)).
+Each request runs in one database transaction, with the company, the actor, the actor's kind (`user`, `system` or `integration`) and the channel (`rest` or `mcp`) set for that transaction only. A `signed-in` operation's transaction sets no company. A `none` operation opens its own transactions. A read sees one snapshot, so a page and its total agree. The behandlingshistorik records the actor, its kind and the channel of every change ([db/README.md](../db/README.md)).
 
 ## Requests on `/v1`
 
 - Paths and names are case-sensitive. A path has no trailing slash. An unknown path gets 404 `not-found`. A known path with another method gets 405 `method-not-allowed`, with the methods it takes in `Allow`.
+- A path parameter is one segment of the path, such as the id in `/v1/users/{userId}`. Its value is checked like any field: a bad one is a field problem at `/userId`.
 - A query parameter that the operation does not declare is refused, and so is a parameter given twice.
 - A body is JSON in UTF-8, sent as `application/json`. Another media type gets 415 `unsupported-media-type`. A body that does not parse gets 400 `malformed-json`. A body over 1 MiB gets 413 `payload-too-large`.
 - A body field that the operation does not declare is refused, at any depth.
-- A success answers 200, or 201 for an operation that creates something, with plain JSON.
+
+## Cross-site requests
+
+A browser's session comes in the cookie `__Host-nortfox-session`, which is `SameSite=Strict`, so a browser never sends it with a request that another site starts. `/v1` also checks the `Origin` header, from the request's headers alone and before it reads the cookie:
+
+- A request whose method is not `GET` or `HEAD`, that carries the session cookie and no bearer token, must carry the install's own origin in `Origin`. A browser sends `Origin` with every such request. Without it, or with another, the request gets 403 `origin-not-allowed`.
+- An operation that runs before sign-in (`permission: none`) refuses an `Origin` that is not the install's, so another site cannot sign a browser in. A request with no `Origin` and no session cookie, from a program that is not a browser, runs. With the session cookie, the first rule holds: a sign-in from a program that still sends an old session cookie gets 403 `origin-not-allowed`.
+- A request with a bearer token is a program's. It ignores the cookie, so the first rule does not touch it.
+
+The install's own origin is the one it is set up with, `NORTFOX_PUBLIC_ORIGIN` ([deploy/README.md](../deploy/README.md)). `/mcp` allows the same one. A `public` operation reads nothing of anyone's, so neither rule touches it. A body is `application/json` only, which a form on another site cannot send without a preflight, and `/v1` answers no preflight.
+
+## Signing in
+
+A browser signs in in two steps. Each serves the browser's session, so its MCP tool refuses every call.
+
+1. `loginWithPassword` takes an identifier and the password. The identifier is the e-mail address, in any letter case, or the personnummer: in 12 digits, with or without the hyphen, or in 10, `YYMMDD-NNNN`, with `+` in place of `-` from the year the person turns 100. A right password gives `{ "outcome": "totp-required", "challenge": "..." }`. The challenge works for 20 minutes and for five codes.
+2. `verifyTotp` takes the challenge and the six digits of the person's authenticator app (RFC 6238). A right code answers 204, sets the session cookie, and makes the browser a known device. A code works once, also when it is sent twice at once. The browser keeps its device cookie only when it names a device that the person knows already. Otherwise the answer sets a new one: a device token that the server did not give the person, such as one that someone else put in the browser, never becomes the person's known device. So one browser is a known device of one person at a time.
+
+The person's two-step choice, `twoStep` in `getMe`, says how often the TOTP step comes. With `new_device_90_days`, which a new identity starts with, it comes on a new device, and on a known device 90 days after the device's last TOTP step. Inside those 90 days, on a known device, `loginWithPassword` answers `{ "outcome": "signed-in" }` and sets the session cookie itself. With `every_login` it comes at every sign-in.
+
+| Cookie | Holds | Attributes |
+| --- | --- | --- |
+| `__Host-nortfox-session` | the session | `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and no `Max-Age`, so it ends with the browser |
+| `__Host-nortfox-device` | the known device | `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, and `Max-Age` 400 days |
+
+No answer body holds a session's token, and the server keeps every token only as its hash. `getSession` gives the session's person, and `getMe` the person's own login data. A session ends at `logout`, 12 hours after it began, and, while it has no company, after 120 minutes without a request. The server notes a request at most once a minute, so that end can come up to a minute early. From the next request on, its cookie gets 401. `logout` ends the session at once and clears its cookie. The browser stays a known device.
+
+**One answer for every failure.** Every failed password step gets 422 `sign-in-failed`: an unknown identifier, a deleted identity, an identity without a password and a wrong password. With no identity or no password, the server checks the password against a dummy hash, so the time tells nothing either. Every failed TOTP step gets 422 `sign-in-failed` too: a wrong code, a code used before, and a challenge that is used, past its 20 minutes or out of codes. A stored TOTP secret that does not open with the install secret is the server's fault, not a wrong code: the step answers 500 `internal-error`, counts nothing against the person, and the server logs which secret it was.
+
+**The limits.**
+
+- The failures of the password step count per account, for an hour from the first: the identity's, or, for an identifier that names none, the identifier's, so both are limited the same way. An e-mail address counts in the form that finds its identity: folded as the database folds it, so every spelling that would find one identity counts as one. After the nth failure from the fifth on, the next attempt waits 2^(n-5) seconds, at most 60, and never past the hour's end. At 100 failures the step is locked until the hour has passed. An attempt that comes too soon gets 429 `too-many-attempts` with `Retry-After`, and its password is not checked. A right password clears the count.
+- A challenge takes five codes in all, also from parallel calls. Ten wrong codes of one identity in 15 minutes lock its TOTP step for 15 minutes from the tenth, with 429 `too-many-attempts` and `Retry-After`, also across its challenges, and also when the 15 minutes from the first wrong code end before the lock does.
+- Each attempt is counted before it is checked, so attempts sent at once come one after another: a burst gets no more checked than one attempt after another would. An attempt that the server could not check, such as one that gets 503, counts nothing.
+- The server checks at most as many passwords at once as it has cores, with a queue of as many. When both are full, a request gets 503 `server-busy` with `Retry-After: 1`.
+
+**Kontoaktivitet** holds the person's own events: each sign-in and each failed one, with the method, the second step, the application and the IP address; the lock of a step; and each logout. The entries of a failure are written after the answer.
+
+**The first identity.** An empty install gets its first identity from a setup link that the install's setup command prints ([deploy/README.md](../deploy/README.md)). `completeSetup` takes the link's token in its path, with a name, an e-mail address and a password. The link works once, for 28 days, and a newer link stops it. Any other link gets 422 `setup-link-invalid`, and an install that has an identity 422 `install-not-empty`. The answer gives the new TOTP secret as an `otpauth` URI, and sets no session: the person signs in next, and the first right code confirms the secret.
+
+**Passwords.** A new password is 12 to 1024 characters, counted in code points after NFC normalisation. One that is too short or too long is a field problem at `/password`, `too-short` or `too-long`. One that holds a lone surrogate (half of a character, which JSON can send as an escape such as `\ud800`), or more than 30 combining marks in a row, is a field problem too, `invalid-value`, and such a password is never right at the sign-in. The server keeps a password only as an Argon2id hash.
+
+## Answers on `/v1`
+
+| Status | When | Body |
+| --- | --- | --- |
+| 200 | Most successes. | Plain JSON. |
+| 201 | An operation that creates something. | Plain JSON. |
+| 202 | An operation whose work goes on after the answer. | None. |
+| 204 | An operation that has nothing to answer, such as a removal. | None. |
+| 303 | A `GET` that runs before sign-in and sends the browser on, such as to an identity provider. | The `Location` header, and the same location as JSON: `{ "location": "..." }`. |
+
+- Every answer carries `Cache-Control: no-store`, a problem too, since it may hold the request's own data.
+- An operation that serves the browser's session may set or clear its cookies with `Set-Cookie`. No answer body holds what a cookie holds.
+- On MCP, an answer with no body is an empty object.
 
 ## Money
 
@@ -88,16 +169,18 @@ Every error on `/v1` is problem details (RFC 9457), as `application/problem+json
 
 - `type` is always `about:blank`, so `title` is the status's phrase.
 - `code` is stable and kebab-case. Programs rely on `code`, never on `detail`. The texts are English until slice 2d brings the Swedish ones.
-- `errors` lists every field problem of a 400 `invalid-request`. Each has its own `code`, a `detail`, a `pointer` and, when there are any, its facts in `data`: `expected` (the JSON type the field takes), `minimum`, `maximum` and `allowed` (the values it takes).
+- `errors` lists every field problem of a 400 `invalid-request`. Each has its own `code`, a `detail`, a `pointer` and, when there are any, its facts in `data`: `expected` (the JSON type the field takes), `minimum`, `maximum`, `allowed` (the values it takes) and `format` (the format a text lacks).
 - `permission` names the permission a 403 `permission-missing` lacks.
 - A rule's refusal, 422, has the rule's `code`, its facts in `data`, and a `pointer` when it is about one field, so a screen can show it on that field.
-- A 500 `internal-error` holds nothing of the error. The server logs it.
+- A 429 and a 503 carry `Retry-After`, in whole seconds.
+- A 500 `internal-error` holds nothing of the error. The server logs it, but only the error's class, its code, the constraint, schema, table and column it names, its message and its stack, with every token, personnummer and e-mail address taken out. The log never holds a database error's detail, which can hold a row, nor the parameters of a statement.
 - An answer never repeats the values the request sent.
 
 ### Pointers
 
-A pointer is a JSON Pointer (RFC 6901), in its string form, into the operation's flat input. The flat input is one object with the query parameters, the body's fields and, for a write, `idempotencyKey`. It is the same object that the operation's MCP tool takes. So:
+A pointer is a JSON Pointer (RFC 6901), in its string form, into the operation's flat input. The flat input is one object with the path parameters, the query parameters, the body's fields and, for a write, `idempotencyKey`. It is the same object that the operation's MCP tool takes. So:
 
+- `/userId` is the path parameter `userId`;
 - `/limit` is the query parameter `limit`;
 - `/amount/amount` is the field `amount` inside the body field `amount`;
 - `/idempotencyKey` is the `Idempotency-Key` header on REST and the argument on MCP;
@@ -112,16 +195,22 @@ The registry keeps the names apart, so a pointer is never ambiguous. The same re
 | 400 | `invalid-request` | The request does not fit the operation. `errors` says where. |
 | 400 | `malformed-json` | The body is not JSON in UTF-8. |
 | 401 | `authentication-required` | The request names no actor. |
+| 403 | `company-required` | The operation works in a company, and the request's credential names none. |
 | 403 | `permission-missing` | The actor lacks the operation's permission. |
-| 403 | `origin-not-allowed` | A request to `/mcp` from a browser origin that may not call it. |
+| 403 | `origin-not-allowed` | A request from a site that may not send it: to `/mcp` from a browser origin that the install does not allow, or to `/v1` as Cross-site requests says. |
+| 403 | `browser-only` | An MCP call of an operation that serves the browser's session. |
 | 404 | `not-found` | No operation has the path. |
 | 405 | `method-not-allowed` | The path takes another method. |
 | 409 | `idempotency-key-in-use` | Another request with the same idempotency key is still running. |
 | 413 | `payload-too-large` | The body is over 1 MiB. |
 | 415 | `unsupported-media-type` | The body is not `application/json`. |
 | 422 | `idempotency-key-reused` | The idempotency key belongs to another request. |
-| 422 | a rule's code | A rule refuses the request, such as `period-locked-manual`. |
+| 422 | `sign-in-failed` | A sign-in step failed. The answer is the same for every cause (Signing in). |
+| 422 | `setup-link-invalid` | The setup link is unknown, used, stopped by a newer link, or past its end. |
+| 422 | a rule's code | A rule refuses the request, such as `period-locked-manual`, or `install-not-empty` for a setup link on an install that has an identity. |
+| 429 | `too-many-attempts` | An attempt came too soon after failed ones, or while its step is locked. `Retry-After` gives the seconds to wait. |
 | 500 | `internal-error` | The server failed. |
+| 503 | `server-busy` | The server checks as many passwords as it can at once. `Retry-After` gives the seconds to wait. |
 
 The field problems:
 
@@ -132,11 +221,12 @@ The field problems:
 | `unknown-field` | A body field or a tool argument that the operation does not declare. |
 | `missing-field` | A field that the operation needs is missing. |
 | `invalid-type` | A field has the wrong JSON type. `data.expected` names the right one. |
-| `invalid-value` | A field holds a value it does not take. `data.allowed` lists the values when there is a list. |
+| `invalid-value` | A field holds a value it does not take. `data.allowed` lists the values when there is a list. No text that the server stores or looks up takes U+0000, which PostgreSQL's text cannot hold. |
 | `too-short`, `too-long` | A text or a list is shorter or longer than it may be. |
 | `not-an-integer` | A number that must be whole is not. |
 | `out-of-range` | A number or an amount is outside its bounds. |
-| `bad-format`, `fraction-of-ore`, `unknown-currency` | An amount is wrong (above). |
+| `bad-format` | A text does not have its format, such as an e-mail address, a token, a six-digit code or a UUID. `data.format` names the format: `email`, `uuid`, or `regex` for a pattern. An amount that is not a decimal string gets it too, with no `data.format` (above). |
+| `fraction-of-ore`, `unknown-currency` | An amount is wrong (above). |
 | `cursor-invalid` | A cursor that this server did not make for this list and this company. |
 | `idempotency-key-missing`, `idempotency-key-invalid` | A write's key is missing, or is not a key (below). |
 
@@ -144,16 +234,17 @@ The rules of the ledger live in the database. When one refuses a request, the an
 
 ## Writes and idempotency keys
 
-A write takes an idempotency key: the `Idempotency-Key` header on REST, and the `idempotencyKey` argument on MCP. A key is 1 to 255 characters of visible ASCII without `"` and `\`, such as a random UUID. The header takes the key bare or in double quotes, as the IETF draft writes it.
+A write takes an idempotency key: the `Idempotency-Key` header on REST, and the `idempotencyKey` argument on MCP. A key is 1 to 255 characters of visible ASCII without `"` and `\`, such as a random UUID. The header takes the key bare or in double quotes, as the IETF draft writes it. A write that runs before sign-in takes no key, since there is no actor to keep it for.
 
-- The same key with the same request gives the first answer again, and nothing is written twice.
-- The same key with another request gets 422 `idempotency-key-reused`. Another operation, another body or another query is another request, and so is `"1.5"` beside `"1.50"`.
+- The same key with the same request gives the first answer again, and nothing is written twice. An answer without a body is given again with no body.
+- The same key with another request gets 422 `idempotency-key-reused`. Another operation, another path parameter, another body or another query is another request, and so is `"1.5"` beside `"1.50"`.
 - A request whose key a running request holds gets 409 `idempotency-key-in-use`, and writes nothing. Send it again once the first has ended.
 - A write with no key gets 400, with the field problem `idempotency-key-missing` at `/idempotencyKey`. A key that is not a key gets `idempotency-key-invalid` there.
-- Keys belong to one company and one actor. The same key in another company, or from another actor, is another key.
+- Keys belong to one company and one actor. The same key in another company, or from another actor, is another key. A signed-in person's write that works in no company keeps its keys for the person alone.
 - The key and the first answer are stored in the write's own transaction. A write that is refused or fails stores no key, so a retry with the key runs again.
+- The server keeps a request's fingerprint, never the request: an HMAC-SHA256 of it, under a key from the install secret. A body can hold a password, and without the install secret a stored fingerprint tells nothing of it.
 - REST and MCP share the keys: the same input by either gives the same answer.
-- Keys do not expire yet.
+- A signed-in person's own keys are purged 24 hours after they were stored. The keys of a write in a company do not expire yet.
 
 ## Lists
 
@@ -175,15 +266,17 @@ A list takes `limit` and `cursor`, and answers its items, `nextCursor` while mor
 `tools/list` lists exactly the registry, in its order:
 
 - the tool's `name` is the operation's id, its `title` the operation's summary, and its `description` the operation's tool text;
-- its `inputSchema` is the flat input as one strict JSON Schema object: the query parameters, the body's fields and, for a write, the required `idempotencyKey`;
-- its `outputSchema` is the REST answer's shape;
+- its `inputSchema` is the flat input as one strict JSON Schema object: the path parameters, the query parameters, the body's fields and, for a write, the required `idempotencyKey`;
+- its `outputSchema` is the REST answer's shape, and an empty object for an operation that answers with no body;
 - `annotations.readOnlyHint` is true for an operation that does not write.
 
 A tool call answers the same JSON as the REST call, as structured content and as the same JSON in one text block. A refusal answers the same problem details as `/v1`, in a result marked `isError`. A tool name that the registry does not hold is a protocol error. Each tool call is one request, with one transaction and the same rules as REST.
 
+The tool of an operation that serves the browser's session, such as a sign-in, is listed like any other, and refuses every call with 403 `browser-only` before it reads an argument. An MCP client signs in through OAuth instead.
+
 The arguments take JSON's own types: on MCP, `limit` is a JSON number, and the key is the argument as it is, without the header's quotes.
 
-`/mcp` checks the `Origin` header before anything else, as the MCP specification asks against DNS rebinding. A request whose `Origin` the install does not allow gets 403 `origin-not-allowed`, and nothing runs for it. A request with no `Origin`, as a program that is not a browser sends, is not refused for that. Until slice 2c, the install allows no browser origin.
+`/mcp` checks the `Origin` header before anything else, as the MCP specification asks against DNS rebinding. A request whose `Origin` the install does not allow gets 403 `origin-not-allowed`, and nothing runs for it. A request with no `Origin`, as a program that is not a browser sends, is not refused for that. The install allows one browser origin, its own, `NORTFOX_PUBLIC_ORIGIN`.
 
 ## The assistant
 

@@ -5,8 +5,9 @@
 // detail is the facts as JSON. ledger.refusal_reasons() in
 // db/migrations/0001_foundation.sql holds the same list, and a test fails when
 // the two differ. NF001 to NF020 are the reasons that later slices answer with
-// the established system's messages; from NF050 on they guard the database's
-// own rules, and have no such answer.
+// the established system's messages, and NF021 to NF049 are other rules that
+// a request can break; from NF050 on they guard the database's own rules, and
+// have no such answer.
 
 export const REFUSALS = [
   { reason: "unbalanced", code: "NF001" },
@@ -29,6 +30,7 @@ export const REFUSALS = [
   { reason: "series_code_duplicate", code: "NF018" },
   { reason: "series_code_changed", code: "NF019" },
   { reason: "immutable_field", code: "NF020" },
+  { reason: "install_not_empty", code: "NF021" },
   { reason: "actor_missing", code: "NF050" },
   { reason: "append_only", code: "NF051" },
   { reason: "internal_only", code: "NF052" },

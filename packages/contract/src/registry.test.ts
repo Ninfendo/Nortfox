@@ -11,8 +11,53 @@ describe("REGISTRY", () => {
     expect(registryProblems(REGISTRY, Object.keys(PERMISSIONS))).toEqual([]);
   });
 
-  it("holds getHealth and getCompany", () => {
-    expect(REGISTRY.map((entry) => [entry.operationId, entry.method, entry.path, entry["x-nortfox"]])).toEqual([
+  it("holds getHealth and getCompany, then the browser's sign-in and the person's own operations", () => {
+    const signIn = (tool: string, writes: boolean) => ({ permission: "none", tool, assistant: false, writes, list: false, session: "flow", company: "none" });
+    const signedIn = (tool: string, writes: boolean, session: "flow" | null) => ({
+      permission: "signed-in",
+      tool,
+      assistant: false,
+      writes,
+      list: false,
+      session,
+      company: "none",
+    });
+    expect(REGISTRY.slice(2).map((entry) => [entry.operationId, entry.method, entry.path, entry["x-nortfox"]])).toEqual([
+      ["completeSetup", "post", "/v1/setup/{token}", signIn("Makes the first identity of an empty install. It serves the browser's sign-in, so this tool refuses every call.", true)],
+      [
+        "loginWithPassword",
+        "post",
+        "/v1/auth/password",
+        signIn("Signs a browser in with a password. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.", true),
+      ],
+      [
+        "verifyTotp",
+        "post",
+        "/v1/auth/totp",
+        signIn("Gives the TOTP code of a browser's sign-in. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.", true),
+      ],
+      ["logout", "post", "/v1/auth/logout", signedIn("Signs a browser out. It serves the browser's session, so this tool refuses every call.", true, "flow")],
+      [
+        "getSession",
+        "get",
+        "/v1/session",
+        signedIn("Reads the browser's session. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.", false, "flow"),
+      ],
+      [
+        "getMe",
+        "get",
+        "/v1/me",
+        signedIn(
+          "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code.",
+          false,
+          null,
+        ),
+      ],
+    ]);
+  });
+
+  it("starts with getHealth and getCompany", () => {
+    expect(REGISTRY.slice(0, 2).map((entry) => [entry.operationId, entry.method, entry.path, entry["x-nortfox"]])).toEqual([
       [
         "getHealth",
         "get",
@@ -23,6 +68,8 @@ describe("REGISTRY", () => {
           assistant: false,
           writes: false,
           list: false,
+          session: null,
+          company: "none",
         },
       ],
       [
@@ -35,6 +82,8 @@ describe("REGISTRY", () => {
           assistant: true,
           writes: false,
           list: false,
+          session: null,
+          company: "credential",
         },
       ],
     ]);

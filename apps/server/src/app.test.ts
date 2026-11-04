@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   ALL_PERMISSIONS,
   CURSOR_KEY,
+  TEST_INSTALL_KEY,
   TEST_REGISTRY,
   bearer,
   bookingControls,
@@ -15,6 +16,7 @@ import {
   testResolver,
   untouchedDatabase,
 } from "../test/api.ts";
+import { SHAPES_REGISTRY, shapeLog, shapesHandlers } from "../test/shapes.ts";
 import { handleData, ok } from "./api/operation.ts";
 import { createApp, type AppOptions } from "./app.ts";
 import { getCompanyHandler } from "./modules/companies/get-company.ts";
@@ -23,7 +25,7 @@ import { openApiDocument } from "./openapi.ts";
 
 /** The app as main.ts builds it, with the defaults, and a database the test may not touch. */
 function defaults(overrides: Partial<AppOptions> = {}): AppOptions {
-  return { version: "1.2.3", resolve: testResolver({}), database: untouchedDatabase(), cursorKey: CURSOR_KEY, ...overrides };
+  return { version: "1.2.3", resolve: testResolver({}), database: untouchedDatabase(), cursorKey: CURSOR_KEY, installKey: TEST_INSTALL_KEY, ...overrides };
 }
 
 const app = createApp(defaults()).hono;
@@ -67,6 +69,8 @@ describe("GET /openapi.json", () => {
       assistant: false,
       writes: false,
       list: false,
+      session: null,
+      company: "none",
     });
     expect(Object.keys(health?.responses ?? {})).toEqual(["200", "400", "500"]);
     expect(health?.responses?.["400"]?.content).toEqual({
@@ -79,12 +83,25 @@ describe("GET /openapi.json", () => {
       assistant: true,
       writes: false,
       list: false,
+      session: null,
+      company: "credential",
     });
     expect(Object.keys(company?.responses ?? {})).toEqual(["200", "400", "401", "403", "500"]);
     expect(company?.responses?.["401"]?.headers).toEqual({
-      "WWW-Authenticate": { description: "The challenge, as RFC 9110 asks of every 401: Bearer.", schema: { type: "string" } },
+      "WWW-Authenticate": { description: `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session".`, schema: { type: "string" } },
     });
-    expect(Object.keys(document.components.schemas).sort()).toEqual(["Company", "FieldProblem", "Health", "Problem"]);
+    expect(Object.keys(document.components.schemas).sort()).toEqual([
+      "Company",
+      "FieldProblem",
+      "Health",
+      "Me",
+      "PasswordSignIn",
+      "Problem",
+      "Session",
+      "SetupResult",
+      "TotpEnrolment",
+      "User",
+    ]);
   });
 
   it("describes the operations under /v1, under the MIT licence", () => {
@@ -133,7 +150,7 @@ describe("createApp", () => {
       writes: false,
     });
     const handler = handleData(lookalike, () => Promise.resolve(ok({})));
-    expect(() => createApp(defaults({ handlers: [healthHandler("1.2.3"), handler] }))).toThrow(
+    expect(() => createApp(defaults({ registry: [getHealth, getCompany], handlers: [healthHandler("1.2.3"), handler] }))).toThrow(
       "The app cannot serve its registry:\n- getCompany has no handler.\n- The handler of getCompany serves an operation that is not in the registry.",
     );
   });
@@ -158,6 +175,15 @@ describe("createApp", () => {
     expect(() => createApp(defaults({ registry: [...REGISTRY, testListAccounts], handlers: testHandlers(bookingControls(), "1.2.3") }))).toThrow(
       'testListAccounts needs the permission "test:read", which is not on the list.',
     );
+  });
+
+  it("takes the server's clock, which a handler of an operation that runs before sign-in reads", async () => {
+    const log = shapeLog();
+    const at = new Date("2090-01-02T03:04:05.000Z");
+    const { hono } = createApp(defaults({ registry: SHAPES_REGISTRY, handlers: shapesHandlers(log), permissions: ALL_PERMISSIONS, now: () => at }));
+    const response = await hono.request("/v1/test-sign-ins", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "anna@example.com" }) });
+    expect(response.status).toBe(200);
+    expect(log.calls[0]?.now).toEqual(at);
   });
 
   it("refuses a cursor key shorter than 32 bytes", () => {

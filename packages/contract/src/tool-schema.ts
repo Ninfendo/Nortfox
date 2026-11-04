@@ -2,11 +2,12 @@
 
 /**
  * The JSON Schemas of an operation's MCP tool. A tool takes one object, the
- * operation's flat input: the query's fields, the body's fields and, for a
- * write, the idempotency key. A field problem's pointer points into the same
- * object, on REST too. The schemas come from z.toJSONSchema with every
- * reference inlined, so a client needs no $defs, and they leave out $schema:
- * MCP reads a tool schema as JSON Schema 2020-12 when it names none.
+ * operation's flat input: the path parameters, the query's fields, the body's
+ * fields and, for a write that takes one, the idempotency key. A field
+ * problem's pointer points into the same object, on REST too. The schemas
+ * come from z.toJSONSchema with every reference inlined, so a client needs no
+ * $defs, and they leave out $schema: MCP reads a tool schema as JSON Schema
+ * 2020-12 when it names none.
  */
 
 import { z } from "zod";
@@ -16,7 +17,7 @@ import {
   IDEMPOTENCY_KEY_MAX_LENGTH,
   IDEMPOTENCY_KEY_PATTERN,
 } from "./idempotency-key.ts";
-import { bodySchema, outputSchema, querySchema, type Operation } from "./operation.ts";
+import { bodySchema, outputSchema, paramsSchema, querySchema, takesIdempotencyKey, type Operation } from "./operation.ts";
 
 export { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_PATTERN } from "./idempotency-key.ts";
 
@@ -81,12 +82,13 @@ const IdempotencyKey = z
   .regex(new RegExp(IDEMPOTENCY_KEY_PATTERN))
   .meta({ description: IDEMPOTENCY_KEY_DESCRIPTION });
 
-/** The tool's input: one strict object with the query's fields, the body's fields and, for a write, the key. */
+/** The tool's input: one strict object with the path parameters, the query's fields, the body's fields and, for a write that takes one, the key. */
 export function toolInputSchema(operation: Operation): JsonSchema {
   const flat = z.strictObject({
+    ...fieldsOf(paramsSchema(operation)),
     ...fieldsOf(querySchema(operation)),
     ...fieldsOf(bodySchema(operation)),
-    ...(operation["x-nortfox"].writes ? { [IDEMPOTENCY_KEY_ARGUMENT]: IdempotencyKey } : {}),
+    ...(takesIdempotencyKey(operation) ? { [IDEMPOTENCY_KEY_ARGUMENT]: IdempotencyKey } : {}),
   });
   return jsonSchemaOf(flat, "input");
 }

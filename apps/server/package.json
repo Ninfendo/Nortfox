@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "dev": "node --conditions=@nortfox/source --watch src/main.ts",
     "start": "node dist/main.js",
+    "setup-link": "node --conditions=@nortfox/source src/setup-main.ts",
     "openapi": "node --conditions=@nortfox/source scripts/write-openapi.ts"
   },
   "dependencies": {

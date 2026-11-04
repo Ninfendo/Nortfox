@@ -49,3 +49,14 @@ Pinned by slice 2b, the API and MCP spine. [docs/api.md](api.md) gives the API's
 | Behörighet / permission | Instruktioner om behörighet are räkenskapsinformation (BFN's commentary to BFL 1 kap. 2 § första stycket 9 c). | `permission`, such as `company:read` | Declared once for each operation, in the registry. Slice 2c grants them. |
 | (no screen word) / operation | None. | one entry in the registry in `packages/contract` | The REST route, the client method and the MCP tool come from it. |
 | (no screen word) / idempotency key | None. | the `Idempotency-Key` header; the `idempotencyKey` argument on MCP | A write takes one. The same key and request give the first answer again. |
+
+## Login
+
+Pinned by slice 2c, login, roles, tokens and MCP OAuth, as each of its parts adds them. [docs/api.md](api.md#signing-in) gives the sign-in's rules. `packages/contract/src/terms.test.ts` checks that each name below is the one `/v1` has.
+
+| Term (sv / en) | What the law means | Name in /v1 and the code | Note |
+|---|---|---|---|
+| Användare / user | No role. The law asks who made a correction and when (BFL 5 kap. 5 §), and when each entry was registered (BFNAR 2013:2 punkt 9.16). | `User`: `id`, `name`, `email`, `language` | The person. Its `id` is the actor of the person's changes, of the kind `user` (Platform, above). A person stays the actor on every entry, also once the identity is deleted. The person in one company, the membership, comes with the companies. |
+| NortFox ID / login identity | None. | the person's login data: `User`, and `Me` for the person's own | One per person, for every company. Companies share nothing of it. NortFox's own name, where the established system's is a brand. |
+| (no screen word) / session | None. | `Session`: `user` | One person in one browser. Its cookie is the session's credential. A session works in no company until one is chosen. |
+| Personnummer / personal identity number | Personal data (GDPR). | `personalIdentityNumber` | Twelve digits with a hyphen, `YYYYMMDD-NNNN`. Added once, never changed, and unique across identities. A sign-in takes it in 10 or 12 digits ([docs/api.md](api.md#signing-in)). |

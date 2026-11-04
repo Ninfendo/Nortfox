@@ -23,7 +23,7 @@ import { freshDatabase, inTransaction, type TestDatabase } from "../../test/data
 import { addCompany, addFiscalYear, someUser } from "../../test/ledger.ts";
 import { commit, type TransactionSettings } from "../db/database.ts";
 import { getCompanyHandler } from "../modules/companies/get-company.ts";
-import type { RequestContext } from "./context.ts";
+import type { CompanyContext } from "./context.ts";
 import type { ServerApp } from "../app.ts";
 
 const PER_COMPANY = 30;
@@ -123,14 +123,14 @@ describe("two companies through the API", () => {
   });
 
   it("adds no company condition in the read handlers: the transaction's company alone decides", async () => {
-    const contextA: RequestContext = { ...principalOf(companyA, { kind: "user" }), channel: "rest" };
-    const inB: TransactionSettings = { companyId: companyB, actorId: contextA.actorId, actorKind: "user", channel: "rest" };
+    const contextA: CompanyContext = { ...principalOf(companyA, { kind: "user" }), channel: "rest" };
+    const inB: TransactionSettings = { companyId: companyB, actorId: contextA.personId, actorKind: "user", channel: "rest" };
     const company = await pool.database.read(inB, async (tx) =>
-      commit(await getCompanyHandler.run({ context: contextA, tx }, { query: {}, body: undefined })),
+      commit(await getCompanyHandler.run({ context: contextA, tx }, { params: {}, query: {}, body: undefined })),
     );
     expect(company).toMatchObject({ ok: true, output: { id: companyB } });
     const page = await pool.database.read(inB, async (tx) =>
-      commit(await testListAccountsHandler.run({ context: contextA, tx, page: { limit: 500 } }, { query: {}, body: undefined })),
+      commit(await testListAccountsHandler.run({ context: contextA, tx, page: { limit: 500 } }, { params: {}, query: {}, body: undefined })),
     );
     expect(page).toEqual({
       ok: true,

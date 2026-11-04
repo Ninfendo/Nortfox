@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// With no actor, every operation that reads or writes data answers 401 with
-// the Bearer challenge, and an actor without the operation's permission gets
-// 403. Both come before any part of the request is read, so a bad request
-// gets them too, a refused body is never read, and the database is never
-// asked. The health check and the API description stay open.
+// With no actor, every operation that needs one answers 401 with the Bearer
+// challenge: every operation with a permission, and every signed-in one. An
+// actor without the operation's permission gets 403. Both come before any
+// part of the request is read, so a bad request gets them too, a refused
+// body is never read, and the database is never asked. The health check and
+// the API description stay open. The operations that run before sign-in
+// need no actor (modules/auth), and by MCP the tools of the browser's
+// session refuse every call with browser-only first (mcp-session-tools).
 
-import { PUBLIC, type Operation } from "@nortfox/contract";
+import { NONE, OPEN_PERMISSIONS, PUBLIC, type Operation } from "@nortfox/contract";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -27,7 +30,11 @@ import { resolveNoActor, type ContextResolver } from "./context.ts";
 const COMPANY = randomUUID();
 const TOKENS = { nobody: principalOf(COMPANY, { permissions: [] }) };
 
-const DATA_OPERATIONS = TEST_REGISTRY.filter((operation) => operation["x-nortfox"].permission !== PUBLIC);
+/** The operations that need an actor: every one but the public ones and those that run before sign-in. */
+const DATA_OPERATIONS = TEST_REGISTRY.filter((operation) => ![PUBLIC, NONE].includes(operation["x-nortfox"].permission));
+
+/** The operations that need a permission in the credential's company. */
+const PERMISSION_OPERATIONS = DATA_OPERATIONS.filter((operation) => !(OPEN_PERMISSIONS as readonly string[]).includes(operation["x-nortfox"].permission));
 
 /** A well-formed query, and each bad one that must get the same answer. */
 const QUERIES = ["", "?unknown=1", "?limit=1&limit=2", "?limit=abc", "?Limit=1", "?cursor=garbage"];
@@ -65,34 +72,38 @@ function requestsTo(operation: Operation): [string, Sent][] {
 
 const CASES = DATA_OPERATIONS.flatMap((operation) => requestsTo(operation).map(([label, sent]) => [label, sent, operation] as const));
 
+const PERMISSION_CASES = CASES.filter(([, , operation]) => PERMISSION_OPERATIONS.includes(operation));
+
 function send(database: ReturnType<typeof untouchedDatabase>, sent: Sent, credential: Readonly<Record<string, string>>, resolve = testResolver(TOKENS)) {
   return buildTestApp({ database, resolve }).hono.request(sent.path, { ...sent.init, headers: { ...sent.init.headers, ...credential } });
 }
 
 describe("no actor", () => {
-  it("covers every operation that reads or writes data, and a write's bad bodies and missing key", () => {
-    expect(DATA_OPERATIONS.map((operation) => operation.operationId)).toEqual(["getCompany", "testBookVoucher", "testListAccounts"]);
-    expect(CASES.filter(([, , operation]) => operation["x-nortfox"].writes).map(([label]) => label)).toEqual([
-      ...QUERIES.map((query) => `POST /v1/test-vouchers${query}`),
-      "POST /v1/test-vouchers with no body",
-      "POST /v1/test-vouchers with text/plain",
-      "POST /v1/test-vouchers with malformed JSON",
-      "POST /v1/test-vouchers with a body over 1 MiB",
-      "POST /v1/test-vouchers with no key",
-    ]);
+  it("covers every operation that needs an actor, and a write's bad bodies and missing key", () => {
+    expect(DATA_OPERATIONS.map((operation) => operation.operationId)).toEqual(["getCompany", "logout", "getSession", "getMe", "testBookVoucher", "testListAccounts"]);
+    expect(PERMISSION_OPERATIONS.map((operation) => operation.operationId)).toEqual(["getCompany", "testBookVoucher", "testListAccounts"]);
+    const writeLabels = (path: string): string[] => [
+      ...QUERIES.map((query) => `POST ${path}${query}`),
+      `POST ${path} with no body`,
+      `POST ${path} with text/plain`,
+      `POST ${path} with malformed JSON`,
+      `POST ${path} with a body over 1 MiB`,
+      `POST ${path} with no key`,
+    ];
+    expect(CASES.filter(([, , operation]) => operation["x-nortfox"].writes).map(([label]) => label)).toEqual([...writeLabels("/v1/auth/logout"), ...writeLabels("/v1/test-vouchers")]);
   });
 
-  it.each(CASES)("%s answers 401 with WWW-Authenticate: Bearer, and asks no database", async (_label, sent) => {
+  it.each(CASES)("%s answers 401 with the challenge of the session cookie, which it takes, and asks no database", async (_label, sent) => {
     for (const credential of [{}, bearer("unknown-token"), { authorization: "Basic YTpi" }]) {
       const database = untouchedDatabase();
       const response = await send(database, sent, credential);
       expect(response.status).toBe(401);
-      expect(response.headers.get("www-authenticate")).toBe("Bearer");
+      expect(response.headers.get("www-authenticate")).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`);
       expect(await problemIn(response)).toEqual({
         type: "about:blank",
         title: "Unauthorized",
         status: 401,
-        detail: "The request names no actor. Send a credential in the Authorization header.",
+        detail: "The request names no actor. Sign in first: a browser sends its session cookie, and a program its token in the Authorization header.",
         code: "authentication-required",
       });
       expect(database.asked).toEqual([]);
@@ -108,7 +119,7 @@ describe("no actor", () => {
 });
 
 describe("an actor without the permission", () => {
-  it.each(CASES)("%s answers 403 permission-missing with the permission, and asks no database", async (_label, sent, operation) => {
+  it.each(PERMISSION_CASES)("%s answers 403 permission-missing with the permission, and asks no database", async (_label, sent, operation) => {
     const database = untouchedDatabase();
     const response = await send(database, sent, bearer("nobody"));
     expect(response.status).toBe(403);
@@ -164,9 +175,14 @@ const ARGUMENTS: readonly [string, Readonly<Record<string, unknown>>][] = [
   ["badly typed arguments", { limit: "abc", cursor: 5, description: 5, amount: 125, idempotencyKey: 7 }],
 ];
 
+/** The tools that need an actor and read their call: by MCP, a tool of the browser's session refuses every call before that. */
+const TOOL_OPERATIONS = DATA_OPERATIONS.filter((operation) => operation["x-nortfox"].session !== "flow");
+
 const TOOL_CASES = MCP_ERAS.flatMap((era) =>
-  DATA_OPERATIONS.flatMap((operation) => ARGUMENTS.map(([label, args]) => [`${operation.operationId} with ${label} (${era})`, operation, args, era] as const)),
+  TOOL_OPERATIONS.flatMap((operation) => ARGUMENTS.map(([label, args]) => [`${operation.operationId} with ${label} (${era})`, operation, args, era] as const)),
 );
+
+const PERMISSION_TOOL_CASES = TOOL_CASES.filter(([, operation]) => PERMISSION_OPERATIONS.includes(operation));
 
 /** Calls a tool as the token's actor, or as no actor, on an app over `database`. */
 async function callAs(database: ReturnType<typeof untouchedDatabase>, token: string | undefined, operation: Operation, args: Readonly<Record<string, unknown>>, era: (typeof MCP_ERAS)[number], resolve: ContextResolver = testResolver(TOKENS)) {
@@ -179,8 +195,9 @@ async function callAs(database: ReturnType<typeof untouchedDatabase>, token: str
 }
 
 describe("no actor by MCP", () => {
-  it("covers every operation that reads or writes data, by both eras", () => {
-    expect(TOOL_CASES).toHaveLength(MCP_ERAS.length * DATA_OPERATIONS.length * ARGUMENTS.length);
+  it("covers every operation that needs an actor but those of the browser's session, by both eras", () => {
+    expect(TOOL_OPERATIONS.map((operation) => operation.operationId)).toEqual(["getCompany", "getMe", "testBookVoucher", "testListAccounts"]);
+    expect(TOOL_CASES).toHaveLength(MCP_ERAS.length * TOOL_OPERATIONS.length * ARGUMENTS.length);
   });
 
   it.each(TOOL_CASES)("%s answers isError with 401 authentication-required before it reads an argument, and asks no database", async (_label, operation, args, era) => {
@@ -192,7 +209,7 @@ describe("no actor by MCP", () => {
           type: "about:blank",
           title: "Unauthorized",
           status: 401,
-          detail: "The request names no actor. Send a credential in the Authorization header.",
+          detail: "The request names no actor. Sign in first: a browser sends its session cookie, and a program its token in the Authorization header.",
           code: "authentication-required",
         },
       });
@@ -209,7 +226,7 @@ describe("no actor by MCP", () => {
 });
 
 describe("an actor without the permission by MCP", () => {
-  it.each(TOOL_CASES)("%s answers isError with 403 permission-missing before it reads an argument, and asks no database", async (_label, operation, args, era) => {
+  it.each(PERMISSION_TOOL_CASES)("%s answers isError with 403 permission-missing before it reads an argument, and asks no database", async (_label, operation, args, era) => {
     const database = untouchedDatabase();
     const permission = operation["x-nortfox"].permission;
     expect(await callAs(database, "nobody", operation, args, era)).toEqual({

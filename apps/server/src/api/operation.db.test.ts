@@ -9,7 +9,7 @@
 // the key policy none, as the compatible surface will pass it, a write on
 // every call and no key stored.
 
-import { defineOperation } from "@nortfox/contract";
+import { CHALLENGES, defineOperation } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -28,10 +28,13 @@ import {
 } from "../../test/api.ts";
 import { failureOf, freshDatabase, inTransaction, type TestDatabase } from "../../test/database.ts";
 import { addBooks, addCompany, type Books } from "../../test/ledger.ts";
-import type { ActorKind, Database } from "../db/database.ts";
+import type { Database } from "../db/database.ts";
 import { getCompanyHandler } from "../modules/companies/get-company.ts";
-import type { RequestContext } from "./context.ts";
+import type { PrincipalKind, RequestContext } from "./context.ts";
 import { handleData, ok, runOperation, type OperationCall } from "./operation.ts";
+
+/** The challenge of the session cookie, the one credential in this part. */
+const SESSION_CHALLENGE = CHALLENGES.sessionCookie;
 
 /** PostgreSQL's SQLSTATE for a write in a READ ONLY transaction. */
 const READ_ONLY_SQL_TRANSACTION = "25006";
@@ -89,7 +92,7 @@ describe("the runner's read path", () => {
     company = await addCompany(app);
     broken = await addCompany(app);
     // A row whose organisation number has a form the output's schema refuses.
-    await inTransaction(app, { company: broken, actor: principalOf(broken).actorId, kind: "user" }, () =>
+    await inTransaction(app, { company: broken, actor: principalOf(broken).personId, kind: "user" }, () =>
       app.query("UPDATE ledger.companies SET organization_number = 'saknas'"),
     );
     pool = appPool(db, 1);
@@ -110,7 +113,7 @@ describe("the runner's read path", () => {
     expect(outcome).toEqual({
       ok: true,
       status: 200,
-      output: { level: "repeatable read", readOnly: "on", company, actor: context.actorId, kind: "user", channel: "rest" },
+      output: { level: "repeatable read", readOnly: "on", company, actor: context.personId, kind: "user", channel: "rest" },
     });
   });
 
@@ -132,6 +135,7 @@ describe("the runner's read path", () => {
           }
         }),
       write: () => Promise.reject(new Error("A read never writes.")),
+      lookup: () => Promise.reject(new Error("A read looks nothing up.")),
       end: () => Promise.resolve(),
     };
     const error = await failureOf(runOperation(getCompanyHandler, call(contextIn(broken)), runnerDeps(watching)));
@@ -157,7 +161,7 @@ describe("the runner's read path", () => {
     const held = await pool.pool.connect();
     try {
       const deps = runnerDeps(pool.database);
-      expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required" } });
+      expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
       expect(await runOperation(readSettings, call(contextIn(company, [])), deps)).toEqual({
         ok: false,
         refusal: { kind: "permission-missing", permission: "test:read" },
@@ -211,7 +215,7 @@ describe("the runner's write path", () => {
     return ok(found.rows[0] ?? { level: "", readOnly: "", company: "", actor: "", kind: "", channel: "" });
   });
 
-  function contextOf(kind: ActorKind): RequestContext {
+  function contextOf(kind: PrincipalKind): RequestContext {
     return { ...principalOf(books.company, { kind }), channel: "rest" };
   }
 
@@ -221,7 +225,7 @@ describe("the runner's write path", () => {
     expect(outcome).toEqual({
       ok: true,
       status: 200,
-      output: { level: "read committed", readOnly: "off", company: books.company, actor: context.actorId, kind: "integration", channel: "rest" },
+      output: { level: "read committed", readOnly: "off", company: books.company, actor: context.personId, kind: "integration", channel: "rest" },
     });
   });
 

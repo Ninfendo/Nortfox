@@ -35,6 +35,7 @@ import {
 } from "../../test/api.ts";
 import { freshDatabase, inTransaction, type TestDatabase } from "../../test/database.ts";
 import { addBooks, setLock, someUser, type Books } from "../../test/ledger.ts";
+import { SHAPES_REGISTRY, shapeLog, shapesHandlers } from "../../test/shapes.ts";
 import type { ServerApp } from "../app.ts";
 
 const MIB = 1024 * 1024;
@@ -385,6 +386,7 @@ describe("the body of a write on /v1", () => {
     expect(answers.map((response) => response.status)).toEqual([400, 400, 401, 403, 404, 405, 413, 415, 422, 422, 409, 422, 500]);
     for (const response of answers) {
       expect(response.headers.get("content-type")).toBe("application/problem+json");
+      expect(response.headers.get("cache-control")).toBe("no-store");
       const problem = await problemIn(response);
       expect(problem.type).toBe("about:blank");
       expect(problem.status).toBe(response.status);
@@ -395,5 +397,64 @@ describe("the body of a write on /v1", () => {
         expect(PROBLEM_CODES[problem.code as keyof typeof PROBLEM_CODES]).toBe(response.status);
       }
     }
+  });
+
+  describe("the shapes of slice 2c", () => {
+    const THING = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b";
+    const OTHER_THING = "2f3e4d5c-6b7a-4899-8a1b-2c3d4e5f6a7b";
+    let shapes: ServerApp;
+
+    beforeAll(() => {
+      shapes = buildTestApp({
+        database: pool.database,
+        resolve: testResolver({ writer: principalOf(books.company) }),
+        registry: SHAPES_REGISTRY,
+        handlers: shapesHandlers(shapeLog()),
+        report: () => undefined,
+      });
+    });
+
+    function remove(thing: string, key: string): Promise<Response> {
+      return Promise.resolve(shapes.hono.request(`/v1/test-things/${thing}`, { method: "DELETE", headers: { ...bearer("writer"), "idempotency-key": key } }));
+    }
+
+    it("answers a write in a company with 204 and no body, keeps its key with the empty answer, and replays it so", async () => {
+      const key = randomUUID();
+      const first = await remove(THING, key);
+      expect(first.status).toBe(204);
+      expect(await first.text()).toBe("");
+      expect(first.headers.get("cache-control")).toBe("no-store");
+      const kept = (await writtenIn(app, books.company)).keys.filter((stored) => stored.idempotency_key === key);
+      expect(kept).toEqual([{ actor_id: expect.any(String) as unknown, idempotency_key: key, response_status: 204, response_body: {} }]);
+      const again = await remove(THING, key);
+      expect(again.status).toBe(204);
+      expect(await again.text()).toBe("");
+      expect((await writtenIn(app, books.company)).keys.filter((stored) => stored.idempotency_key === key)).toHaveLength(1);
+      nothing = await writtenIn(app, books.company);
+    });
+
+    it("takes the path into the fingerprint: the same key on another path is another request", async () => {
+      const key = randomUUID();
+      expect((await remove(THING, key)).status).toBe(204);
+      const elsewhere = await remove(OTHER_THING, key);
+      expect(elsewhere.status).toBe(422);
+      expect(await problemIn(elsewhere)).toMatchObject({ code: "idempotency-key-reused" });
+      nothing = await writtenIn(app, books.company);
+    });
+
+    it("names a bad path parameter at its pointer, and writes nothing", async () => {
+      const response = await remove("not-a-uuid", randomUUID());
+      expect(await fieldProblems(response)).toEqual([
+        { code: "bad-format", detail: "The field /thingId does not have the format uuid.", pointer: "/thingId", data: { format: "uuid" } },
+      ]);
+    });
+
+    it("answers 303 with the Location header and the same location as JSON", async () => {
+      const response = await shapes.hono.request("/v1/test-redirects?provider=beta");
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe("https://beta.example.com/authorize?state=test-state");
+      expect(await response.json()).toEqual({ location: "https://beta.example.com/authorize?state=test-state" });
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    });
   });
 });

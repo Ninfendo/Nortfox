@@ -92,9 +92,9 @@ describe("idempotency", () => {
     books = await addBooks(app);
     other = await addBooks(app);
     tokens = {
-      writer: principalOf(books.company, { actorId: writer }),
+      writer: principalOf(books.company, { personId: writer }),
       colleague: principalOf(books.company),
-      elsewhere: principalOf(other.company, { actorId: writer }),
+      elsewhere: principalOf(other.company, { personId: writer }),
     };
     pool = appPool(db, 3);
     controls = bookingControls();
@@ -263,7 +263,7 @@ describe("idempotency", () => {
       expect(written.vouchers.map((voucher) => voucher.id)).toEqual(ids.slice(0, 2));
       expect(written.keys.map((stored) => [stored.actor_id, stored.idempotency_key])).toEqual([
         [writer, key],
-        [tokens["colleague"]?.actorId, key],
+        [tokens["colleague"]?.personId, key],
       ]);
       expect(elsewhere.vouchers.map((voucher) => voucher.id)).toEqual(ids.slice(2));
       expect(elsewhere.keys.map((stored) => [stored.actor_id, stored.idempotency_key])).toEqual([[writer, key]]);

@@ -10,16 +10,29 @@
 //
 // /v1 and /mcp share the runner's dependencies, above all the idempotency
 // keys in flight, so a key that a REST request holds gives 409 to an MCP
-// call, and the other way round.
+// call, and the other way round. They share the allowed origins too: /v1's
+// cross-site check and /mcp's Origin check take the same list. The install
+// secret gives the key of each write's request fingerprint, and the sign-in
+// seals each TOTP secret with it. The one password wrapper hashes and checks
+// every password, at most as many at once as the host has cores.
+//
+// An error that the server did not expect goes to the reporter. The default
+// one logs only what api/report.ts lets through: never a database error's
+// detail, a token, a personnummer or an e-mail address.
 
 import { PERMISSIONS, REGISTRY, registryProblems, type Operation } from "@nortfox/contract";
 import { Hono } from "hono";
+import { AfterAnswerQueue } from "./api/after-answer.ts";
 import type { ContextResolver } from "./api/context.ts";
 import { KeysInFlight } from "./api/idempotency.ts";
 import type { Handler } from "./api/operation.ts";
 import { mountMcp } from "./api/mcp.ts";
 import { internalError, notFound } from "./api/problem.ts";
+import { reportSafely } from "./api/report.ts";
 import { mountV1, problemResponse, type V1Env } from "./api/v1.ts";
+import type { InstallKey } from "./auth/install-key.ts";
+import { allowedOrigins } from "./auth/origin.ts";
+import { PasswordHasher } from "./auth/password.ts";
 import type { Database } from "./db/database.ts";
 import { serverHandlers } from "./handlers.ts";
 import { openApiDocument } from "./openapi.ts";
@@ -32,26 +45,40 @@ export interface AppOptions {
   readonly database: Database;
   /** The key that signs each list's cursors: at least 32 bytes. */
   readonly cursorKey: Uint8Array;
+  /** The install secret (auth/install-key.ts). */
+  readonly installKey: InstallKey;
   /** The operations to serve. By default the registry. */
   readonly registry?: readonly Operation[];
   /** One handler per operation. By default the server's own. */
   readonly handlers?: readonly Handler[];
   /** The permissions an operation may need besides "public". By default the contract's. */
   readonly permissions?: readonly string[];
-  /** Told of every error that answers 500. By default console.error. */
+  /** Told of every error that answers 500, and of work after an answer that fails. By default the safe report on console.error (api/report.ts). */
   readonly report?: (error: unknown) => void;
+  /** The server's clock. By default the system's. */
+  readonly now?: () => Date;
   /**
-   * The browser origins that may call /mcp, such as https://nortfox.example.
-   * By default none: a request with an Origin header gets 403, and one
-   * without, from a program that is not a browser, is served.
+   * The one wrapper of passwords. By default one at the production cost
+   * (auth/password.ts). The tests that only need some password pass a small
+   * cost; the production cost has its own test.
+   */
+  readonly passwordHasher?: PasswordHasher;
+  /**
+   * The browser origins of the install, such as https://nortfox.example: the
+   * origins that may call /mcp, and that /v1's writes with the session
+   * cookie, and its sign-ins, must come from. By default none: such a
+   * request with an Origin header gets 403, and one without, from a program
+   * that is not a browser, is served.
    */
   readonly allowedOrigins?: readonly string[];
 }
 
-/** The app as the server serves it: the Hono app, and the registry it serves under /v1. */
+/** The app as the server serves it: the Hono app, the registry it serves under /v1, and the work it runs after its answers. */
 export interface ServerApp {
   readonly hono: Hono<V1Env>;
   readonly registry: readonly Operation[];
+  /** The work after the answers. A served request holds a batch while it runs; a stop and the tests wait in idle(). */
+  readonly afterAnswer: Pick<AfterAnswerQueue, "batch" | "idle">;
 }
 
 /** The shortest key that signs the cursors. */
@@ -84,24 +111,14 @@ function handlersOf(registry: readonly Operation[], handlers: readonly Handler[]
   return served;
 }
 
-/** The origins as a browser sends them. Throws on one that a browser would send in another form, or not at all. */
-function originsOf(allowed: readonly string[]): ReadonlySet<string> {
-  for (const origin of allowed) {
-    if (!URL.canParse(origin) || new URL(origin).origin !== origin) {
-      throw new Error(`The allowed origin "${origin}" is not an origin as a browser sends it, such as https://nortfox.example or http://localhost:5173.`);
-    }
-  }
-  return new Set(allowed);
-}
-
-function logError(error: unknown): void {
-  console.error("The server failed:", error);
+function systemClock(): Date {
+  return new Date();
 }
 
 /** Builds the app with every route. */
 export function createApp(options: AppOptions): ServerApp {
   const registry = options.registry ?? REGISTRY;
-  const report = options.report ?? logError;
+  const report = options.report ?? reportSafely;
   const problems = registryProblems(registry, options.permissions ?? Object.keys(PERMISSIONS));
   if (problems.length > 0) {
     throw new Error(listed("The registry has problems:", problems));
@@ -111,12 +128,22 @@ export function createApp(options: AppOptions): ServerApp {
     throw new Error(`The cursor key must be at least ${String(CURSOR_KEY_BYTES)} bytes long.`);
   }
 
-  const allowedOrigins = originsOf(options.allowedOrigins ?? []);
-
   const hono = new Hono<V1Env>();
-  const deps = { resolve: options.resolve, database: options.database, cursorKey: options.cursorKey, keysInFlight: new KeysInFlight(), report };
+  const afterAnswer = new AfterAnswerQueue(report);
+  const deps = {
+    resolve: options.resolve,
+    database: options.database,
+    cursorKey: options.cursorKey,
+    fingerprintKey: options.installKey.key("idempotency-fingerprint v1"),
+    keysInFlight: new KeysInFlight(),
+    now: options.now ?? systemClock,
+    services: { passwords: options.passwordHasher ?? new PasswordHasher(), installKey: options.installKey },
+    report,
+    afterAnswer,
+    allowedOrigins: allowedOrigins(options.allowedOrigins ?? []),
+  };
   mountV1(hono, handlers, deps);
-  mountMcp(hono, handlers, { ...deps, version: options.version, allowedOrigins });
+  mountMcp(hono, handlers, { ...deps, version: options.version });
   // The description is rendered once, at start.
   const description = JSON.stringify(openApiDocument(registry, options.version));
   hono.get("/openapi.json", () => new Response(description, { headers: { "Content-Type": "application/json" } }));
@@ -125,5 +152,5 @@ export function createApp(options: AppOptions): ServerApp {
     report(error);
     return problemResponse(internalError());
   });
-  return { hono, registry };
+  return { hono, registry, afterAnswer };
 }

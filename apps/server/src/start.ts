@@ -26,14 +26,28 @@ export interface RunningServer {
 /**
  * Serves a built app. Port 0 picks a free port. It first checks the app's
  * routes: a route under /v1 that is not in the registry, added anywhere after
- * createApp, stops the server before it listens.
+ * createApp, stops the server before it listens. Its close stops the
+ * listener, waits for the open connections, and then for every request that
+ * still runs and the work queued for after the answers, such as the entries
+ * of a failed sign-in, so a stop that ends the database pool next loses none
+ * of it. A request whose client has left has no connection to wait for, but
+ * its handler still runs: each request holds a batch of the after-answer
+ * queue from its start to its answer, so the queue waits for it.
  */
 export function startServer(options: { readonly app: ServerApp; readonly port: number }): Promise<RunningServer> {
   return new Promise((resolve) => {
     // A throw here rejects the promise, before anything listens.
     assertV1Routes(options.app);
-    const { hono } = options.app;
-    const server = serve({ fetch: hono.fetch, port: options.port }, (info: AddressInfo) => {
+    const { hono, afterAnswer } = options.app;
+    const fetch = async (request: Request, env: unknown): Promise<Response> => {
+      const running = afterAnswer.batch();
+      try {
+        return await hono.fetch(request, env);
+      } finally {
+        running.release();
+      }
+    };
+    const server = serve({ fetch, port: options.port }, (info: AddressInfo) => {
       resolve({
         port: info.port,
         close: () =>
@@ -45,7 +59,7 @@ export function startServer(options: { readonly app: ServerApp; readonly port: n
                 done();
               }
             });
-          }),
+          }).then(() => options.app.afterAnswer.idle()),
       });
     });
   });

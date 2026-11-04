@@ -12,16 +12,19 @@ import { Money, PERMISSIONS, REGISTRY, defineListOperation, defineOperation, mon
 import type { Client } from "pg";
 import { Pool } from "pg";
 import { z } from "zod";
-import type { ContextResolver, Principal } from "../src/api/context.ts";
+import type { CompanyAccess, ContextResolver, Principal, PrincipalKind } from "../src/api/context.ts";
 import { KeysInFlight } from "../src/api/idempotency.ts";
 import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps } from "../src/api/operation.ts";
 import { assertV1Routes } from "../src/api/route-guard.ts";
 import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
+import { InstallKey } from "../src/auth/install-key.ts";
+import { PasswordHasher, type PasswordCost } from "../src/auth/password.ts";
 import { connectionConfig } from "../src/db/connect.ts";
-import { databaseOver, type ActorKind, type Database } from "../src/db/database.ts";
+import { databaseOver, type Database } from "../src/db/database.ts";
 import { serverHandlers } from "../src/handlers.ts";
 import { urlOf } from "./cluster.ts";
 import { inTransaction, type TestDatabase } from "./database.ts";
+import { expectNoTokens } from "./secrets.ts";
 
 /** The permissions of the test-only operations. */
 export const TEST_PERMISSIONS = ["test:read", "test:write"] as const;
@@ -34,6 +37,24 @@ export const TEST_VERSION = "0.0.0-test";
 
 /** A fixed key for the cursors of the test app. */
 export const CURSOR_KEY = new Uint8Array(32).fill(7);
+
+/** The test app's install secret: key id 9, and made-up bytes that no install holds. */
+export const TEST_INSTALL_KEY = new InstallKey(9, Buffer.from("the made-up install secret of the test app, which no install holds", "utf8"));
+
+/** The key of the test app's request fingerprints, from its install secret. */
+export const FINGERPRINT_KEY = TEST_INSTALL_KEY.key("idempotency-fingerprint v1");
+
+/**
+ * A small cost of Argon2id, for the tests that only need some password: the
+ * least memory of one lane, and one pass. The production cost has its own
+ * tests (auth/password.test.ts, modules/auth/login.db.test.ts).
+ */
+export const TEST_PASSWORD_COST: PasswordCost = { memory: 64, passes: 1, parallelism: 1 };
+
+/** The password wrapper at the small cost of the tests. */
+export function testPasswords(options: { readonly concurrency?: number } = {}): PasswordHasher {
+  return new PasswordHasher({ cost: TEST_PASSWORD_COST, ...options });
+}
 
 /** An account as the test-only list gives it. */
 export const TestAccount = z.strictObject({
@@ -160,7 +181,7 @@ export async function untilAtGate(held: Gate, running: Promise<unknown>): Promis
  * the rest, such as the period lock.
  */
 export function testBookVoucherHandler(controls: BookingControls = bookingControls()): Handler {
-  return handleData(testBookVoucher, async ({ context, tx }, { body }) => {
+  return handleData(testBookVoucher, async ({ context: { company }, tx }, { body }) => {
     const amount = moneyToOre(body.amount);
     if (amount <= 0n) {
       return refused({
@@ -174,7 +195,7 @@ export function testBookVoucherHandler(controls: BookingControls = bookingContro
       `INSERT INTO ledger.vouchers (company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
        SELECT $1, id, 'A', $2, $3, 'MANUAL' FROM ledger.fiscal_years WHERE $3::date BETWEEN from_date AND to_date
        RETURNING id, number`,
-      [context.companyId, body.description, BOOKING_DATE],
+      [company.companyId, body.description, BOOKING_DATE],
     );
     const [voucher] = vouchers.rows;
     if (voucher === undefined) {
@@ -182,10 +203,10 @@ export function testBookVoucherHandler(controls: BookingControls = bookingContro
     }
     const debit = await tx.query<{ debit: bigint }>(
       "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, debit) VALUES ($1, $2, 6110, $3) RETURNING debit",
-      [context.companyId, voucher.id, amount],
+      [company.companyId, voucher.id, amount],
     );
     await tx.query("INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, credit) VALUES ($1, $2, 1930, $3)", [
-      context.companyId,
+      company.companyId,
       voucher.id,
       amount,
     ]);
@@ -213,21 +234,46 @@ export function testHandlers(controls: BookingControls = bookingControls(), vers
   return [...serverHandlers(version), testBookVoucherHandler(controls), testListAccountsHandler];
 }
 
-/** What the runner needs, for a test that calls it directly: the database, the cursor key and a set of keys in flight of its own. */
+/** The clock of the runner in a test that calls it directly. */
+export const TEST_NOW = new Date("2090-03-15T10:00:00.000Z");
+
+/** What the runner needs, for a test that calls it directly: the database, the cursor key, the fingerprint key, a set of keys in flight of its own and a fixed clock. */
 export function runnerDeps(database: Database): RunnerDeps {
-  return { database, cursorKey: CURSOR_KEY, keysInFlight: new KeysInFlight() };
+  return {
+    database,
+    cursorKey: CURSOR_KEY,
+    fingerprintKey: FINGERPRINT_KEY,
+    keysInFlight: new KeysInFlight(),
+    now: () => TEST_NOW,
+    services: { passwords: testPasswords(), installKey: TEST_INSTALL_KEY },
+  };
+}
+
+/** Who a test principal is: its person, its kind and, in a company, its permissions. */
+export interface PrincipalOptions {
+  readonly personId?: string;
+  readonly kind?: PrincipalKind;
+  readonly permissions?: readonly string[];
+}
+
+/**
+ * A signed-in person with no company: a user, unless the options say
+ * otherwise. Its credential is a session that only the test knows; the
+ * test's resolver hands it out for a bearer token.
+ */
+export function personOf(options: Omit<PrincipalOptions, "permissions"> = {}): Principal {
+  return {
+    personId: options.personId ?? randomUUID(),
+    actorKind: options.kind ?? "user",
+    credential: { kind: "session", sessionId: randomUUID(), method: "password-email" },
+  };
 }
 
 /** A principal in `companyId`: an integration with every permission, unless the options say otherwise. */
-export function principalOf(
-  companyId: string,
-  options: { readonly actorId?: string; readonly kind?: ActorKind; readonly permissions?: readonly string[] } = {},
-): Principal {
+export function principalOf(companyId: string, options: PrincipalOptions = {}): Principal & { readonly company: CompanyAccess } {
   return {
-    companyId,
-    actorId: options.actorId ?? randomUUID(),
-    actorKind: options.kind ?? "integration",
-    permissions: new Set(options.permissions ?? ALL_PERMISSIONS),
+    ...personOf({ kind: options.kind ?? "integration", ...(options.personId === undefined ? {} : { personId: options.personId }) }),
+    company: { companyId, permissions: new Set(options.permissions ?? ALL_PERMISSIONS) },
   };
 }
 
@@ -260,6 +306,7 @@ export function untouchedDatabase(): UntouchedDatabase {
     asked,
     read: () => refuse("read"),
     write: () => refuse("write"),
+    lookup: () => refuse("lookup"),
     end: () => refuse("end"),
   };
 }
@@ -277,14 +324,16 @@ export function appPool(db: TestDatabase, max: number): AppPool {
   return { pool, database: databaseOver(pool, (error) => errors.push(error)), errors };
 }
 
-/** The test app: the test registry and handlers, and the routes checked as startServer checks them. */
+/** The test app: the test registry and handlers, the passwords at the tests' small cost, and the routes checked as startServer checks them. */
 export function buildTestApp(options: Pick<AppOptions, "database" | "resolve"> & Partial<AppOptions>): ServerApp {
   const app = createApp({
     version: TEST_VERSION,
     cursorKey: CURSOR_KEY,
+    installKey: TEST_INSTALL_KEY,
     registry: TEST_REGISTRY,
     handlers: testHandlers(),
     permissions: ALL_PERMISSIONS,
+    passwordHasher: testPasswords(),
     ...options,
   });
   assertV1Routes(app);
@@ -336,17 +385,18 @@ const MCP_URL = "http://nortfox.test/mcp";
 
 /**
  * An MCP client of the app, connected through app.request, as the SDK's
- * client connects to a real server. It sends the token's credential and the
- * Origin when they are given. It speaks the 2026-07-28 revision unless the
- * era says 2025.
+ * client connects to a real server. It sends the token's credential, the
+ * Origin and a Cookie header when they are given. It speaks the 2026-07-28
+ * revision unless the era says 2025.
  */
 export async function mcpClient(
   app: ServerApp,
-  options: { readonly token?: string; readonly era?: McpEra; readonly origin?: string } = {},
+  options: { readonly token?: string; readonly era?: McpEra; readonly origin?: string; readonly cookie?: string } = {},
 ): Promise<McpClient> {
   const headers: Record<string, string> = {
     ...(options.token === undefined ? {} : bearer(options.token)),
     ...(options.origin === undefined ? {} : { origin: options.origin }),
+    ...(options.cookie === undefined ? {} : { cookie: options.cookie }),
   };
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
     fetch: (url, init) => Promise.resolve(app.hono.request(url, init)),
@@ -368,10 +418,13 @@ export interface ToolAnswer {
 
 /**
  * Calls a tool, and checks that the answer's one text block is its
- * structured content as JSON, as the MCP specification recommends.
+ * structured content as JSON, as the MCP specification recommends, and that
+ * the result holds no token of any kind: no operation that an MCP client can
+ * reach answers with a secret.
  */
 export async function callTool(client: McpClient, name: string, args: Readonly<Record<string, unknown>> = {}): Promise<ToolAnswer> {
   const result = await client.callTool({ name, arguments: { ...args } });
+  expectNoTokens([result]);
   const { content, structuredContent, isError } = result as { content?: unknown; structuredContent?: unknown; isError?: boolean };
   const text = JSON.stringify(structuredContent);
   if (JSON.stringify(content) !== JSON.stringify([{ type: "text", text }])) {

@@ -11,17 +11,29 @@ export {
 export { CURRENCIES, Money, ORE_MAX, ORE_MIN, moneyToOre, oreToMoney } from "./money.ts";
 export type { Currency } from "./money.ts";
 export {
+  COMPANY_SOURCES,
   METHODS,
+  NONE,
+  NoBody,
+  OPEN_PERMISSIONS,
   PERMISSIONS,
   PUBLIC,
+  Redirect,
+  SIGNED_IN,
+  SUCCESS_STATUSES,
   bodySchema,
+  challengeOf,
   defineListOperation,
   defineOperation,
   outputSchema,
+  paramsSchema,
   querySchema,
+  securityOf,
   successStatus,
+  takesIdempotencyKey,
 } from "./operation.ts";
 export type {
+  CompanySource,
   JsonBody,
   ListDefinition,
   ListQuery,
@@ -31,14 +43,31 @@ export type {
   OperationMeta,
   OperationRequest,
   Permission,
+  SecurityRequirement,
+  SessionMark,
   Shape,
+  SuccessStatus,
 } from "./operation.ts";
+export { PasswordSignIn, SetupResult, TotpEnrolment, completeSetup, loginWithPassword, logout, verifyTotp } from "./operations/auth.ts";
 export { Company, getCompany } from "./operations/companies.ts";
+export { LANGUAGES, Me, TWO_STEP_CHOICES, User, getMe } from "./operations/me.ts";
+export { Session, getSession } from "./operations/session.ts";
 export { Health, getHealth } from "./operations/status.ts";
 export { Cursor, LIMIT, Limit, effectiveLimit, pageOf } from "./paging.ts";
+export {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MAX_MARK_RUN,
+  PASSWORD_MAX_UNITS,
+  PASSWORD_MIN_LENGTH,
+  newPassword,
+  newPasswordIssue,
+  passwordLength,
+} from "./password.ts";
 export { FIELD_PROBLEM_CODES, FieldProblem, PROBLEM_CODES, Problem, fieldIssues, jsonPointer } from "./problem.ts";
 export type { FieldIssue, FieldProblemCode, JsonValue, ProblemCode } from "./problem.ts";
 export { REGISTRY } from "./registry.ts";
+export { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
+export type { SecurityScheme } from "./security.ts";
 export { registryProblems } from "./registry-guard.ts";
 export { jsonSchemaOf, toolInputSchema, toolOutputSchema } from "./tool-schema.ts";
 export type { JsonSchema } from "./tool-schema.ts";

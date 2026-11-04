@@ -8,6 +8,7 @@
 import { REGISTRY } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
 import { buildTestApp, untouchedDatabase, testResolver } from "../../test/api.ts";
+import { SHAPES_REGISTRY } from "../../test/shapes.ts";
 import { assertV1Routes, v1RouteProblems, type Route } from "./route-guard.ts";
 
 const SERVED: Route[] = [
@@ -44,6 +45,18 @@ describe("v1RouteProblems", () => {
   ])("names %s %s", (method, path) => {
     expect(v1RouteProblems([{ method, path }], REGISTRY)).toEqual([
       `${method} ${path} is a route under /v1 that no operation of the registry declares.`,
+    ]);
+  });
+
+  it("accepts a route with a path parameter as Hono names it, and names the registry's own spelling as a stray route", () => {
+    const routes: Route[] = [
+      { method: "GET", path: "/v1/test-things/:thingId" },
+      { method: "DELETE", path: "/v1/test-things/:thingId" },
+      { method: "ALL", path: "/v1/test-things/:thingId" },
+    ];
+    expect(v1RouteProblems(routes, SHAPES_REGISTRY)).toEqual([]);
+    expect(v1RouteProblems([{ method: "GET", path: "/v1/test-things/{thingId}" }], SHAPES_REGISTRY)).toEqual([
+      "GET /v1/test-things/{thingId} is a route under /v1 that no operation of the registry declares.",
     ]);
   });
 

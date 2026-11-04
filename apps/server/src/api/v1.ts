@@ -4,15 +4,32 @@
 // reader and writer. Each operation's route is a chain that checks the
 // caller before it reads anything:
 //
-// 1. authorize: the resolver reads the credential from the request's headers,
-//    and the runner's authorize answers 401 (with the Bearer challenge) or
+// 1. the cross-site check (auth/origin.ts), from the headers alone: a write
+//    with the session cookie and no bearer token needs the install's own
+//    Origin, and an operation that runs before sign-in refuses any other
+//    Origin. A refusal is 403 origin-not-allowed, before the resolver reads
+//    the cookie.
+// 2. authorize: the resolver reads the credential from the request's headers,
+//    and the runner's authorize answers 401 (with the operation's challenge) or
 //    403 at once. No query parameter and no byte of the body is read first.
-// 2. the body limit, for an operation that takes a body: a body over 1 MiB
+// 3. the body limit, for an operation that takes a body: a body over 1 MiB
 //    gets 413. A Content-Length over the limit is refused before a byte is
 //    read; a body without one is counted as it comes, and refused once it
 //    passes the limit.
-// 3. serve: the body reader, the query reader and the idempotency key, then
-//    the runner, then the JSON writer.
+// 4. serve: the body reader, the path parameters, the query reader and the
+//    idempotency key, then the runner, then the writer.
+//
+// A route's path holds each path parameter as :name, as Hono reads it; the
+// registry writes it {name}, as OpenAPI does. Hono gives each parameter
+// decoded, and the runner checks it by the operation's schema, so a bad one
+// is a field problem at /<name>.
+//
+// The writer answers 200 and 201 with plain JSON, 202 and 204 with no body,
+// and 303 with Location and the same location as JSON. It writes each cookie
+// effect of the handler as a Set-Cookie header. Every /v1 answer, a problem
+// too, carries Cache-Control: no-store, since it may hold the request's own
+// data. Work that the handler queued for after the answer is released once
+// the answer is built (after-answer.ts).
 //
 // The body reader takes application/json only, with any parameters (415
 // otherwise), and JSON in UTF-8 (400 malformed-json otherwise). It gives the
@@ -33,14 +50,27 @@
 // quoted form or bare. The surface passes it to the runner for every write,
 // so a write without one is 400 (idempotency.ts).
 
-import { IDEMPOTENCY_KEY_HEADER, PUBLIC, bodySchema, jsonPointer, jsonSchemaOf, querySchema, type FieldIssue, type Operation } from "@nortfox/contract";
-import type { Hono, Handler as RouteHandler, MiddlewareHandler } from "hono";
+import { IDEMPOTENCY_KEY_HEADER, PUBLIC, bodySchema, jsonPointer, jsonSchemaOf, paramsSchema, querySchema, type FieldIssue, type Operation } from "@nortfox/contract";
+import type { Context, Hono, Handler as RouteHandler, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { z } from "zod";
+import { DEVICE_COOKIE, readCookie, setCookieHeader } from "../auth/cookies.ts";
+import { crossSiteRefused } from "../auth/origin.ts";
+import type { AfterAnswerQueue } from "./after-answer.ts";
 import type { ContextResolver, Principal, RequestContext } from "./context.ts";
 import { readKeyHeader } from "./idempotency.ts";
-import { authorize, runOperation, type Handler, type OperationCall, type Outcome, type RunnerDeps } from "./operation.ts";
-import { internalError, malformedJson, methodNotAllowed, payloadTooLarge, problemOf, unsupportedMediaType, type ProblemAnswer } from "./problem.ts";
+import { authorize, runOperation, type Handler, type OperationCall, type Outcome, type RequestFacts, type RunnerDeps } from "./operation.ts";
+import {
+  NO_STORE,
+  crossSiteRequest,
+  internalError,
+  malformedJson,
+  methodNotAllowed,
+  payloadTooLarge,
+  problemOf,
+  unsupportedMediaType,
+  type ProblemAnswer,
+} from "./problem.ts";
 
 /** What a /v1 request carries from one step of its chain to the next. */
 export interface V1Env {
@@ -49,8 +79,12 @@ export interface V1Env {
 
 export interface V1Deps extends RunnerDeps {
   readonly resolve: ContextResolver;
-  /** Told of every error that answers 500. */
+  /** The browser origins of the install, each as a browser serialises it: /v1's cross-site check and /mcp's Origin check. */
+  readonly allowedOrigins: ReadonlySet<string>;
+  /** Told of every error that answers 500, and of work after an answer that fails. */
   readonly report: (error: unknown) => void;
+  /** Where each call's work for after its answer goes. */
+  readonly afterAnswer: AfterAnswerQueue;
 }
 
 /** The kind of each query parameter an operation declares: a number is read from its text. */
@@ -129,16 +163,60 @@ export function problemResponse(answer: ProblemAnswer): Response {
   return new Response(JSON.stringify(answer.body), { status: answer.status, headers: answer.headers });
 }
 
-/** Plain UTF-8 JSON, as every /v1 success answers. */
-function jsonResponse(output: unknown, status: number): Response {
-  return new Response(JSON.stringify(output), { status, headers: { "Content-Type": "application/json" } });
+/**
+ * A success as /v1 answers it: plain UTF-8 JSON, no body for 202 and 204,
+ * and Location with the JSON for 303. Each cookie effect is a Set-Cookie
+ * header.
+ */
+function successResponse(outcome: Extract<Outcome, { readonly ok: true }>): Response {
+  const { status, output } = outcome;
+  const headers = new Headers(NO_STORE);
+  for (const effect of outcome.effects ?? []) {
+    headers.append("Set-Cookie", setCookieHeader(effect));
+  }
+  if (status === 202 || status === 204) {
+    return new Response(null, { status, headers });
+  }
+  if (status === 303) {
+    // The output passed the Redirect schema: the location is a string.
+    headers.set("Location", (output as { readonly location: string }).location);
+  }
+  headers.set("Content-Type", "application/json");
+  return new Response(JSON.stringify(output), { status, headers });
 }
 
-/** The chain's first step: who acts, and whether they may call the operation. Nothing of the request but its headers is read. */
+/** The address a request came from, when the server runs on Node; none through app.request, as in most tests. */
+function ipAddressOf(env: unknown): string | undefined {
+  const bindings = env as { readonly incoming?: { readonly socket: { readonly remoteAddress?: string } } } | undefined;
+  return bindings?.incoming?.socket.remoteAddress;
+}
+
+/** What /v1 knows of a request besides its input: its Origin, its address and its device cookie. */
+function factsOf(c: Context<V1Env>): RequestFacts {
+  const { headers } = c.req.raw;
+  const origin = headers.get("origin");
+  const ipAddress = ipAddressOf(c.env);
+  const device = readCookie(headers, DEVICE_COOKIE);
+  return {
+    ...(origin === null ? {} : { origin }),
+    ...(ipAddress === undefined ? {} : { ipAddress }),
+    ...(device === undefined ? {} : { device }),
+  };
+}
+
+/**
+ * The chain's first step: whether another site may have started the request,
+ * then who acts, and whether they may call the operation. Nothing of the
+ * request but its headers is read. A public operation reads nothing of
+ * anyone's, so neither check touches it.
+ */
 function authorizeRequest(operation: Operation, deps: V1Deps): MiddlewareHandler<V1Env> {
   const isPublic = operation["x-nortfox"].permission === PUBLIC;
   return async (c, next) => {
-    const principal = isPublic ? undefined : await deps.resolve(c.req.raw);
+    if (!isPublic && crossSiteRefused(operation, c.req.raw, deps.allowedOrigins)) {
+      return problemResponse(crossSiteRequest());
+    }
+    const principal = isPublic ? undefined : await deps.resolve(c.req.raw, "rest");
     const refusal = authorize(operation, principal);
     if (refusal !== undefined) {
       return problemResponse(problemOf(refusal));
@@ -149,10 +227,11 @@ function authorizeRequest(operation: Operation, deps: V1Deps): MiddlewareHandler
   };
 }
 
-/** The chain's last step: the body, the query and the key, the runner and the answer. */
+/** The chain's last step: the body, the path parameters, the query and the key, the runner and the answer. */
 function serve(handler: Handler, fields: QueryFields, deps: V1Deps): RouteHandler<V1Env> {
   const { operation } = handler;
   const takesBody = bodySchema(operation) !== undefined;
+  const takesParams = paramsSchema(operation) !== undefined;
   const writes = operation["x-nortfox"].writes;
   return async (c) => {
     let body: unknown;
@@ -163,18 +242,25 @@ function serve(handler: Handler, fields: QueryFields, deps: V1Deps): RouteHandle
       }
       body = read.value;
     }
+    const params: Readonly<Record<string, string>> = takesParams ? c.req.param() : {};
     const query = readQuery(c.req.url, fields);
     const idempotency: OperationCall["idempotency"] = writes ? { key: readKeyHeader(c.req.raw.headers.get(IDEMPOTENCY_KEY_HEADER)) } : "none";
     const principal = c.get("principal");
     const context: RequestContext | undefined = principal === undefined ? undefined : { ...principal, channel: "rest" };
-    let outcome: Outcome;
+    const batch = deps.afterAnswer.batch();
     try {
-      outcome = await runOperation(handler, { context, input: { query: query.values, body, problems: query.problems }, idempotency }, deps);
-    } catch (error) {
-      deps.report(error);
-      return problemResponse(internalError());
+      let outcome: Outcome;
+      try {
+        const input = { params, query: query.values, body, problems: query.problems };
+        outcome = await runOperation(handler, { context, input, idempotency, request: factsOf(c), later: batch.later }, deps);
+      } catch (error) {
+        deps.report(error);
+        return problemResponse(internalError());
+      }
+      return outcome.ok ? successResponse(outcome) : problemResponse(problemOf(outcome.refusal));
+    } finally {
+      batch.release();
     }
-    return outcome.ok ? jsonResponse(outcome.output, outcome.status) : problemResponse(problemOf(outcome.refusal));
   };
 }
 
@@ -190,19 +276,20 @@ export function mountV1(app: Hono<V1Env>, handlers: readonly Handler[], deps: V1
   for (const handler of handlers) {
     const { operation } = handler;
     const method = operation.method.toUpperCase();
+    const path = operation.getRoutingPath();
     const first = authorizeRequest(operation, deps);
     const last = serve(handler, queryFields(operation), deps);
     if (bodySchema(operation) === undefined) {
-      app.on(method, operation.path, first, last);
+      app.on(method, path, first, last);
     } else {
-      app.on(method, operation.path, first, limitBody, last);
+      app.on(method, path, first, limitBody, last);
     }
-    const methods = allowed.get(operation.path) ?? new Set<string>();
+    const methods = allowed.get(path) ?? new Set<string>();
     methods.add(method);
     if (method === "GET") {
       methods.add("HEAD");
     }
-    allowed.set(operation.path, methods);
+    allowed.set(path, methods);
   }
   for (const [path, methods] of allowed) {
     const allow = METHOD_ORDER.filter((method) => methods.has(method));

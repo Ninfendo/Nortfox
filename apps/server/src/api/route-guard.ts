@@ -31,10 +31,14 @@ function servesV1(path: string): boolean {
   return first === "v1" || first.startsWith(":") || first.includes("*");
 }
 
-/** Each route that could serve a /v1 path and that the registry does not declare. */
+/**
+ * Each route that could serve a /v1 path and that the registry does not
+ * declare. A route's path holds a path parameter as :name, as Hono routes
+ * the registry's {name}.
+ */
 export function v1RouteProblems(routes: readonly Route[], operations: readonly Operation[]): string[] {
-  const declared = new Set(operations.map((operation) => `${operation.method.toUpperCase()} ${operation.path}`));
-  const paths = new Set(operations.map((operation) => operation.path));
+  const declared = new Set(operations.map((operation) => `${operation.method.toUpperCase()} ${operation.getRoutingPath()}`));
+  const paths = new Set(operations.map((operation) => operation.getRoutingPath()));
   return routes
     .filter((route) => servesV1(route.path))
     .filter((route) => !declared.has(`${route.method} ${route.path}`) && !(route.method === "ALL" && paths.has(route.path)))

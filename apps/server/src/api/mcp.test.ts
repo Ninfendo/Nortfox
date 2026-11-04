@@ -21,18 +21,22 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   CURSOR_KEY,
+  TEST_INSTALL_KEY,
   MCP_ERAS,
   TEST_VERSION,
   bearer,
   buildTestApp,
   callTool,
   mcpClient,
+  personOf,
   principalOf,
   testResolver,
   untouchedDatabase,
   voucherBody,
 } from "../../test/api.ts";
+import { SHAPES_REGISTRY, SHAPE_OPERATIONS, fakeDatabase, shapeLog, shapesHandlers } from "../../test/shapes.ts";
 import { createApp } from "../app.ts";
+import type { Database } from "../db/database.ts";
 import { startServer } from "../start.ts";
 import { callerPrincipal } from "./mcp.ts";
 
@@ -67,7 +71,179 @@ const MONEY = {
 
 const NO_INPUT = { type: "object", properties: {}, additionalProperties: false };
 
-/** The tools of the test app, as tools/list gives them: the registry's two, then the test-only write and list. */
+const NO_OUTPUT = { type: "object", properties: {}, additionalProperties: false, description: "Nothing: REST answers with no body, MCP with an empty object." };
+
+const USER = {
+  type: "object",
+  properties: {
+    id: { ...UUID, description: "The person's id. The person stays the actor of every entry they made." },
+    name: { type: "string", description: "The person's name." },
+    email: { type: "string", description: "The person's personal e-mail address. A password sign-in takes it as the identifier, in any letter case." },
+    language: { type: "string", enum: ["sv", "en"], description: "Språk: sv (Svenska) or en (English). It applies in every company." },
+  },
+  required: ["id", "name", "email", "language"],
+  additionalProperties: false,
+  description: "A person: their NortFox ID, the one login identity they use for every company.",
+};
+
+const CHALLENGE_PATTERN = "^nfc_[A-Za-z0-9_-]{43}$";
+
+/** The tools of the browser's sign-in and of the person's own operations, as tools/list gives them. */
+const SIGN_IN_TOOLS = [
+  {
+    name: "completeSetup",
+    title: "Make the first identity",
+    description: "Makes the first identity of an empty install. It serves the browser's sign-in, so this tool refuses every call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: { type: "string", pattern: "^nfu_[A-Za-z0-9_-]{43}$", description: "The setup link's token, which the install's setup command printed." },
+        name: { type: "string", minLength: 1, maxLength: 200, description: "The person's name." },
+        email: { type: "string", maxLength: 254, format: "email", pattern: '^[^\\s@"]{1,64}@[^\\s@]{1,255}$', description: "The person's personal e-mail address." },
+        password: { type: "string", description: "The password: 12 to 1024 characters." },
+      },
+      required: ["token", "name", "email", "password"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        user: USER,
+        totpEnrolment: {
+          type: "object",
+          properties: {
+            otpauthUri: {
+              type: "string",
+              description: "The TOTP secret as an otpauth URI, for an authenticator app: show it as a QR code. The first right code of it confirms it.",
+            },
+          },
+          required: ["otpauthUri"],
+          additionalProperties: false,
+          description: "A new TOTP secret, which the person adds to an authenticator app.",
+        },
+      },
+      required: ["user", "totpEnrolment"],
+      additionalProperties: false,
+      description: "The first identity of the install, with its TOTP enrolment. The person signs in next, with the password and a code.",
+    },
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "loginWithPassword",
+    title: "Sign in with a password",
+    description: "Signs a browser in with a password. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        identifier: { type: "string", minLength: 1, maxLength: 254, description: "The e-mail address, or the personnummer in 10 or 12 digits." },
+        password: { type: "string", minLength: 1, description: "The password." },
+      },
+      required: ["identifier", "password"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        outcome: {
+          type: "string",
+          enum: ["signed-in", "totp-required"],
+          description: "signed-in: the session cookie is set, on a known device inside its 90 days. totp-required: verifyTotp comes next, with the challenge.",
+        },
+        challenge: {
+          type: "string",
+          pattern: CHALLENGE_PATTERN,
+          description: "The login challenge, for verifyTotp, when the outcome is totp-required. It works for 20 minutes and for five codes.",
+        },
+      },
+      required: ["outcome"],
+      additionalProperties: false,
+      description: "What a right password gives: a session, or the TOTP step.",
+    },
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "verifyTotp",
+    title: "Give the TOTP code",
+    description: "Gives the TOTP code of a browser's sign-in. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        challenge: { type: "string", pattern: CHALLENGE_PATTERN, description: "The login challenge that loginWithPassword gave." },
+        code: { type: "string", pattern: "^[0-9]{6}$", description: "The six digits of the authenticator app." },
+      },
+      required: ["challenge", "code"],
+      additionalProperties: false,
+    },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "logout",
+    title: "Sign out",
+    description: "Signs a browser out. It serves the browser's session, so this tool refuses every call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        idempotencyKey: {
+          type: "string",
+          minLength: 1,
+          maxLength: 255,
+          pattern: "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+          description:
+            'A key you choose for this write, 1 to 255 characters of visible ASCII without " and \\. Send the same key with the same input again, and you get the first answer back instead of a second write.',
+        },
+      },
+      required: ["idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "getSession",
+    title: "Read the session",
+    description: "Reads the browser's session. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
+    inputSchema: NO_INPUT,
+    outputSchema: {
+      type: "object",
+      properties: { user: USER },
+      required: ["user"],
+      additionalProperties: false,
+      description: "The browser's session: the person it signed in. A session works in no company until one is chosen.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "getMe",
+    title: "Read yourself",
+    description:
+      "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code.",
+    inputSchema: NO_INPUT,
+    outputSchema: {
+      type: "object",
+      properties: {
+        user: USER,
+        personalIdentityNumber: {
+          description: "The person's personnummer, in twelve digits with a hyphen. Absent until one is added.",
+          type: "string",
+          pattern: "^[0-9]{8}-[0-9]{4}$",
+        },
+        mobile: { description: "The person's mobile number. Absent when none is set.", type: "string" },
+        twoStep: {
+          type: "string",
+          enum: ["new_device_90_days", "every_login"],
+          description: "How often a password sign-in asks for a TOTP code: new_device_90_days on each new device and every 90 days on a known one, or every_login.",
+        },
+      },
+      required: ["user", "twoStep"],
+      additionalProperties: false,
+      description: "The signed-in person, with their own login data.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+];
+
+/** The tools of the test app, as tools/list gives them: the registry's, then the test-only write and list. */
 const TOOLS = [
   {
     name: "getHealth",
@@ -116,6 +292,7 @@ const TOOLS = [
     },
     annotations: { readOnlyHint: true },
   },
+  ...SIGN_IN_TOOLS,
   {
     name: "testBookVoucher",
     title: "Book a voucher",
@@ -315,6 +492,98 @@ describe("tools/call", () => {
   });
 });
 
+describe("the shapes of slice 2c by MCP", () => {
+  const THING = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b";
+  const PERSON = personOf();
+  const SHAPE_TOKENS = { ...TOKENS, person: PERSON };
+
+  function shapeApp(database: Database = untouchedDatabase()) {
+    const log = shapeLog();
+    return { log, app: buildTestApp({ database, resolve: testResolver(SHAPE_TOKENS), registry: SHAPES_REGISTRY, handlers: shapesHandlers(log), report: () => undefined }) };
+  }
+
+  /** Arguments with which each operation that serves the browser's session would succeed by REST. */
+  const FLOW_ARGUMENTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+    testSignIn: { email: "anna@example.com" },
+    testSendLetter: { email: "anna@example.com" },
+    testStartRedirect: { provider: "alfa" },
+    testEndSession: { idempotencyKey: "k-1" },
+  };
+
+  const FLOW = SHAPE_OPERATIONS.filter((operation) => operation["x-nortfox"].session === "flow");
+
+  it("covers every test-only operation that serves the browser's session", () => {
+    expect(FLOW.map((operation) => operation.operationId)).toEqual(Object.keys(FLOW_ARGUMENTS));
+  });
+
+  it.each(FLOW.flatMap((operation) => MCP_ERAS.flatMap((era) => [undefined, "person", "writer"].map((token) => [operation.operationId, era, token] as const))))(
+    "refuses %s with 403 browser-only, before any argument is read, and runs no handler and asks no database (%s, %s)",
+    async (name, era, token) => {
+      const database = untouchedDatabase();
+      const { app, log } = shapeApp(database);
+      const client = await mcpClient(app, { era, ...(token === undefined ? {} : { token }) });
+      for (const args of [FLOW_ARGUMENTS[name] ?? {}, { unknown: 1 }]) {
+        expect(await callTool(client, name, args)).toEqual({
+          isError: true,
+          structured: {
+            type: "about:blank",
+            title: "Forbidden",
+            status: 403,
+            detail: "This operation serves the browser's sign-in. An MCP client signs in through OAuth.",
+            code: "browser-only",
+          },
+        });
+      }
+      expect(log.calls).toEqual([]);
+      expect(database.asked).toEqual([]);
+      await client.close();
+    },
+  );
+
+  it("lists each operation of the browser's session with its schemas, as any tool", async () => {
+    const client = await mcpClient(shapeApp().app);
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name)).toEqual(SHAPES_REGISTRY.map((operation) => operation.operationId));
+    expect(tools.find((tool) => tool.name === "testSignIn")?.inputSchema).toEqual({
+      type: "object",
+      properties: { email: { type: "string", minLength: 1, description: "The e-mail address." } },
+      required: ["email"],
+      additionalProperties: false,
+    });
+    await client.close();
+  });
+
+  it("takes a path parameter as an argument, and names a bad one at its pointer", async () => {
+    const { app } = shapeApp(fakeDatabase());
+    const client = await mcpClient(app, { token: "writer" });
+    expect(await callTool(client, "testGetThing", { thingId: THING, view: "long" })).toEqual({
+      isError: false,
+      structured: { id: THING, view: "long", companyId: COMPANY },
+    });
+    expect(await callTool(client, "testGetThing", { view: "long" })).toMatchObject({
+      isError: true,
+      structured: { status: 400, errors: [{ code: "missing-field", pointer: "/thingId" }] },
+    });
+    await client.close();
+  });
+
+  it("answers an operation that answers 204 with an empty object", async () => {
+    const { app } = shapeApp(fakeDatabase());
+    const client = await mcpClient(app, { token: "writer" });
+    expect(await callTool(client, "testRemoveThing", { thingId: THING, idempotencyKey: "k-1" })).toEqual({ isError: false, structured: {} });
+    await client.close();
+  });
+
+  it("answers a signed-in person's operation that does not serve the browser's session", async () => {
+    const database = fakeDatabase();
+    const { app } = shapeApp(database);
+    const client = await mcpClient(app, { token: "person" });
+    expect(await callTool(client, "testGetPerson")).toEqual({ isError: false, structured: { personId: PERSON.personId } });
+    expect(database.transactions).toEqual([{ mode: "read", settings: { actorId: PERSON.personId, actorKind: "user", channel: "mcp" }, ended: "commit" }]);
+    await client.close();
+  });
+});
+
 describe("the caller of an MCP request", () => {
   it("is the principal that /mcp passes with each request, and nothing else", () => {
     expect(() => callerPrincipal(undefined)).toThrow("The MCP server got no caller");
@@ -324,7 +593,7 @@ describe("the caller of an MCP request", () => {
 
 describe("/mcp on the real server", () => {
   it.each(MCP_ERAS)("serves a client of the %s era over HTTP, as through app.request", async (era) => {
-    const app = createApp({ version: TEST_VERSION, resolve: testResolver(TOKENS), database: untouchedDatabase(), cursorKey: CURSOR_KEY });
+    const app = createApp({ version: TEST_VERSION, resolve: testResolver(TOKENS), database: untouchedDatabase(), cursorKey: CURSOR_KEY, installKey: TEST_INSTALL_KEY });
     const server = await startServer({ app, port: 0 });
     try {
       const client = new Client(
@@ -332,7 +601,7 @@ describe("/mcp on the real server", () => {
         era === "2025" ? {} : { versionNegotiation: { mode: { pin: "2026-07-28" } } },
       );
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(server.port)}/mcp`)));
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany"]);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...SIGN_IN_TOOLS.map((tool) => tool.name)]);
       expect(await callTool(client, "getHealth")).toEqual({ isError: false, structured: { status: "ok", version: TEST_VERSION } });
       await client.close();
     } finally {

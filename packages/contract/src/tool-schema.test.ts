@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_PATTERN } from "./idempotency-key.ts";
 import { Money } from "./money.ts";
-import { defineListOperation, defineOperation } from "./operation.ts";
+import { NoBody, Redirect, defineListOperation, defineOperation } from "./operation.ts";
 import { getCompany } from "./operations/companies.ts";
 import { getHealth } from "./operations/status.ts";
 import { jsonSchemaOf, toolInputSchema, toolOutputSchema } from "./tool-schema.ts";
@@ -117,6 +117,59 @@ describe("toolInputSchema", () => {
     });
   });
 
+  it("is the path parameters, the query's fields, the body's fields and the key, in that order, for a write with all four", () => {
+    const renameSample = defineOperation({
+      id: "renameSample",
+      method: "patch",
+      path: "/v1/samples/{sampleId}",
+      tags: ["samples"],
+      summary: "Rename a sample",
+      description: "Renames a sample.",
+      params: z.strictObject({ sampleId: z.uuid().meta({ description: "The sample's id." }) }),
+      query: z.strictObject({ dryRun: z.enum(["yes", "no"]).optional() }),
+      body: z.strictObject({ name: z.string().min(1) }),
+      output: NoBody,
+      status: 204,
+      permission: "test:write",
+      tool: "Renames a sample.",
+      writes: true,
+    });
+    expect(toolInputSchema(renameSample)).toEqual({
+      type: "object",
+      properties: {
+        sampleId: { ...UUID, description: "The sample's id." },
+        dryRun: { type: "string", enum: ["yes", "no"] },
+        name: { type: "string", minLength: 1 },
+        idempotencyKey: KEY,
+      },
+      required: ["sampleId", "name", "idempotencyKey"],
+      additionalProperties: false,
+    });
+  });
+
+  it("takes no key for a write that runs before sign-in", () => {
+    const signIn = defineOperation({
+      id: "signInSample",
+      method: "post",
+      path: "/v1/sample-sign-ins",
+      tags: ["samples"],
+      summary: "Sign in",
+      description: "Signs in.",
+      body: z.strictObject({ email: z.string() }),
+      output: z.strictObject({ step: z.string() }),
+      permission: "none",
+      session: "flow",
+      tool: "Signs in.",
+      writes: true,
+    });
+    expect(toolInputSchema(signIn)).toEqual({
+      type: "object",
+      properties: { email: { type: "string" } },
+      required: ["email"],
+      additionalProperties: false,
+    });
+  });
+
   it("names the key argument and its alphabet", () => {
     expect(IDEMPOTENCY_KEY_ARGUMENT).toBe("idempotencyKey");
     expect(IDEMPOTENCY_KEY_PATTERN).toBe("^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$");
@@ -167,6 +220,49 @@ describe("toolOutputSchema", () => {
       type: "object",
       properties: { id: UUID, amount: MONEY },
       required: ["id", "amount"],
+      additionalProperties: false,
+    });
+  });
+
+  it("is the empty object for an answer without a body, and the location for a redirect", () => {
+    const end = defineOperation({
+      id: "endSample",
+      method: "delete",
+      path: "/v1/samples",
+      tags: ["samples"],
+      summary: "End",
+      description: "Ends.",
+      output: NoBody,
+      status: 204,
+      permission: "test:write",
+      tool: "Ends.",
+      writes: true,
+    });
+    expect(toolOutputSchema(end)).toEqual({
+      type: "object",
+      description: "Nothing: REST answers with no body, MCP with an empty object.",
+      properties: {},
+      additionalProperties: false,
+    });
+    const start = defineOperation({
+      id: "startSample",
+      method: "get",
+      path: "/v1/sample-starts",
+      tags: ["samples"],
+      summary: "Start",
+      description: "Starts.",
+      output: Redirect,
+      status: 303,
+      permission: "none",
+      session: "flow",
+      tool: "Starts.",
+      writes: true,
+    });
+    expect(toolOutputSchema(start)).toEqual({
+      type: "object",
+      description: "Where the browser goes next.",
+      properties: { location: { type: "string", description: "The URL the browser goes to next. REST sends it in the Location header too." } },
+      required: ["location"],
       additionalProperties: false,
     });
   });

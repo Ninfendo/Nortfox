@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createClient, type FetchFunction } from "./index.ts";
+import { createSend, type OperationCall } from "./runtime.ts";
 
 function answering(status: number, body: unknown): { fetch: FetchFunction; calls: [string, RequestInit][] } {
   const calls: [string, RequestInit][] = [];
@@ -108,6 +109,41 @@ describe("createClient", () => {
     }
   });
 
+  it("sends each operation of the browser's sign-in and of the person as its operation takes it", async () => {
+    const user = { id: "8a9b0c1d-2e3f-4a5b-8c7d-6e5f4a3b2c1d", name: "Alva Berg", email: "alva.berg@example.com", language: "sv" };
+    const answers: Response[] = [
+      Response.json({ user, totpEnrolment: { otpauthUri: "otpauth://totp/NortFox:alva.berg%40example.com?secret=AAAA" } }, { status: 201 }),
+      Response.json({ outcome: "totp-required", challenge: "the-challenge" }),
+      new Response(null, { status: 204 }),
+      new Response(null, { status: 204 }),
+      Response.json({ user }),
+      Response.json({ user, twoStep: "new_device_90_days" }),
+    ];
+    const calls: [string, RequestInit][] = [];
+    const client = createClient({
+      baseUrl: "https://nortfox.example",
+      fetch: (input, init) => {
+        calls.push([input, init]);
+        return Promise.resolve(answers.shift() ?? Response.json({}));
+      },
+    });
+    await expect(client.completeSetup({ token: "the-setup-token", name: "Alva Berg", email: "alva.berg@example.com", password: "tolv-tecken!" })).resolves.toMatchObject({ user });
+    await expect(client.loginWithPassword({ identifier: "alva.berg@example.com", password: "tolv-tecken!" })).resolves.toEqual({ outcome: "totp-required", challenge: "the-challenge" });
+    await expect(client.verifyTotp({ challenge: "the-challenge", code: "123456" })).resolves.toBeUndefined();
+    await expect(client.logout({ idempotencyKey: "logout-1" })).resolves.toBeUndefined();
+    await expect(client.getSession()).resolves.toEqual({ user });
+    await expect(client.getMe()).resolves.toEqual({ user, twoStep: "new_device_90_days" });
+    const json = { accept: "application/json", "content-type": "application/json" };
+    expect(calls).toEqual([
+      ["https://nortfox.example/v1/setup/the-setup-token", { method: "POST", headers: json, body: '{"name":"Alva Berg","email":"alva.berg@example.com","password":"tolv-tecken!"}' }],
+      ["https://nortfox.example/v1/auth/password", { method: "POST", headers: json, body: '{"identifier":"alva.berg@example.com","password":"tolv-tecken!"}' }],
+      ["https://nortfox.example/v1/auth/totp", { method: "POST", headers: json, body: '{"challenge":"the-challenge","code":"123456"}' }],
+      ["https://nortfox.example/v1/auth/logout", { method: "POST", headers: { accept: "application/json", "idempotency-key": "logout-1" } }],
+      ["https://nortfox.example/v1/session", { method: "GET", headers: { accept: "application/json" } }],
+      ["https://nortfox.example/v1/me", { method: "GET", headers: { accept: "application/json" } }],
+    ]);
+  });
+
   it("uses the global fetch when none is given", async () => {
     const server = answering(200, { status: "ok", version: "2.0.0" });
     vi.stubGlobal("fetch", server.fetch);
@@ -115,5 +151,83 @@ describe("createClient", () => {
 
     await expect(client.getHealth()).resolves.toEqual({ status: "ok", version: "2.0.0" });
     expect(server.calls[0]?.[0]).toBe("http://localhost:4100/v1/health");
+  });
+});
+
+describe("a call of each shape", () => {
+  /** A fetch that answers each call with `answer`, and records what it was asked. */
+  function recording(answer: () => Response): { fetch: FetchFunction; calls: [string, RequestInit][] } {
+    const calls: [string, RequestInit][] = [];
+    return {
+      calls,
+      fetch: (input, init) => {
+        calls.push([input, init]);
+        return Promise.resolve(answer());
+      },
+    };
+  }
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"] as const)("sends %s", async (method) => {
+    const server = recording(() => Response.json({ done: true }));
+    const send = createSend({ baseUrl: "https://books.example.com", fetch: server.fetch });
+    await expect(send({ method, path: "/v1/things" }, undefined, undefined)).resolves.toEqual({ done: true });
+    expect(server.calls).toEqual([["https://books.example.com/v1/things", { method, headers: { accept: "application/json" } }]]);
+  });
+
+  it("puts the path parameters in the path, encoded, the query in the URL, the rest of the input in a JSON body, and the key in its header", async () => {
+    const server = recording(() => Response.json({ id: "x" }, { status: 201 }));
+    const send = createSend({ baseUrl: "https://books.example.com", fetch: server.fetch });
+    const call: OperationCall = { method: "PATCH", path: "/v1/things/{thingId}/parts/{partId}", params: ["thingId", "partId"], query: ["view", "limit", "from"], body: true, key: true };
+    const input = { thingId: "a/b c", partId: "ö", view: "long", limit: 5, from: undefined, name: "Kassa", note: undefined };
+    await expect(send(call, input, { idempotencyKey: "k-1" })).resolves.toEqual({ id: "x" });
+    expect(server.calls).toEqual([
+      [
+        "https://books.example.com/v1/things/a%2Fb%20c/parts/%C3%B6?view=long&limit=5",
+        { method: "PATCH", headers: { accept: "application/json", "content-type": "application/json", "idempotency-key": "k-1" }, body: '{"name":"Kassa"}' },
+      ],
+    ]);
+  });
+
+  it("sends an empty body for a write whose input holds only its parameters, and no key when the call takes none", async () => {
+    const server = recording(() => Response.json({}));
+    const send = createSend({ baseUrl: "", fetch: server.fetch });
+    await send({ method: "POST", path: "/v1/sign-ins", body: true }, {}, { idempotencyKey: "ignored" });
+    expect(server.calls[0]?.[1]).toEqual({ method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: "{}" });
+  });
+
+  it("leaves out the query when none of its fields is given, and sends no body for a call that takes none", async () => {
+    const server = recording(() => Response.json({}));
+    const send = createSend({ baseUrl: "", fetch: server.fetch });
+    await send({ method: "GET", path: "/v1/things", query: ["view"] }, { view: undefined }, undefined);
+    expect(server.calls[0]).toEqual(["/v1/things", { method: "GET", headers: { accept: "application/json" } }]);
+  });
+
+  it("gives nothing for an answer without a body, 202 or 204, and reads no body", async () => {
+    for (const status of [202, 204]) {
+      const server = recording(() => new Response(null, { status }));
+      const send = createSend({ baseUrl: "", fetch: server.fetch });
+      await expect(send({ method: "POST", path: "/v1/letters", answer: "none" }, undefined, undefined)).resolves.toBeUndefined();
+    }
+  });
+
+  it("asks fetch not to follow a 303, and gives its location", async () => {
+    const server = recording(() => new Response(JSON.stringify({ location: "https://idp.example.com/authorize" }), { status: 303, headers: { location: "https://idp.example.com/authorize", "content-type": "application/json" } }));
+    const send = createSend({ baseUrl: "", fetch: server.fetch });
+    await expect(send({ method: "GET", path: "/v1/starts", answer: "redirect" }, undefined, undefined)).resolves.toEqual({ location: "https://idp.example.com/authorize" });
+    expect(server.calls[0]?.[1]).toEqual({ method: "GET", headers: { accept: "application/json" }, redirect: "manual" });
+  });
+
+  it("throws an ApiError for a redirect that answers anything but 303, with its problem details when it has them", async () => {
+    const problem = { type: "about:blank", title: "Bad Request", status: 400, detail: "x", code: "invalid-request" };
+    const answers = [
+      () => Response.json({ location: "x" }),
+      () => new Response(JSON.stringify(problem), { status: 400, headers: { "content-type": "application/problem+json" } }),
+    ];
+    for (const answer of answers) {
+      const send = createSend({ baseUrl: "", fetch: recording(answer).fetch });
+      await expect(send({ method: "GET", path: "/v1/starts", answer: "redirect" }, undefined, undefined)).rejects.toBeInstanceOf(ApiError);
+    }
+    const send = createSend({ baseUrl: "", fetch: recording(answers[0] ?? (() => Response.json({}))).fetch });
+    await expect(send({ method: "GET", path: "/v1/starts", answer: "redirect" }, undefined, undefined)).rejects.toMatchObject({ status: 200, message: "GET /v1/starts answered 200." });
   });
 });

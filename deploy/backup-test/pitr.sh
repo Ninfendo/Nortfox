@@ -13,7 +13,8 @@
 #   container's own and no mount, and one that is killed during its first
 #   full backups;
 # - on the running stack: PostgreSQL archives WAL through pgBackRest, with
-#   archive_timeout 1min; the migrate step exited 0, and the owner role
+#   archive_timeout 1min, and its log of a failed statement holds no DETAIL
+#   and no parameter; the migrate step exited 0, and the owner role
 #   applied every migration and owns every table; our roles, a reader among
 #   them, connect to the database nortfox only, and in no database may any of
 #   them make a large object, write a WAL message or read pg_locks; the
@@ -239,6 +240,8 @@ expect "wal_level" "$(sql postgres <<< 'SHOW wal_level')" replica
 expect "archive_mode" "$(sql postgres <<< 'SHOW archive_mode')" on
 expect "archive_timeout" "$(sql postgres <<< 'SHOW archive_timeout')" 1min
 expect "archive_command" "$(sql postgres <<< 'SHOW archive_command')" "pgbackrest --stanza=nortfox archive-push %p"
+expect "log_error_verbosity" "$(sql postgres <<< 'SHOW log_error_verbosity')" terse
+expect "log_parameter_max_length_on_error" "$(sql postgres <<< 'SHOW log_parameter_max_length_on_error')" 0
 
 migrations=("$root"/db/migrations/*.sql)
 expect "the migrations applied, and who applied them" \

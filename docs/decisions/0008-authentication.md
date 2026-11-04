@@ -1,6 +1,6 @@
 # 8. Authentication
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: the login of the compatible API.
+Status: accepted, 2026-11-01. Amended 2026-11-02: the login of the compatible API. Amended 2026-11-04, in slice 2c: the session's cookies, the cross-site rule, and the company of a request that works in one.
 
 ## Context
 
@@ -30,10 +30,12 @@ People log in from the web app. Programs and MCP clients need access too. Progra
 - The access token of that flow has the established token's shape: a JWT that carries the company's tenant id as a claim. The established API's docs tell integrators to read the tenant id from the token, so an opaque token would break those integrations. 2e's issue takes the claim names from a token of the established system. NortFox never trusts what the token says: the token holds a random value, is stored only as a hash and is looked up on every request. This shape is a working default that the owner may change.
 - The code and the refresh token of that flow are opaque and random, and are stored only as hashes. Every token of that flow is bound to one company. It works only on the compatible API's paths, as the MCP tokens work only for `/mcp`.
 - In the established flow, a live access token cannot be revoked: it works until it expires. In NortFox, revoking a consent, or the client, stops every token it gave on the next request, access tokens included, because every token is looked up. This is NortFox's own working default, which the owner may change.
-- Every request acts in one company, as one user. A service account has no user: its request acts as its client, with the rights its scopes give. The permission a request needs comes from the operation's entry in the registry.
+- Every request that works in a company acts in that one company, as one user. A sign-in acts before there is a user, and a signed-in person's own requests, such as reading their own login data, work in no company. A service account has no user: its request acts as its client, with the rights its scopes give. The permission a request needs comes from the operation's entry in the registry.
 
 ## Consequences
 
+- A browser's session is the cookie `__Host-nortfox-session`, and a known device, whose TOTP step passed, the cookie `__Host-nortfox-device`. Both are HttpOnly, Secure and SameSite=Strict, with `Path=/` and no Domain, as the `__Host-` prefix asks. The session cookie has no Max-Age, so it ends with the browser. The device cookie lasts 400 days, the most a browser keeps one.
+- Cross-site requests: a request that carries the session cookie, is not a `GET` or `HEAD` and has no bearer token must carry the install's own origin in `Origin`, and an operation that runs before sign-in refuses an `Origin` that is not the install's own. A request with a bearer token ignores the cookie ([docs/api.md](../api.md#cross-site-requests)).
 - A revoked session or token stops working on the next request, because every token is looked up.
 - That lookup is one indexed database read per request.
 - A real BankID login needs an agreement with the provider the install chooses. Tests use a fake provider.
