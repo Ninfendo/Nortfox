@@ -13,7 +13,7 @@ import { NoBody, defineListOperation, defineOperation, getCompany, getHealth, ty
 import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { CURSOR_KEY, TEST_NOW, personOf, principalOf, runnerDeps, testListAccounts, testListAccountsHandler } from "../../test/api.ts";
+import { CURSOR_KEY, FINGERPRINT_KEY, TEST_NOW, personOf, principalOf, runnerDeps, testListAccounts, testListAccountsHandler } from "../../test/api.ts";
 import { testEndSession, testGetPerson, testGetThing, testSignIn } from "../../test/shapes.ts";
 import type { CookieEffect } from "../auth/cookies.ts";
 import type { Ending, Queryable, TransactionSettings, Work } from "../db/database.ts";
@@ -380,8 +380,8 @@ describe("runOperation", () => {
     }
 
     const SETTINGS: TransactionSettings = { companyId: COMPANY, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" };
-    const HASH = requestHash("testWrite", {}, { name: "Kassa" });
-    const OTHER_HASH = requestHash("testWrite", {}, { name: "Bank" });
+    const HASH = requestHash(FINGERPRINT_KEY, "testWrite", {}, { name: "Kassa" });
+    const OTHER_HASH = requestHash(FINGERPRINT_KEY, "testWrite", {}, { name: "Bank" });
     const KEY_ID = "f0e1d2c3-b4a5-4697-8879-6a5b4c3d2e1f";
 
     function stored(hash: string): QueryResultRow {
@@ -836,7 +836,7 @@ describe("runOperation for a signed-in person's operation", () => {
     expect(transactions).toEqual([{ mode: "write", settings: PERSON_SETTINGS, ended: "commit" }]);
     expect(queries.map((query) => [query.text.split(/\s+/).slice(0, 4).join(" "), query.values])).toEqual([
       ["SELECT request_hash, response_status, response_body", [PERSON.personId, "k-1"]],
-      ["INSERT INTO access.idempotency_keys (idempotency_key,", ["k-1", "testEndSession", requestHash("testEndSession", {}, undefined), 204, "{}"]],
+      ["INSERT INTO access.idempotency_keys (idempotency_key,", ["k-1", "testEndSession", requestHash(FINGERPRINT_KEY, "testEndSession", {}, undefined), 204, "{}"]],
     ]);
   });
 
@@ -854,7 +854,7 @@ describe("runOperation for a signed-in person's operation", () => {
   });
 
   it("replays a person's stored answer, without running the handler and without its effects", async () => {
-    const stored = { request_hash: requestHash("testEndSession", {}, undefined), response_status: 204, response_body: {} };
+    const stored = { request_hash: requestHash(FINGERPRINT_KEY, "testEndSession", {}, undefined), response_status: 204, response_body: {} };
     const { database, transactions } = recordingDatabase(personKeyAnswers([[stored]]));
     let runs = 0;
     const handler = handlePerson(testEndSession, () => {

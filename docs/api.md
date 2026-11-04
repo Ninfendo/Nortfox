@@ -68,6 +68,16 @@ Each request runs in one database transaction, with the company, the actor, the 
 - A body is JSON in UTF-8, sent as `application/json`. Another media type gets 415 `unsupported-media-type`. A body that does not parse gets 400 `malformed-json`. A body over 1 MiB gets 413 `payload-too-large`.
 - A body field that the operation does not declare is refused, at any depth.
 
+## Cross-site requests
+
+A browser's session comes in the cookie `__Host-nortfox-session`, which is `SameSite=Strict`, so a browser never sends it with a request that another site starts. `/v1` also checks the `Origin` header, from the request's headers alone and before it reads the cookie:
+
+- A request whose method is not `GET` or `HEAD`, that carries the session cookie and no bearer token, must carry the install's own origin in `Origin`. A browser sends `Origin` with every such request. Without it, or with another, the request gets 403 `origin-not-allowed`.
+- An operation that runs before sign-in (`permission: none`) refuses an `Origin` that is not the install's, so another site cannot sign a browser in. A request with no `Origin`, from a program that is not a browser, runs.
+- A request with a bearer token is a program's. It ignores the cookie, so the first rule does not touch it.
+
+The install's own origin is the one it is set up with, `NORTFOX_PUBLIC_ORIGIN` ([deploy/README.md](../deploy/README.md)). `/mcp` allows the same one. A `public` operation reads nothing of anyone's, so neither rule touches it. A body is `application/json` only, which a form on another site cannot send without a preflight, and `/v1` answers no preflight.
+
 ## Answers on `/v1`
 
 | Status | When | Body |
@@ -123,7 +133,7 @@ Every error on `/v1` is problem details (RFC 9457), as `application/problem+json
 - `errors` lists every field problem of a 400 `invalid-request`. Each has its own `code`, a `detail`, a `pointer` and, when there are any, its facts in `data`: `expected` (the JSON type the field takes), `minimum`, `maximum` and `allowed` (the values it takes).
 - `permission` names the permission a 403 `permission-missing` lacks.
 - A rule's refusal, 422, has the rule's `code`, its facts in `data`, and a `pointer` when it is about one field, so a screen can show it on that field.
-- A 500 `internal-error` holds nothing of the error. The server logs it.
+- A 500 `internal-error` holds nothing of the error. The server logs it, but only the error's class, its code, the constraint, schema, table and column it names, its message and its stack, with every token, personnummer and e-mail address taken out. The log never holds a database error's detail, which can hold a row, nor the parameters of a statement.
 - An answer never repeats the values the request sent.
 
 ### Pointers
@@ -147,7 +157,7 @@ The registry keeps the names apart, so a pointer is never ambiguous. The same re
 | 401 | `authentication-required` | The request names no actor. |
 | 403 | `company-required` | The operation works in a company, and the request's credential names none. |
 | 403 | `permission-missing` | The actor lacks the operation's permission. |
-| 403 | `origin-not-allowed` | A request to `/mcp` from a browser origin that may not call it. |
+| 403 | `origin-not-allowed` | A request from a site that may not send it: to `/mcp` from a browser origin that the install does not allow, or to `/v1` as Cross-site requests says. |
 | 403 | `browser-only` | An MCP call of an operation that serves the browser's session. |
 | 404 | `not-found` | No operation has the path. |
 | 405 | `method-not-allowed` | The path takes another method. |
@@ -187,6 +197,7 @@ A write takes an idempotency key: the `Idempotency-Key` header on REST, and the 
 - A write with no key gets 400, with the field problem `idempotency-key-missing` at `/idempotencyKey`. A key that is not a key gets `idempotency-key-invalid` there.
 - Keys belong to one company and one actor. The same key in another company, or from another actor, is another key. A signed-in person's write that works in no company keeps its keys for the person alone.
 - The key and the first answer are stored in the write's own transaction. A write that is refused or fails stores no key, so a retry with the key runs again.
+- The server keeps a request's fingerprint, never the request: an HMAC-SHA256 of it, under a key from the install secret. A body can hold a password, and without the install secret a stored fingerprint tells nothing of it.
 - REST and MCP share the keys: the same input by either gives the same answer.
 - Keys do not expire yet.
 
@@ -220,7 +231,7 @@ The tool of an operation that serves the browser's session, such as a sign-in, i
 
 The arguments take JSON's own types: on MCP, `limit` is a JSON number, and the key is the argument as it is, without the header's quotes.
 
-`/mcp` checks the `Origin` header before anything else, as the MCP specification asks against DNS rebinding. A request whose `Origin` the install does not allow gets 403 `origin-not-allowed`, and nothing runs for it. A request with no `Origin`, as a program that is not a browser sends, is not refused for that. Until slice 2c, the install allows no browser origin.
+`/mcp` checks the `Origin` header before anything else, as the MCP specification asks against DNS rebinding. A request whose `Origin` the install does not allow gets 403 `origin-not-allowed`, and nothing runs for it. A request with no `Origin`, as a program that is not a browser sends, is not refused for that. The install allows one browser origin, its own, `NORTFOX_PUBLIC_ORIGIN`.
 
 ## The assistant
 

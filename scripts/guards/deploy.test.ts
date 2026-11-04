@@ -78,8 +78,10 @@ describe("the compose file", () => {
 
   const COMMAND =
     "deploy/compose.yaml: services.postgres.command must be exactly postgres -c wal_level=replica -c archive_mode=on " +
-    "-c archive_command=pgbackrest --stanza=nortfox archive-push %p -c archive_timeout=60, one item to a line. " +
-    "PostgreSQL archives each WAL segment through pgBackRest to both repositories, and closes a segment after at most 60 seconds.";
+    "-c archive_command=pgbackrest --stanza=nortfox archive-push %p -c archive_timeout=60 " +
+    "-c log_error_verbosity=terse -c log_parameter_max_length_on_error=0, one item to a line. " +
+    "PostgreSQL archives each WAL segment through pgBackRest to both repositories, and closes a segment after at most 60 seconds. " +
+    "Its log of a failed statement holds no DETAIL and no parameter, so no row and no secret of a request reaches the log.";
   const REPO2_TYPE =
     "deploy/compose.yaml: services.postgres.environment.PGBACKREST_REPO2_TYPE must be the required variable ${NORTFOX_REPO2_TYPE:?...}, " +
     "so the stack does not start without the off-site repository.";
@@ -109,10 +111,26 @@ describe("the compose file", () => {
     [
       "the command as one string",
       "    command:\n      - postgres\n      - -c\n      - wal_level=replica\n      - -c\n      - archive_mode=on\n      - -c\n" +
-        "      - archive_command=pgbackrest --stanza=nortfox archive-push %p\n      - -c\n      - archive_timeout=60\n",
-      "    command: postgres -c wal_level=replica -c archive_mode=on -c archive_timeout=60\n",
+        "      - archive_command=pgbackrest --stanza=nortfox archive-push %p\n      - -c\n      - archive_timeout=60\n" +
+        "      - -c\n      - log_error_verbosity=terse\n      - -c\n      - log_parameter_max_length_on_error=0\n",
+      "    command: postgres -c wal_level=replica -c archive_mode=on -c archive_timeout=60 -c log_error_verbosity=terse -c log_parameter_max_length_on_error=0\n",
       [COMMAND],
     ],
+    ["the log's default error verbosity, with DETAIL", "      - log_error_verbosity=terse\n", "      - log_error_verbosity=default\n", [COMMAND]],
+    ["the log's verbose errors", "      - log_error_verbosity=terse\n", "      - log_error_verbosity=verbose\n", [COMMAND]],
+    [
+      "the parameters of a failed statement in the log",
+      "      - log_parameter_max_length_on_error=0\n",
+      "      - log_parameter_max_length_on_error=-1\n",
+      [COMMAND],
+    ],
+    [
+      "the log settings dropped",
+      "      - -c\n      - log_error_verbosity=terse\n      - -c\n      - log_parameter_max_length_on_error=0\n",
+      "",
+      [COMMAND],
+    ],
+    ["the error verbosity dropped", "      - -c\n      - log_error_verbosity=terse\n", "", [COMMAND]],
     ["a default for the off-site type", "${NORTFOX_REPO2_TYPE:?", "${NORTFOX_REPO2_TYPE:-posix", [REPO2_TYPE]],
     ["no off-site path", "      PGBACKREST_REPO2_PATH: ${NORTFOX_REPO2_PATH:?", "      REPO2_PATH: ${NORTFOX_REPO2_PATH:?", [REPO2_PATH]],
     ["a fixed off-site type", "${NORTFOX_REPO2_TYPE:?Set NORTFOX_REPO2_TYPE to the type of the off-site repository, as deploy/README.md says.}", "posix", [
@@ -152,7 +170,18 @@ describe("the compose file", () => {
     const text = changed(compose, "    restart: \"no\"\n", "    restart: \"no\"\n    labels:\n      archive_timeout: \"600\"\n");
     const line = text.split("\n").findIndex((found) => found.includes('archive_timeout: "600"')) + 1;
     expect(composeProblems(text)).toEqual([
-      `deploy/compose.yaml:${String(line)} names archive_timeout outside services.postgres.command, where the archive settings are set.`,
+      `deploy/compose.yaml:${String(line)} names archive_timeout outside services.postgres.command, where the archive and log settings are set.`,
+    ]);
+  });
+
+  it.each([
+    ["log_error_verbosity", "      PGOPTIONS: -c log_error_verbosity=verbose\n"],
+    ["log_parameter_max_length_on_error", "      PGOPTIONS: -c log_parameter_max_length_on_error=-1\n"],
+  ])("fails the log setting %s outside the postgres command", (setting, line) => {
+    const text = changed(compose, "      POSTGRES_PASSWORD_FILE:", `${line}      POSTGRES_PASSWORD_FILE:`);
+    const number = text.split("\n").indexOf(line.slice(0, -1)) + 1;
+    expect(composeProblems(text)).toEqual([
+      `deploy/compose.yaml:${String(number)} names ${setting} outside services.postgres.command, where the archive and log settings are set.`,
     ]);
   });
 

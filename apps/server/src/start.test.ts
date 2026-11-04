@@ -3,7 +3,7 @@
 import { get } from "node:http";
 import { createServer, type Server } from "node:net";
 import { describe, expect, it } from "vitest";
-import { CURSOR_KEY, testResolver, untouchedDatabase } from "../test/api.ts";
+import { CURSOR_KEY, TEST_INSTALL_KEY, testResolver, untouchedDatabase } from "../test/api.ts";
 import { createApp } from "./app.ts";
 import { DEFAULT_PORT, parsePort, startServer } from "./start.ts";
 import { parseVersion, readServerVersion } from "./version.ts";
@@ -24,7 +24,7 @@ function getText(port: number, path: string): Promise<{ status: number; body: st
 }
 
 function app() {
-  return createApp({ version: "9.9.9", resolve: testResolver({}), database: untouchedDatabase(), cursorKey: CURSOR_KEY });
+  return createApp({ version: "9.9.9", resolve: testResolver({}), database: untouchedDatabase(), cursorKey: CURSOR_KEY, installKey: TEST_INSTALL_KEY });
 }
 
 /** Listens on `port`, or on a free one for 0, and gives the listener. */

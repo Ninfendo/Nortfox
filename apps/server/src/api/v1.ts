@@ -4,14 +4,19 @@
 // reader and writer. Each operation's route is a chain that checks the
 // caller before it reads anything:
 //
-// 1. authorize: the resolver reads the credential from the request's headers,
+// 1. the cross-site check (auth/origin.ts), from the headers alone: a write
+//    with the session cookie and no bearer token needs the install's own
+//    Origin, and an operation that runs before sign-in refuses any other
+//    Origin. A refusal is 403 origin-not-allowed, before the resolver reads
+//    the cookie.
+// 2. authorize: the resolver reads the credential from the request's headers,
 //    and the runner's authorize answers 401 (with the Bearer challenge) or
 //    403 at once. No query parameter and no byte of the body is read first.
-// 2. the body limit, for an operation that takes a body: a body over 1 MiB
+// 3. the body limit, for an operation that takes a body: a body over 1 MiB
 //    gets 413. A Content-Length over the limit is refused before a byte is
 //    read; a body without one is counted as it comes, and refused once it
 //    passes the limit.
-// 3. serve: the body reader, the path parameters, the query reader and the
+// 4. serve: the body reader, the path parameters, the query reader and the
 //    idempotency key, then the runner, then the writer.
 //
 // A route's path holds each path parameter as :name, as Hono reads it; the
@@ -50,11 +55,22 @@ import type { Context, Hono, Handler as RouteHandler, MiddlewareHandler } from "
 import { bodyLimit } from "hono/body-limit";
 import type { z } from "zod";
 import { setCookieHeader } from "../auth/cookies.ts";
+import { crossSiteRefused } from "../auth/origin.ts";
 import type { AfterAnswerQueue } from "./after-answer.ts";
 import type { ContextResolver, Principal, RequestContext } from "./context.ts";
 import { readKeyHeader } from "./idempotency.ts";
 import { authorize, runOperation, type Handler, type OperationCall, type Outcome, type RequestFacts, type RunnerDeps } from "./operation.ts";
-import { NO_STORE, internalError, malformedJson, methodNotAllowed, payloadTooLarge, problemOf, unsupportedMediaType, type ProblemAnswer } from "./problem.ts";
+import {
+  NO_STORE,
+  crossSiteRequest,
+  internalError,
+  malformedJson,
+  methodNotAllowed,
+  payloadTooLarge,
+  problemOf,
+  unsupportedMediaType,
+  type ProblemAnswer,
+} from "./problem.ts";
 
 /** What a /v1 request carries from one step of its chain to the next. */
 export interface V1Env {
@@ -63,6 +79,8 @@ export interface V1Env {
 
 export interface V1Deps extends RunnerDeps {
   readonly resolve: ContextResolver;
+  /** The browser origins of the install, each as a browser serialises it: /v1's cross-site check and /mcp's Origin check. */
+  readonly allowedOrigins: ReadonlySet<string>;
   /** Told of every error that answers 500, and of work after an answer that fails. */
   readonly report: (error: unknown) => void;
   /** Where each call's work for after its answer goes. */
@@ -180,10 +198,18 @@ function factsOf(c: Context<V1Env>): RequestFacts {
   return { ...(origin === null ? {} : { origin }), ...(ipAddress === undefined ? {} : { ipAddress }) };
 }
 
-/** The chain's first step: who acts, and whether they may call the operation. Nothing of the request but its headers is read. */
+/**
+ * The chain's first step: whether another site may have started the request,
+ * then who acts, and whether they may call the operation. Nothing of the
+ * request but its headers is read. A public operation reads nothing of
+ * anyone's, so neither check touches it.
+ */
 function authorizeRequest(operation: Operation, deps: V1Deps): MiddlewareHandler<V1Env> {
   const isPublic = operation["x-nortfox"].permission === PUBLIC;
   return async (c, next) => {
+    if (!isPublic && crossSiteRefused(operation, c.req.raw, deps.allowedOrigins)) {
+      return problemResponse(crossSiteRequest());
+    }
     const principal = isPublic ? undefined : await deps.resolve(c.req.raw);
     const refusal = authorize(operation, principal);
     if (refusal !== undefined) {

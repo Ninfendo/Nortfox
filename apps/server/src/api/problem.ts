@@ -142,6 +142,15 @@ export function originNotAllowed(): ProblemAnswer {
   return answer(403, CODES.origin, "The Origin header names a site that may not call /mcp. A program that is not a browser sends no Origin.");
 }
 
+/** The answer of /v1 to a request that another site may have started (auth/origin.ts). */
+export function crossSiteRequest(): ProblemAnswer {
+  return answer(
+    403,
+    CODES.origin,
+    "The request's Origin is not the install's own site. A browser's write with the session cookie, and a sign-in, come only from there.",
+  );
+}
+
 /** The answer to an MCP call of an operation that serves the browser's session. */
 export function browserOnly(): ProblemAnswer {
   return answer(403, CODES.browserOnly, "This operation serves the browser's sign-in. An MCP client signs in through OAuth.");

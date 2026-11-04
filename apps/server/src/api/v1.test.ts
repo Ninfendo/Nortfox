@@ -9,11 +9,12 @@ import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { TEST_REGISTRY, bearer, buildTestApp, gate, personOf, principalOf, problemIn, testHandlers, testResolver, untouchedDatabase } from "../../test/api.ts";
+import { FINGERPRINT_KEY, TEST_REGISTRY, bearer, buildTestApp, gate, personOf, principalOf, problemIn, testHandlers, testResolver, untouchedDatabase } from "../../test/api.ts";
 import { FAILING_LETTER, SHAPES_REGISTRY, fakeDatabase, shapeLog, shapesHandlers, type FakeDatabase, type ShapeLog } from "../../test/shapes.ts";
 import type { Database } from "../db/database.ts";
 import { startServer } from "../start.ts";
 import { requestHash } from "./idempotency.ts";
+import { errorReport } from "./report.ts";
 import { handleData, ok } from "./operation.ts";
 
 const COMPANY = randomUUID();
@@ -230,12 +231,13 @@ describe("an error the server did not expect", () => {
     expect(reported).toEqual([new Error(SECRET)]);
   });
 
-  it("reports to console.error unless told otherwise", async () => {
+  it("reports to console.error unless told otherwise, as the safe report", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const hono = buildTestApp({ database: failing(new Error(SECRET)), resolve: testResolver(TOKENS) }).hono;
+    const error = new Error(SECRET);
+    const hono = buildTestApp({ database: failing(error), resolve: testResolver(TOKENS) }).hono;
     const response = await hono.request("/v1/company", { headers: bearer("reader") });
     expect(response.status).toBe(500);
-    expect(logged).toHaveBeenCalledWith("The server failed:", new Error(SECRET));
+    expect(logged.mock.calls).toEqual([[`The server failed: ${errorReport(error)}`]]);
   });
 });
 
@@ -260,6 +262,7 @@ describe("the shapes of slice 2c on /v1", () => {
       registry: SHAPES_REGISTRY,
       handlers: shapesHandlers(log),
       report: (error) => reported.push(error),
+      allowedOrigins: ["https://nortfox.example"],
     });
     return { app, log, database, reported };
   }
@@ -303,7 +306,7 @@ describe("the shapes of slice 2c on /v1", () => {
       expect(response.headers.get("content-type")).toBeNull();
       expect(shapes.database.queries.map((query) => query.values)).toEqual([
         [SHAPE_TOKENS.reader.personId, "k-1"],
-        [COMPANY, "k-1", "testRemoveThing", requestHash("testRemoveThing", {}, undefined, { thingId: THING }), 204, "{}"],
+        [COMPANY, "k-1", "testRemoveThing", requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: THING }), 204, "{}"],
       ]);
     });
 

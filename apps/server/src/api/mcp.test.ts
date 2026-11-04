@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   CURSOR_KEY,
+  TEST_INSTALL_KEY,
   MCP_ERAS,
   TEST_VERSION,
   bearer,
@@ -419,7 +420,7 @@ describe("the caller of an MCP request", () => {
 
 describe("/mcp on the real server", () => {
   it.each(MCP_ERAS)("serves a client of the %s era over HTTP, as through app.request", async (era) => {
-    const app = createApp({ version: TEST_VERSION, resolve: testResolver(TOKENS), database: untouchedDatabase(), cursorKey: CURSOR_KEY });
+    const app = createApp({ version: TEST_VERSION, resolve: testResolver(TOKENS), database: untouchedDatabase(), cursorKey: CURSOR_KEY, installKey: TEST_INSTALL_KEY });
     const server = await startServer({ app, port: 0 });
     try {
       const client = new Client(

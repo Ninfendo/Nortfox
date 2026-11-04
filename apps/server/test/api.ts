@@ -17,6 +17,7 @@ import { KeysInFlight } from "../src/api/idempotency.ts";
 import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps } from "../src/api/operation.ts";
 import { assertV1Routes } from "../src/api/route-guard.ts";
 import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
+import { InstallKey } from "../src/auth/install-key.ts";
 import { connectionConfig } from "../src/db/connect.ts";
 import { databaseOver, type Database } from "../src/db/database.ts";
 import { serverHandlers } from "../src/handlers.ts";
@@ -34,6 +35,12 @@ export const TEST_VERSION = "0.0.0-test";
 
 /** A fixed key for the cursors of the test app. */
 export const CURSOR_KEY = new Uint8Array(32).fill(7);
+
+/** The test app's install secret: key id 9, and made-up bytes that no install holds. */
+export const TEST_INSTALL_KEY = new InstallKey(9, Buffer.from("the made-up install secret of the test app, which no install holds", "utf8"));
+
+/** The key of the test app's request fingerprints, from its install secret. */
+export const FINGERPRINT_KEY = TEST_INSTALL_KEY.key("idempotency-fingerprint v1");
 
 /** An account as the test-only list gives it. */
 export const TestAccount = z.strictObject({
@@ -216,9 +223,9 @@ export function testHandlers(controls: BookingControls = bookingControls(), vers
 /** The clock of the runner in a test that calls it directly. */
 export const TEST_NOW = new Date("2090-03-15T10:00:00.000Z");
 
-/** What the runner needs, for a test that calls it directly: the database, the cursor key, a set of keys in flight of its own and a fixed clock. */
+/** What the runner needs, for a test that calls it directly: the database, the cursor key, the fingerprint key, a set of keys in flight of its own and a fixed clock. */
 export function runnerDeps(database: Database): RunnerDeps {
-  return { database, cursorKey: CURSOR_KEY, keysInFlight: new KeysInFlight(), now: () => TEST_NOW };
+  return { database, cursorKey: CURSOR_KEY, fingerprintKey: FINGERPRINT_KEY, keysInFlight: new KeysInFlight(), now: () => TEST_NOW };
 }
 
 /** Who a test principal is: its person, its kind and, in a company, its permissions. */
@@ -301,6 +308,7 @@ export function buildTestApp(options: Pick<AppOptions, "database" | "resolve"> &
   const app = createApp({
     version: TEST_VERSION,
     cursorKey: CURSOR_KEY,
+    installKey: TEST_INSTALL_KEY,
     registry: TEST_REGISTRY,
     handlers: testHandlers(),
     permissions: ALL_PERMISSIONS,

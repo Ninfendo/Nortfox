@@ -94,6 +94,33 @@ Do this only after a failed first start. `--volumes` removes the data and the lo
 
 Never empty a path that holds another install's backups.
 
+## The server's settings
+
+This compose file does not run the server yet. It comes in a later part of slice 2c, with Caddy in front of it. Until then, whoever runs the server image, or `pnpm --filter @nortfox/server dev`, gives it these settings. The server does not start without each of them, and says which one is missing or wrong.
+
+| Setting | What it holds |
+| --- | --- |
+| `NORTFOX_DATABASE_URL` | The database's address as `nortfox_app`, with no password, such as `postgres://nortfox_app@postgres:5432/nortfox`. |
+| `NORTFOX_DATABASE_PASSWORD_FILE` | The file that holds `nortfox_app`'s password, such as `secrets/app-password`. |
+| `NORTFOX_PUBLIC_ORIGIN` | The origin people open NortFox at, such as `https://nortfox.example`, with no path. It is the one browser origin that `/v1` and `/mcp` allow ([docs/api.md](../docs/api.md)). NortFox's cookies are `Secure`, which a browser keeps only over https, so the origin is https, or http on `localhost`, `127.0.0.1` or `[::1]` while you develop. |
+| `NORTFOX_SECRET_KEY_FILE` | The file of the install secret (below). |
+| `PORT` | The port the server listens on. By default 4100. |
+
+The server connects to the database at start, for the key check below.
+
+### The install secret
+
+The install secret protects what the database keeps but must never hold in clear: it seals each person's TOTP secret, and keys the HMAC of each request's fingerprint and, later, of the codes a person types. Its file has two lines: the key id, a whole number from 1 to 255, and the secret, at least 32 random bytes in hexadecimal. Make it once, before the server's first start:
+
+```sh
+{ echo 1; openssl rand -hex 32; } > secrets/install-key
+chmod 0644 secrets/install-key
+```
+
+**The key check.** The first start stores, in `access.install_keys`, a fixed text sealed under the key, with its key id. Each later start opens it with its own key, and refuses to start when it cannot: "The install secret does not open the check value that this install stored for key id 1 at its first start." So a key that was made again by mistake stops the server before it writes anything that the old key cannot read. Start the server with the first key again.
+
+**Keep a copy of the file**, apart from the database and its backups: a backup of the database holds the sealed TOTP secrets, and the key must not be beside them. Without the key, the sealed secrets cannot be opened, and every person needs a new TOTP device.
+
 ## The backup settings
 
 | Setting | Value | Where | What it does |
@@ -109,6 +136,15 @@ Never empty a path that holds another install's backups.
 | `pg1-path` | `/var/lib/postgresql/18/docker` | `postgres/pgbackrest.conf` | The data folder of the PostgreSQL 18 image, on the volume `data`. |
 
 `scripts/guards/deploy.ts` pins these settings in the files, and `pnpm backup:test` checks them on a running stack.
+
+### The log settings
+
+| Setting | Value | Where | What it does |
+| --- | --- | --- | --- |
+| `log_error_verbosity` | `terse` | `compose.yaml` | PostgreSQL's log of a failed statement holds no `DETAIL`, `HINT`, `QUERY` or `CONTEXT`. A `DETAIL` can hold the failing row, or the key that was taken, such as a personnummer. |
+| `log_parameter_max_length_on_error` | `0` | `compose.yaml` | The log of a failed statement holds none of its parameters, which can hold a secret of the request. |
+
+The server's own log holds the same and no more: an error's class, its code, the constraint, schema, table and column it names, its message and its stack, with every token, personnummer and e-mail address taken out ([docs/api.md](../docs/api.md)). The guard and the restore test check these two settings as they check the backup settings.
 
 ### Where räkenskapsinformation may be kept
 
@@ -155,7 +191,7 @@ PostgreSQL replays the archived WAL up to that moment, then opens the database f
 pnpm backup:test
 ```
 
-It runs `backup-test/pitr.sh`. The test builds and starts this compose file under a project of its own, `nortfox-backup-test`, with made-up secrets and a second local volume in place of the off-site repository. It first checks that a first start that does not finish never becomes healthy: one whose off-site repository cannot be written, one whose off-site folder is no mount, and one killed during its first full backups. Then it checks the archive settings, the migrate step, the owner of every table, that our roles, a reader among them, connect to the database `nortfox` only, that none of them can make a large object, write a message in the WAL or read `pg_locks` in any database, that the first start took a full backup to each repository, and both repositories on the running stack. Then it writes, notes the time, and writes again, and restores to that time from `repo1` and again from `repo2`, each from its own repository alone. Each restore must give the first write and not the second. The test removes its containers and volumes when it ends. It needs bash and Docker. CI runs it in the job `backup`.
+It runs `backup-test/pitr.sh`. The test builds and starts this compose file under a project of its own, `nortfox-backup-test`, with made-up secrets and a second local volume in place of the off-site repository. It first checks that a first start that does not finish never becomes healthy: one whose off-site repository cannot be written, one whose off-site folder is no mount, and one killed during its first full backups. Then it checks the archive settings, the log settings, the migrate step, the owner of every table, that our roles, a reader among them, connect to the database `nortfox` only, that none of them can make a large object, write a message in the WAL or read `pg_locks` in any database, that the first start took a full backup to each repository, and both repositories on the running stack. Then it writes, notes the time, and writes again, and restores to that time from `repo1` and again from `repo2`, each from its own repository alone. Each restore must give the first write and not the second. The test removes its containers and volumes when it ends. It needs bash and Docker. CI runs it in the job `backup`.
 
 ## Moving a pin
 

@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   ALL_PERMISSIONS,
   CURSOR_KEY,
+  TEST_INSTALL_KEY,
   TEST_REGISTRY,
   bearer,
   bookingControls,
@@ -24,7 +25,7 @@ import { openApiDocument } from "./openapi.ts";
 
 /** The app as main.ts builds it, with the defaults, and a database the test may not touch. */
 function defaults(overrides: Partial<AppOptions> = {}): AppOptions {
-  return { version: "1.2.3", resolve: testResolver({}), database: untouchedDatabase(), cursorKey: CURSOR_KEY, ...overrides };
+  return { version: "1.2.3", resolve: testResolver({}), database: untouchedDatabase(), cursorKey: CURSOR_KEY, installKey: TEST_INSTALL_KEY, ...overrides };
 }
 
 const app = createApp(defaults()).hono;

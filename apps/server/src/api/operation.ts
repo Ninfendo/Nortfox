@@ -380,6 +380,8 @@ export interface RunnerDeps {
   readonly database: Database;
   /** The key that signs each list's cursors. */
   readonly cursorKey: Uint8Array;
+  /** The key of a write's request fingerprint, from the install secret (idempotency.ts). */
+  readonly fingerprintKey: Uint8Array;
   /** The idempotency keys of the writes that run now in this process. */
   readonly keysInFlight: KeysInFlight;
   /** The server's clock. */
@@ -571,7 +573,7 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
   }
   try {
     const params = paramsSchema(operation) === undefined ? undefined : input.params;
-    const hash = requestHash(operation.operationId, input.query, input.body, params);
+    const hash = requestHash(deps.fingerprintKey, operation.operationId, input.query, input.body, params);
     const first = await answered(() =>
       deps.database.write(settings, async (tx): Promise<Ending<Outcome | typeof STORED_FIRST_ELSEWHERE>> => {
         const stored = await store.find(tx, actorId, key);

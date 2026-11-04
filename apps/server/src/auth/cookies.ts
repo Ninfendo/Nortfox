@@ -16,6 +16,9 @@
 //
 // Each is HttpOnly and Secure with Path=/ and no Domain: the __Host- prefix
 // makes a browser refuse it otherwise.
+//
+// The cross-site check of /v1 and the resolver read them from a request's
+// Cookie header.
 
 /** What a handler asks of the browser's cookies. */
 export type CookieEffect =
@@ -68,4 +71,37 @@ export function setCookieHeader(effect: CookieEffect): string {
     case "clear-login":
       return cookie(LOGIN_COOKIE, "", 0, "Lax");
   }
+}
+
+/**
+ * The values that a request's Cookie header gives the cookie `name`, in its
+ * order. A browser writes the header as name=value pairs joined by "; " (RFC
+ * 6265, section 5.4). A part without "=" names no cookie. Names are compared
+ * exactly, case and all.
+ */
+export function cookieValues(headers: Headers, name: string): string[] {
+  const values: string[] = [];
+  for (const part of (headers.get("cookie") ?? "").split(";")) {
+    const equals = part.indexOf("=");
+    if (equals !== -1 && part.slice(0, equals).trim() === name) {
+      values.push(part.slice(equals + 1).trim());
+    }
+  }
+  return values;
+}
+
+/** Whether a request carries the cookie `name`, with any value, once or more. */
+export function carriesCookie(headers: Headers, name: string): boolean {
+  return cookieValues(headers, name).length > 0;
+}
+
+/**
+ * The value of the cookie `name`, when the request carries it once and in the
+ * form that NortFox writes; otherwise undefined. A browser keeps one cookie
+ * of a __Host- name for this host, so two are not NortFox's.
+ */
+export function readCookie(headers: Headers, name: string): string | undefined {
+  const values = cookieValues(headers, name);
+  const [value] = values;
+  return values.length === 1 && value !== undefined && VALUE.test(value) ? value : undefined;
 }

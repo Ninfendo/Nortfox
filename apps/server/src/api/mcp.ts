@@ -79,8 +79,6 @@ export const MCP_PATH = "/mcp";
 export interface McpDeps extends V1Deps {
   /** The version the server reports to an MCP client. */
   readonly version: string;
-  /** The browser origins that may call /mcp, each as a browser serialises it. */
-  readonly allowedOrigins: ReadonlySet<string>;
 }
 
 /**

@@ -11,11 +11,15 @@
 // - A key is 1 to 255 characters of visible ASCII without " and \. No key is
 //   idempotency-key-missing, and any other value idempotency-key-invalid,
 //   both at /idempotencyKey, in the one 400 with the input's own problems.
-// - The request's fingerprint is the SHA-256 of the canonical JSON of the
-//   operation's id, its path parameters when it takes any, the query and the
-//   body as the operation's schemas parsed them. So the same input by REST
-//   and by MCP is the same request, the same key on two paths is two, and
-//   "1.5" and "1.50" are two.
+// - The request's fingerprint is the HMAC-SHA256 of the canonical JSON of
+//   the operation's id, its path parameters when it takes any, the query and
+//   the body as the operation's schemas parsed them, under a key that the
+//   install secret derives for it (idempotency-fingerprint v1). So the same
+//   input by REST and by MCP is the same request, the same key on two paths
+//   is two, and "1.5" and "1.50" are two. A body can hold a password, and a
+//   plain SHA-256 of a mostly known JSON would let anyone with a copy of the
+//   database test guesses at SHA-256's speed; without the install secret, a
+//   stored fingerprint tells nothing.
 // - Keys are kept per company and actor, and a signed-in person's own write,
 //   which works in no company, keeps its keys per person. While a request
 //   runs, its key is in flight in this process, and a second request with it
@@ -30,7 +34,7 @@
 // - A write that runs before sign-in takes no key: there is no actor to keep
 //   it for.
 
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_MAX_LENGTH, IDEMPOTENCY_KEY_PATTERN, jsonPointer, type FieldIssue, type JsonValue } from "@nortfox/contract";
 import type { Queryable } from "../db/database.ts";
 
@@ -112,12 +116,13 @@ export function canonicalJson(value: unknown): string {
 }
 
 /**
- * The request's fingerprint: the SHA-256 of the canonical JSON of the
- * operation, its path parameters when it takes any, the query and the body,
- * as 64 lower-case hexadecimal digits.
+ * The request's fingerprint: the HMAC-SHA256 under `key`, the install's
+ * fingerprint key, of the canonical JSON of the operation, its path
+ * parameters when it takes any, the query and the body, as 64 lower-case
+ * hexadecimal digits.
  */
-export function requestHash(operationId: string, query: unknown, body: unknown, params?: unknown): string {
-  return createHash("sha256").update(canonicalJson({ operation: operationId, params, query, body })).digest("hex");
+export function requestHash(key: Uint8Array, operationId: string, query: unknown, body: unknown, params?: unknown): string {
+  return createHmac("sha256", key).update(canonicalJson({ operation: operationId, params, query, body })).digest("hex");
 }
 
 /**

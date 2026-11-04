@@ -8,7 +8,7 @@
 // an identity provider brings the browser back with a top-level GET.
 
 import { describe, expect, it } from "vitest";
-import { DEVICE_COOKIE, LOGIN_COOKIE, SESSION_COOKIE, setCookieHeader, type CookieEffect } from "./cookies.ts";
+import { DEVICE_COOKIE, LOGIN_COOKIE, SESSION_COOKIE, carriesCookie, cookieValues, readCookie, setCookieHeader, type CookieEffect } from "./cookies.ts";
 
 describe("the cookies", () => {
   it("have the __Host- prefix", () => {
@@ -38,4 +38,42 @@ describe("the cookies", () => {
       expect(() => setCookieHeader({ kind: "set-login", token })).toThrow("A cookie's value is 1 to 512 characters of letters, digits, - and _.");
     },
   );
+});
+
+describe("reading the cookies of a request", () => {
+  const headers = (cookie?: string): Headers => new Headers(cookie === undefined ? {} : { cookie });
+
+  it("finds a cookie by its exact name among the others, as a browser sends them", () => {
+    const sent = headers("theme=dark; __Host-nortfox-session=nfs_one; __Host-nortfox-device=nfd_two");
+    expect(cookieValues(sent, SESSION_COOKIE)).toEqual(["nfs_one"]);
+    expect(cookieValues(sent, DEVICE_COOKIE)).toEqual(["nfd_two"]);
+    expect(cookieValues(sent, LOGIN_COOKIE)).toEqual([]);
+    expect(readCookie(sent, SESSION_COOKIE)).toBe("nfs_one");
+    expect(carriesCookie(sent, SESSION_COOKIE)).toBe(true);
+    expect(carriesCookie(sent, LOGIN_COOKIE)).toBe(false);
+  });
+
+  it("takes a header without spaces, with spaces around the parts, and with an empty part", () => {
+    expect(cookieValues(headers("a=1;__Host-nortfox-session=x"), SESSION_COOKIE)).toEqual(["x"]);
+    expect(cookieValues(headers("  __Host-nortfox-session = x ;  ; a=1"), SESSION_COOKIE)).toEqual(["x"]);
+    expect(cookieValues(headers("__Host-nortfox-session"), SESSION_COOKIE)).toEqual([]);
+    expect(cookieValues(headers("__Host-nortfox-session="), SESSION_COOKIE)).toEqual([""]);
+  });
+
+  it("finds no cookie in a request without a Cookie header, and none under a name that only looks the same", () => {
+    expect(cookieValues(headers(), SESSION_COOKIE)).toEqual([]);
+    expect(carriesCookie(headers(), SESSION_COOKIE)).toBe(false);
+    for (const cookie of ["__host-nortfox-session=x", "__Host-nortfox-sessions=x", "nortfox-session=x", "x__Host-nortfox-session=x", "__Host-nortfox-session-old=x"]) {
+      expect(carriesCookie(headers(cookie), SESSION_COOKIE)).toBe(false);
+    }
+  });
+
+  it("reads a value only when the cookie is there once, in the form NortFox writes", () => {
+    expect(readCookie(headers("__Host-nortfox-session=a; __Host-nortfox-session=b"), SESSION_COOKIE)).toBeUndefined();
+    expect(carriesCookie(headers("__Host-nortfox-session=a; __Host-nortfox-session=b"), SESSION_COOKIE)).toBe(true);
+    for (const value of ["", "two%20words", "quote\"d", "x".repeat(513), "å"]) {
+      expect(readCookie(headers(`__Host-nortfox-session=${value}`), SESSION_COOKIE)).toBeUndefined();
+    }
+    expect(readCookie(headers(`__Host-nortfox-session=${"x".repeat(512)}`), SESSION_COOKIE)).toBe("x".repeat(512));
+  });
 });

@@ -4,9 +4,10 @@
 // forms on REST, the key's check, the request's fingerprint and the keys in
 // flight. idempotency.db.test.ts runs the whole flow on PostgreSQL.
 
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { IDEMPOTENCY_KEY_MAX_LENGTH } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
+import { FINGERPRINT_KEY } from "../../test/api.ts";
 import { KeysInFlight, canonicalJson, checkKey, readKeyHeader, requestHash } from "./idempotency.ts";
 
 const MISSING = {
@@ -116,27 +117,32 @@ describe("canonicalJson", () => {
   );
 });
 
+/** The fingerprint as the server makes it: HMAC-SHA256 under the install's fingerprint key. */
+function hmacOf(text: string): string {
+  return createHmac("sha256", FINGERPRINT_KEY).update(text).digest("hex");
+}
+
 describe("requestHash", () => {
-  it("is the SHA-256 of the canonical JSON of the operation, the query and the body", () => {
+  it("is the HMAC-SHA256 of the canonical JSON of the operation, the query and the body, under the fingerprint key", () => {
     const text = '{"body":{"amount":{"amount":"1.50","currency":"SEK"}},"operation":"testBookVoucher","query":{}}';
-    const expected = createHash("sha256").update(text).digest("hex");
-    expect(requestHash("testBookVoucher", {}, { amount: { currency: "SEK", amount: "1.50" } })).toBe(expected);
+    const expected = hmacOf(text);
+    expect(requestHash(FINGERPRINT_KEY, "testBookVoucher", {}, { amount: { currency: "SEK", amount: "1.50" } })).toBe(expected);
     expect(expected).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("is the same for the same input in another key order, and differs for another operation, query or body", () => {
-    const hash = requestHash("testBookVoucher", { a: 1 }, { description: "x", amount: "1.50" });
-    expect(requestHash("testBookVoucher", { a: 1 }, { amount: "1.50", description: "x" })).toBe(hash);
-    expect(requestHash("testOther", { a: 1 }, { description: "x", amount: "1.50" })).not.toBe(hash);
-    expect(requestHash("testBookVoucher", { a: 2 }, { description: "x", amount: "1.50" })).not.toBe(hash);
-    expect(requestHash("testBookVoucher", { a: 1 }, { description: "x", amount: "1.5" })).not.toBe(hash);
-    expect(requestHash("testBookVoucher", {}, undefined)).toBe(createHash("sha256").update('{"operation":"testBookVoucher","query":{}}').digest("hex"));
+    const hash = requestHash(FINGERPRINT_KEY, "testBookVoucher", { a: 1 }, { description: "x", amount: "1.50" });
+    expect(requestHash(FINGERPRINT_KEY, "testBookVoucher", { a: 1 }, { amount: "1.50", description: "x" })).toBe(hash);
+    expect(requestHash(FINGERPRINT_KEY, "testOther", { a: 1 }, { description: "x", amount: "1.50" })).not.toBe(hash);
+    expect(requestHash(FINGERPRINT_KEY, "testBookVoucher", { a: 2 }, { description: "x", amount: "1.50" })).not.toBe(hash);
+    expect(requestHash(FINGERPRINT_KEY, "testBookVoucher", { a: 1 }, { description: "x", amount: "1.5" })).not.toBe(hash);
+    expect(requestHash(FINGERPRINT_KEY, "testBookVoucher", {}, undefined)).toBe(hmacOf('{"operation":"testBookVoucher","query":{}}'));
   });
 
   it("holds the path parameters of an operation that takes them, so the same key on two paths is two requests", () => {
     const text = '{"operation":"testRemoveThing","params":{"thingId":"a"},"query":{}}';
-    expect(requestHash("testRemoveThing", {}, undefined, { thingId: "a" })).toBe(createHash("sha256").update(text).digest("hex"));
-    expect(requestHash("testRemoveThing", {}, undefined, { thingId: "b" })).not.toBe(requestHash("testRemoveThing", {}, undefined, { thingId: "a" }));
+    expect(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "a" })).toBe(hmacOf(text));
+    expect(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "b" })).not.toBe(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "a" }));
   });
 });
 
