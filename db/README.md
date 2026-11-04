@@ -310,7 +310,7 @@ The install-wide tables of the login:
 | Function | What it does |
 | --- | --- |
 | `access.find_login(identifier)` | The identity of a personnummer, or of an e-mail address in any letter case, with its status, its two-step choice and its password hash. |
-| `access.identifier_form(identifier)` | The form that `find_login` matches on: a personnummer as it is, and an e-mail address folded with `casefold()`, as the unique index folds it. The server counts an identifier that names no identity under the HMAC of this form, so every spelling that would find one identity counts as one. |
+| `access.identifier_form(identifier)` | The form that `find_login` matches on: a personnummer as it is, and an e-mail address folded with `casefold()`, as the unique index folds it. The server counts an identifier that names no identity under the HMAC of this form, so every spelling that would find one identity counts as one. The server reads it beside `find_login`, in one statement, for every identifier, so a known and an unknown one cost the same. |
 | `access.open_challenge(hash, person, method, device_hash, at, expires_at)` | Opens a login challenge after a right password. |
 | `access.challenge_by_token(hash, at)` | A live challenge: not used, before its end, with an attempt left. With it, the person's TOTP secret: the active one, or else the pending one. |
 | `access.claim_attempt(challenge, at)` | Claims one of the challenge's five attempts before its code is checked, and gives its number, or NULL when none is left. Parallel calls get five in all. |

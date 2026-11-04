@@ -11,8 +11,7 @@ import type { Client } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { TEST_INSTALL_KEY, appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
-import { DAY, TEST_ORIGIN, expectNoTokensFromSignInApps, postAsBrowser, signInApp, testClock, type SignInApp, type TestClock } from "../../../test/sign-in.ts";
+import { DAY, TEST_ORIGIN, expectNoSecretsAtRestFromSignInApps, expectNoTokensFromSignInApps, postAsBrowser, signInApp, testClock, type SignInApp, type TestClock } from "../../../test/sign-in.ts";
 import { open } from "../../auth/secret-box.ts";
 import { base32Decode } from "../../auth/totp.ts";
 import { createSetupLink } from "../../setup.ts";
@@ -196,6 +195,26 @@ describe("completeSetup's password", () => {
     ]);
     expect(await identitiesOf(install.owner)).toEqual([]);
   });
+
+  it("refuses U+0000 in the name or the e-mail address, and a lone surrogate in the password, as field problems, and leaves the link as it was", async () => {
+    const install = await emptyInstall();
+    const token = await setupToken(install);
+    const nul = await complete(install, token, { name: "Alva\u0000Berg", email: "alva\u0000berg@example.com" });
+    expect(nul.status).toBe(400);
+    expect((await problemIn(nul)).errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
+      ["invalid-value", "/name", "The field /name holds the character U+0000, which no text may hold."],
+      ["invalid-value", "/email", "The field /email holds the character U+0000, which no text may hold."],
+    ]);
+    // JSON carries a lone surrogate as an escape.
+    const lone = await complete(install, token, { password: "första-lösenordet-\uD800" });
+    expect(lone.status).toBe(400);
+    expect((await problemIn(lone)).errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
+      ["invalid-value", "/password", "The field /password holds a lone surrogate, which is not a character."],
+    ]);
+    expect(install.server.reports).toEqual([]);
+    expect(await identitiesOf(install.owner)).toEqual([]);
+    expect((await complete(install, token)).status).toBe(201);
+  });
 });
 
 describe("every install of these tests", () => {
@@ -205,7 +224,7 @@ describe("every install of these tests", () => {
     for (const install of installs) {
       // The TOTP secrets that the answers gave, each in its otpauth URI.
       const secrets = install.server.bodies.flatMap((body) => [...body.matchAll(/[?&]secret=([A-Z2-7]+)/g)].map((match) => base32Decode(match[1] ?? "") ?? Buffer.alloc(0)));
-      await expectNoSecretsAtRest(install.db, { passwords: [PASSWORD, "tolv-tecken!", "elva-tecken"], totpSecrets: secrets });
+      await expectNoSecretsAtRestFromSignInApps(install.db, { passwords: [PASSWORD, "tolv-tecken!", "elva-tecken"], totpSecrets: secrets });
     }
   });
 });

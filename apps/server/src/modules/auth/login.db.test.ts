@@ -11,18 +11,18 @@
 // failure are written only after the answer.
 
 import type { Argon2Parameters } from "node:crypto";
-import type { Client } from "pg";
+import type { Client, QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, gate, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { PERSONAL_IDENTITY_NUMBERS, addIdentity, deleteIdentity } from "../../../test/identities.ts";
-import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   PASSWORD_FAILED,
   TEST_ORIGIN,
   addSignInIdentity,
   challengeOf,
   codeOf,
+  expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
   passwordStep,
   postAsBrowser,
@@ -177,6 +177,52 @@ describe("the password sign-in", () => {
     expect(zeroSalt(calls[0])).toBe(false);
   });
 
+  it("sends the same statements before the answer for a known identity, an unknown address and an unknown personnummer", async () => {
+    const person = await addPerson({ personalIdentityNumber: PERSONAL_IDENTITY_NUMBERS[0] });
+    // Every statement of the sign-in's own transactions: the person's entries come after the answer, as the person.
+    const statements: string[] = [];
+    const recording: Database = {
+      ...pool.database,
+      write: (settings, work) =>
+        pool.database.write(settings, (tx) =>
+          work(
+            settings.actorId !== undefined
+              ? tx
+              : {
+                  query: <Row extends QueryResultRow>(text: string, values?: readonly unknown[]) => {
+                    statements.push(text);
+                    return tx.query<Row>(text, values);
+                  },
+                },
+          ),
+        ),
+    };
+    const recorded = signInApp(recording);
+    const identifiers = [person.email, "ingen.har.den@example.com", PERSONAL_IDENTITY_NUMBERS[2], person.personalIdentityNumber ?? ""];
+    const sent = async (identifier: string): Promise<{ status: number; statements: string[] }> => {
+      statements.length = 0;
+      const response = await passwordStep(recorded, identifier, "fel-lösenord-varje-gång");
+      return { status: response.status, statements: [...statements] };
+    };
+    // A wrong password, and, after five failures, an attempt that must wait.
+    for (const wanted of [422, 429]) {
+      const answers = [];
+      for (const identifier of identifiers) {
+        for (let failure = wanted === 429 ? 1 : 5; failure < 5; failure += 1) {
+          await passwordStep(recorded, identifier, "fel-lösenord-varje-gång");
+        }
+        answers.push(await sent(identifier));
+      }
+      expect(answers.map((answer) => answer.status)).toEqual(identifiers.map(() => wanted));
+      const [known, ...others] = answers.map((answer) => answer.statements);
+      expect(known?.length).toBeGreaterThan(0);
+      for (const other of others) {
+        expect(other).toEqual(known);
+      }
+    }
+    await recorded.app.afterAnswer.idle();
+  });
+
   it("writes the entries of a failure only after the answer", async () => {
     const person = await addPerson();
     const held = gate();
@@ -233,10 +279,22 @@ describe("the password sign-in", () => {
     ]);
   });
 
+  it("refuses U+0000 in the identifier as a field problem, never a server failure", async () => {
+    const watched = signInApp(pool.database);
+    for (const identifier of ["ada.lind@example.com\u0000", "x\u0000@example.com", `${PERSONAL_IDENTITY_NUMBERS[0]}\u0000`]) {
+      const response = await passwordStep(watched, identifier, "fel-lösenord-här");
+      expect(response.status).toBe(400);
+      expect((await problemIn(response)).errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
+        ["invalid-value", "/identifier", "The field /identifier holds the character U+0000, which no text may hold."],
+      ]);
+    }
+    expect(watched.reports).toEqual([]);
+  });
+
   it("leaves no token but its challenges in an answer or a report, and no secret in clear in the database", async () => {
     expect(challengesIn(server.bodies)).toEqual(expect.arrayContaining(challenges));
     expectNoTokensFromSignInApps();
-    await expectNoSecretsAtRest(db, { passwords, totpSecrets: secrets });
+    await expectNoSecretsAtRestFromSignInApps(db, { passwords, totpSecrets: secrets });
   });
 });
 

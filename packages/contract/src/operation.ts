@@ -264,7 +264,7 @@ function forbiddenCauses(permission: string, method: Method): string[] {
   const open = (OPEN_PERMISSIONS as readonly string[]).includes(permission);
   return [
     ...(open ? [] : [FORBIDDEN.permission]),
-    ...(permission !== PUBLIC && permission !== NONE && method !== "get" ? [FORBIDDEN.cookieOrigin] : []),
+    ...(permission !== PUBLIC && method !== "get" ? [FORBIDDEN.cookieOrigin] : []),
     ...(permission === NONE ? [FORBIDDEN.noneOrigin] : []),
   ];
 }

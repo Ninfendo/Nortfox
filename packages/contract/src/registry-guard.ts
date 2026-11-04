@@ -27,6 +27,13 @@ const MARKS = ["permission", "tool", "assistant", "writes", "list", "session", "
 const JSON_SUCCESSES = ["200", "201", "303"];
 const NO_BODY_SUCCESSES = ["202", "204"];
 
+/**
+ * The types a query field may have. /v1 reads a query value as a number for
+ * an integer or a number field and as text for any other, so a boolean, a
+ * list, an object or null could never arrive as MCP takes it.
+ */
+const QUERY_TYPES: readonly unknown[] = ["string", "integer", "number"];
+
 /** Keys whose values are data, not schemas, so the strictness walk skips them. */
 const DATA_KEYS = new Set(["default", "examples", "const", "enum"]);
 
@@ -323,6 +330,9 @@ function entryProblems(entry: Entry, name: string, permissions: ReadonlySet<stri
   const query = querySchema === undefined ? undefined : strictObject(querySchema);
   if (querySchema !== undefined && query === undefined) {
     problems.push(`${name}: its query must be a strict object, and so must every object in it.`);
+  }
+  for (const fieldName of fieldNames(query).filter((each) => !QUERY_TYPES.includes(field(query, "properties", each, "type")))) {
+    problems.push(`${name}: its query field ${JSON.stringify(fieldName)} is not a string, an integer or a number, the values a query string carries.`);
   }
   const bodyConfig = field(entry, "request", "body");
   const body = bodyConfig === undefined ? undefined : strictObject(field(bodyConfig, "content", "application/json", "schema"));

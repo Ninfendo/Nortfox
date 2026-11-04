@@ -16,13 +16,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, callTool, mcpClient, type AppPool } from "../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../test/database.ts";
 import { OPERATION_ARGUMENTS, restRequestOf, type ArgumentsFixture } from "../../test/operation-arguments.ts";
-import { expectNoSecretsAtRest, expectNoTokens } from "../../test/secrets.ts";
+import { expectNoTokens } from "../../test/secrets.ts";
 import {
   TEST_ORIGIN,
   addSignInIdentity,
   challengeOf,
   codeOf,
   cookieHeader,
+  expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
   passwordStep,
   signIn,
@@ -132,6 +133,6 @@ describe("the session operations on /mcp", () => {
     expect(results).toHaveLength(2 * SESSION_OPERATIONS.length);
     expectNoTokens(results);
     expectNoTokensFromSignInApps();
-    await expectNoSecretsAtRest(db, { passwords: [...people.map((person) => person.password), "signes-första-lösenord"] });
+    await expectNoSecretsAtRestFromSignInApps(db, { passwords: [...people.map((person) => person.password), "signes-första-lösenord"] });
   });
 });

@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { Money } from "./money.ts";
+import { Limit } from "./paging.ts";
 import { NoBody, Redirect, defineListOperation, defineOperation, type Operation } from "./operation.ts";
 import { registryProblems } from "./registry-guard.ts";
 
@@ -574,6 +575,20 @@ describe("registryProblems", () => {
       expect(problemsOf(withRequest(readThing, { query: z.string() }))).toEqual([
         "getThing: its query must be a strict object, and so must every object in it.",
       ]);
+    });
+
+    it("fails a query field that a query string cannot carry the same way on REST and MCP: not a string, an integer or a number", () => {
+      for (const [field, schema] of [
+        ["all", z.boolean().optional()],
+        ["tags", z.array(z.string()).optional()],
+        ["note", z.string().nullable().optional()],
+        ["when", z.union([z.string(), z.number()]).optional()],
+      ] as const) {
+        expect(problemsOf(withRequest(readThing, { query: z.strictObject({ [field]: schema }) }))).toEqual([
+          `getThing: its query field "${field}" is not a string, an integer or a number, the values a query string carries.`,
+        ]);
+      }
+      expect(problemsOf(withRequest(readThing, { query: z.strictObject({ name: z.string().optional(), view: z.enum(["a", "b"]), limit: Limit, rate: z.number() }) }))).toEqual([]);
     });
 
     it.each([

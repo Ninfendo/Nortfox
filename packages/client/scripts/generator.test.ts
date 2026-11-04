@@ -488,6 +488,18 @@ describe("generateClient", () => {
       'paths["/v1/x"].get.parameters[0] is in "cookie", which the generator does not support yet.',
     ],
     [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { parameters: [{ name: "all", in: "query", schema: { type: "boolean" } }] }) }),
+      'paths["/v1/x"].get.parameters[0]: the query field all has the type "boolean". A query field is a string, an integer or a number.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { parameters: [{ name: "tags", in: "query", schema: { type: "array", items: { type: "string" } } }] }) }),
+      'paths["/v1/x"].get.parameters[0]: the query field tags has the type "array". A query field is a string, an integer or a number.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { parameters: [{ name: "note", in: "query", schema: { anyOf: [{ type: "string" }, { type: "null" }] } }] }) }),
+      'paths["/v1/x"].get.parameters[0]: the query field note has no type. A query field is a string, an integer or a number.',
+    ],
+    [
       documentWith({}, { "/v1/x": getOperation({ type: "string" }, { parameters: [{ name: "X-Other", in: "header", schema: { type: "string" } }] }) }),
       'paths["/v1/x"].get.parameters[0] is the header "X-Other", which the generator does not support yet.',
     ],

@@ -15,7 +15,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, bearer, buildTestApp, callTool, mcpClient, personOf, problemIn, testResolver, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { PERSONAL_IDENTITY_NUMBERS, deleteIdentity } from "../../../test/identities.ts";
-import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   HOUR,
   MINUTE,
@@ -24,6 +23,7 @@ import {
   challengeOf,
   codeOf,
   cookieHeader,
+  expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
   passwordStep,
   sendAsBrowser,
@@ -220,6 +220,6 @@ describe("a browser session", () => {
 
   it("leaves no token in an answer or a report, and no secret in clear in the database", async () => {
     expectNoTokensFromSignInApps();
-    await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
+    await expectNoSecretsAtRestFromSignInApps(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
   });
 });

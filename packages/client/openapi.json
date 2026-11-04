@@ -520,7 +520,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).",
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -675,7 +675,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).",
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -822,7 +822,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).",
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -33,6 +33,9 @@ const PATH_ITEM_KEYS = new Set([...SUPPORTED_METHODS, "summary", "description"])
 const PARAMETER_KEYS = new Set(["name", "in", "required", "schema", "description"]);
 const REQUEST_BODY_KEYS = new Set(["required", "content", "description"]);
 
+/** The types a query field may have: those a query string carries, and /v1 reads. */
+const QUERY_TYPES: ReadonlySet<unknown> = new Set(["string", "integer", "number"]);
+
 /** The one header an operation may take: a write's key. */
 const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 const OPERATION_KEYS = new Set([
@@ -409,6 +412,11 @@ function parametersOf(value: unknown, path: string, where: string): Pick<Operati
         params.push(field);
         break;
       case "query":
+        // /v1 reads a query value as a number or as text, so a field of any other type would never arrive as typed.
+        if (!QUERY_TYPES.has(schema["type"])) {
+          const type = schema["type"] === undefined ? "no type" : `the type ${JSON.stringify(schema["type"])}`;
+          throw new GeneratorError(`${at}: the query field ${name} has ${type}. A query field is a string, an integer or a number.`);
+        }
         query.push(field);
         break;
       default:

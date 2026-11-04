@@ -13,8 +13,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "pg";
 import { expect } from "vitest";
 import { buildTestApp, gate, testPasswords, TEST_INSTALL_KEY, TEST_NOW, type Gate, type ProblemBody } from "./api.ts";
+import type { TestDatabase } from "./database.ts";
 import { addIdentity, addPassword, someEmail } from "./identities.ts";
-import { expectNoTokensButChallenges } from "./secrets.ts";
+import { expectNoSecretsAtRest, expectNoTokensButChallenges, type SecretsInClear } from "./secrets.ts";
 import type { AppOptions, ServerApp } from "../src/app.ts";
 import { sessionResolver } from "../src/auth/resolver.ts";
 import { seal } from "../src/auth/secret-box.ts";
@@ -58,6 +59,8 @@ export interface SignInApp {
   readonly reports: unknown[];
   /** The body of every answer that send gave, as text, for the secret scan. */
   readonly bodies: string[];
+  /** Every password and code that send sent in a body, right or wrong, for the scan of the database. */
+  readonly sent: { readonly passwords: string[]; readonly codes: string[] };
   /** Sends a request to the app, as app.request does, and keeps the answer's body. */
   send(path: string, init: RequestInit, bindings?: unknown): Promise<Response>;
 }
@@ -79,10 +82,50 @@ export function expectNoTokensFromSignInApps(): void {
   }
 }
 
+/** Every password and TOTP code that the sign-in apps of the test file sent. */
+export function sentSecrets(): { readonly passwords: string[]; readonly codes: string[] } {
+  return { passwords: made.flatMap((server) => server.sent.passwords), codes: made.flatMap((server) => server.sent.codes) };
+}
+
+/**
+ * Fails on a token, or on a secret in clear, in the database: the secrets
+ * the test names, and every password and code, right or wrong, that a
+ * sign-in app of the test file sent.
+ */
+export async function expectNoSecretsAtRestFromSignInApps(db: TestDatabase, secrets: SecretsInClear = {}): Promise<void> {
+  const sent = sentSecrets();
+  await expectNoSecretsAtRest(db, {
+    ...secrets,
+    passwords: [...(secrets.passwords ?? []), ...sent.passwords],
+    codes: [...(secrets.codes ?? []), ...sent.codes],
+  });
+}
+
+/** The fields of a JSON body that are secrets in clear: its password and its code, when it has them. */
+function keepSecrets(body: unknown, sent: SignInApp["sent"]): void {
+  if (typeof body !== "string") {
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return;
+  }
+  const { password, code } = typeof parsed === "object" && parsed !== null ? (parsed as { password?: unknown; code?: unknown }) : {};
+  if (typeof password === "string") {
+    sent.passwords.push(password);
+  }
+  if (typeof code === "string") {
+    sent.codes.push(code);
+  }
+}
+
 export function signInApp(database: Database, options: SignInAppOptions = {}): SignInApp {
   const clock = options.clock ?? testClock();
   const reports: unknown[] = [];
   const bodies: string[] = [];
+  const sent: SignInApp["sent"] = { passwords: [], codes: [] };
   const app = buildTestApp({
     database,
     resolve: sessionResolver({ database, now: clock.now }),
@@ -97,7 +140,9 @@ export function signInApp(database: Database, options: SignInAppOptions = {}): S
     clock,
     reports,
     bodies,
+    sent,
     async send(path, init, bindings) {
+      keepSecrets(init.body, sent);
       const response = await app.hono.request(path, init, bindings);
       // The answer keeps its own body: the scan reads a copy.
       bodies.push(await response.clone().text());

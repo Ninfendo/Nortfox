@@ -7,7 +7,9 @@
 //    and its login is looked up: the identity, its two-step choice and its
 //    password's hash. The failures count under the identity's id, or, for an
 //    identifier that names no identity, under the HMAC of the form that the
-//    database matches on.
+//    database matches on. One statement gives the login and the form for
+//    every identifier, and the HMAC is taken every time, so a known and an
+//    unknown identifier do the same work before the answer.
 // 2. The attempt is counted as a failure before its password is checked, in
 //    the same transaction, under the counter's row lock (limits.ts). An
 //    attempt that comes too soon after failures, or while the step is locked,
@@ -49,21 +51,33 @@ interface Login {
   readonly passwordHash: string | undefined;
 }
 
-interface LoginRow {
-  readonly identity_id: string;
-  readonly two_step: Login["twoStep"];
-  readonly password_hash: string | null;
+/** The one row of the lookup: the login's columns, all NULL when the identifier names no identity, and always the form. */
+type LoginRow = { readonly form: string } & (
+  | { readonly identity_id: string; readonly two_step: Login["twoStep"]; readonly password_hash: string | null }
+  | { readonly identity_id: null; readonly two_step: null; readonly password_hash: null }
+);
+
+/** What the lookup found: the login, or undefined when the identifier names none, and the form that the database matches on. */
+interface Found {
+  readonly login: Login | undefined;
+  readonly form: string;
 }
 
 /**
- * The login of an identifier, or undefined when it names none. A deleted
- * identity holds no e-mail address and no personnummer, so no identifier
- * finds it.
+ * The login of an identifier and its form, in one statement that gives one
+ * row for every identifier, so a known and an unknown one cost the same. A
+ * deleted identity holds no e-mail address and no personnummer, so no
+ * identifier finds it.
  */
-async function findLogin(tx: Queryable, identifier: string): Promise<Login | undefined> {
-  const found = await tx.query<LoginRow>("SELECT identity_id, two_step, password_hash FROM access.find_login($1)", [identifier]);
-  const [row] = found.rows;
-  return row === undefined ? undefined : { identityId: row.identity_id, twoStep: row.two_step, passwordHash: row.password_hash ?? undefined };
+async function findLogin(tx: Queryable, identifier: string): Promise<Found> {
+  const found = await tx.query<LoginRow>(
+    "SELECT f.identity_id, f.two_step, f.password_hash, access.identifier_form($1) AS form FROM (SELECT) AS one LEFT JOIN access.find_login($1) AS f ON true",
+    [identifier],
+  );
+  // The left join gives one row, whether find_login finds the identity or not.
+  const [row] = found.rows as [LoginRow];
+  const login = row.identity_id === null ? undefined : { identityId: row.identity_id, twoStep: row.two_step, passwordHash: row.password_hash ?? undefined };
+  return { login, form: row.form };
 }
 
 /** What a right password opened: a session's token, or a challenge; or nothing, for an identity no longer active. */
@@ -71,13 +85,6 @@ type Opened = { readonly session: string } | { readonly challenge: string } | un
 
 /** The attempt, counted and free to run, or the seconds it must wait. */
 type Claim = { readonly login: Login | undefined; readonly subject: string; readonly counted: AttemptCounter } | { readonly wait: number };
-
-/** The form of an identifier that access.find_login matches on. */
-async function identifierForm(tx: Queryable, identifier: string): Promise<string> {
-  const found = await tx.query<{ form: string }>("SELECT access.identifier_form($1) AS form", [identifier]);
-  // A SELECT of one function call gives one row.
-  return (found.rows as [{ readonly form: string }])[0].form;
-}
 
 /** Checks the password. When the wrapper cannot check it, the attempt gives its count back, and the error goes on. */
 async function checkPassword(call: NoneCall, password: string, login: Login | undefined, subject: string): Promise<boolean> {
@@ -98,11 +105,13 @@ export const loginWithPasswordHandler = handleNone(loginWithPassword, async (cal
   const identifier = readIdentifier(body.identifier, at);
   const method: SignInMethod = identifier.kind === "email" ? "password-email" : "password-personnummer";
   const claim = await database.write({ channel }, async (tx): Promise<Ending<Claim>> => {
-    const found = await findLogin(tx, identifier.value);
-    const subject = found === undefined ? unknownSubject(services.installKey, await identifierForm(tx, identifier.value)) : found.identityId;
+    const { login, form } = await findLogin(tx, identifier.value);
+    // The HMAC is taken for a known identity too, so both cost the same.
+    const unknown = unknownSubject(services.installKey, form);
+    const subject = login === undefined ? unknown : login.identityId;
     const { before, after } = await countFailure(tx, subject, "password", PASSWORD_WINDOW_MS, at);
     const wait = passwordWait(before, at);
-    return wait === undefined ? commit({ login: found, subject, counted: after }) : rollBack({ wait });
+    return wait === undefined ? commit({ login, subject, counted: after }) : rollBack({ wait });
   });
   if ("wait" in claim) {
     return tooManyAttempts(claim.wait);

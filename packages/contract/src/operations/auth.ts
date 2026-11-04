@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import { NoBody, defineOperation } from "../operation.ts";
+import { noNul } from "../text.ts";
 import { User } from "./me.ts";
 
 /** A token's form: nf, its kind's letter, an underscore and 43 characters of base64url. */
@@ -49,10 +50,11 @@ export const completeSetup = defineOperation({
     "The answer gives the new TOTP secret. It sets no session: the person signs in next, with the password and a code.",
   params: z.strictObject({ token: token("u", "The setup link's token, which the install's setup command printed.") }),
   body: z.strictObject({
-    name: z.string().min(1).max(200).meta({ description: "The person's name." }),
+    name: z.string().min(1).max(200).check(noNul()).meta({ description: "The person's name." }),
     email: z
       .email({ pattern: z.regexes.unicodeEmail })
       .max(254)
+      .check(noNul())
       .meta({ description: "The person's personal e-mail address." }),
     password: z.string().meta({ description: "The password: 12 to 1024 characters." }),
   }),
@@ -88,7 +90,7 @@ export const loginWithPassword = defineOperation({
     "A right password gives the TOTP step, or a session on a known device inside its 90 days when the person's two-step choice allows it. " +
     "Every failure gets the same answer. After 5 failures in an hour each attempt waits longer, and after 100 the sign-in waits until the hour has passed.",
   body: z.strictObject({
-    identifier: z.string().min(1).max(254).meta({ description: "The e-mail address, or the personnummer in 10 or 12 digits." }),
+    identifier: z.string().min(1).max(254).check(noNul()).meta({ description: "The e-mail address, or the personnummer in 10 or 12 digits." }),
     password: z.string().min(1).meta({ description: "The password." }),
   }),
   output: PasswordSignIn,

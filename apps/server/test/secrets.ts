@@ -12,6 +12,10 @@
 // - expectNoSecretsAtRest reads, as the cluster's superuser, every column of
 //   every table in ledger, audit and access, as text. It fails on any token,
 //   and on any password, TOTP secret or code that the test used, in clear.
+//   A password or a secret counts anywhere in a row, in any letter case. A
+//   code of six digits counts as a whole JSON string, so the digits of a
+//   time or an id are no hit. The sign-in apps keep every password and code
+//   they send, and test/sign-in.ts gives them to the scan.
 
 import { expect } from "vitest";
 import { base32Encode } from "../src/auth/totp.ts";
@@ -91,6 +95,20 @@ export interface SecretsInClear {
 const SCANNED_SCHEMAS = ["ledger", "audit", "access"];
 
 /**
+ * Whether a row, as JSON text, holds a secret in clear: a password or a TOTP
+ * secret anywhere in it, in any letter case, or a code as a whole JSON
+ * string. An empty password is no secret: every text holds it.
+ */
+export function holdsSecret(row: string, secrets: SecretsInClear): boolean {
+  const folded = row.toLowerCase();
+  const anywhere = [
+    ...(secrets.passwords ?? []).filter((password) => password !== ""),
+    ...(secrets.totpSecrets ?? []).flatMap((secret) => [Buffer.from(secret).toString("hex"), base32Encode(secret)]),
+  ];
+  return anywhere.some((secret) => folded.includes(secret.toLowerCase())) || (secrets.codes ?? []).some((code) => row.includes(JSON.stringify(code)));
+}
+
+/**
  * Reads every row of every table in the scanned schemas as the superuser, as
  * JSON text, where a bytea is \x and its hexadecimal digits, and fails on a
  * token or on a secret of the test in clear.
@@ -104,11 +122,6 @@ export async function expectNoSecretsAtRest(db: TestDatabase, secrets: SecretsIn
       [SCANNED_SCHEMAS],
     );
     expect(tables.rows.map((table) => table.schema)).toContain("access");
-    const wanted = [
-      ...(secrets.passwords ?? []),
-      ...(secrets.codes ?? []),
-      ...(secrets.totpSecrets ?? []).flatMap((secret) => [Buffer.from(secret).toString("hex"), base32Encode(secret)]),
-    ];
     const found: string[] = [];
     for (const { schema, name } of tables.rows) {
       const rows = await admin.query<{ row: string }>(`SELECT pg_catalog.to_jsonb(t)::text AS row FROM ${admin.escapeIdentifier(schema)}.${admin.escapeIdentifier(name)} AS t`);
@@ -116,11 +129,8 @@ export async function expectNoSecretsAtRest(db: TestDatabase, secrets: SecretsIn
         for (const token of row.matchAll(ANY_TOKEN)) {
           found.push(`${schema}.${name} holds a token`, token[0]);
         }
-        const folded = row.toLowerCase();
-        for (const secret of wanted) {
-          if (folded.includes(secret.toLowerCase())) {
-            found.push(`${schema}.${name} holds a secret in clear`);
-          }
+        if (holdsSecret(row, secrets)) {
+          found.push(`${schema}.${name} holds a secret in clear`);
         }
       }
     }

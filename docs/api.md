@@ -81,7 +81,7 @@ Each request runs in one database transaction, with the company, the actor, the 
 A browser's session comes in the cookie `__Host-nortfox-session`, which is `SameSite=Strict`, so a browser never sends it with a request that another site starts. `/v1` also checks the `Origin` header, from the request's headers alone and before it reads the cookie:
 
 - A request whose method is not `GET` or `HEAD`, that carries the session cookie and no bearer token, must carry the install's own origin in `Origin`. A browser sends `Origin` with every such request. Without it, or with another, the request gets 403 `origin-not-allowed`.
-- An operation that runs before sign-in (`permission: none`) refuses an `Origin` that is not the install's, so another site cannot sign a browser in. A request with no `Origin`, from a program that is not a browser, runs.
+- An operation that runs before sign-in (`permission: none`) refuses an `Origin` that is not the install's, so another site cannot sign a browser in. A request with no `Origin` and no session cookie, from a program that is not a browser, runs. With the session cookie, the first rule holds: a sign-in from a program that still sends an old session cookie gets 403 `origin-not-allowed`.
 - A request with a bearer token is a program's. It ignores the cookie, so the first rule does not touch it.
 
 The install's own origin is the one it is set up with, `NORTFOX_PUBLIC_ORIGIN` ([deploy/README.md](../deploy/README.md)). `/mcp` allows the same one. A `public` operation reads nothing of anyone's, so neither rule touches it. A body is `application/json` only, which a form on another site cannot send without a preflight, and `/v1` answers no preflight.
@@ -107,7 +107,7 @@ No answer body holds a session's token, and the server keeps every token only as
 **The limits.**
 
 - The failures of the password step count per account, for an hour from the first: the identity's, or, for an identifier that names none, the identifier's, so both are limited the same way. An e-mail address counts in the form that finds its identity: folded as the database folds it, so every spelling that would find one identity counts as one. After the nth failure from the fifth on, the next attempt waits 2^(n-5) seconds, at most 60, and never past the hour's end. At 100 failures the step is locked until the hour has passed. An attempt that comes too soon gets 429 `too-many-attempts` with `Retry-After`, and its password is not checked. A right password clears the count.
-- A challenge takes five codes in all, also from parallel calls. Ten wrong codes of one identity in 15 minutes lock its TOTP step for 15 minutes, with 429 `too-many-attempts` and `Retry-After`, also across its challenges.
+- A challenge takes five codes in all, also from parallel calls. Ten wrong codes of one identity in 15 minutes lock its TOTP step for 15 minutes from the tenth, with 429 `too-many-attempts` and `Retry-After`, also across its challenges, and also when the 15 minutes from the first wrong code end before the lock does.
 - Each attempt is counted before it is checked, so attempts sent at once come one after another: a burst gets no more checked than one attempt after another would. An attempt that the server could not check, such as one that gets 503, counts nothing.
 - The server checks at most as many passwords at once as it has cores, with a queue of as many. When both are full, a request gets 503 `server-busy` with `Retry-After: 1`.
 
@@ -115,7 +115,7 @@ No answer body holds a session's token, and the server keeps every token only as
 
 **The first identity.** An empty install gets its first identity from a setup link that the install's setup command prints ([deploy/README.md](../deploy/README.md)). `completeSetup` takes the link's token in its path, with a name, an e-mail address and a password. The link works once, for 28 days, and a newer link stops it. Any other link gets 422 `setup-link-invalid`, and an install that has an identity 422 `install-not-empty`. The answer gives the new TOTP secret as an `otpauth` URI, and sets no session: the person signs in next, and the first right code confirms the secret.
 
-**Passwords.** A new password is 12 to 1024 characters, counted in code points after NFC normalisation. One that is too short or too long is a field problem at `/password`, `too-short` or `too-long`. The server keeps a password only as an Argon2id hash.
+**Passwords.** A new password is 12 to 1024 characters, counted in code points after NFC normalisation. One that is too short or too long is a field problem at `/password`, `too-short` or `too-long`. One that holds a lone surrogate (half of a character, which JSON can send as an escape such as `\ud800`), or more than 30 combining marks in a row, is a field problem too, `invalid-value`, and such a password is never right at the sign-in. The server keeps a password only as an Argon2id hash.
 
 ## Answers on `/v1`
 
@@ -169,7 +169,7 @@ Every error on `/v1` is problem details (RFC 9457), as `application/problem+json
 
 - `type` is always `about:blank`, so `title` is the status's phrase.
 - `code` is stable and kebab-case. Programs rely on `code`, never on `detail`. The texts are English until slice 2d brings the Swedish ones.
-- `errors` lists every field problem of a 400 `invalid-request`. Each has its own `code`, a `detail`, a `pointer` and, when there are any, its facts in `data`: `expected` (the JSON type the field takes), `minimum`, `maximum` and `allowed` (the values it takes).
+- `errors` lists every field problem of a 400 `invalid-request`. Each has its own `code`, a `detail`, a `pointer` and, when there are any, its facts in `data`: `expected` (the JSON type the field takes), `minimum`, `maximum`, `allowed` (the values it takes) and `format` (the format a text lacks).
 - `permission` names the permission a 403 `permission-missing` lacks.
 - A rule's refusal, 422, has the rule's `code`, its facts in `data`, and a `pointer` when it is about one field, so a screen can show it on that field.
 - A 429 and a 503 carry `Retry-After`, in whole seconds.
@@ -221,11 +221,12 @@ The field problems:
 | `unknown-field` | A body field or a tool argument that the operation does not declare. |
 | `missing-field` | A field that the operation needs is missing. |
 | `invalid-type` | A field has the wrong JSON type. `data.expected` names the right one. |
-| `invalid-value` | A field holds a value it does not take. `data.allowed` lists the values when there is a list. |
+| `invalid-value` | A field holds a value it does not take. `data.allowed` lists the values when there is a list. No text that the server stores or looks up takes U+0000, which PostgreSQL's text cannot hold. |
 | `too-short`, `too-long` | A text or a list is shorter or longer than it may be. |
 | `not-an-integer` | A number that must be whole is not. |
 | `out-of-range` | A number or an amount is outside its bounds. |
-| `bad-format`, `fraction-of-ore`, `unknown-currency` | An amount is wrong (above). |
+| `bad-format` | A text does not have its format, such as an e-mail address, a token, a six-digit code or a UUID. `data.format` names the format: `email`, `uuid`, or `regex` for a pattern. An amount that is not a decimal string gets it too, with no `data.format` (above). |
+| `fraction-of-ore`, `unknown-currency` | An amount is wrong (above). |
 | `cursor-invalid` | A cursor that this server did not make for this list and this company. |
 | `idempotency-key-missing`, `idempotency-key-invalid` | A write's key is missing, or is not a key (below). |
 

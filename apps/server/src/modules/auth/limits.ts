@@ -20,8 +20,10 @@
 // ones before it, and a burst gets no more through than one attempt after
 // another would. A counter at its cap is locked by the rules alone, so the
 // attempt that reached the cap, while it is still being checked, already
-// stops the next one. An attempt that the rules refuse rolls its count back,
-// and one whose check finds no failure gives it back.
+// stops the next one: the password step's until its window's end, and the
+// TOTP step's until 15 minutes from the tenth code, also when the window
+// ends first. An attempt that the rules refuse rolls its count back, and one
+// whose check finds no failure gives it back.
 //
 // A wait is given in whole seconds, rounded up, so Retry-After never says a
 // second too few.
@@ -91,13 +93,19 @@ export function passwordLockEnd(counter: AttemptCounter): Date {
   return new Date(counter.windowStartedAt.getTime() + PASSWORD_WINDOW_MS);
 }
 
-/** The seconds a TOTP attempt at `at` must wait, or undefined when it may run. */
+/**
+ * The seconds a TOTP attempt at `at` must wait, or undefined when it may run.
+ * A counter at the cap locks the step until 15 minutes from its last wrong
+ * code, also once its window has passed: the tenth code can come just before
+ * the window's end, and its lock is written only after its check.
+ */
 export function totpWait(counter: AttemptCounter | undefined, at: Date): number | undefined {
   const locked = lockWait(counter, at);
   if (locked !== undefined || counter === undefined) {
     return locked;
   }
-  return windowLive(counter, TOTP_WINDOW_MS, at) && counter.failures >= TOTP_CAP ? secondsUntil(totpLockEnd(counter.lastFailureAt), at) : undefined;
+  const end = totpLockEnd(counter.lastFailureAt);
+  return counter.failures >= TOTP_CAP && end > at ? secondsUntil(end, at) : undefined;
 }
 
 /** When a TOTP step locked by a wrong code at `at` opens again. */

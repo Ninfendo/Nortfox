@@ -13,7 +13,6 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   DAY,
   MINUTE,
@@ -21,6 +20,7 @@ import {
   addSignInIdentity,
   challengeOf,
   codeOf,
+  expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
   passwordStep,
   postAsBrowser,
@@ -182,6 +182,6 @@ describe("the TOTP step of a password sign-in", () => {
 
   it("leaves no token but its challenges in an answer or a report, and no secret in clear in the database", async () => {
     expectNoTokensFromSignInApps();
-    await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
+    await expectNoSecretsAtRestFromSignInApps(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
   });
 });

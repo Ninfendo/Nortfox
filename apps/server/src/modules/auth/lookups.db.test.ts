@@ -8,13 +8,26 @@
 // row, with the identity's status. Each one that uses up a row that works
 // once does it with one conditional update, so two parallel calls use it
 // once. The times are the server's clock, which the server passes in, so a
-// test moves it. The set-once columns never change once they are set.
+// test moves it. The set-once columns never change once they are set. The
+// setup functions take the setup links' table lock, so two at once come one
+// after the other.
 
 import { randomBytes, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import fc from "fast-check";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CHECK_VIOLATION, INSUFFICIENT_PRIVILEGE, UNIQUE_VIOLATION, expectError, expectRefusal, freshDatabase, type TestDatabase } from "../../../test/database.ts";
+import {
+  CHECK_VIOLATION,
+  INSUFFICIENT_PRIVILEGE,
+  UNIQUE_VIOLATION,
+  backendPid,
+  begin,
+  expectError,
+  expectRefusal,
+  freshDatabase,
+  type TestDatabase,
+} from "../../../test/database.ts";
 import {
   PERSONAL_IDENTITY_NUMBERS,
   addIdentity,
@@ -129,6 +142,103 @@ describe("the setup link", () => {
 
   it("makes no setup link on an install that has an identity", async () => {
     await expectRefusal(create(tokenHash(), later(T0, 6)), "install_not_empty", {});
+  });
+});
+
+describe("the setup links' table lock", () => {
+  let db: TestDatabase;
+  let first: Client;
+  let second: Client;
+  let observer: Client;
+  let owner: Client;
+  let secondPid: number;
+  const END = later(T0, 28 * 24 * 60);
+
+  beforeAll(async () => {
+    db = await freshDatabase();
+    first = await db.connect("app");
+    second = await db.connect("app");
+    observer = await db.connect("app");
+    owner = await db.connect("owner");
+    secondPid = await backendPid(second);
+  });
+
+  afterAll(async () => {
+    await db.close();
+  });
+
+  /** What a call gave: its rows, or the error it failed with. */
+  type Outcome = { readonly rows: Record<string, unknown>[] } | { readonly error: unknown };
+
+  /**
+   * Runs `sql` on two connections as the app, each in a transaction that
+   * waits before its commit: the first's call ends, then the second's starts,
+   * and the first commits only once the second waits for a lock or has
+   * ended. Without the setup links' table lock, the second never sees what
+   * the first did.
+   */
+  async function overlapping(sql: string, values: readonly [readonly unknown[], readonly unknown[]]): Promise<[Outcome, Outcome]> {
+    const run = (client: Client, params: readonly unknown[]): Promise<Outcome> =>
+      client.query<Record<string, unknown>>(sql, [...params]).then(
+        (result) => ({ rows: result.rows }),
+        (error: unknown) => ({ error }),
+      );
+    await begin(first, { channel: "rest" });
+    await begin(second, { channel: "rest" });
+    const firstOutcome = await run(first, values[0]);
+    const secondState = { ended: false };
+    const secondCall = run(second, values[1]).finally(() => {
+      secondState.ended = true;
+    });
+    for (let attempt = 0; attempt < 1000 && !secondState.ended; attempt += 1) {
+      const found = await observer.query<{ waiting: boolean }>(
+        "SELECT wait_event_type IS NOT DISTINCT FROM 'Lock' AS waiting FROM pg_catalog.pg_stat_activity WHERE pid = $1",
+        [secondPid],
+      );
+      if (found.rows[0]?.waiting === true) {
+        break;
+      }
+      await delay(10);
+    }
+    // COMMIT ends a failed transaction too, with a rollback.
+    await first.query("COMMIT");
+    const secondOutcome = await secondCall;
+    await second.query("COMMIT");
+    return [firstOutcome, secondOutcome];
+  }
+
+  /** The hashes of the live setup links. */
+  async function liveLinks(): Promise<Buffer[]> {
+    const found = await owner.query<{ token_hash: Buffer }>("SELECT token_hash FROM access.setup_tokens WHERE used_at IS NULL AND superseded_at IS NULL");
+    return found.rows.map((row) => row.token_hash);
+  }
+
+  async function identityCount(): Promise<number> {
+    return (await owner.query("SELECT 1 FROM access.identities")).rowCount ?? 0;
+  }
+
+  it("leaves one live link when two setup commands make links at once", async () => {
+    const [older, newer] = [tokenHash(), tokenHash()];
+    const made = await overlapping("SELECT access.create_setup_token($1, $2, $3) IS NOT NULL AS made", [
+      [older, T0, END],
+      [newer, later(T0, 1), END],
+    ]);
+    expect(made).toEqual([{ rows: [{ made: true }] }, { rows: [{ made: true }] }]);
+    expect(await liveLinks()).toEqual([newer]);
+  });
+
+  it("makes one identity when two live links are used at once, and the other gets install-not-empty", async () => {
+    const links = [tokenHash(), tokenHash()];
+    // Two live links, as only the owner or a race could leave them.
+    for (const link of links) {
+      await owner.query("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at) VALUES ($1, $2, $3)", [link, T0, END]);
+    }
+    const use = (link: Buffer | undefined): unknown[] => [link, later(T0, 2), randomUUID(), someEmail(), phcString(), randomUUID(), sealedSecret()];
+    const [done, refused] = await overlapping("SELECT access.complete_setup($1, $2, $3, 'Alva Berg', $4, $5, $6, $7) AS done", [use(links[0]), use(links[1])]);
+    expect(done).toEqual({ rows: [{ done: true }] });
+    expect("error" in refused).toBe(true);
+    await expectRefusal(Promise.reject("error" in refused ? (refused.error as Error) : new Error("The second use made an identity.")), "install_not_empty", {});
+    expect(await identityCount()).toBe(1);
   });
 });
 
@@ -564,6 +674,65 @@ describe("the lookup functions", () => {
       const hash = tokenHash();
       await anonymously(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3)", [hash, person, T0]);
       await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3)", [hash, person, T0]), UNIQUE_VIOLATION, /sessions_token_hash_key/);
+      const challenge = tokenHash();
+      await anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', NULL, $3, $4)", [challenge, person, T0, at]);
+      await expectError(
+        anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', NULL, $3, $4)", [challenge, person, T0, at]),
+        UNIQUE_VIOLATION,
+        /login_challenges_token_hash_key/,
+      );
+      const link = tokenHash();
+      await owner.query("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, superseded_at) VALUES ($1, $2, $3, $2)", [link, T0, at]);
+      await expectError(
+        owner.query("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at) VALUES ($1, $2, $3)", [link, T0, at]),
+        UNIQUE_VIOLATION,
+        /setup_tokens_token_hash_key/,
+      );
+    });
+
+    it("keeps a challenge's wrong attempts from 0 to 5 and its method a password's, a used TOTP step and a failure count above 0, and a session's end with its reason", async () => {
+      const person = await addIdentity(owner);
+      const at = later(T0, 20);
+      const challenge = await first(anonymously<{ id: string }>(app, "SELECT access.open_challenge($1, $2, 'password-email', NULL, $3, $4) AS id", [tokenHash(), person, T0, at]));
+      for (const attempts of [6, -1]) {
+        await expectError(
+          owner.query("UPDATE access.login_challenges SET wrong_attempts = $2 WHERE id = $1", [challenge?.id, attempts]),
+          CHECK_VIOLATION,
+          /login_challenges_attempts_range/,
+        );
+      }
+      await owner.query("UPDATE access.login_challenges SET wrong_attempts = 5 WHERE id = $1", [challenge?.id]);
+      await expectError(
+        anonymously(app, "SELECT access.open_challenge($1, $2, 'bankid', NULL, $3, $4)", [tokenHash(), person, T0, at]),
+        CHECK_VIOLATION,
+        /login_challenges_method_known/,
+      );
+      const secret = await addTotpSecret(owner, person, "active");
+      await expectError(anonymously(app, "SELECT access.use_totp_step($1, $2, -1, $3)", [secret, person, T0]), CHECK_VIOLATION, /totp_secrets_step_positive/);
+      await anonymously(app, "SELECT access.use_totp_step($1, $2, 0, $3)", [secret, person, T0]);
+      await expectError(
+        owner.query("INSERT INTO access.attempt_counters (subject, kind, window_started_at, failures, last_failure_at) VALUES ($1, 'password', $2, 0, $2)", [person, T0]),
+        CHECK_VIOLATION,
+        /attempt_counters_failures_positive/,
+      );
+      const session = await first(anonymously<{ id: string }>(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3) AS id", [tokenHash(), person, T0]));
+      await expectError(anonymously(app, "SELECT access.end_session($1, NULL, $2)", [session?.id, T0]), CHECK_VIOLATION, /sessions_ended_with_reason/);
+      for (const [ended, reason] of [
+        [T0, null],
+        [null, "logout"],
+      ] as const) {
+        await expectError(
+          owner.query("INSERT INTO access.sessions (token_hash, identity_id, method, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', $3, $3, $4, $5)", [
+            tokenHash(),
+            person,
+            T0,
+            ended,
+            reason,
+          ]),
+          CHECK_VIOLATION,
+          /sessions_ended_with_reason/,
+        );
+      }
     });
 
     it("keeps a password only as an Argon2id hash in the PHC string format", async () => {

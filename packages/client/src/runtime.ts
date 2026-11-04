@@ -107,8 +107,8 @@ function urlOf(baseUrl: string, call: OperationCall, input: Readonly<Record<stri
   }
   const search = new URLSearchParams();
   for (const name of call.query ?? []) {
-    // The method's input type makes each query field a string, a number or a boolean.
-    const value = input[name] as string | number | boolean | undefined;
+    // The method's input type makes each query field a string or a number: the generator refuses any other type.
+    const value = input[name] as string | number | undefined;
     if (value !== undefined) {
       search.append(name, String(value));
     }

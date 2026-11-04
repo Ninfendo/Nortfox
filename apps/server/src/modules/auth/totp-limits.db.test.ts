@@ -8,12 +8,11 @@
 // records the lock. A code works once: the same code sent twice at once
 // gives one session.
 
-import type { Client } from "pg";
+import type { Client, QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
+import { appPool, gate, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { addTotpSecret, deleteIdentity } from "../../../test/identities.ts";
-import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 import {
   CODE_FAILED,
   MINUTE,
@@ -21,6 +20,7 @@ import {
   addSignInIdentity,
   challengeOf,
   codeOf,
+  expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
   holdingWrites,
   passwordStep,
@@ -34,6 +34,7 @@ import {
   type SignInApp,
   type TestIdentity,
 } from "../../../test/sign-in.ts";
+import type { Database } from "../../db/database.ts";
 
 describe("the limits of the TOTP step", () => {
   let db: TestDatabase;
@@ -152,6 +153,85 @@ describe("the limits of the TOTP step", () => {
     server.clock.advance(15 * MINUTE - 10 * SECOND);
     const answer = await totpStep(server, challenge, codeOf(person, server.clock.now()));
     expect(answer.status).toBe(204);
+  });
+
+  it("keeps the step locked for 15 minutes from the tenth wrong code, also after the window of the first has passed", async () => {
+    server.clock.advance(15 * MINUTE);
+    const person = await addPerson();
+    const first = await challengeFor(person);
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      expect((await totpStep(server, first, wrongCodeOf(person, server.clock.now()))).status).toBe(422);
+    }
+    const second = await challengeFor(person);
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      expect((await totpStep(server, second, wrongCodeOf(person, server.clock.now()))).status).toBe(422);
+    }
+    // The tenth comes late in the window of the first, which ends a minute after it.
+    server.clock.advance(14 * MINUTE);
+    const tenthAt = server.clock.now();
+    expect((await totpStep(server, second, wrongCodeOf(person, tenthAt))).status).toBe(422);
+    const lock = await owner.query<{ locked_until: Date }>("SELECT locked_until FROM access.attempt_counters WHERE subject = $1 AND kind = 'totp'", [person.id]);
+    expect(lock.rows).toEqual([{ locked_until: new Date(tenthAt.getTime() + 15 * MINUTE) }]);
+    server.clock.advance(90 * SECOND);
+    const locked = await totpStep(server, await challengeFor(person), codeOf(person, server.clock.now()));
+    expect(locked.status).toBe(429);
+    expect(locked.headers.get("retry-after")).toBe(String(15 * 60 - 90));
+    // 15 minutes from the tenth, a right code works.
+    server.clock.advance(15 * MINUTE - 90 * SECOND);
+    expect((await totpStep(server, await challengeFor(person), codeOf(person, server.clock.now()))).status).toBe(204);
+  });
+
+  it("refuses every code while a tenth wrong code, counted just before its window's end, is still being checked", async () => {
+    server.clock.advance(15 * MINUTE);
+    const person = await addPerson();
+    const first = await challengeFor(person);
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      expect((await totpStep(server, first, wrongCodeOf(person, server.clock.now()))).status).toBe(422);
+    }
+    const second = await challengeFor(person);
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      expect((await totpStep(server, second, wrongCodeOf(person, server.clock.now()))).status).toBe(422);
+    }
+    server.clock.advance(15 * MINUTE - SECOND);
+    const later = await challengeFor(person);
+    // The tenth's lock waits at the gate, before its statement, so the tenth is still being checked.
+    const held = gate();
+    let armed = true;
+    const holding: Database = {
+      ...pool.database,
+      write: (settings, work) =>
+        pool.database.write(settings, (tx) =>
+          work({
+            query: async <Row extends QueryResultRow>(text: string, values?: readonly unknown[]) => {
+              if (armed && text.includes("access.lock_attempts")) {
+                armed = false;
+                await held.pass();
+              }
+              return tx.query<Row>(text, values);
+            },
+          }),
+        ),
+    };
+    const racing = signInApp(holding, { clock: server.clock });
+    const tenth = totpStep(racing, second, wrongCodeOf(person, server.clock.now()));
+    await held.reached;
+    // The window of the first wrong code has passed, but the counter at its cap locks the step until 15 minutes from the tenth.
+    server.clock.advance(2 * SECOND);
+    const statuses: [number, string | null][] = [];
+    try {
+      for (const code of [codeOf(person, server.clock.now()), wrongCodeOf(person, server.clock.now()), wrongCodeOf(person, server.clock.now())]) {
+        const answer = await totpStep(server, later, code);
+        statuses.push([answer.status, answer.headers.get("retry-after")]);
+      }
+    } finally {
+      held.open();
+    }
+    expect(statuses).toEqual(Array.from({ length: 3 }, () => [429, String(15 * 60 - 2)]));
+    expect((await tenth).status).toBe(422);
+    await racing.app.afterAnswer.idle();
+    expect(await failures(person)).toBe(10);
+    expect(await wrongAttempts(later)).toBe(0);
+    expect(await sessionsOf(person)).toBe(0);
   });
 
   it("checks at most ten codes of one identity from a parallel burst across its challenges, and refuses the rest with 429", async () => {
@@ -301,6 +381,6 @@ describe("the limits of the TOTP step", () => {
 
   it("leaves no token but its challenges in an answer or a report, and no secret in clear in the database", async () => {
     expectNoTokensFromSignInApps();
-    await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
+    await expectNoSecretsAtRestFromSignInApps(db, { passwords: people.map((person) => person.password), totpSecrets: people.flatMap((person) => (person.totpSecret === undefined ? [] : [person.totpSecret])) });
   });
 });

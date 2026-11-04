@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   HASH_BYTES,
   PASSWORD_MAX_LENGTH,
+  PASSWORD_MAX_MARK_RUN,
   PASSWORD_MAX_UNITS,
   PASSWORD_MIN_LENGTH,
   PRODUCTION_PASSWORD_COST,
@@ -144,12 +145,12 @@ describe("a new password", () => {
     expect(newPasswordIssue("é".repeat(1024), "/password")).toBeUndefined();
   });
 
-  it("never normalises a password of more UTF-16 units than four to each of 1024 characters, and counts it as too long", async () => {
+  it("never normalises a password of more UTF-16 units than six to each of 1024 characters, and counts it as too long", async () => {
     // A long run of combining marks of two classes in turn makes NFC take quadratic time, so such a password never reaches normalize().
     const below = String.fromCodePoint(0x316);
     const above = String.fromCodePoint(0x301);
     const attack = `a${`${below}${above}`.repeat(32 * 1024)}`;
-    expect(PASSWORD_MAX_UNITS).toBe(4 * PASSWORD_MAX_LENGTH);
+    expect(PASSWORD_MAX_UNITS).toBe(6 * PASSWORD_MAX_LENGTH);
     const { hasher, calls } = watched();
     const normalize = vi.spyOn(String.prototype, "normalize");
     try {
@@ -163,12 +164,117 @@ describe("a new password", () => {
     }
     // It was checked as the empty password, against the dummy.
     expect(calls.map((call) => Buffer.from(call.message as Uint8Array).length)).toEqual([0]);
-    // NFC makes at most four code points one character: 1024 such characters, written out in 4096 units, are a password.
-    const fourToOne = String.fromCodePoint(0x3b1, 0x313, 0x300, 0x345);
-    expect(fourToOne.normalize("NFC")).toHaveLength(1);
-    expect(passwordLength(fourToOne.repeat(PASSWORD_MAX_LENGTH))).toBe(PASSWORD_MAX_LENGTH);
-    expect(newPasswordIssue(fourToOne.repeat(PASSWORD_MAX_LENGTH), "/password")).toBeUndefined();
-    expect(passwordLength(`${fourToOne.repeat(PASSWORD_MAX_LENGTH)}a`)).toBe(Number.POSITIVE_INFINITY);
+    // NFC makes at most six units one character, such as U+16126 written as its three vowel signs. A starter and ten of
+    // them, which is 30 marks in a row, are 11 characters in 61 units: 93 such groups are 1023 characters in 5673 units.
+    const sixToOne = String.fromCodePoint(0x16126);
+    expect(sixToOne.normalize("NFD")).toHaveLength(6);
+    const group = `x${sixToOne.repeat(10)}`;
+    const decomposed = group.normalize("NFD").repeat(93);
+    expect(decomposed).toHaveLength(5673);
+    expect(passwordLength(decomposed)).toBe(1023);
+    expect(newPasswordIssue(decomposed, "/password")).toBeUndefined();
+    expect(passwordLength(`${decomposed}${"y".repeat(PASSWORD_MAX_UNITS - decomposed.length + 1)}`)).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("takes either way of writing a character of six units as one password", async () => {
+    const { hasher } = watched();
+    const composed = `x${String.fromCodePoint(0x16126).repeat(10)}`.repeat(93);
+    const decomposed = composed.normalize("NFD");
+    expect(decomposed.length).toBeGreaterThan(4 * PASSWORD_MAX_LENGTH);
+    const stored = hashOf(await hasher.hash(composed, "/password"));
+    expect(await hasher.verify(decomposed, stored)).toBe(true);
+    expect(await hasher.verify(composed, hashOf(await hasher.hash(decomposed, "/password")))).toBe(true);
+  });
+
+  it("bounds a password's units by the longest canonical decomposition of any character, in this Node's Unicode", () => {
+    // A later Unicode with a longer decomposition fails here, so the bound grows with it.
+    let longest = 0;
+    for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
+      if (codePoint < 0xd800 || codePoint > 0xdfff) {
+        longest = Math.max(longest, String.fromCodePoint(codePoint).normalize("NFD").length);
+      }
+    }
+    expect(longest).toBe(6);
+    expect(longest * PASSWORD_MAX_LENGTH).toBeLessThanOrEqual(PASSWORD_MAX_UNITS);
+  });
+
+  it("counts every character whose decomposition starts with a mark that NFC reorders as a mark, so the run of marks bounds the reordering", () => {
+    // U+0334 has the lowest combining class, 1, and U+0345 the highest, 240: a mark of any other class moves past one of them.
+    const reorders = (mark: string): boolean => `a${mark}\u0334`.normalize("NFD") !== `a${mark}\u0334` || `a\u0345${mark}`.normalize("NFD") !== `a\u0345${mark}`;
+    const unmarked: number[] = [];
+    for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+        continue;
+      }
+      const character = String.fromCodePoint(codePoint);
+      const first = String.fromCodePoint(character.normalize("NFD").codePointAt(0) ?? 0);
+      if (reorders(first) && !/^\p{M}$/u.test(character)) {
+        unmarked.push(codePoint);
+      }
+    }
+    expect(reorders("\u0301")).toBe(true);
+    expect(reorders("a")).toBe(false);
+    expect(unmarked).toEqual([]);
+  });
+
+  it("refuses a run of more than 30 combining marks before it normalises it, and never takes one as right", async () => {
+    const pointer = "/password";
+    expect(PASSWORD_MAX_MARK_RUN).toBe(30);
+    const thirty = `a${"\u0301".repeat(30)}bcdefghijkl`;
+    const thirtyOne = `a${"\u0301".repeat(31)}bcdefghijkl`;
+    expect(newPasswordIssue(thirty, pointer)).toBeUndefined();
+    expect(newPasswordIssue(thirtyOne, pointer)).toEqual({
+      code: "invalid-value",
+      detail: "The field /password holds more than 30 combining marks in a row.",
+      pointer,
+      data: {},
+    });
+    const { hasher, calls } = watched();
+    const stored = hashOf(await hasher.hash(thirty, pointer));
+    // The worst case inside the bound: marks of two classes in turn, in 6143 units.
+    const attack = `a${"\u0316\u0301".repeat(3071)}`;
+    calls.length = 0;
+    const normalize = vi.spyOn(String.prototype, "normalize");
+    try {
+      const started = performance.now();
+      expect(newPasswordIssue(attack, pointer)?.code).toBe("invalid-value");
+      expect(await hasher.verify(attack, stored)).toBe(false);
+      expect(await hasher.verify(thirtyOne, stored)).toBe(false);
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(normalize.mock.contexts.filter((text) => /\p{M}{31}/u.test(String(text)))).toEqual([]);
+    } finally {
+      normalize.mockRestore();
+    }
+    // Each was checked as the empty password, against the dummy.
+    expect(calls.map((call) => [Buffer.from(call.message as Uint8Array).length, Buffer.from(call.nonce as Uint8Array).equals(Buffer.alloc(SALT_BYTES))])).toEqual([
+      [0, true],
+      [0, true],
+    ]);
+    expect(await hasher.verify(thirty, stored)).toBe(true);
+  });
+
+  it("refuses a password with a lone surrogate, and never takes one as right, so no two such passwords are one", async () => {
+    const pointer = "/password";
+    const lone = "Lösenordet-ok-\uD800\uD801\uD802";
+    expect(newPasswordIssue(lone, pointer)).toEqual({
+      code: "invalid-value",
+      detail: "The field /password holds a lone surrogate, which is not a character.",
+      pointer,
+      data: {},
+    });
+    const { hasher, calls } = watched();
+    expect(await hasher.hash(lone, pointer)).toMatchObject({ ok: false, issue: { code: "invalid-value" } });
+    // A JSON body can carry a lone surrogate as an escape, and UTF-8 would write each one as U+FFFD.
+    const replaced = "Lösenordet-ok-\uFFFD\uFFFD\uFFFD";
+    const stored = hashOf(await hasher.hash(replaced, pointer));
+    calls.length = 0;
+    expect(await hasher.verify(lone, stored)).toBe(false);
+    expect(await hasher.verify("Lösenordet-ok-\uDC00\uDBFF\uD83D", stored)).toBe(false);
+    expect(calls.map((call) => [Buffer.from(call.message as Uint8Array).length, Buffer.from(call.nonce as Uint8Array).equals(Buffer.alloc(SALT_BYTES))])).toEqual([
+      [0, true],
+      [0, true],
+    ]);
+    expect(await hasher.verify(replaced, stored)).toBe(true);
   });
 
   it("answers a password of combining marks quickly, however long it is", async () => {

@@ -332,8 +332,10 @@ describe("an operation that runs before sign-in", () => {
     expect(statuses(signIn)).toEqual(["200", "400", "403", "413", "415", "422", "429", "500", "503"]);
   });
 
-  it("can be refused for another site only: a page of another site may not start a sign-in", () => {
-    expect(signIn.responses[403]?.description).toBe("The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).");
+  it("can be refused for another site only: a page of another site may not start a sign-in, and a write with the session cookie needs the install's own Origin", () => {
+    expect(signIn.responses[403]?.description).toBe(
+      "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
+    );
   });
 
   it("names Retry-After on its 429 and its 503, and on no other answer", () => {

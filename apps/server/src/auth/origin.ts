@@ -18,7 +18,8 @@
 // - An operation that runs before sign-in refuses an Origin that is not on
 //   the list, so another site cannot sign a browser in, start a sign-in or
 //   send mail through it. Each such operation serves the browser's sign-in.
-//   One with no Origin, from a program that is not a browser, runs.
+//   One with no Origin and no session cookie, from a program that is not a
+//   browser, runs.
 // - A request with a bearer token is a program's: it ignores the cookie, so
 //   the first rule does not touch it. A browser on another site cannot send
 //   one without a preflight either.

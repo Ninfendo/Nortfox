@@ -15,8 +15,7 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { TEST_INSTALL_KEY, appPool, gate, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
-import { MINUTE, SECOND, addSignInIdentity, expectNoTokensFromSignInApps, passwordStep, signInApp, testClock, type SignInApp, type TestIdentity } from "../../../test/sign-in.ts";
+import { MINUTE, SECOND, addSignInIdentity, expectNoSecretsAtRestFromSignInApps, expectNoTokensFromSignInApps, passwordStep, signInApp, testClock, type SignInApp, type TestIdentity } from "../../../test/sign-in.ts";
 import { PasswordHasher, nodeArgon2id, type Argon2id } from "../../auth/password.ts";
 import { unknownSubject } from "./identifier.ts";
 
@@ -103,8 +102,8 @@ describe("the limits of the password step", () => {
     const unknown = serverWithCount();
     expect(await delays(unknown.server, unknown.checked, "ingen.sadan@example.com", "fel-lösenord-varje-gång")).toEqual(DELAYS);
     // Each answer is the same, also in its detail.
-    const sooner = await passwordStep(known.server, person.email, "x");
-    const soonerUnknown = await passwordStep(unknown.server, "ingen.sadan@example.com", "x");
+    const sooner = await passwordStep(known.server, person.email, "fel-lösenord-för-tidigt");
+    const soonerUnknown = await passwordStep(unknown.server, "ingen.sadan@example.com", "fel-lösenord-för-tidigt");
     expect(await problemIn(sooner)).toEqual(await problemIn(soonerUnknown));
   });
 
@@ -284,6 +283,6 @@ describe("the limits of the password step", () => {
 
   it("leaves no token in an answer or a report, and no secret in clear in the database", async () => {
     expectNoTokensFromSignInApps();
-    await expectNoSecretsAtRest(db, { passwords: people.map((person) => person.password) });
+    await expectNoSecretsAtRestFromSignInApps(db, { passwords: people.map((person) => person.password) });
   });
 });

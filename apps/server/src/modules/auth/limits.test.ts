@@ -89,8 +89,16 @@ describe("the TOTP step's lock", () => {
     // The tenth code may still be checked: the counter at the cap locks the step on its own.
     expect(totpWait(counter(10, 100), at(200))).toBe(900 - 100);
     expect(totpWait(counter(10, 100, { lockedUntil: 1000 }), at(200))).toBe(800);
-    // Once the window of 15 minutes from the first wrong code has passed, only a lock counts.
-    expect(totpWait(counter(10, 100), at(900))).toBeUndefined();
+    // After the window of 15 minutes from the first wrong code, the counter at the cap still locks until 15 minutes from the tenth.
+    expect(totpWait(counter(10, 100), at(900))).toBe(100);
     expect(totpWait(counter(10, 100, { lockedUntil: 1000 }), at(900))).toBe(100);
+    expect(totpWait(counter(10, 100), at(1000))).toBeUndefined();
+  });
+
+  it("locks the step for 15 minutes from a tenth code counted just before its window ends, before the lock is written", () => {
+    // The tenth code came 1 ms before the window's end; the next comes 1 ms after it, while the tenth is still being checked.
+    expect(totpWait(counter(10, 899.999), at(900.001))).toBe(900);
+    expect(totpWait(counter(10, 899.999), at(1799.998))).toBe(1);
+    expect(totpWait(counter(10, 899.999), at(1799.999))).toBeUndefined();
   });
 });
