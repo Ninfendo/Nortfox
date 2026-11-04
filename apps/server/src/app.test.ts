@@ -15,6 +15,7 @@ import {
   testResolver,
   untouchedDatabase,
 } from "../test/api.ts";
+import { SHAPES_REGISTRY, shapeLog, shapesHandlers } from "../test/shapes.ts";
 import { handleData, ok } from "./api/operation.ts";
 import { createApp, type AppOptions } from "./app.ts";
 import { getCompanyHandler } from "./modules/companies/get-company.ts";
@@ -67,6 +68,8 @@ describe("GET /openapi.json", () => {
       assistant: false,
       writes: false,
       list: false,
+      session: null,
+      company: "none",
     });
     expect(Object.keys(health?.responses ?? {})).toEqual(["200", "400", "500"]);
     expect(health?.responses?.["400"]?.content).toEqual({
@@ -79,6 +82,8 @@ describe("GET /openapi.json", () => {
       assistant: true,
       writes: false,
       list: false,
+      session: null,
+      company: "credential",
     });
     expect(Object.keys(company?.responses ?? {})).toEqual(["200", "400", "401", "403", "500"]);
     expect(company?.responses?.["401"]?.headers).toEqual({
@@ -158,6 +163,15 @@ describe("createApp", () => {
     expect(() => createApp(defaults({ registry: [...REGISTRY, testListAccounts], handlers: testHandlers(bookingControls(), "1.2.3") }))).toThrow(
       'testListAccounts needs the permission "test:read", which is not on the list.',
     );
+  });
+
+  it("takes the server's clock, which a handler of an operation that runs before sign-in reads", async () => {
+    const log = shapeLog();
+    const at = new Date("2090-01-02T03:04:05.000Z");
+    const { hono } = createApp(defaults({ registry: SHAPES_REGISTRY, handlers: shapesHandlers(log), permissions: ALL_PERMISSIONS, now: () => at }));
+    const response = await hono.request("/v1/test-sign-ins", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "anna@example.com" }) });
+    expect(response.status).toBe(200);
+    expect(log.calls[0]?.now).toEqual(at);
   });
 
   it("refuses a cursor key shorter than 32 bytes", () => {

@@ -14,6 +14,7 @@
 
 import { PERMISSIONS, REGISTRY, registryProblems, type Operation } from "@nortfox/contract";
 import { Hono } from "hono";
+import { AfterAnswerQueue } from "./api/after-answer.ts";
 import type { ContextResolver } from "./api/context.ts";
 import { KeysInFlight } from "./api/idempotency.ts";
 import type { Handler } from "./api/operation.ts";
@@ -38,8 +39,10 @@ export interface AppOptions {
   readonly handlers?: readonly Handler[];
   /** The permissions an operation may need besides "public". By default the contract's. */
   readonly permissions?: readonly string[];
-  /** Told of every error that answers 500. By default console.error. */
+  /** Told of every error that answers 500, and of work after an answer that fails. By default console.error. */
   readonly report?: (error: unknown) => void;
+  /** The server's clock. By default the system's. */
+  readonly now?: () => Date;
   /**
    * The browser origins that may call /mcp, such as https://nortfox.example.
    * By default none: a request with an Origin header gets 403, and one
@@ -48,10 +51,12 @@ export interface AppOptions {
   readonly allowedOrigins?: readonly string[];
 }
 
-/** The app as the server serves it: the Hono app, and the registry it serves under /v1. */
+/** The app as the server serves it: the Hono app, the registry it serves under /v1, and the work it runs after its answers. */
 export interface ServerApp {
   readonly hono: Hono<V1Env>;
   readonly registry: readonly Operation[];
+  /** The tests wait here until the work after each answer has run. */
+  readonly afterAnswer: Pick<AfterAnswerQueue, "idle">;
 }
 
 /** The shortest key that signs the cursors. */
@@ -98,6 +103,10 @@ function logError(error: unknown): void {
   console.error("The server failed:", error);
 }
 
+function systemClock(): Date {
+  return new Date();
+}
+
 /** Builds the app with every route. */
 export function createApp(options: AppOptions): ServerApp {
   const registry = options.registry ?? REGISTRY;
@@ -114,7 +123,16 @@ export function createApp(options: AppOptions): ServerApp {
   const allowedOrigins = originsOf(options.allowedOrigins ?? []);
 
   const hono = new Hono<V1Env>();
-  const deps = { resolve: options.resolve, database: options.database, cursorKey: options.cursorKey, keysInFlight: new KeysInFlight(), report };
+  const afterAnswer = new AfterAnswerQueue(report);
+  const deps = {
+    resolve: options.resolve,
+    database: options.database,
+    cursorKey: options.cursorKey,
+    keysInFlight: new KeysInFlight(),
+    now: options.now ?? systemClock,
+    report,
+    afterAnswer,
+  };
   mountV1(hono, handlers, deps);
   mountMcp(hono, handlers, { ...deps, version: options.version, allowedOrigins });
   // The description is rendered once, at start.
@@ -125,5 +143,5 @@ export function createApp(options: AppOptions): ServerApp {
     report(error);
     return problemResponse(internalError());
   });
-  return { hono, registry };
+  return { hono, registry, afterAnswer };
 }

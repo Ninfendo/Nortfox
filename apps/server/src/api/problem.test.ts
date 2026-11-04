@@ -3,6 +3,7 @@
 import { PROBLEM_CODES, Problem } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
 import {
+  browserOnly,
   fieldProblemOf,
   internalError,
   malformedJson,
@@ -15,7 +16,8 @@ import {
   type ProblemAnswer,
 } from "./problem.ts";
 
-const JSON_PROBLEM = { "Content-Type": "application/problem+json" };
+/** Every problem answer is application/problem+json, and no cache keeps it. */
+const JSON_PROBLEM = { "Content-Type": "application/problem+json", "Cache-Control": "no-store" };
 
 /** Every answer is problem details that the contract's schema takes, with a code it lists at its status. */
 function expectProblem(answer: ProblemAnswer): void {
@@ -57,6 +59,22 @@ describe("problemOf", () => {
         detail: "The actor lacks the permission company:read, which this operation needs.",
         code: "permission-missing",
         permission: "company:read",
+      },
+    });
+  });
+
+  it("answers a credential that names no company with 403 company-required, for an operation in the credential's company", () => {
+    const answer = problemOf({ kind: "company-required" });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 403,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Forbidden",
+        status: 403,
+        detail: "The operation works in a company, and the request's credential names none. Choose a company first.",
+        code: "company-required",
       },
     });
   });
@@ -255,6 +273,22 @@ describe("the answers of the surface itself", () => {
         status: 403,
         detail: "The Origin header names a site that may not call /mcp. A program that is not a browser sends no Origin.",
         code: "origin-not-allowed",
+      },
+    });
+  });
+
+  it("answers an MCP call of an operation that serves the browser's session with 403 browser-only", () => {
+    const answer = browserOnly();
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 403,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Forbidden",
+        status: 403,
+        detail: "This operation serves the browser's sign-in. An MCP client signs in through OAuth.",
+        code: "browser-only",
       },
     });
   });

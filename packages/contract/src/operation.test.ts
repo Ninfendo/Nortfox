@@ -5,12 +5,16 @@ import { z } from "zod";
 import { IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
 import { Money } from "./money.ts";
 import {
+  NoBody,
+  Redirect,
   bodySchema,
   defineListOperation,
   defineOperation,
   outputSchema,
+  paramsSchema,
   querySchema,
   successStatus,
+  takesIdempotencyKey,
   type Shape,
 } from "./operation.ts";
 import { Limit, Cursor } from "./paging.ts";
@@ -101,6 +105,8 @@ describe("defineOperation", () => {
       assistant: true,
       writes: false,
       list: false,
+      session: null,
+      company: "credential",
     });
     expect(write["x-nortfox"]).toEqual({
       permission: "test:write",
@@ -108,7 +114,14 @@ describe("defineOperation", () => {
       assistant: false,
       writes: true,
       list: false,
+      session: null,
+      company: "credential",
     });
+  });
+
+  it("takes the company from the credential for an operation with a permission, and from nowhere for one without", () => {
+    expect(publicRead["x-nortfox"]).toMatchObject({ session: null, company: "none" });
+    expect(read["x-nortfox"].company).toBe("credential");
   });
 
   it("answers a public read with its output, 400 and 500", () => {
@@ -159,10 +172,203 @@ describe("defineOperation", () => {
     expect(querySchema<Shape | undefined>(write)).toBeUndefined();
     expect(bodySchema(write)).toBe(Body);
     expect(bodySchema<Shape | undefined>(read)).toBeUndefined();
+    expect(paramsSchema<Shape | undefined>(read)).toBeUndefined();
     expect(outputSchema(read)).toBe(Item);
     expect(outputSchema(write)).toBe(Item);
     expect(successStatus(read)).toBe(200);
     expect(successStatus(write)).toBe(201);
+    expect(takesIdempotencyKey(write)).toBe(true);
+    expect(takesIdempotencyKey(read)).toBe(false);
+  });
+
+  it("throws for an entry with no success answer, which the registry guard refuses", () => {
+    expect(() => successStatus({ ...read, responses: { 400: { description: "Refused." } } })).toThrow("getItem has no success answer.");
+  });
+});
+
+describe("path parameters", () => {
+  const Params = z.strictObject({ itemId: z.uuid().meta({ description: "The item's id." }) });
+  const getOne = defineOperation({
+    id: "getOneItem",
+    method: "get",
+    path: "/v1/items/{itemId}",
+    tags: ["items"],
+    summary: "Read one item",
+    description: "Reads one item.",
+    params: Params,
+    output: Item,
+    permission: "test:read",
+    tool: "Reads one item.",
+    writes: false,
+  });
+
+  it("takes them as the request's params, and routes them as Hono names them", () => {
+    expect(getOne.request).toEqual({ params: Params });
+    expect(paramsSchema(getOne)).toBe(Params);
+    expect(getOne.path).toBe("/v1/items/{itemId}");
+    expect(getOne.getRoutingPath()).toBe("/v1/items/:itemId");
+  });
+});
+
+describe("the answers without a body, and the redirect", () => {
+  const texts = { tags: ["items"], summary: "S", description: "D.", tool: "T." } as const;
+
+  const ended = defineOperation({
+    ...texts,
+    id: "endItem",
+    method: "delete",
+    path: "/v1/items",
+    output: NoBody,
+    status: 204,
+    permission: "test:write",
+    writes: true,
+  });
+
+  const accepted = defineOperation({
+    ...texts,
+    id: "sendItem",
+    method: "post",
+    path: "/v1/item-letters",
+    body: Body,
+    output: NoBody,
+    status: 202,
+    permission: "none",
+    session: "flow",
+    writes: true,
+  });
+
+  const redirect = defineOperation({
+    ...texts,
+    id: "startItem",
+    method: "get",
+    path: "/v1/item-starts",
+    output: Redirect,
+    status: 303,
+    permission: "none",
+    session: "flow",
+    writes: true,
+  });
+
+  it("answers 204 with no body: its output is the empty object", () => {
+    expect(ended.responses[204]).toEqual({ description: "Done. The answer has no body." });
+    expect(successStatus(ended)).toBe(204);
+    expect(outputSchema(ended)).toBe(NoBody);
+    expect(NoBody.parse({})).toEqual({});
+    expect(NoBody.safeParse({ x: 1 }).success).toBe(false);
+  });
+
+  it("answers 202 with no body: the work goes on after the answer", () => {
+    expect(accepted.responses[202]).toEqual({ description: "Accepted. The work goes on after the answer, which has no body." });
+    expect(successStatus(accepted)).toBe(202);
+    expect(outputSchema(accepted)).toBe(NoBody);
+  });
+
+  it("answers 303 with the Location header and the same location as JSON", () => {
+    expect(redirect.responses[303]).toEqual({
+      description: "See Other: the browser goes on to the location.",
+      headers: { Location: { description: "The URL the browser goes to next.", schema: { type: "string" } } },
+      content: { "application/json": { schema: Redirect } },
+    });
+    expect(successStatus(redirect)).toBe(303);
+    expect(outputSchema(redirect)).toBe(Redirect);
+    expect(Redirect.parse({ location: "https://idp.example.com/authorize" })).toEqual({ location: "https://idp.example.com/authorize" });
+  });
+
+  it("refuses another output for an answer without a body, and for a redirect", () => {
+    expect(() => defineOperation({ ...texts, id: "badEnd", method: "delete", path: "/v1/items", output: Item, status: 204, permission: "test:write", writes: true })).toThrow(
+      "badEnd answers 204, which has no body, so its output is NoBody.",
+    );
+    expect(() => defineOperation({ ...texts, id: "badSend", method: "post", path: "/v1/items", output: z.strictObject({}), status: 202, permission: "none", writes: true })).toThrow(
+      "badSend answers 202, which has no body, so its output is NoBody.",
+    );
+    expect(() => defineOperation({ ...texts, id: "badStart", method: "get", path: "/v1/items", output: Item, status: 303, permission: "none", writes: true })).toThrow(
+      "badStart answers 303, so its output is Redirect.",
+    );
+    expect(() => defineOperation({ ...texts, id: "badRead", method: "get", path: "/v1/items", output: NoBody, permission: "test:read", writes: false })).toThrow(
+      "badRead answers 200 with JSON, so its output is not NoBody.",
+    );
+  });
+});
+
+describe("an operation that runs before sign-in", () => {
+  const signIn = defineOperation({
+    id: "signInItem",
+    method: "post",
+    path: "/v1/item-sign-ins",
+    tags: ["items"],
+    summary: "Sign in",
+    description: "Signs in.",
+    body: Body,
+    output: Item,
+    permission: "none",
+    session: "flow",
+    tool: "Signs in.",
+    writes: true,
+  });
+
+  it("takes no idempotency key, has no company, and is refused only by its input and its rules", () => {
+    expect(signIn.request.headers).toBeUndefined();
+    expect(takesIdempotencyKey(signIn)).toBe(false);
+    expect(signIn["x-nortfox"]).toMatchObject({ permission: "none", session: "flow", company: "none", writes: true });
+    expect(statuses(signIn)).toEqual(["200", "400", "413", "415", "422", "500"]);
+  });
+
+  it("is refused by a rule also when it only reads, such as a link that has ended", () => {
+    const readLink = defineOperation({
+      id: "getItemLink",
+      method: "get",
+      path: "/v1/item-links",
+      tags: ["items"],
+      summary: "Read a link",
+      description: "Reads a link.",
+      output: Item,
+      permission: "none",
+      session: "flow",
+      tool: "Reads a link.",
+      writes: false,
+    });
+    expect(statuses(readLink)).toEqual(["200", "400", "422", "500"]);
+  });
+});
+
+describe("a signed-in operation", () => {
+  const endSession = defineOperation({
+    id: "endItemSession",
+    method: "post",
+    path: "/v1/item-session-ends",
+    tags: ["items"],
+    summary: "End",
+    description: "Ends.",
+    output: NoBody,
+    status: 204,
+    permission: "signed-in",
+    session: "flow",
+    tool: "Ends.",
+    writes: true,
+  });
+
+  it("takes an idempotency key when it writes, works in no company, and can be refused for its actor", () => {
+    expect(takesIdempotencyKey(endSession)).toBe(true);
+    expect(endSession.request.headers?.shape[IDEMPOTENCY_KEY_HEADER]).toBeDefined();
+    expect(endSession["x-nortfox"]).toMatchObject({ permission: "signed-in", session: "flow", company: "none" });
+    expect(statuses(endSession)).toEqual(["204", "400", "401", "403", "409", "422", "500"]);
+  });
+
+  it("takes a company source of its own", () => {
+    const inCompany = defineOperation({
+      id: "readItemCompany",
+      method: "get",
+      path: "/v1/item-companies",
+      tags: ["items"],
+      summary: "Read",
+      description: "Reads.",
+      output: Item,
+      permission: "test:read",
+      company: "none",
+      tool: "Reads.",
+      writes: false,
+    });
+    expect(inCompany["x-nortfox"].company).toBe("none");
   });
 });
 
@@ -174,6 +380,8 @@ describe("defineListOperation", () => {
       assistant: false,
       writes: false,
       list: true,
+      session: null,
+      company: "credential",
     });
     const query = querySchema(list);
     expect(Object.keys(query?.shape ?? {})).toEqual(["name", "limit", "cursor"]);

@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// The cookies of a browser's sign-in (docs/decisions/0008-authentication.md).
+// A handler of an operation that serves the browser's session gives its
+// cookies as effects beside its output; the runner passes them on, and only
+// /v1 writes them as Set-Cookie headers. No answer body ever holds what a
+// cookie holds.
+//
+// - __Host-nortfox-session holds the session's token. It has no Max-Age, so
+//   it ends with the browser too.
+// - __Host-nortfox-device holds the known device's token, for 400 days, the
+//   most a browser keeps a cookie.
+// - __Host-nortfox-login binds a sign-in that leaves the site and comes back,
+//   for 10 minutes. It is SameSite=Lax, since an identity provider brings the
+//   browser back with a top-level GET, which a Strict cookie does not follow.
+//
+// Each is HttpOnly and Secure with Path=/ and no Domain: the __Host- prefix
+// makes a browser refuse it otherwise.
+
+/** What a handler asks of the browser's cookies. */
+export type CookieEffect =
+  | { readonly kind: "set-session"; readonly token: string }
+  | { readonly kind: "clear-session" }
+  | { readonly kind: "set-device"; readonly token: string }
+  | { readonly kind: "set-login"; readonly token: string }
+  | { readonly kind: "clear-login" };
+
+export const SESSION_COOKIE = "__Host-nortfox-session";
+export const DEVICE_COOKIE = "__Host-nortfox-device";
+export const LOGIN_COOKIE = "__Host-nortfox-login";
+
+/** 400 days in seconds: the longest a browser keeps a cookie. */
+const DEVICE_MAX_AGE = 400 * 24 * 60 * 60;
+
+/** 10 minutes in seconds: as long as a sign-in may take away from the site. */
+const LOGIN_MAX_AGE = 10 * 60;
+
+/** A value a cookie carries as it is: the base64url of NortFox's tokens and their prefix. */
+const VALUE = /^[A-Za-z0-9_-]{1,512}$/;
+
+function cookie(name: string, value: string, maxAge: number | undefined, sameSite: "Strict" | "Lax"): string {
+  if (value !== "" && !VALUE.test(value)) {
+    throw new Error("A cookie's value is 1 to 512 characters of letters, digits, - and _.");
+  }
+  const age = maxAge === undefined ? "" : `; Max-Age=${String(maxAge)}`;
+  return `${name}=${value}; Path=/${age}; Secure; HttpOnly; SameSite=${sameSite}`;
+}
+
+/** A value that a cookie may hold: never empty. Clearing a cookie is an effect of its own. */
+function value(token: string): string {
+  if (token === "") {
+    throw new Error("A cookie's value is 1 to 512 characters of letters, digits, - and _.");
+  }
+  return token;
+}
+
+/** The Set-Cookie header of an effect. */
+export function setCookieHeader(effect: CookieEffect): string {
+  switch (effect.kind) {
+    case "set-session":
+      return cookie(SESSION_COOKIE, value(effect.token), undefined, "Strict");
+    case "clear-session":
+      return cookie(SESSION_COOKIE, "", 0, "Strict");
+    case "set-device":
+      return cookie(DEVICE_COOKIE, value(effect.token), DEVICE_MAX_AGE, "Strict");
+    case "set-login":
+      return cookie(LOGIN_COOKIE, value(effect.token), LOGIN_MAX_AGE, "Lax");
+    case "clear-login":
+      return cookie(LOGIN_COOKIE, "", 0, "Lax");
+  }
+}

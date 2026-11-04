@@ -12,13 +12,13 @@ import { Money, PERMISSIONS, REGISTRY, defineListOperation, defineOperation, mon
 import type { Client } from "pg";
 import { Pool } from "pg";
 import { z } from "zod";
-import type { ContextResolver, Principal } from "../src/api/context.ts";
+import type { CompanyAccess, ContextResolver, Principal, PrincipalKind } from "../src/api/context.ts";
 import { KeysInFlight } from "../src/api/idempotency.ts";
 import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps } from "../src/api/operation.ts";
 import { assertV1Routes } from "../src/api/route-guard.ts";
 import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
 import { connectionConfig } from "../src/db/connect.ts";
-import { databaseOver, type ActorKind, type Database } from "../src/db/database.ts";
+import { databaseOver, type Database } from "../src/db/database.ts";
 import { serverHandlers } from "../src/handlers.ts";
 import { urlOf } from "./cluster.ts";
 import { inTransaction, type TestDatabase } from "./database.ts";
@@ -160,7 +160,7 @@ export async function untilAtGate(held: Gate, running: Promise<unknown>): Promis
  * the rest, such as the period lock.
  */
 export function testBookVoucherHandler(controls: BookingControls = bookingControls()): Handler {
-  return handleData(testBookVoucher, async ({ context, tx }, { body }) => {
+  return handleData(testBookVoucher, async ({ context: { company }, tx }, { body }) => {
     const amount = moneyToOre(body.amount);
     if (amount <= 0n) {
       return refused({
@@ -174,7 +174,7 @@ export function testBookVoucherHandler(controls: BookingControls = bookingContro
       `INSERT INTO ledger.vouchers (company_id, fiscal_year_id, series_code, description, transaction_date, reference_type)
        SELECT $1, id, 'A', $2, $3, 'MANUAL' FROM ledger.fiscal_years WHERE $3::date BETWEEN from_date AND to_date
        RETURNING id, number`,
-      [context.companyId, body.description, BOOKING_DATE],
+      [company.companyId, body.description, BOOKING_DATE],
     );
     const [voucher] = vouchers.rows;
     if (voucher === undefined) {
@@ -182,10 +182,10 @@ export function testBookVoucherHandler(controls: BookingControls = bookingContro
     }
     const debit = await tx.query<{ debit: bigint }>(
       "INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, debit) VALUES ($1, $2, 6110, $3) RETURNING debit",
-      [context.companyId, voucher.id, amount],
+      [company.companyId, voucher.id, amount],
     );
     await tx.query("INSERT INTO ledger.voucher_rows (company_id, voucher_id, account_number, credit) VALUES ($1, $2, 1930, $3)", [
-      context.companyId,
+      company.companyId,
       voucher.id,
       amount,
     ]);
@@ -213,21 +213,39 @@ export function testHandlers(controls: BookingControls = bookingControls(), vers
   return [...serverHandlers(version), testBookVoucherHandler(controls), testListAccountsHandler];
 }
 
-/** What the runner needs, for a test that calls it directly: the database, the cursor key and a set of keys in flight of its own. */
+/** The clock of the runner in a test that calls it directly. */
+export const TEST_NOW = new Date("2090-03-15T10:00:00.000Z");
+
+/** What the runner needs, for a test that calls it directly: the database, the cursor key, a set of keys in flight of its own and a fixed clock. */
 export function runnerDeps(database: Database): RunnerDeps {
-  return { database, cursorKey: CURSOR_KEY, keysInFlight: new KeysInFlight() };
+  return { database, cursorKey: CURSOR_KEY, keysInFlight: new KeysInFlight(), now: () => TEST_NOW };
+}
+
+/** Who a test principal is: its person, its kind and, in a company, its permissions. */
+export interface PrincipalOptions {
+  readonly personId?: string;
+  readonly kind?: PrincipalKind;
+  readonly permissions?: readonly string[];
+}
+
+/**
+ * A signed-in person with no company: a user, unless the options say
+ * otherwise. Its credential is a session that only the test knows; the
+ * test's resolver hands it out for a bearer token.
+ */
+export function personOf(options: Omit<PrincipalOptions, "permissions"> = {}): Principal {
+  return {
+    personId: options.personId ?? randomUUID(),
+    actorKind: options.kind ?? "user",
+    credential: { kind: "session", sessionId: randomUUID() },
+  };
 }
 
 /** A principal in `companyId`: an integration with every permission, unless the options say otherwise. */
-export function principalOf(
-  companyId: string,
-  options: { readonly actorId?: string; readonly kind?: ActorKind; readonly permissions?: readonly string[] } = {},
-): Principal {
+export function principalOf(companyId: string, options: PrincipalOptions = {}): Principal & { readonly company: CompanyAccess } {
   return {
-    companyId,
-    actorId: options.actorId ?? randomUUID(),
-    actorKind: options.kind ?? "integration",
-    permissions: new Set(options.permissions ?? ALL_PERMISSIONS),
+    ...personOf({ kind: options.kind ?? "integration", ...(options.personId === undefined ? {} : { personId: options.personId }) }),
+    company: { companyId, permissions: new Set(options.permissions ?? ALL_PERMISSIONS) },
   };
 }
 

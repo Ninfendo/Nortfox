@@ -15,7 +15,17 @@ import { urlOf } from "../../test/cluster.ts";
 import { UNIQUE_VIOLATION, failureOf, freshDatabase, inTransaction, type TestDatabase } from "../../test/database.ts";
 import { INSERT_ROW, INSERT_VOUCHER, addBooks, type Books } from "../../test/ledger.ts";
 import { connectionConfig } from "./connect.ts";
-import { commit, createDatabase, databaseOver, rollBack, type Database, type Queryable, type TransactionSettings } from "./database.ts";
+import {
+  commit,
+  createDatabase,
+  databaseOver,
+  rollBack,
+  type ActorKind,
+  type Channel,
+  type Database,
+  type Queryable,
+  type TransactionSettings,
+} from "./database.ts";
 import { readRefusal } from "./refusals.ts";
 
 /** PostgreSQL's SQLSTATE for a write in a READ ONLY transaction, and for a backend that an administrator ended. */
@@ -80,12 +90,12 @@ describe("one transaction per request", () => {
     return { pool, database: databaseOver(pool, (error) => errors.push(error)), errors };
   }
 
-  function settingsOf(kind: TransactionSettings["actorKind"] = "integration", channel: TransactionSettings["channel"] = "rest"): TransactionSettings {
+  function settingsOf(kind: ActorKind = "integration", channel: Channel = "rest"): TransactionSettings {
     return { companyId: books.company, actorId: randomUUID(), actorKind: kind, channel };
   }
 
   function seenAs(settings: TransactionSettings): Omit<Seen, "pid"> {
-    return { company: settings.companyId, actor: settings.actorId, kind: settings.actorKind, channel: settings.channel };
+    return { company: settings.companyId ?? "", actor: settings.actorId ?? "", kind: settings.actorKind ?? "", channel: settings.channel };
   }
 
   /** The transaction's level and whether it is read only. */
@@ -133,6 +143,20 @@ describe("one transaction per request", () => {
     // The company's rows, and only through row level security: no condition of the work's own.
     const companies = await database.read(settingsOf(), async (tx) => commit((await tx.query("SELECT company_id FROM ledger.companies")).rows));
     expect(companies).toEqual([{ company_id: books.company }]);
+  });
+
+  it("sets only what its form names: a person's transaction no company, an anonymous one only the channel", async () => {
+    const { database } = poolOf(1);
+    const person: TransactionSettings = { actorId: randomUUID(), actorKind: "user", channel: "rest" };
+    const anonymous: TransactionSettings = { channel: "rest" };
+    for (const settings of [person, anonymous]) {
+      expect(await database.read(settings, async (tx) => commit(await seenBy(tx)))).toMatchObject(seenAs(settings));
+      expect(await database.write(settings, async (tx) => commit(await seenBy(tx)))).toMatchObject(seenAs(settings));
+    }
+    expect(seenAs(person)).toEqual({ company: "", actor: person.actorId, kind: "user", channel: "rest" });
+    expect(seenAs(anonymous)).toEqual({ company: "", actor: "", kind: "", channel: "rest" });
+    // With no company set, row level security shows no company's rows.
+    expect(await database.read(person, async (tx) => commit((await tx.query("SELECT company_id FROM ledger.companies")).rows))).toEqual([]);
   });
 
   it("runs a read at REPEATABLE READ READ ONLY and a write at READ COMMITTED, whatever the connection's defaults", async () => {

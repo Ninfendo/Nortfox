@@ -103,7 +103,7 @@
           },
           "pointer": {
             "type": "string",
-            "description": "A JSON Pointer to the field in the operation's input: the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.",
+            "description": "A JSON Pointer to the field in the operation's input: the path parameters, the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.",
             "examples": [
               "/amount/amount"
             ]
@@ -172,7 +172,9 @@
           "tool": "Checks that the NortFox server is up, and gives its version. It reads no data.",
           "assistant": false,
           "writes": false,
-          "list": false
+          "list": false,
+          "session": null,
+          "company": "none"
         },
         "responses": {
           "200": {
@@ -221,7 +223,9 @@
           "tool": "Gives the company you work in: its id, name, organisation number and database number. Every other tool works in this company too.",
           "assistant": true,
           "writes": false,
-          "list": false
+          "list": false,
+          "session": null,
+          "company": "credential"
         },
         "responses": {
           "200": {
@@ -263,7 +267,7 @@
             }
           },
           "403": {
-            "description": "The actor lacks the permission the operation needs.",
+            "description": "The request may not call the operation: the actor lacks its permission, or the credential names no company.",
             "content": {
               "application/problem+json": {
                 "schema": {

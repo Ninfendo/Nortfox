@@ -14,14 +14,32 @@ The compatible API, which follows the established system's API so that an existi
 Each operation is one entry in the registry in `packages/contract` ([decision 3](decisions/0003-contract-first-rest-and-mcp.md)). An entry declares:
 
 - its id, which is also the MCP tool's name and the client's method name;
-- its method and its path under `/v1`;
-- the shapes of its input and its output;
-- the permission it needs, or `public` for an operation that reads no data;
+- its method and its path under `/v1`, with each path parameter as `{name}`;
+- the shapes of its input and its output, and its success status;
+- who may call it (`permission`);
 - the text of its MCP tool;
 - whether it writes;
-- whether the AI assistant may call it. An operation is closed to the assistant unless it says otherwise.
+- whether it is a list;
+- whether the AI assistant may call it. An operation is closed to the assistant unless it says otherwise;
+- whether it serves the browser's session (`session`);
+- where its company comes from (`company`).
 
 `openapi.json` shows these facts on each operation, under `x-nortfox`. So the diff of `openapi.json` in a pull request shows a reviewer every change, a changed permission too.
+
+### The marks
+
+| Mark | Value | Meaning |
+| --- | --- | --- |
+| `permission` | `public` | Reads and writes no data. Anyone may call it, and it never asks for an actor. |
+| | `none` | Runs before there is an actor, such as a sign-in. Anyone may call it. It serves the browser's session, and it takes no idempotency key. |
+| | `signed-in` | Needs a signed-in person, and no permission in a company. |
+| | a permission, such as `company:read` | Needs that permission in the credential's company. |
+| `session` | `flow` | Serves the browser's session, such as a sign-in or a logout. Its MCP tool refuses every call. |
+| | `null` | Any other operation. |
+| `company` | `none` | Works in no company: every `public`, `none` and `signed-in` operation. |
+| | `credential` | Works in the company that the request's credential names: every operation with a permission. |
+
+The registry guard holds these together. An operation that runs before sign-in serves the browser's session. Only a `none` or a `signed-in` operation may serve it. An operation with a permission takes its company from the credential, and no other operation does. A write takes an idempotency key, unless it runs before sign-in. A `GET` writes only when it runs before sign-in and answers 303. Two operations of one method never answer the same path, so `/v1/users/{userId}` and `/v1/users/me` cannot both be `GET`.
 
 The server serves only what the registry holds. It refuses to start when a route under `/v1` is not in the registry.
 
@@ -34,21 +52,35 @@ Field names are camelCase. An answer is the object itself, with no wrapper aroun
 
 ## Who acts
 
-Every operation that is not `public` acts as one actor in one company. The company comes from the request's credential, never from the path or the body. A path holds no company id.
+Every operation with a permission acts as one actor in one company. The company comes from the request's credential, never from the path or the body. A path holds no company id. A `signed-in` operation acts as the signed-in person in no company. A `none` operation runs before there is an actor.
 
-The credential goes in the `Authorization` header. Login and API tokens come in slice 2c. Until then the server knows no actor: every operation that reads or writes data answers 401, by REST with the challenge `WWW-Authenticate: Bearer`, and by MCP in a tool result marked `isError`. `GET /v1/health` and `/openapi.json` need no actor.
+Login and API tokens come in slice 2c. Until its sessions are built the server knows no actor: every operation that needs one answers 401, by REST with the challenge `WWW-Authenticate: Bearer`, and by MCP in a tool result marked `isError`. `GET /v1/health` and `/openapi.json` need no actor.
 
-The server checks the actor and the permission before it reads the rest of the request: on REST before the query and the body, on MCP before the tool's arguments. So a request with no actor gets 401, and an actor without the permission gets 403, even when the rest of the request is wrong. Neither touches the database.
+The server checks the actor and the permission before it reads the rest of the request: on REST before the path parameters, the query and the body, on MCP before the tool's arguments. So a request with no actor gets 401, a credential that names no company gets 403 `company-required` for an operation that works in a company, and an actor without the permission gets 403 `permission-missing`, even when the rest of the request is wrong. None of them touches the database.
 
-Each request runs in one database transaction, with the company, the actor, the actor's kind (`user`, `system` or `integration`) and the channel (`rest` or `mcp`) set for that transaction only. A read sees one snapshot, so a page and its total agree. The behandlingshistorik records the actor, its kind and the channel of every change ([db/README.md](../db/README.md)).
+Each request runs in one database transaction, with the company, the actor, the actor's kind (`user`, `system` or `integration`) and the channel (`rest` or `mcp`) set for that transaction only. A `signed-in` operation's transaction sets no company. A `none` operation opens its own transactions. A read sees one snapshot, so a page and its total agree. The behandlingshistorik records the actor, its kind and the channel of every change ([db/README.md](../db/README.md)).
 
 ## Requests on `/v1`
 
 - Paths and names are case-sensitive. A path has no trailing slash. An unknown path gets 404 `not-found`. A known path with another method gets 405 `method-not-allowed`, with the methods it takes in `Allow`.
+- A path parameter is one segment of the path, such as the id in `/v1/users/{userId}`. Its value is checked like any field: a bad one is a field problem at `/userId`.
 - A query parameter that the operation does not declare is refused, and so is a parameter given twice.
 - A body is JSON in UTF-8, sent as `application/json`. Another media type gets 415 `unsupported-media-type`. A body that does not parse gets 400 `malformed-json`. A body over 1 MiB gets 413 `payload-too-large`.
 - A body field that the operation does not declare is refused, at any depth.
-- A success answers 200, or 201 for an operation that creates something, with plain JSON.
+
+## Answers on `/v1`
+
+| Status | When | Body |
+| --- | --- | --- |
+| 200 | Most successes. | Plain JSON. |
+| 201 | An operation that creates something. | Plain JSON. |
+| 202 | An operation whose work goes on after the answer. | None. |
+| 204 | An operation that has nothing to answer, such as a removal. | None. |
+| 303 | A `GET` that runs before sign-in and sends the browser on, such as to an identity provider. | The `Location` header, and the same location as JSON: `{ "location": "..." }`. |
+
+- Every answer carries `Cache-Control: no-store`, a problem too, since it may hold the request's own data.
+- An operation that serves the browser's session may set or clear its cookies with `Set-Cookie`. No answer body holds what a cookie holds.
+- On MCP, an answer with no body is an empty object.
 
 ## Money
 
@@ -96,8 +128,9 @@ Every error on `/v1` is problem details (RFC 9457), as `application/problem+json
 
 ### Pointers
 
-A pointer is a JSON Pointer (RFC 6901), in its string form, into the operation's flat input. The flat input is one object with the query parameters, the body's fields and, for a write, `idempotencyKey`. It is the same object that the operation's MCP tool takes. So:
+A pointer is a JSON Pointer (RFC 6901), in its string form, into the operation's flat input. The flat input is one object with the path parameters, the query parameters, the body's fields and, for a write, `idempotencyKey`. It is the same object that the operation's MCP tool takes. So:
 
+- `/userId` is the path parameter `userId`;
 - `/limit` is the query parameter `limit`;
 - `/amount/amount` is the field `amount` inside the body field `amount`;
 - `/idempotencyKey` is the `Idempotency-Key` header on REST and the argument on MCP;
@@ -112,8 +145,10 @@ The registry keeps the names apart, so a pointer is never ambiguous. The same re
 | 400 | `invalid-request` | The request does not fit the operation. `errors` says where. |
 | 400 | `malformed-json` | The body is not JSON in UTF-8. |
 | 401 | `authentication-required` | The request names no actor. |
+| 403 | `company-required` | The operation works in a company, and the request's credential names none. |
 | 403 | `permission-missing` | The actor lacks the operation's permission. |
 | 403 | `origin-not-allowed` | A request to `/mcp` from a browser origin that may not call it. |
+| 403 | `browser-only` | An MCP call of an operation that serves the browser's session. |
 | 404 | `not-found` | No operation has the path. |
 | 405 | `method-not-allowed` | The path takes another method. |
 | 409 | `idempotency-key-in-use` | Another request with the same idempotency key is still running. |
@@ -144,13 +179,13 @@ The rules of the ledger live in the database. When one refuses a request, the an
 
 ## Writes and idempotency keys
 
-A write takes an idempotency key: the `Idempotency-Key` header on REST, and the `idempotencyKey` argument on MCP. A key is 1 to 255 characters of visible ASCII without `"` and `\`, such as a random UUID. The header takes the key bare or in double quotes, as the IETF draft writes it.
+A write takes an idempotency key: the `Idempotency-Key` header on REST, and the `idempotencyKey` argument on MCP. A key is 1 to 255 characters of visible ASCII without `"` and `\`, such as a random UUID. The header takes the key bare or in double quotes, as the IETF draft writes it. A write that runs before sign-in takes no key, since there is no actor to keep it for.
 
-- The same key with the same request gives the first answer again, and nothing is written twice.
-- The same key with another request gets 422 `idempotency-key-reused`. Another operation, another body or another query is another request, and so is `"1.5"` beside `"1.50"`.
+- The same key with the same request gives the first answer again, and nothing is written twice. An answer without a body is given again with no body.
+- The same key with another request gets 422 `idempotency-key-reused`. Another operation, another path parameter, another body or another query is another request, and so is `"1.5"` beside `"1.50"`.
 - A request whose key a running request holds gets 409 `idempotency-key-in-use`, and writes nothing. Send it again once the first has ended.
 - A write with no key gets 400, with the field problem `idempotency-key-missing` at `/idempotencyKey`. A key that is not a key gets `idempotency-key-invalid` there.
-- Keys belong to one company and one actor. The same key in another company, or from another actor, is another key.
+- Keys belong to one company and one actor. The same key in another company, or from another actor, is another key. A signed-in person's write that works in no company keeps its keys for the person alone.
 - The key and the first answer are stored in the write's own transaction. A write that is refused or fails stores no key, so a retry with the key runs again.
 - REST and MCP share the keys: the same input by either gives the same answer.
 - Keys do not expire yet.
@@ -175,11 +210,13 @@ A list takes `limit` and `cursor`, and answers its items, `nextCursor` while mor
 `tools/list` lists exactly the registry, in its order:
 
 - the tool's `name` is the operation's id, its `title` the operation's summary, and its `description` the operation's tool text;
-- its `inputSchema` is the flat input as one strict JSON Schema object: the query parameters, the body's fields and, for a write, the required `idempotencyKey`;
-- its `outputSchema` is the REST answer's shape;
+- its `inputSchema` is the flat input as one strict JSON Schema object: the path parameters, the query parameters, the body's fields and, for a write, the required `idempotencyKey`;
+- its `outputSchema` is the REST answer's shape, and an empty object for an operation that answers with no body;
 - `annotations.readOnlyHint` is true for an operation that does not write.
 
 A tool call answers the same JSON as the REST call, as structured content and as the same JSON in one text block. A refusal answers the same problem details as `/v1`, in a result marked `isError`. A tool name that the registry does not hold is a protocol error. Each tool call is one request, with one transaction and the same rules as REST.
+
+The tool of an operation that serves the browser's session, such as a sign-in, is listed like any other, and refuses every call with 403 `browser-only` before it reads an argument. An MCP client signs in through OAuth instead.
 
 The arguments take JSON's own types: on MCP, `limit` is a JSON number, and the key is the argument as it is, without the header's quotes.
 

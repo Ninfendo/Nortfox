@@ -11,17 +11,27 @@ export {
 export { CURRENCIES, Money, ORE_MAX, ORE_MIN, moneyToOre, oreToMoney } from "./money.ts";
 export type { Currency } from "./money.ts";
 export {
+  COMPANY_SOURCES,
   METHODS,
+  NONE,
+  NoBody,
+  OPEN_PERMISSIONS,
   PERMISSIONS,
   PUBLIC,
+  Redirect,
+  SIGNED_IN,
+  SUCCESS_STATUSES,
   bodySchema,
   defineListOperation,
   defineOperation,
   outputSchema,
+  paramsSchema,
   querySchema,
   successStatus,
+  takesIdempotencyKey,
 } from "./operation.ts";
 export type {
+  CompanySource,
   JsonBody,
   ListDefinition,
   ListQuery,
@@ -31,7 +41,9 @@ export type {
   OperationMeta,
   OperationRequest,
   Permission,
+  SessionMark,
   Shape,
+  SuccessStatus,
 } from "./operation.ts";
 export { Company, getCompany } from "./operations/companies.ts";
 export { Health, getHealth } from "./operations/status.ts";

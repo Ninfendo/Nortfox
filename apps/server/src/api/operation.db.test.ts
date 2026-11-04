@@ -28,9 +28,9 @@ import {
 } from "../../test/api.ts";
 import { failureOf, freshDatabase, inTransaction, type TestDatabase } from "../../test/database.ts";
 import { addBooks, addCompany, type Books } from "../../test/ledger.ts";
-import type { ActorKind, Database } from "../db/database.ts";
+import type { Database } from "../db/database.ts";
 import { getCompanyHandler } from "../modules/companies/get-company.ts";
-import type { RequestContext } from "./context.ts";
+import type { PrincipalKind, RequestContext } from "./context.ts";
 import { handleData, ok, runOperation, type OperationCall } from "./operation.ts";
 
 /** PostgreSQL's SQLSTATE for a write in a READ ONLY transaction. */
@@ -89,7 +89,7 @@ describe("the runner's read path", () => {
     company = await addCompany(app);
     broken = await addCompany(app);
     // A row whose organisation number has a form the output's schema refuses.
-    await inTransaction(app, { company: broken, actor: principalOf(broken).actorId, kind: "user" }, () =>
+    await inTransaction(app, { company: broken, actor: principalOf(broken).personId, kind: "user" }, () =>
       app.query("UPDATE ledger.companies SET organization_number = 'saknas'"),
     );
     pool = appPool(db, 1);
@@ -110,7 +110,7 @@ describe("the runner's read path", () => {
     expect(outcome).toEqual({
       ok: true,
       status: 200,
-      output: { level: "repeatable read", readOnly: "on", company, actor: context.actorId, kind: "user", channel: "rest" },
+      output: { level: "repeatable read", readOnly: "on", company, actor: context.personId, kind: "user", channel: "rest" },
     });
   });
 
@@ -211,7 +211,7 @@ describe("the runner's write path", () => {
     return ok(found.rows[0] ?? { level: "", readOnly: "", company: "", actor: "", kind: "", channel: "" });
   });
 
-  function contextOf(kind: ActorKind): RequestContext {
+  function contextOf(kind: PrincipalKind): RequestContext {
     return { ...principalOf(books.company, { kind }), channel: "rest" };
   }
 
@@ -221,7 +221,7 @@ describe("the runner's write path", () => {
     expect(outcome).toEqual({
       ok: true,
       status: 200,
-      output: { level: "read committed", readOnly: "off", company: books.company, actor: context.actorId, kind: "integration", channel: "rest" },
+      output: { level: "read committed", readOnly: "off", company: books.company, actor: context.personId, kind: "integration", channel: "rest" },
     });
   });
 

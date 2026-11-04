@@ -6,7 +6,8 @@
 // says what went wrong. The texts are English until packages/i18n comes in
 // slice 2d. A field problem leaves out the value received, so an answer
 // never echoes its input; the runner's refusal keeps it for a surface that
-// names it in its own message.
+// names it in its own message. Every problem answer carries
+// Cache-Control: no-store, as every /v1 answer does.
 
 import type { FieldIssue, FieldProblem, Problem, ProblemCode } from "@nortfox/contract";
 import type { Refusal } from "./operation.ts";
@@ -37,13 +38,16 @@ const TITLES: Readonly<Record<Status, string>> = {
   500: "Internal Server Error",
 };
 
-const CONTENT_TYPE = { "Content-Type": PROBLEM_CONTENT_TYPE };
+/** Every /v1 answer may hold the request's own data, so no cache keeps it. */
+export const NO_STORE = { "Cache-Control": "no-store" } as const;
+
+const PROBLEM_HEADERS = { "Content-Type": PROBLEM_CONTENT_TYPE, ...NO_STORE };
 
 function answer(status: Status, code: string, detail: string, extra: Partial<Problem> = {}, headers: Readonly<Record<string, string>> = {}): ProblemAnswer {
   return {
     status,
     body: { type: "about:blank", title: TITLES[status], status, detail, code, ...extra },
-    headers: { ...CONTENT_TYPE, ...headers },
+    headers: { ...PROBLEM_HEADERS, ...headers },
   };
 }
 
@@ -63,6 +67,8 @@ const CODES = {
   malformed: "malformed-json",
   authentication: "authentication-required",
   permission: "permission-missing",
+  company: "company-required",
+  browserOnly: "browser-only",
   notFound: "not-found",
   method: "method-not-allowed",
   keyInUse: "idempotency-key-in-use",
@@ -84,6 +90,8 @@ export function problemOf(refusal: Refusal): ProblemAnswer {
         {},
         { "WWW-Authenticate": "Bearer" },
       );
+    case "company-required":
+      return answer(403, CODES.company, "The operation works in a company, and the request's credential names none. Choose a company first.");
     case "permission-missing":
       return answer(403, CODES.permission, `The actor lacks the permission ${refusal.permission}, which this operation needs.`, {
         permission: refusal.permission,
@@ -132,6 +140,11 @@ export function methodNotAllowed(allow: readonly string[]): ProblemAnswer {
 /** The answer to a request to /mcp from a browser origin that may not call it. */
 export function originNotAllowed(): ProblemAnswer {
   return answer(403, CODES.origin, "The Origin header names a site that may not call /mcp. A program that is not a browser sends no Origin.");
+}
+
+/** The answer to an MCP call of an operation that serves the browser's session. */
+export function browserOnly(): ProblemAnswer {
+  return answer(403, CODES.browserOnly, "This operation serves the browser's sign-in. An MCP client signs in through OAuth.");
 }
 
 /** The answer to an error the server did not expect: nothing of the error reaches it. */

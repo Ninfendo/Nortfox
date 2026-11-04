@@ -24,19 +24,24 @@
 //    registry: the tool name is the operation id, the title its summary, the
 //    description its tool text, and the input and output schemas the
 //    contract's (tool-schema.ts). tools/call of an unknown name is a protocol
-//    error. For a known one, the actor and the permission are checked before
-//    any argument is read, as on /v1.
-// 4. The arguments are the operation's flat input: a query field goes to the
-//    query, idempotencyKey to a write's key, and every other argument to the
-//    body, or to the query of an operation without a body, where the
-//    operation's strict schema names it as an unknown field. Then the runner
-//    runs the call with the channel mcp and, for a write, the key as the
-//    caller sent it.
+//    error. A tool of an operation that serves the browser's session, such
+//    as a sign-in, refuses every call with 403 browser-only before any
+//    argument is read: an MCP client signs in through OAuth. For any other
+//    tool, the actor and the permission are checked before any argument is
+//    read, as on /v1.
+// 4. The arguments are the operation's flat input: a path parameter goes to
+//    the path parameters, a query field to the query, idempotencyKey to a
+//    write's key, and every other argument to the body, or to the query of an
+//    operation without a body, where the operation's strict schema names it
+//    as an unknown field. Then the runner runs the call with the channel mcp
+//    and, for a write, the key as the caller sent it.
 //
 // A tool call answers the same JSON as the REST call, as structured content
-// and as text. A refusal, and an error the server did not expect, answer the
-// same problem details as /v1, in a result marked isError. Every structured
-// content is an object, which both eras carry as it is.
+// and as text, and an empty object for an operation that answers with no
+// body. A refusal, and an error the server did not expect, answer the same
+// problem details as /v1, in a result marked isError. Every structured
+// content is an object, which both eras carry as it is. Work that a handler
+// queued for after its answer is released once the result is built.
 //
 // The SDK's low-level server is used, not McpServer's registerTool, because
 // registerTool checks the arguments itself and answers a bad one with its
@@ -53,11 +58,19 @@ import {
   type CallToolResult,
   type Tool,
 } from "@modelcontextprotocol/server";
-import { IDEMPOTENCY_KEY_ARGUMENT, bodySchema, querySchema, toolInputSchema, toolOutputSchema } from "@nortfox/contract";
+import {
+  IDEMPOTENCY_KEY_ARGUMENT,
+  bodySchema,
+  paramsSchema,
+  querySchema,
+  takesIdempotencyKey,
+  toolInputSchema,
+  toolOutputSchema,
+} from "@nortfox/contract";
 import type { Hono } from "hono";
 import type { Principal, RequestContext } from "./context.ts";
 import { authorize, runOperation, type Handler, type Outcome } from "./operation.ts";
-import { internalError, originNotAllowed, problemOf } from "./problem.ts";
+import { browserOnly, internalError, originNotAllowed, problemOf } from "./problem.ts";
 import { BODY_LIMIT, problemResponse, type V1Deps, type V1Env } from "./v1.ts";
 
 /** Where the app serves MCP. */
@@ -94,13 +107,16 @@ export function callerPrincipal(authInfo: AuthInfo | undefined): Principal | und
   return authInfo.principal;
 }
 
-/** One tool: its operation's handler, its listing, and the names of its query's fields. */
+/** One tool: its operation's handler, its listing, and the names of its path parameters and its query's fields. */
 interface ServedTool {
   readonly handler: Handler;
   readonly tool: Tool;
+  readonly paramFields: ReadonlySet<string>;
   readonly queryFields: ReadonlySet<string>;
   readonly takesBody: boolean;
   readonly writes: boolean;
+  /** Whether its operation serves the browser's session, so its tool refuses every call. */
+  readonly browserOnly: boolean;
 }
 
 function servedTool(handler: Handler): ServedTool {
@@ -116,14 +132,17 @@ function servedTool(handler: Handler): ServedTool {
       outputSchema: { ...toolOutputSchema(operation), type: "object" },
       annotations: { readOnlyHint: !meta.writes },
     },
+    paramFields: new Set(Object.keys(paramsSchema(operation)?.shape ?? {})),
     queryFields: new Set(Object.keys(querySchema(operation)?.shape ?? {})),
     takesBody: bodySchema(operation) !== undefined,
-    writes: meta.writes,
+    writes: takesIdempotencyKey(operation),
+    browserOnly: meta.session === "flow",
   };
 }
 
-/** A call's arguments as the runner takes them: the query, the body and a write's key. */
+/** A call's arguments as the runner takes them: the path parameters, the query, the body and a write's key. */
 interface SplitArguments {
+  readonly params: Readonly<Record<string, unknown>>;
   readonly query: Readonly<Record<string, unknown>>;
   readonly body: unknown;
   readonly key: unknown;
@@ -135,11 +154,14 @@ interface SplitArguments {
  * field of its own, which the schema then names as unknown.
  */
 function splitArguments(served: ServedTool, args: Readonly<Record<string, unknown>>): SplitArguments {
+  const params: [string, unknown][] = [];
   const query: [string, unknown][] = [];
   const body: [string, unknown][] = [];
   let key: unknown;
   for (const [name, value] of Object.entries(args)) {
-    if (served.queryFields.has(name)) {
+    if (served.paramFields.has(name)) {
+      params.push([name, value]);
+    } else if (served.queryFields.has(name)) {
       query.push([name, value]);
     } else if (served.writes && name === IDEMPOTENCY_KEY_ARGUMENT) {
       key = value;
@@ -149,7 +171,12 @@ function splitArguments(served: ServedTool, args: Readonly<Record<string, unknow
       query.push([name, value]);
     }
   }
-  return { query: Object.fromEntries(query), body: served.takesBody ? Object.fromEntries(body) : undefined, key };
+  return {
+    params: Object.fromEntries(params),
+    query: Object.fromEntries(query),
+    body: served.takesBody ? Object.fromEntries(body) : undefined,
+    key,
+  };
 }
 
 /** A tool's answer: the JSON as structured content, and as text. */
@@ -158,23 +185,36 @@ function toolAnswer(structured: object, isError: boolean): CallToolResult {
   return isError ? { ...answer, isError: true } : answer;
 }
 
-/** Runs one tool call for the principal: authorize before any argument is read, then the runner. */
+/**
+ * Runs one tool call for the principal: the refusal of an operation that
+ * serves the browser's session, then authorize, both before any argument is
+ * read, then the runner.
+ */
 async function callTool(served: ServedTool, principal: Principal | undefined, args: Readonly<Record<string, unknown>>, deps: McpDeps): Promise<CallToolResult> {
   const { handler } = served;
+  if (served.browserOnly) {
+    return toolAnswer(browserOnly().body, true);
+  }
   const denied = authorize(handler.operation, principal);
   if (denied !== undefined) {
     return toolAnswer(problemOf(denied).body, true);
   }
-  const { query, body, key } = splitArguments(served, args);
+  const { params, query, body, key } = splitArguments(served, args);
   const context: RequestContext | undefined = principal === undefined ? undefined : { ...principal, channel: "mcp" };
-  let outcome: Outcome;
+  const batch = deps.afterAnswer.batch();
   try {
-    outcome = await runOperation(handler, { context, input: { query, body }, idempotency: served.writes ? { key } : "none" }, deps);
-  } catch (error) {
-    deps.report(error);
-    return toolAnswer(internalError().body, true);
+    let outcome: Outcome;
+    try {
+      const idempotency = served.writes ? { key } : "none";
+      outcome = await runOperation(handler, { context, input: { params, query, body }, idempotency, later: batch.later }, deps);
+    } catch (error) {
+      deps.report(error);
+      return toolAnswer(internalError().body, true);
+    }
+    return outcome.ok ? toolAnswer(outcome.output as object, false) : toolAnswer(problemOf(outcome.refusal).body, true);
+  } finally {
+    batch.release();
   }
-  return outcome.ok ? toolAnswer(outcome.output as object, false) : toolAnswer(problemOf(outcome.refusal).body, true);
 }
 
 /** The MCP server for one request of the principal: tools/list and tools/call over the served tools. */

@@ -23,6 +23,8 @@ describe("REGISTRY", () => {
           assistant: false,
           writes: false,
           list: false,
+          session: null,
+          company: "none",
         },
       ],
       [
@@ -35,6 +37,8 @@ describe("REGISTRY", () => {
           assistant: true,
           writes: false,
           list: false,
+          session: null,
+          company: "credential",
         },
       ],
     ]);

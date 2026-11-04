@@ -1,27 +1,48 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The request context: who acts, in which company, with which permissions,
-// and through which channel. Every operation that is not public acts as one
-// actor in one company (decision 8). The company comes from the request's
-// credential, never from its path or its body.
+// The request context: who acts, with which credential, in which company
+// with which permissions, and through which channel. An operation that needs
+// a permission acts as one person in one company (decision 8). The company
+// comes from the request's credential, never from its path or its body. An
+// operation that needs only a signed-in person works in no company.
 //
 // A resolver reads the credential from the request's headers and gives the
-// principal: the company, the actor, its kind and the permissions it holds,
-// or nothing when the request names no actor. It never reads the body. The
+// principal: the person, the actor's kind, the credential, and the company
+// with the permissions held there when the credential names one. It gives
+// nothing when the request names no actor. It never reads the body. The
 // surface adds the channel, since it knows whether the request came by REST
-// or by MCP. Login comes in slice 2c. Until then the server's resolver knows
-// no actor, so every data operation answers 401, and the tests pass their
-// own resolver. No setting turns on a fixed actor.
+// or by MCP. Until the sessions of slice 2c are built, the server's resolver
+// knows no actor, so every operation that needs one answers 401, and the
+// tests pass their own resolver. No setting turns on a fixed actor.
 
 import type { ActorKind, Channel } from "../db/database.ts";
 
+/** The kinds of actor a credential can name. A session acts as its user (decision 2); the system user is never a request's actor. */
+export type PrincipalKind = Exclude<ActorKind, "system">;
+
+/** A browser session, from the session cookie. API tokens and MCP tokens come later in slice 2c. */
+export interface SessionCredential {
+  readonly kind: "session";
+  readonly sessionId: string;
+}
+
+/** What the request's credential is. */
+export type Credential = SessionCredential;
+
+/** The company a request works in, and the permissions the person holds there. */
+export interface CompanyAccess {
+  readonly companyId: string;
+  readonly permissions: ReadonlySet<string>;
+}
+
 /** Who acts, as the request's credential says. */
 export interface Principal {
-  readonly companyId: string;
-  readonly actorId: string;
-  readonly actorKind: ActorKind;
-  /** The permissions the actor holds in the company. */
-  readonly permissions: ReadonlySet<string>;
+  /** The person: the identity's id, which is the actor's id. */
+  readonly personId: string;
+  readonly actorKind: PrincipalKind;
+  readonly credential: Credential;
+  /** The company the credential works in, when it names one. */
+  readonly company?: CompanyAccess;
 }
 
 /** The principal, and the channel the request came through. */
@@ -29,8 +50,13 @@ export interface RequestContext extends Principal {
   readonly channel: Channel;
 }
 
+/** The context of an operation that works in the credential's company. */
+export interface CompanyContext extends RequestContext {
+  readonly company: CompanyAccess;
+}
+
 /** Reads the principal from a request's headers, or gives undefined when the request names no actor. */
 export type ContextResolver = (request: Request) => Promise<Principal | undefined>;
 
-/** The server's resolver until slice 2c brings login: it knows no actor. */
+/** The server's resolver until the sessions of slice 2c are built: it knows no actor. */
 export const resolveNoActor: ContextResolver = () => Promise.resolve(undefined);

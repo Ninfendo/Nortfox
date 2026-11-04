@@ -161,7 +161,7 @@ describe("the channel in the behandlingshistorik", () => {
     try {
       const { hono } = buildTestApp({
         database: pool.database,
-        resolve: testResolver({ integration: principalOf(books.company, { actorId: actor, kind: "integration" }) }),
+        resolve: testResolver({ integration: principalOf(books.company, { personId: actor, kind: "integration" }) }),
       });
       let voucher = "";
       const written = await added(books.company, async () => {
@@ -200,7 +200,7 @@ describe("the channel in the behandlingshistorik", () => {
     try {
       const server = buildTestApp({
         database: pool.database,
-        resolve: testResolver({ user: principalOf(books.company, { actorId: actor, kind: "user" }) }),
+        resolve: testResolver({ user: principalOf(books.company, { personId: actor, kind: "user" }) }),
       });
       const client = await mcpClient(server, { token: "user" });
       let voucher = "";

@@ -6,6 +6,12 @@
 // fails here instead of turning into a wrong type or a missing method. Each
 // key of the document, of a path item and of an operation is one it reads,
 // one that only documents, or one it refuses.
+//
+// A method takes the operation's flat input as one object: the path
+// parameters, the query's fields and the body's fields. A write that takes an
+// idempotency key requires it as a call option. A method gives the JSON
+// answer, nothing for 202 and 204, and the location of a 303, which a program
+// reads and a browser follows itself.
 
 export class GeneratorError extends Error {
   override readonly name = "GeneratorError";
@@ -14,12 +20,19 @@ export class GeneratorError extends Error {
 type Json = Readonly<Record<string, unknown>>;
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-/** Every HTTP method a path item can hold. Only GET is supported yet. */
-const METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace", "query"]);
+/** The methods the generator writes, in the order it writes those of one path. */
+const SUPPORTED_METHODS = ["get", "put", "post", "delete", "patch"] as const;
+/** Every HTTP method a path item can hold. */
+const METHODS = new Set([...SUPPORTED_METHODS, "options", "head", "trace", "query"]);
 
 /** The keys the generator reads or that only document. Any other key is refused. */
 const DOCUMENT_KEYS = new Set(["openapi", "info", "components", "paths", "webhooks", "tags", "externalDocs"]);
-const PATH_ITEM_KEYS = new Set(["get", "summary", "description"]);
+const PATH_ITEM_KEYS = new Set([...SUPPORTED_METHODS, "summary", "description"]);
+const PARAMETER_KEYS = new Set(["name", "in", "required", "schema", "description"]);
+const REQUEST_BODY_KEYS = new Set(["required", "content", "description"]);
+
+/** The one header an operation may take: a write's key. */
+const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 const OPERATION_KEYS = new Set([
   "operationId",
   "summary",
@@ -34,12 +47,20 @@ const OPERATION_KEYS = new Set([
 
 /**
  * The keys of x-nortfox, NortFox's own parts of an operation. The generator
- * reads the permission; the others only document, for the server and MCP.
+ * reads the permission, the session mark and the company source for the doc
+ * comment, and refuses a value of the last two that it does not know; the
+ * others only document, for the server and MCP.
  */
-const NORTFOX_KEYS = new Set(["permission", "tool", "assistant", "writes", "list"]);
+const NORTFOX_KEYS = new Set(["permission", "tool", "assistant", "writes", "list", "session", "company"]);
+const SESSION_MARKS = [null, "flow"] as const;
+const COMPANY_SOURCES = ["none", "credential"] as const;
 
 /** The permission of an operation that reads no data. */
 const PUBLIC = "public";
+/** The permission of an operation that runs before sign-in. */
+const NONE = "none";
+/** The permission of an operation that needs a signed-in person. */
+const SIGNED_IN = "signed-in";
 
 /** Keys that would change a type, which the generator cannot express yet. */
 const UNSUPPORTED_KEYS = [
@@ -176,7 +197,7 @@ function namedType(name: unknown, schema: Json, where: string, indent: string): 
       return "null";
     case "array": {
       const item = typeOf(schema["items"], `${where}.items`, indent);
-      return item.includes(" ") ? `ReadonlyArray<${item}>` : `readonly ${item}[]`;
+      return item.includes(" ") ? `readonly (${item})[]` : `readonly ${item}[]`;
     }
     case "object":
       return isFacts(schema) ? "Readonly<Record<string, unknown>>" : objectType(schema, where, indent);
@@ -225,80 +246,252 @@ function declaration(name: string, schema: Json, where: string): string[] {
   return [...head, `export type ${name} = ${typeOf(schema, where, "")};`];
 }
 
+/** NortFox's own parts of an operation that the doc comment tells. */
+interface Meta {
+  readonly permission?: string;
+  readonly session?: "flow" | null;
+  readonly company?: "none" | "credential";
+}
+
+/** One field of an operation's input that is not in its body: a path parameter or a query field. */
+interface Field {
+  readonly name: string;
+  readonly required: boolean;
+  readonly schema: Json;
+}
+
+/** What a success answers: JSON, nothing (202 and 204), or a redirect (303) with its location as JSON. */
+type AnswerKind = "json" | "none" | "redirect";
+
 interface Operation {
   readonly id: string;
   readonly method: string;
   readonly path: string;
   readonly summary: string | undefined;
   readonly description: string | undefined;
-  readonly permission: string | undefined;
+  readonly meta: Meta;
+  readonly params: readonly Field[];
+  readonly query: readonly Field[];
+  /** The body's type, or undefined when the operation takes none. */
+  readonly body: string | undefined;
+  /** Whether a call needs an idempotency key. */
+  readonly key: boolean;
+  readonly answer: AnswerKind;
   readonly result: string;
 }
 
-/** The permission in an operation's x-nortfox, or undefined when it has none. */
-function permissionOf(value: unknown, where: string): string | undefined {
+/** A value of x-nortfox that must be one of `known`, or absent. */
+function oneOf<T>(value: unknown, known: readonly T[], where: string): T | undefined {
+  if (value !== undefined && !known.includes(value as T)) {
+    throw new GeneratorError(`${where} is ${JSON.stringify(value)}, which the generator does not support yet.`);
+  }
+  return value as T | undefined;
+}
+
+/** The parts of an operation's x-nortfox that its doc comment tells; none when it has no x-nortfox. */
+function metaOf(value: unknown, where: string): Meta {
   if (value === undefined) {
-    return undefined;
+    return {};
   }
   const meta = record(value, where);
   refuseOtherKeys(meta, NORTFOX_KEYS, where);
-  return text(meta["permission"], `${where}.permission`);
-}
-
-function resultType(responses: Json, where: string): string {
-  for (const status of ["200", "201"]) {
-    const response = responses[status];
-    if (response === undefined) {
-      continue;
-    }
-    const content = record(record(response, `${where}.${status}`)["content"], `${where}.${status}.content`);
-    const json = record(content["application/json"], `${where}.${status}.content["application/json"]`);
-    return typeOf(json["schema"], `${where}.${status}.content["application/json"].schema`, "");
-  }
-  throw new GeneratorError(`${where} needs a 200 or 201 response with JSON.`);
-}
-
-function operation(path: string, value: unknown): Operation {
-  const where = `paths["${path}"].get`;
-  const entry = record(value, where);
-  refuseOtherKeys(entry, OPERATION_KEYS, where);
-  const parameters = entry["parameters"];
-  const noParameters = parameters === undefined || (Array.isArray(parameters) && parameters.length === 0);
-  if (path.includes("{") || !noParameters) {
-    throw new GeneratorError(`${where}: parameters are not supported yet.`);
-  }
-  if (entry["requestBody"] !== undefined) {
-    throw new GeneratorError(`${where}: a request body is not supported yet.`);
-  }
+  const session = oneOf(meta["session"], SESSION_MARKS, `${where}.session`);
+  const company = oneOf(meta["company"], COMPANY_SOURCES, `${where}.company`);
   return {
-    id: identifier(text(entry["operationId"], `${where}.operationId`), `${where}.operationId`),
-    method: "GET",
-    path,
-    summary: optionalText(entry["summary"], `${where}.summary`),
-    description: optionalText(entry["description"], `${where}.description`),
-    permission: permissionOf(entry["x-nortfox"], `${where}.x-nortfox`),
-    result: resultType(record(entry["responses"], `${where}.responses`), `${where}.responses`),
+    permission: text(meta["permission"], `${where}.permission`),
+    ...(session === undefined ? {} : { session }),
+    ...(company === undefined ? {} : { company }),
   };
 }
 
-function operations(document: Json): Operation[] {
+/** The names a path gives in {braces}. The group always matches, at least an empty name. */
+function pathNames(path: string): string[] {
+  return [...path.matchAll(/\{([^}]*)\}/g)].map((match) => String(match[1]));
+}
+
+/** The parameters of an operation: its path parameters, its query's fields, and whether it takes the idempotency key. */
+function parametersOf(value: unknown, path: string, where: string): Pick<Operation, "params" | "query" | "key"> {
+  const params: Field[] = [];
+  const query: Field[] = [];
+  let key = false;
+  if (value !== undefined && !Array.isArray(value)) {
+    throw new GeneratorError(`${where}.parameters must be a list.`);
+  }
+  const named = pathNames(path);
+  const seen = new Set<string>();
+  for (const [index, item] of (value ?? []).entries()) {
+    const at = `${where}.parameters[${String(index)}]`;
+    const parameter = record(item, at);
+    refuseOtherKeys(parameter, PARAMETER_KEYS, at);
+    const name = text(parameter["name"], `${at}.name`);
+    const location = text(parameter["in"], `${at}.in`);
+    const required = parameter["required"] ?? false;
+    if (typeof required !== "boolean") {
+      throw new GeneratorError(`${at}.required must be true or false.`);
+    }
+    const schema = record(parameter["schema"], `${at}.schema`);
+    const description = optionalText(parameter["description"], `${at}.description`);
+    if (seen.has(name)) {
+      throw new GeneratorError(`${at}: the name ${name} is given twice.`);
+    }
+    seen.add(name);
+    const field: Field = { name, required, schema: description === undefined ? schema : { ...schema, description } };
+    switch (location) {
+      case "header":
+        if (name !== IDEMPOTENCY_KEY_HEADER) {
+          throw new GeneratorError(`${at} is the header "${name}", which the generator does not support yet.`);
+        }
+        if (!required) {
+          throw new GeneratorError(`${at}: the ${IDEMPOTENCY_KEY_HEADER} header must be required.`);
+        }
+        key = true;
+        break;
+      case "path":
+        if (!required) {
+          throw new GeneratorError(`${at}: a path parameter must be required.`);
+        }
+        if (!named.includes(name)) {
+          throw new GeneratorError(`${at}: the path parameter ${name} is not in the path.`);
+        }
+        params.push(field);
+        break;
+      case "query":
+        query.push(field);
+        break;
+      default:
+        throw new GeneratorError(`${at} is in "${location}", which the generator does not support yet.`);
+    }
+  }
+  for (const name of named.filter((each) => !params.some((field) => field.name === each))) {
+    throw new GeneratorError(`${where}: the path names {${name}}, and no path parameter has that name.`);
+  }
+  return { params, query, key };
+}
+
+/** Whether a schema is an object, or a $ref to a component that is one. */
+function isObjectSchema(schema: Json, schemas: Json): boolean {
+  const ref = schema["$ref"];
+  const target = typeof ref === "string" ? schemas[ref.replace(/^#\/components\/schemas\//, "")] : schema;
+  return isJson(target) && target["type"] === "object";
+}
+
+/** The type of an operation's JSON body, or undefined when it takes none. */
+function bodyOf(value: unknown, where: string, schemas: Json): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const at = `${where}.requestBody`;
+  const body = record(value, at);
+  refuseOtherKeys(body, REQUEST_BODY_KEYS, at);
+  const content = body["content"];
+  if (body["required"] !== true || !isJson(content)) {
+    throw new GeneratorError(`${at} must be required, with an application/json schema.`);
+  }
+  refuseOtherKeys(content, new Set(["application/json"]), at);
+  const schema = field(content["application/json"], "schema");
+  if (!isJson(schema)) {
+    throw new GeneratorError(`${at} must be required, with an application/json schema.`);
+  }
+  if (!isObjectSchema(schema, schemas)) {
+    throw new GeneratorError(`${at}'s schema must be an object or a $ref to one.`);
+  }
+  return typeOf(schema, `${at}.content["application/json"].schema`, "    ");
+}
+
+function field(value: unknown, key: string): unknown {
+  return isJson(value) ? value[key] : undefined;
+}
+
+/** The success answer of an operation: what it answers, and the type its method gives. */
+function successOf(responses: Json, where: string): Pick<Operation, "answer" | "result"> {
+  const statuses = Object.keys(responses).filter((status) => /^[23]/.test(status));
+  const [status, ...more] = statuses;
+  if (status === undefined) {
+    throw new GeneratorError(`${where} needs a success answer: 200 or 201 with JSON, 202 or 204, or 303 with JSON.`);
+  }
+  if (more.length > 0) {
+    throw new GeneratorError(`${where} has more than one success answer: ${statuses.join(", ")}.`);
+  }
+  const response = record(responses[status], `${where}.${status}`);
+  const json = (): string => {
+    const content = record(response["content"], `${where}.${status}.content`);
+    const body = record(content["application/json"], `${where}.${status}.content["application/json"]`);
+    return typeOf(body["schema"], `${where}.${status}.content["application/json"].schema`, "");
+  };
+  switch (status) {
+    case "200":
+    case "201":
+      return { answer: "json", result: json() };
+    case "202":
+    case "204":
+      if (response["content"] !== undefined) {
+        throw new GeneratorError(`${where}.${status} has content, but ${status} answers with no body.`);
+      }
+      return { answer: "none", result: "void" };
+    case "303":
+      return { answer: "redirect", result: json() };
+    default:
+      throw new GeneratorError(`${where} answers ${status}, which the generator does not support yet.`);
+  }
+}
+
+function operation(path: string, method: string, value: unknown, schemas: Json): Operation {
+  const where = `paths["${path}"].${method}`;
+  const entry = record(value, where);
+  refuseOtherKeys(entry, OPERATION_KEYS, where);
+  const id = identifier(text(entry["operationId"], `${where}.operationId`), `${where}.operationId`);
+  return {
+    id,
+    method: method.toUpperCase(),
+    path,
+    summary: optionalText(entry["summary"], `${where}.summary`),
+    description: optionalText(entry["description"], `${where}.description`),
+    meta: metaOf(entry["x-nortfox"], `${where}.x-nortfox`),
+    ...parametersOf(entry["parameters"], path, where),
+    body: bodyOf(entry["requestBody"], where, schemas),
+    ...successOf(record(entry["responses"], `${where}.responses`), `${where}.responses`),
+  };
+}
+
+function operations(document: Json, schemas: Json): Operation[] {
   const paths = record(document["paths"], "paths");
   const found: Operation[] = [];
   for (const path of Object.keys(paths).sort()) {
     const where = `paths["${path}"]`;
     const item = record(paths[path], where);
     for (const key of Object.keys(item)) {
-      if (METHODS.has(key) && key !== "get") {
-        throw new GeneratorError(`${where}.${key}: only GET operations are supported yet.`);
+      if (METHODS.has(key) && !(SUPPORTED_METHODS as readonly string[]).includes(key)) {
+        throw new GeneratorError(`${where}.${key}: only GET, PUT, POST, DELETE and PATCH operations are supported yet.`);
       }
     }
     // Parameters, servers or a $ref on the path item would change every call under it.
     refuseOtherKeys(item, PATH_ITEM_KEYS, where);
-    if (item["get"] !== undefined) {
-      found.push(operation(path, item["get"]));
+    for (const method of SUPPORTED_METHODS) {
+      if (item[method] !== undefined) {
+        found.push(operation(path, method, item[method], schemas));
+      }
     }
   }
   return found;
+}
+
+/** The line of the doc comment that says who may call the operation. */
+function permissionLine(meta: Meta): string | undefined {
+  const { permission } = meta;
+  switch (permission) {
+    case undefined:
+      return undefined;
+    case PUBLIC:
+      return "Needs no permission: it reads no data.";
+    case NONE:
+      return "Needs no actor: anyone may call it, before signing in.";
+    case SIGNED_IN:
+      return "Needs a signed-in person, and works in no company.";
+    default:
+      return meta.company === "credential"
+        ? `Needs the permission \`${permission}\`, in the company that the credential names.`
+        : `Needs the permission \`${permission}\`.`;
+  }
 }
 
 function operationDocs(operation: Operation): string[] {
@@ -306,14 +499,80 @@ function operationDocs(operation: Operation): string[] {
     (part): part is string => part !== undefined,
   );
   const lines = [...parts.flatMap((part) => [part, ""]), `\`${operation.method} ${operation.path}\``];
-  if (operation.permission === undefined) {
-    return lines;
+  const session = operation.meta.session === "flow" ? "Serves the browser's session: its MCP tool refuses every call." : undefined;
+  for (const line of [permissionLine(operation.meta), session]) {
+    if (line !== undefined) {
+      lines.push("", line);
+    }
   }
-  const permission =
-    operation.permission === PUBLIC
-      ? "Needs no permission: it reads no data."
-      : `Needs the permission \`${operation.permission}\`.`;
-  return [...lines, "", permission];
+  return lines;
+}
+
+/** The type of an operation's input: its path parameters and query fields, and its body; or undefined when it takes none. */
+function inputType(operation: Operation): string | undefined {
+  const fields = [...operation.params, ...operation.query];
+  const parts: string[] = [];
+  if (fields.length > 0) {
+    const schema = {
+      type: "object",
+      properties: Object.fromEntries(fields.map((each) => [each.name, each.schema])),
+      required: fields.filter((each) => each.required).map((each) => each.name),
+    };
+    parts.push(typeOf(schema, `paths["${operation.path}"].${operation.method.toLowerCase()}.parameters`, "    "));
+  }
+  if (operation.body !== undefined) {
+    parts.push(operation.body);
+  }
+  return parts.length === 0 ? undefined : parts.join(" & ");
+}
+
+/** Whether an operation's input may be left out: it has no required field, no body and no key. */
+function inputIsOptional(operation: Operation): boolean {
+  return operation.body === undefined && !operation.key && ![...operation.params, ...operation.query].some((each) => each.required);
+}
+
+/** The method's lines in the Operations interface. */
+function signature(operation: Operation): string[] {
+  const options = operation.key ? "options: WriteOptions" : "options?: CallOptions";
+  const input = inputType(operation);
+  const result = `Promise<${operation.result}>`;
+  if (input === undefined) {
+    return [`  ${operation.id}(${options}): ${result};`];
+  }
+  return [`  ${operation.id}(`, `    input${inputIsOptional(operation) ? "?" : ""}: ${input},`, `    ${options},`, `  ): ${result};`];
+}
+
+/** The call as the runtime takes it: the method, the path, and the parts that are not the default. */
+function callOf(operation: Operation): string {
+  const names = (fields: readonly Field[]): string => `[${fields.map((each) => JSON.stringify(each.name)).join(", ")}]`;
+  const parts = [`method: ${JSON.stringify(operation.method)}`, `path: ${JSON.stringify(operation.path)}`];
+  if (operation.params.length > 0) {
+    parts.push(`params: ${names(operation.params)}`);
+  }
+  if (operation.query.length > 0) {
+    parts.push(`query: ${names(operation.query)}`);
+  }
+  if (operation.body !== undefined) {
+    parts.push("body: true");
+  }
+  if (operation.key) {
+    parts.push("key: true");
+  }
+  if (operation.answer !== "json") {
+    parts.push(`answer: ${JSON.stringify(operation.answer)}`);
+  }
+  return `{ ${parts.join(", ")} }`;
+}
+
+/** The method's line in createOperations. */
+function implementation(operation: Operation): string {
+  const takesInput = inputType(operation) !== undefined;
+  const parameters = takesInput ? "input, options" : "options";
+  const sent = `send(${callOf(operation)}, ${takesInput ? "input" : "undefined"}, options)`;
+  if (operation.answer === "none") {
+    return `    ${operation.id}: async (${parameters}) => { await ${sent}; },`;
+  }
+  return `    ${operation.id}: async (${parameters}) => (await ${sent}) as ${operation.result},`;
 }
 
 /** Writes the TypeScript source of src/generated.ts for an API description. */
@@ -330,15 +589,21 @@ export function generateClient(input: unknown): string {
   }
   const components = record(document["components"] ?? {}, "components");
   const schemas = record(components["schemas"] ?? {}, "components.schemas");
-  const found = operations(document);
+  const found = operations(document, schemas);
 
+  // Each type the methods use, and no other: an unused import does not compile.
+  const runtimeTypes = [
+    ...(found.some((each) => !each.key) ? ["CallOptions"] : []),
+    "Send",
+    ...(found.some((each) => each.key) ? ["WriteOptions"] : []),
+  ];
   const out: string[] = [
     "// SPDX-License-Identifier: MIT",
     "",
     "// Generated from openapi.json by scripts/generate.ts. Do not edit it by hand:",
     "// change the API, then run `pnpm openapi`.",
     "",
-    'import type { CallOptions, Send } from "./runtime.ts";',
+    `import type { ${runtimeTypes.join(", ")} } from "./runtime.ts";`,
   ];
   for (const name of Object.keys(schemas).sort()) {
     const where = `components.schemas.${name}`;
@@ -350,14 +615,11 @@ export function generateClient(input: unknown): string {
       out.push("");
     }
     out.push(...comment(operationDocs(operation), "  "));
-    out.push(`  ${operation.id}(options?: CallOptions): Promise<${operation.result}>;`);
+    out.push(...signature(operation));
   }
   out.push("}", "", "export function createOperations(send: Send): Operations {", "  return {");
   for (const operation of found) {
-    const call = `{ method: ${JSON.stringify(operation.method)}, path: ${JSON.stringify(operation.path)} }`;
-    out.push(
-      `    ${operation.id}: async (options) => (await send(${call}, options)) as ${operation.result},`,
-    );
+    out.push(implementation(operation));
   }
   out.push("  };", "}", "");
   return out.join("\n");

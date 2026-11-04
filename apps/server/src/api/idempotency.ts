@@ -12,16 +12,23 @@
 //   idempotency-key-missing, and any other value idempotency-key-invalid,
 //   both at /idempotencyKey, in the one 400 with the input's own problems.
 // - The request's fingerprint is the SHA-256 of the canonical JSON of the
-//   operation's id, the query and the body as the operation's schemas parsed
-//   them. So the same input by REST and by MCP is the same request, and "1.5"
-//   and "1.50" are two.
-// - Keys are kept per company and actor. While a request runs, its key is in
-//   flight in this process, and a second request with it gets 409 before it
-//   asks the pool for a connection. NortFox runs one server process
-//   (decision 3); across processes the database's unique key decides.
-// - The key and the first answer are stored in ledger.idempotency_keys in the
-//   write's own transaction, after the output passed its check. A refused or
-//   failed write stores nothing, so a retry with the key runs again.
+//   operation's id, its path parameters when it takes any, the query and the
+//   body as the operation's schemas parsed them. So the same input by REST
+//   and by MCP is the same request, the same key on two paths is two, and
+//   "1.5" and "1.50" are two.
+// - Keys are kept per company and actor, and a signed-in person's own write,
+//   which works in no company, keeps its keys per person. While a request
+//   runs, its key is in flight in this process, and a second request with it
+//   gets 409 before it asks the pool for a connection. NortFox runs one
+//   server process (decision 3); across processes the database's unique key
+//   decides.
+// - The key and the first answer are stored in the write's own transaction,
+//   after the output passed its check: a write in a company in
+//   ledger.idempotency_keys, a person's own write in access.idempotency_keys,
+//   which belongs to no company. A refused or failed write stores nothing, so
+//   a retry with the key runs again.
+// - A write that runs before sign-in takes no key: there is no actor to keep
+//   it for.
 
 import { createHash } from "node:crypto";
 import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_MAX_LENGTH, IDEMPOTENCY_KEY_PATTERN, jsonPointer, type FieldIssue, type JsonValue } from "@nortfox/contract";
@@ -104,22 +111,27 @@ export function canonicalJson(value: unknown): string {
   throw new Error(`JSON cannot hold this ${typeof value}, so it has no canonical form.`);
 }
 
-/** The request's fingerprint: the SHA-256 of the canonical JSON of the operation, the query and the body, as 64 lower-case hexadecimal digits. */
-export function requestHash(operationId: string, query: unknown, body: unknown): string {
-  return createHash("sha256").update(canonicalJson({ operation: operationId, query, body })).digest("hex");
+/**
+ * The request's fingerprint: the SHA-256 of the canonical JSON of the
+ * operation, its path parameters when it takes any, the query and the body,
+ * as 64 lower-case hexadecimal digits.
+ */
+export function requestHash(operationId: string, query: unknown, body: unknown, params?: unknown): string {
+  return createHash("sha256").update(canonicalJson({ operation: operationId, params, query, body })).digest("hex");
 }
 
 /**
- * The keys of the writes that run now in this process, each for its company
- * and actor. A request claims its key before it asks the pool for a
- * connection, and lets it go when it ends.
+ * The keys of the writes that run now in this process, each for its scope
+ * and actor. The scope is the company, or "" for a person's own write. A
+ * request claims its key before it asks the pool for a connection, and lets
+ * it go when it ends.
  */
 export class KeysInFlight {
   readonly #held = new Set<string>();
 
   /** Holds the key, and gives the function that lets it go; undefined when a running request holds it. */
-  claim(companyId: string, actorId: string, key: string): (() => void) | undefined {
-    const slot = JSON.stringify([companyId, actorId, key]);
+  claim(scope: string, actorId: string, key: string): (() => void) | undefined {
+    const slot = JSON.stringify([scope, actorId, key]);
     if (this.#held.has(slot)) {
       return undefined;
     }
@@ -141,23 +153,8 @@ export interface StoredAnswer {
   readonly body: unknown;
 }
 
-/**
- * The key as the actor stored it, in the transaction's company, or undefined.
- * The query has no company condition: row level security keeps it to the
- * transaction's company (decision 9).
- */
-export async function findKey(tx: Queryable, actorId: string, key: string): Promise<StoredAnswer | undefined> {
-  const found = await tx.query<{ request_hash: string; response_status: number; response_body: unknown }>(
-    "SELECT request_hash, response_status, response_body FROM ledger.idempotency_keys WHERE actor_id = $1 AND idempotency_key = $2",
-    [actorId, key],
-  );
-  const [row] = found.rows;
-  return row === undefined ? undefined : { hash: row.request_hash, status: row.response_status, body: row.response_body };
-}
-
 /** What a write stores with its key. */
 export interface NewKey {
-  readonly companyId: string;
   readonly key: string;
   readonly operationId: string;
   readonly hash: string;
@@ -165,17 +162,83 @@ export interface NewKey {
   readonly body: unknown;
 }
 
-/**
- * Stores the key with the write's answer, in the write's transaction. The
- * database writes the actor, its kind and the time. It gives false when
- * another transaction stored the same key first, and stores nothing then.
- */
-export async function storeKey(tx: Queryable, stored: NewKey): Promise<boolean> {
-  const found = await tx.query(
-    `INSERT INTO ledger.idempotency_keys (company_id, idempotency_key, operation_id, request_hash, response_status, response_body)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-     ON CONFLICT (company_id, actor_id, idempotency_key) DO NOTHING RETURNING id`,
-    [stored.companyId, stored.key, stored.operationId, stored.hash, stored.status, JSON.stringify(stored.body)],
-  );
-  return found.rows.length > 0;
+/** Where a write keeps its keys. */
+export interface KeyStore {
+  /** The scope its keys are claimed in while they are in flight: the company, or "" for a person's own write. */
+  readonly scope: string;
+  /** The key as the actor stored it, or undefined. */
+  find(tx: Queryable, actorId: string, key: string): Promise<StoredAnswer | undefined>;
+  /**
+   * Stores the key with the write's answer, in the write's transaction. The
+   * database writes the actor, its kind and the time. It gives false when
+   * another transaction stored the same key first, and stores nothing then.
+   */
+  store(tx: Queryable, stored: NewKey): Promise<boolean>;
 }
+
+interface KeyRow {
+  readonly request_hash: string;
+  readonly response_status: number;
+  readonly response_body: unknown;
+}
+
+function answerOf(rows: readonly KeyRow[]): StoredAnswer | undefined {
+  const [row] = rows;
+  return row === undefined ? undefined : { hash: row.request_hash, status: row.response_status, body: row.response_body };
+}
+
+/**
+ * The keys of the writes in a company, in ledger.idempotency_keys. A lookup
+ * has no company condition: row level security keeps it to the transaction's
+ * company (decision 9).
+ */
+export function companyKeys(companyId: string): KeyStore {
+  return {
+    scope: companyId,
+    find: async (tx, actorId, key) =>
+      answerOf(
+        (
+          await tx.query<KeyRow>(
+            "SELECT request_hash, response_status, response_body FROM ledger.idempotency_keys WHERE actor_id = $1 AND idempotency_key = $2",
+            [actorId, key],
+          )
+        ).rows,
+      ),
+    store: async (tx, stored) => {
+      const found = await tx.query(
+        `INSERT INTO ledger.idempotency_keys (company_id, idempotency_key, operation_id, request_hash, response_status, response_body)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+         ON CONFLICT (company_id, actor_id, idempotency_key) DO NOTHING RETURNING id`,
+        [companyId, stored.key, stored.operationId, stored.hash, stored.status, JSON.stringify(stored.body)],
+      );
+      return found.rows.length > 0;
+    },
+  };
+}
+
+/**
+ * The keys of a signed-in person's own writes, which work in no company, in
+ * access.idempotency_keys with no key_company_id. That table belongs to no
+ * company: row level security keeps it to the transaction's person.
+ */
+export const personKeys: KeyStore = {
+  scope: "",
+  find: async (tx, actorId, key) =>
+    answerOf(
+      (
+        await tx.query<KeyRow>(
+          "SELECT request_hash, response_status, response_body FROM access.idempotency_keys WHERE actor_id = $1 AND key_company_id IS NULL AND idempotency_key = $2",
+          [actorId, key],
+        )
+      ).rows,
+    ),
+  store: async (tx, stored) => {
+    const found = await tx.query(
+      `INSERT INTO access.idempotency_keys (idempotency_key, operation_id, request_hash, response_status, response_body)
+       VALUES ($1, $2, $3, $4, $5::jsonb)
+       ON CONFLICT (actor_id, key_company_id, idempotency_key) DO NOTHING RETURNING id`,
+      [stored.key, stored.operationId, stored.hash, stored.status, JSON.stringify(stored.body)],
+    );
+    return found.rows.length > 0;
+  },
+};

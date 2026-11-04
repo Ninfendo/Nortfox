@@ -7,11 +7,13 @@
 // - Each request runs in one transaction. Before the work's first query, one
 //   statement sets the company, the actor, its kind and the channel with
 //   set_config(name, value, true), which does what SET LOCAL does and takes
-//   bind parameters. They are set once, at the start, and never changed: the
-//   database keeps the transaction's first actor and channel, and refuses
-//   another. They end with the transaction, so a pooled connection never
-//   carries them on: after it, PostgreSQL gives '', which the database reads
-//   as unset.
+//   bind parameters. A person's transaction sets no company, and an
+//   anonymous one only the channel: what a form leaves out is set to '',
+//   which the database reads as unset. They are set once, at the start, and
+//   never changed: the database keeps the transaction's first actor and
+//   channel, and refuses another. They end with the transaction, so a pooled
+//   connection never carries them on: after it, PostgreSQL gives '', which
+//   the database reads as unset.
 // - A read runs at REPEATABLE READ READ ONLY, so a page and its total come
 //   from one snapshot, and a read cannot write. A write runs at READ
 //   COMMITTED, as the ledger asks of every write. Both are named in BEGIN, so
@@ -36,13 +38,36 @@ export type ActorKind = "user" | "system" | "integration";
 /** The clients a request comes through, which the behandlingshistorik records. */
 export type Channel = "rest" | "mcp";
 
-/** What a transaction sets before the work's first query. */
-export interface TransactionSettings {
+/** An anonymous transaction, such as a sign-in's before it knows the person: only the channel. */
+export interface AnonymousSettings {
+  readonly channel: Channel;
+  readonly actorId?: never;
+  readonly actorKind?: never;
+  readonly companyId?: never;
+}
+
+/** A person's transaction in no company: the actor, its kind and the channel. */
+export interface PersonSettings {
+  readonly actorId: string;
+  readonly actorKind: ActorKind;
+  readonly channel: Channel;
+  readonly companyId?: never;
+}
+
+/** A transaction in a company: the company, the actor, its kind and the channel. */
+export interface CompanySettings {
   readonly companyId: string;
   readonly actorId: string;
   readonly actorKind: ActorKind;
   readonly channel: Channel;
 }
+
+/**
+ * What a transaction sets before the work's first query, in one of three
+ * forms. A value that the form leaves out stays unset, '', which the
+ * database reads as unset.
+ */
+export type TransactionSettings = AnonymousSettings | PersonSettings | CompanySettings;
 
 /** The transaction, as the work sees it: its queries, and nothing else of the connection. */
 export interface Queryable {
@@ -110,7 +135,7 @@ async function runInTransaction<T>(pool: Pool, begin: string, settings: Transact
     let ending: Ending<T>;
     try {
       await client.query(begin);
-      await client.query(SETTINGS, [settings.companyId, settings.actorId, settings.actorKind, settings.channel]);
+      await client.query(SETTINGS, [settings.companyId ?? "", settings.actorId ?? "", settings.actorKind ?? "", settings.channel]);
       ending = await work(tx);
       open = false;
       await client.query(ending.commit ? "COMMIT" : "ROLLBACK");

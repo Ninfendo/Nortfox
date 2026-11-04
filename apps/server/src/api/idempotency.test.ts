@@ -132,6 +132,12 @@ describe("requestHash", () => {
     expect(requestHash("testBookVoucher", { a: 1 }, { description: "x", amount: "1.5" })).not.toBe(hash);
     expect(requestHash("testBookVoucher", {}, undefined)).toBe(createHash("sha256").update('{"operation":"testBookVoucher","query":{}}').digest("hex"));
   });
+
+  it("holds the path parameters of an operation that takes them, so the same key on two paths is two requests", () => {
+    const text = '{"operation":"testRemoveThing","params":{"thingId":"a"},"query":{}}';
+    expect(requestHash("testRemoveThing", {}, undefined, { thingId: "a" })).toBe(createHash("sha256").update(text).digest("hex"));
+    expect(requestHash("testRemoveThing", {}, undefined, { thingId: "b" })).not.toBe(requestHash("testRemoveThing", {}, undefined, { thingId: "a" }));
+  });
 });
 
 describe("KeysInFlight", () => {

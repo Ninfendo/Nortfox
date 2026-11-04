@@ -27,12 +27,15 @@ import {
   buildTestApp,
   callTool,
   mcpClient,
+  personOf,
   principalOf,
   testResolver,
   untouchedDatabase,
   voucherBody,
 } from "../../test/api.ts";
+import { SHAPES_REGISTRY, SHAPE_OPERATIONS, fakeDatabase, shapeLog, shapesHandlers } from "../../test/shapes.ts";
 import { createApp } from "../app.ts";
+import type { Database } from "../db/database.ts";
 import { startServer } from "../start.ts";
 import { callerPrincipal } from "./mcp.ts";
 
@@ -312,6 +315,98 @@ describe("tools/call", () => {
       expect(response.status).toBe(405);
     }
     expect(database.asked).toEqual([]);
+  });
+});
+
+describe("the shapes of slice 2c by MCP", () => {
+  const THING = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b";
+  const PERSON = personOf();
+  const SHAPE_TOKENS = { ...TOKENS, person: PERSON };
+
+  function shapeApp(database: Database = untouchedDatabase()) {
+    const log = shapeLog();
+    return { log, app: buildTestApp({ database, resolve: testResolver(SHAPE_TOKENS), registry: SHAPES_REGISTRY, handlers: shapesHandlers(log), report: () => undefined }) };
+  }
+
+  /** Arguments with which each operation that serves the browser's session would succeed by REST. */
+  const FLOW_ARGUMENTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+    testSignIn: { email: "anna@example.com" },
+    testSendLetter: { email: "anna@example.com" },
+    testStartRedirect: { provider: "alfa" },
+    testEndSession: { idempotencyKey: "k-1" },
+  };
+
+  const FLOW = SHAPE_OPERATIONS.filter((operation) => operation["x-nortfox"].session === "flow");
+
+  it("covers every test-only operation that serves the browser's session", () => {
+    expect(FLOW.map((operation) => operation.operationId)).toEqual(Object.keys(FLOW_ARGUMENTS));
+  });
+
+  it.each(FLOW.flatMap((operation) => MCP_ERAS.flatMap((era) => [undefined, "person", "writer"].map((token) => [operation.operationId, era, token] as const))))(
+    "refuses %s with 403 browser-only, before any argument is read, and runs no handler and asks no database (%s, %s)",
+    async (name, era, token) => {
+      const database = untouchedDatabase();
+      const { app, log } = shapeApp(database);
+      const client = await mcpClient(app, { era, ...(token === undefined ? {} : { token }) });
+      for (const args of [FLOW_ARGUMENTS[name] ?? {}, { unknown: 1 }]) {
+        expect(await callTool(client, name, args)).toEqual({
+          isError: true,
+          structured: {
+            type: "about:blank",
+            title: "Forbidden",
+            status: 403,
+            detail: "This operation serves the browser's sign-in. An MCP client signs in through OAuth.",
+            code: "browser-only",
+          },
+        });
+      }
+      expect(log.calls).toEqual([]);
+      expect(database.asked).toEqual([]);
+      await client.close();
+    },
+  );
+
+  it("lists each operation of the browser's session with its schemas, as any tool", async () => {
+    const client = await mcpClient(shapeApp().app);
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name)).toEqual(SHAPES_REGISTRY.map((operation) => operation.operationId));
+    expect(tools.find((tool) => tool.name === "testSignIn")?.inputSchema).toEqual({
+      type: "object",
+      properties: { email: { type: "string", minLength: 1, description: "The e-mail address." } },
+      required: ["email"],
+      additionalProperties: false,
+    });
+    await client.close();
+  });
+
+  it("takes a path parameter as an argument, and names a bad one at its pointer", async () => {
+    const { app } = shapeApp(fakeDatabase());
+    const client = await mcpClient(app, { token: "writer" });
+    expect(await callTool(client, "testGetThing", { thingId: THING, view: "long" })).toEqual({
+      isError: false,
+      structured: { id: THING, view: "long", companyId: COMPANY },
+    });
+    expect(await callTool(client, "testGetThing", { view: "long" })).toMatchObject({
+      isError: true,
+      structured: { status: 400, errors: [{ code: "missing-field", pointer: "/thingId" }] },
+    });
+    await client.close();
+  });
+
+  it("answers an operation that answers 204 with an empty object", async () => {
+    const { app } = shapeApp(fakeDatabase());
+    const client = await mcpClient(app, { token: "writer" });
+    expect(await callTool(client, "testRemoveThing", { thingId: THING, idempotencyKey: "k-1" })).toEqual({ isError: false, structured: {} });
+    await client.close();
+  });
+
+  it("answers a signed-in person's operation that does not serve the browser's session", async () => {
+    const database = fakeDatabase();
+    const { app } = shapeApp(database);
+    const client = await mcpClient(app, { token: "person" });
+    expect(await callTool(client, "testGetPerson")).toEqual({ isError: false, structured: { personId: PERSON.personId } });
+    expect(database.transactions).toEqual([{ mode: "read", settings: { actorId: PERSON.personId, actorKind: "user", channel: "mcp" }, ended: "commit" }]);
+    await client.close();
   });
 });
 

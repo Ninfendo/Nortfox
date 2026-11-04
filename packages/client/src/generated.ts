@@ -40,7 +40,7 @@ export interface FieldProblem {
    */
   readonly detail: string;
   /**
-   * A JSON Pointer to the field in the operation's input: the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.
+   * A JSON Pointer to the field in the operation's input: the path parameters, the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.
    */
   readonly pointer: string;
   /**
@@ -113,7 +113,7 @@ export interface Operations {
    *
    * `GET /v1/company`
    *
-   * Needs the permission `company:read`.
+   * Needs the permission `company:read`, in the company that the credential names.
    */
   getCompany(options?: CallOptions): Promise<Company>;
 
@@ -131,7 +131,7 @@ export interface Operations {
 
 export function createOperations(send: Send): Operations {
   return {
-    getCompany: async (options) => (await send({ method: "GET", path: "/v1/company" }, options)) as Company,
-    getHealth: async (options) => (await send({ method: "GET", path: "/v1/health" }, options)) as Health,
+    getCompany: async (options) => (await send({ method: "GET", path: "/v1/company" }, undefined, options)) as Company,
+    getHealth: async (options) => (await send({ method: "GET", path: "/v1/health" }, undefined, options)) as Health,
   };
 }

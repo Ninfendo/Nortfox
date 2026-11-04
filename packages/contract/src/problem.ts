@@ -8,8 +8,8 @@
  * A request that does not fit its operation gets one problem with a field
  * problem per field. Each field problem has a JSON Pointer (RFC 6901) into
  * the operation's flat input: the one object an MCP tool takes, with the
- * query parameters, the body's fields and, for a write, `idempotencyKey`. So
- * a field problem is the same by REST and by MCP.
+ * path parameters, the query parameters, the body's fields and, for a write,
+ * `idempotencyKey`. So a field problem is the same by REST and by MCP.
  */
 
 import { z } from "zod";
@@ -45,7 +45,7 @@ export const FieldProblem = z
     detail: z.string().meta({ description: "The same in an English sentence." }),
     pointer: z.string().meta({
       description:
-        "A JSON Pointer to the field in the operation's input: the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.",
+        "A JSON Pointer to the field in the operation's input: the path parameters, the query parameters, the body's fields and, for a write, idempotencyKey. An empty pointer is the whole input.",
       examples: ["/amount/amount"],
     }),
     data: Facts.optional().meta({
@@ -104,7 +104,9 @@ export const PROBLEM_CODES = {
   "malformed-json": 400,
   "authentication-required": 401,
   "permission-missing": 403,
+  "company-required": 403,
   "origin-not-allowed": 403,
+  "browser-only": 403,
   "not-found": 404,
   "method-not-allowed": 405,
   "idempotency-key-in-use": 409,
