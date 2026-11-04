@@ -87,7 +87,7 @@ describe("the planner's statistics", () => {
       JOIN pg_catalog.pg_class AS i ON i.oid = x.indexrelid
       JOIN pg_catalog.pg_class AS t ON t.oid = x.indrelid
       JOIN pg_catalog.pg_namespace AS n ON n.oid = t.relnamespace
-      WHERE n.nspname IN ('ledger', 'audit')
+      WHERE n.nspname IN ('ledger', 'audit', 'access')
         AND EXISTS (
           SELECT FROM pg_catalog.pg_attribute AS a
           WHERE a.attrelid = t.oid AND a.attname = 'company_id' AND a.attnum > 0 AND NOT a.attisdropped

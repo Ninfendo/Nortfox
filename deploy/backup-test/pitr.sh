@@ -15,20 +15,24 @@
 # - on the running stack: PostgreSQL archives WAL through pgBackRest, with
 #   archive_timeout 1min, and its log of a failed statement holds no DETAIL
 #   and no parameter; the migrate step exited 0, and the owner role
-#   applied every migration and owns every table; our roles, a reader among
+#   applied every migration and owns every table, in ledger, audit, meta and
+#   access; our roles, a reader among
 #   them, connect to the database nortfox only, and in no database may any of
 #   them make a large object, write a WAL message or read pg_locks; the
 #   first start took a full backup to each repository; pgBackRest holds a
 #   full backup and the WAL archive in both repositories;
-# - write 1, then the time T, then write 2: a restore to T from repo1 gives
-#   write 1 and not write 2, and so does a restore to T from repo2. Each
+# - write 1, then the time T, then write 2, each a company with its owner: a
+#   restore to T from repo1 gives write 1, with its owner, and not write 2,
+#   and so does a restore to T from repo2. Each
 #   restore reads its backup and its WAL from its own repository only. T
 #   falls in a later whole second than either backup's stop, as a restore to
 #   a time needs.
 #
 # The containers, the volumes and the secrets go when the test ends, also when
 # it fails. Run it with `pnpm backup:test`. It needs Docker with Compose v2,
-# and nothing that runs as the project nortfox-backup-test.
+# and nothing that runs as its project: nortfox-backup-test, as in CI, or the
+# name in NORTFOX_BACKUP_PROJECT, such as nortfox_probe_<something> for a run
+# beside another one. The stack publishes no port.
 set -euo pipefail
 
 # Git Bash on Windows: pass every argument to docker as written. Paths go to
@@ -39,7 +43,11 @@ unset NORTFOX_REPO2_TYPE NORTFOX_REPO2_PATH NORTFOX_TEST_SECRETS
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "$here/../.." && pwd)
-project=nortfox-backup-test
+project=${NORTFOX_BACKUP_PROJECT:-nortfox-backup-test}
+if [[ ! "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "pitr: NORTFOX_BACKUP_PROJECT must be a compose project name: lower-case letters, digits, - and _, not '$project'." >&2
+  exit 1
+fi
 
 # A path in the form docker takes: on Windows, a Windows path.
 native() {
@@ -253,22 +261,28 @@ expect "the owner of the database nortfox" \
 tables=$(sql postgres << 'SQL'
 SELECT count(*) FROM pg_catalog.pg_class AS c
 JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-WHERE n.nspname IN ('ledger', 'audit', 'meta') AND c.relkind IN ('r', 'p')
+WHERE n.nspname IN ('ledger', 'audit', 'meta', 'access') AND c.relkind IN ('r', 'p')
 SQL
 )
 if ((tables < 10)); then
-  fail "the database holds $tables tables in ledger, audit and meta."
+  fail "the database holds $tables tables in ledger, audit, meta and access."
 fi
-expect "what in ledger, audit and meta is not owned by nortfox_owner" "$(sql postgres << 'SQL'
+expect "the schemas that hold our tables" "$(sql postgres << 'SQL'
+SELECT string_agg(DISTINCT n.nspname, ', ' ORDER BY n.nspname) FROM pg_catalog.pg_class AS c
+JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+WHERE n.nspname IN ('ledger', 'audit', 'meta', 'access') AND c.relkind IN ('r', 'p')
+SQL
+)" "access, audit, ledger, meta"
+expect "what in ledger, audit, meta and access is not owned by nortfox_owner" "$(sql postgres << 'SQL'
 SELECT coalesce(string_agg(what, ', ' ORDER BY what), 'nothing') FROM (
   SELECT 'schema ' || n.nspname || ' (' || pg_catalog.pg_get_userbyid(n.nspowner) || ')' AS what
   FROM pg_catalog.pg_namespace AS n
-  WHERE n.nspname IN ('ledger', 'audit', 'meta') AND pg_catalog.pg_get_userbyid(n.nspowner) <> 'nortfox_owner'
+  WHERE n.nspname IN ('ledger', 'audit', 'meta', 'access') AND pg_catalog.pg_get_userbyid(n.nspowner) <> 'nortfox_owner'
   UNION ALL
   SELECT c.oid::pg_catalog.regclass::text || ' (' || pg_catalog.pg_get_userbyid(c.relowner) || ')'
   FROM pg_catalog.pg_class AS c
   JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
-  WHERE n.nspname IN ('ledger', 'audit', 'meta') AND pg_catalog.pg_get_userbyid(c.relowner) <> 'nortfox_owner'
+  WHERE n.nspname IN ('ledger', 'audit', 'meta', 'access') AND pg_catalog.pg_get_userbyid(c.relowner) <> 'nortfox_owner'
 ) AS found
 SQL
 )" nothing
@@ -356,21 +370,43 @@ for _ in $(seq 30); do
 done
 expect "PostgreSQL's clock past the second in which the newest backup stopped" "$past_stop" yes
 
-# Made-up companies and actor. The organisation numbers are on the fixture
+# Made-up companies and person. The organisation numbers are on the fixture
 # guard's list of test values.
 company_1=6f1d2a40-3b5c-4e7d-8a9b-0c1d2e3f4a51
 company_2=6f1d2a40-3b5c-4e7d-8a9b-0c1d2e3f4a52
 company_3=6f1d2a40-3b5c-4e7d-8a9b-0c1d2e3f4a53
 actor=6f1d2a40-3b5c-4e7d-8a9b-0c1d2e3f4a5f
 
-# Books a company as the app role: $1 its id, $2 its name, $3 its organisation number.
+# Makes the person who makes the companies, as the owner role, as the
+# database's own functions make a login identity.
+write_identity() {
+  sql nortfox_owner << SQL
+INSERT INTO access.identities (id, name, email) VALUES ('$actor', 'Vera Nilsson', 'vera.nilsson@example.com');
+SQL
+}
+
+# Books a company as the app role, as createCompany does: in one transaction
+# the company and its owner, the person, who acts as a user. A company needs
+# an active system administrator by its commit. $1 its id, $2 its name, $3
+# its organisation number.
 write_company() {
   sql nortfox_app << SQL
 BEGIN;
 SET LOCAL nortfox.company_id = '$1';
 SET LOCAL nortfox.actor_id = '$actor';
-SET LOCAL nortfox.actor_kind = 'system';
+SET LOCAL nortfox.actor_kind = 'user';
 INSERT INTO ledger.companies (company_id, name, organization_number) VALUES ('$1', '$2', '$3');
+INSERT INTO access.memberships (company_id, user_id, status, admin_level) VALUES ('$1', '$actor', 'active', 'owner');
+COMMIT;
+SQL
+}
+
+# The person who owns the company $1, as the app role sees its memberships.
+owner_of() {
+  sql nortfox_app << SQL
+BEGIN;
+SET LOCAL nortfox.company_id = '$1';
+SELECT coalesce(string_agg(user_id::text, ', '), 'nobody') FROM access.memberships WHERE status = 'active' AND admin_level = 'owner';
 COMMIT;
 SQL
 }
@@ -419,6 +455,7 @@ wait_until_promoted() {
 }
 
 step "write 1, the time T, write 2."
+write_identity
 write_company "$company_1" "Testbolaget Alfa AB" 556000-0167
 target=$(sql postgres <<< 'SELECT pg_catalog.clock_timestamp()')
 step "T is $target."
@@ -441,6 +478,7 @@ restore_to_target() {
   compose start postgres
   wait_until_promoted
   expect "write 1 after the restore from repo$repo" "$(seen "$company_1")" 1
+  expect "the owner of write 1 after the restore from repo$repo" "$(owner_of "$company_1")" "$actor"
   expect "write 2 after the restore from repo$repo" "$(seen "$company_2")" 0
 }
 

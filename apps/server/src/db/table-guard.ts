@@ -98,14 +98,31 @@ const COMPANY_POLICIES: readonly Policy[] = [
   { role: READER, command: "SELECT", using: READER_CHECK, check: null },
 ];
 
+// The owner's reads by the transaction's person, which only the one
+// membership function makes (db/migrations/0007_companies_memberships.sql):
+// the person's live memberships, and the companies that hold one.
+const PERSON_MEMBERSHIPS = "(live_user_id = access.current_person_id())";
+const PERSON_COMPANIES =
+  "(EXISTS ( SELECT\n   FROM access.memberships m\n  WHERE ((m.company_id = companies.company_id) AND (m.live_user_id = access.current_person_id()))))";
+
 /** How the guard holds a table that is an exception, and why. */
 export type GuardException =
   /** Only its owner and its privileges are checked. */
   | { readonly kind: "not a company table"; readonly why: string }
   /** Every check but the history trigger. */
   | { readonly kind: "no history trigger"; readonly why: string }
-  /** Every check, with these policies in place of the company policies. */
-  | { readonly kind: "own policies"; readonly why: string; readonly policies: readonly Policy[] };
+  /**
+   * Every check, with these policies in place of the company policies. The
+   * guard runs after each migration, so a table that a later migration gives
+   * a policy of its own names the policies it had before: `earlier` holds
+   * them, until its table `until` exists, which the same migration made.
+   */
+  | {
+      readonly kind: "own policies";
+      readonly why: string;
+      readonly policies: readonly Policy[];
+      readonly earlier?: { readonly until: string; readonly policies: readonly Policy[] };
+    };
 
 /** The tables the guard holds to other rules. A test pins the list. */
 export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<string, GuardException>([
@@ -127,6 +144,23 @@ export const GUARD_EXCEPTIONS: ReadonlyMap<string, GuardException> = new Map<str
         OWNER_POLICY,
         { role: READER, command: "SELECT", using: OWN_BINDING, check: null },
       ],
+    },
+  ],
+  [
+    "access.memberships",
+    {
+      kind: "own policies",
+      why: "The company policies, and the owner reads the live memberships of the transaction's person in every company, which only the one membership function does. The app reads only its company's.",
+      policies: [...COMPANY_POLICIES, { role: OWNER, command: "SELECT", using: PERSON_MEMBERSHIPS, check: null }],
+    },
+  ],
+  [
+    "ledger.companies",
+    {
+      kind: "own policies",
+      why: "The company policies, and the owner reads the companies where the transaction's person has a live membership, which only the one membership function does. The app reads only its company.",
+      policies: [...COMPANY_POLICIES, { role: OWNER, command: "SELECT", using: PERSON_COMPANIES, check: null }],
+      earlier: { until: "access.memberships", policies: COMPANY_POLICIES },
     },
   ],
 ]);
@@ -168,6 +202,24 @@ export const INSTALL_TABLES: ReadonlyMap<string, InstallTable> = new Map<string,
       column: "actor_id",
       commands: ["SELECT", "INSERT"],
       why: "The keys of a person's own writes keep no company's answer in a company table. The app reads and adds only the person's own.",
+    },
+  ],
+  [
+    "access.recent_companies",
+    {
+      class: "person",
+      column: "identity_id",
+      commands: ["SELECT", "INSERT", "UPDATE"],
+      why: "The companies a person chose last, across companies. The app reads and records only the person's own.",
+    },
+  ],
+  [
+    "access.membership_contacts",
+    {
+      class: "company",
+      column: "contact_company_id",
+      commands: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+      why: "A member's work e-mail and phone in one company are profile data, which an identity's deletion erases, so they keep no history. The app reads and writes only its company's.",
     },
   ],
   ["access.password_credentials", { class: "secret", why: "It holds each identity's password hash. Only the lookup functions read it." }],
@@ -572,6 +624,11 @@ function installTableProblems(row: RelationRow, entry: InstallTable, catalog: Ca
   return own;
 }
 
+/** The policies of a table with policies of its own: its earlier ones until their table exists. `relations` holds every relation by name. */
+function ownPolicies(exception: Extract<GuardException, { kind: "own policies" }>, relations: ReadonlyMap<string, boolean>): readonly Policy[] {
+  return exception.earlier !== undefined && !relations.has(exception.earlier.until) ? exception.earlier.policies : exception.policies;
+}
+
 /** What a company table, or a table the guard excepts, lacks. */
 function companyTableProblems(row: RelationRow, catalog: Catalog, isCompanyTable: ReadonlyMap<string, boolean>): string[] {
   const of = <T extends { relation: string }>(rows: readonly T[]): T[] => rows.filter((found) => found.relation === row.relation);
@@ -595,7 +652,7 @@ function companyTableProblems(row: RelationRow, catalog: Catalog, isCompanyTable
   if (!row.forced) {
     own.push("row level security is not forced.");
   }
-  own.push(...policyProblems(exception?.kind === "own policies" ? exception.policies : COMPANY_POLICIES, of(catalog.policies)));
+  own.push(...policyProblems(exception?.kind === "own policies" ? ownPolicies(exception, isCompanyTable) : COMPANY_POLICIES, of(catalog.policies)));
   if (row.key === null && needsHistory) {
     own.push("has no primary key of one uuid column, which the history needs as the row's id.");
   }

@@ -23,6 +23,7 @@ const PERSON_TABLES = {
   "access.identities": "id",
   "access.account_events": "identity_id",
   "access.idempotency_keys": "actor_id",
+  "access.recent_companies": "identity_id",
 } as const;
 
 describe("the install-wide tables", () => {
@@ -47,6 +48,7 @@ describe("the install-wide tables", () => {
           "INSERT INTO access.idempotency_keys (idempotency_key, operation_id, request_hash, response_status, response_body) VALUES ('k-1', 'logout', $1, 204, '{}')",
           [REQUEST_HASH],
         );
+        await app.query("INSERT INTO access.recent_companies (identity_id, chosen_company_id, chosen_at) VALUES ($1, $2, '2030-05-15 08:30:00+00')", [person, company]);
       });
     }
   });
@@ -63,7 +65,7 @@ describe("the install-wide tables", () => {
     );
   }
 
-  it("is the list the guard pins: three person tables and eight secret tables", () => {
+  it("is the list the guard pins: four person tables, one company table and eight secret tables", () => {
     expect(Object.fromEntries([...INSTALL_TABLES].map(([table, entry]) => [table, entry.class]))).toEqual({
       "access.account_events": "person",
       "access.attempt_counters": "secret",
@@ -72,7 +74,9 @@ describe("the install-wide tables", () => {
       "access.install_keys": "secret",
       "access.known_devices": "secret",
       "access.login_challenges": "secret",
+      "access.membership_contacts": "company",
       "access.password_credentials": "secret",
+      "access.recent_companies": "person",
       "access.sessions": "secret",
       "access.setup_tokens": "secret",
       "access.totp_secrets": "secret",
@@ -160,15 +164,31 @@ describe("the install-wide tables", () => {
     }
   });
 
-  it("gives a reader nothing on any install-wide table, and no use of the schema access", async () => {
+  // The schema access holds company tables too, the memberships among them,
+  // which a reader reads as any company table. So a reader may use the schema,
+  // and still reads no install-wide table.
+  it("gives a reader nothing on any install-wide table, though it may use the schema access for its company tables", async () => {
     const reader = await db.connect("readerA");
     for (const table of INSTALL_TABLES.keys()) {
-      await expectError(reader.query(`SELECT * FROM ${table}`), INSUFFICIENT_PRIVILEGE, /permission denied for schema access/);
+      await expectError(reader.query(`SELECT * FROM ${table}`), INSUFFICIENT_PRIVILEGE, new RegExp(`permission denied for table ${table.replace("access.", "")}$`));
     }
     const found = await owner.query<{ reader: boolean; app: boolean }>(
       "SELECT pg_catalog.has_schema_privilege('nortfox_reader', 'access', 'USAGE') AS reader, pg_catalog.has_schema_privilege('nortfox_app', 'access', 'USAGE') AS app",
     );
-    expect(found.rows).toEqual([{ reader: false, app: true }]);
+    expect(found.rows).toEqual([{ reader: true, app: true }]);
+  });
+
+  it("lets a person record a company as recently chosen, and change only the person's own record", async () => {
+    const chosen = await asPerson(app, alva, () =>
+      app.query("UPDATE access.recent_companies SET chosen_at = '2030-05-16 08:30:00+00' WHERE chosen_company_id = $1", [company]),
+    );
+    expect(chosen.rowCount).toBe(1);
+    await expectError(
+      asPerson(app, alva, () => app.query("INSERT INTO access.recent_companies (identity_id, chosen_company_id, chosen_at) VALUES ($1, $2, pg_catalog.now())", [bodil, company])),
+      INSUFFICIENT_PRIVILEGE,
+      /row-level security/,
+    );
+    await expectError(asPerson(app, alva, () => app.query("DELETE FROM access.recent_companies")), INSUFFICIENT_PRIVILEGE, /permission denied for table/);
   });
 
   it("keeps each person's rows apart also when the app names a person who has none", async () => {

@@ -27,12 +27,16 @@ import { guardedRelations } from "../../db/table-guard.ts";
 const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "access.account_events": ["INSERT", "SELECT"],
   "access.attempt_counters": [],
+  "access.events": ["INSERT", "SELECT"],
   "access.idempotency_keys": ["INSERT", "SELECT"],
   "access.identities": ["SELECT", "UPDATE"],
   "access.install_keys": [],
   "access.known_devices": [],
   "access.login_challenges": [],
+  "access.membership_contacts": ["DELETE", "INSERT", "SELECT", "UPDATE"],
+  "access.memberships": ["INSERT", "SELECT", "UPDATE"],
   "access.password_credentials": [],
+  "access.recent_companies": ["INSERT", "SELECT", "UPDATE"],
   "access.sessions": [],
   "access.setup_tokens": [],
   "access.totp_secrets": [],
@@ -60,12 +64,16 @@ const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
 const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "access.account_events": [],
   "access.attempt_counters": [],
+  "access.events": ["SELECT"],
   "access.idempotency_keys": [],
   "access.identities": [],
   "access.install_keys": [],
   "access.known_devices": [],
   "access.login_challenges": [],
+  "access.membership_contacts": [],
+  "access.memberships": ["SELECT"],
   "access.password_credentials": [],
+  "access.recent_companies": [],
   "access.sessions": [],
   "access.setup_tokens": [],
   "access.totp_secrets": [],
@@ -95,6 +103,7 @@ const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
  */
 const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
   nortfox_app: [
+    "access.active_membership",
     "access.challenge_by_token",
     "access.claim_attempt",
     "access.clear_attempts",
@@ -148,9 +157,7 @@ describe("the database roles", () => {
     db = await freshDatabase();
     app = await db.connect("app");
     owner = await db.connect("owner");
-    await inTransaction(app, { company, actor, kind: "user" }, () =>
-      app.query("INSERT INTO ledger.companies (company_id, name, organization_number) VALUES ($1, 'Testbolaget Alfa AB', '556000-0167')", [company]),
-    );
+    await addCompany(app, { actor, kind: "user" }, { id: company });
   });
 
   afterAll(async () => {
@@ -200,6 +207,16 @@ describe("the database roles", () => {
     ["empty the identities", "TRUNCATE access.identities"],
     ["call the trigger that keeps the identities' rules", "SELECT access.identities_rules()"],
     ["call the trigger that keeps a column set once", "SELECT access.keep_set_once()"],
+    ["delete a membership", "DELETE FROM access.memberships"],
+    ["empty the memberships", "TRUNCATE access.memberships"],
+    ["call the trigger that keeps the memberships' rules", "SELECT access.memberships_rules()"],
+    ["call the check of a company's system administrator", "SELECT access.keep_system_administrator()"],
+    ["switch the check of a company's system administrator off", "ALTER TABLE access.memberships DISABLE TRIGGER memberships_system_administrator"],
+    ["drop the check of a company's system administrator", "DROP TRIGGER companies_system_administrator ON ledger.companies"],
+    ["change an entry of the behandlingshistorik", "UPDATE access.events SET heading = 'sign-in'"],
+    ["delete an entry of the behandlingshistorik", "DELETE FROM access.events"],
+    ["call the trigger that keeps the entries", "SELECT access.events_rules()"],
+    ["call the trigger that stamps the work contacts", "SELECT access.membership_contacts_rules()"],
   ])("refuses the app to %s", async (_case, sql) => {
     await expectError(app.query(sql), INSUFFICIENT_PRIVILEGE);
   });

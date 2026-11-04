@@ -283,9 +283,11 @@ describe("the lookup functions", () => {
       await expectError(app.query(`INSERT INTO ${table} DEFAULT VALUES`), INSUFFICIENT_PRIVILEGE, /permission denied for table/);
       await expectError(app.query(`DELETE FROM ${table}`), INSUFFICIENT_PRIVILEGE, /permission denied for table/);
     }
+    // A reader may use the schema access, for its company tables there, and still runs no lookup function and reads no identity.
     const reader = await db.connect("readerA");
-    await expectError(reader.query("SELECT * FROM access.find_login('x')"), INSUFFICIENT_PRIVILEGE, /permission denied for schema access/);
-    await expectError(reader.query("SELECT * FROM access.identities"), INSUFFICIENT_PRIVILEGE, /permission denied for schema access/);
+    await expectError(reader.query("SELECT * FROM access.find_login('x')"), INSUFFICIENT_PRIVILEGE, /permission denied for function find_login/);
+    await expectError(reader.query("SELECT * FROM access.active_membership()"), INSUFFICIENT_PRIVILEGE, /permission denied for function active_membership/);
+    await expectError(reader.query("SELECT * FROM access.identities"), INSUFFICIENT_PRIVILEGE, /permission denied for table identities/);
   });
 
   describe("signing in", () => {

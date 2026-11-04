@@ -71,7 +71,7 @@ const readSettings = handleData(testReadSettings, async ({ tx }) => {
 });
 
 const writeInRead = handleData(testReadSettings, async ({ tx }) => {
-  await tx.query("INSERT INTO ledger.companies (company_id, name, organization_number) VALUES (gen_random_uuid(), 'Testbolaget Beta AB', '599999-0129')");
+  await tx.query("UPDATE ledger.companies SET name = 'Testbolaget Beta AB'");
   return ok({ level: "", readOnly: "", company: "", actor: "", kind: "", channel: "" });
 });
 
@@ -90,11 +90,9 @@ describe("the runner's read path", () => {
     db = await freshDatabase();
     app = await db.connect("app");
     company = await addCompany(app);
-    broken = await addCompany(app);
-    // A row whose organisation number has a form the output's schema refuses.
-    await inTransaction(app, { company: broken, actor: principalOf(broken).personId, kind: "user" }, () =>
-      app.query("UPDATE ledger.companies SET organization_number = 'saknas'"),
-    );
+    // A company whose organisation number has a form the output's schema refuses.
+    // The number never changes, so the company is made with it.
+    broken = await addCompany(app, undefined, { organizationNumber: "saknas" });
     pool = appPool(db, 1);
   });
 
