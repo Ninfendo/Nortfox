@@ -178,7 +178,7 @@ This is the repository setup. It lands before every other PR: until it does, not
 
 **2c. Login, roles, tokens, MCP OAuth**
 
-- **What:** the companies, users and memberships modules; the first roles (owner, admin, bookkeeper, approver, viewer, auditor); auth with password plus TOTP, generic OIDC and a pluggable BankID provider interface; opaque session tokens in HttpOnly cookies; API tokens; an OAuth 2.1 server for MCP clients; Caddy in the compose file, in front of the server.
+- **What:** the companies, users and memberships modules; the first roles (owner, admin, bookkeeper, approver, viewer, auditor); auth with password plus TOTP, generic OIDC and a pluggable BankID provider interface; opaque session tokens in HttpOnly cookies; API tokens; an OAuth 2.1 server for MCP clients; Caddy in the compose file, in front of the server. The real BankID provider comes in 2f.
 - **Done when:**
   - Through the API and MCP, a person can create a company, log in with password plus TOTP, and invite a second user with a role.
   - Session tokens, API tokens and OAuth tokens are random and opaque, are stored only as hashes, and can be revoked. Cookies are HttpOnly, Secure and SameSite.
@@ -234,6 +234,17 @@ This is the repository setup. It lands before every other PR: until it does, not
   - The login and a compatible call work through the compose stack, with Caddy in front.
   - A request from a compatible client runs as an integration, and so does one from a service account ([decision 2](decisions/0002-ledger-law-in-postgresql.md)). A test checks both.
   - The folder is on the marker allowlist and holds its marker. The names check passes on everything outside it, including `openapi.json`, the client, `packages/i18n` and the changesets. Inside it, the check still refuses every protected name but the established system's.
+
+**2f. BankID: the real provider**
+
+- **What:** a BankID provider behind the provider interface of 2c ([decision 8](decisions/0008-authentication.md)). It speaks BankID's relying party API: it starts an order, collects it and cancels it, over mutual TLS with the install's relying party certificate. Each install gets its certificate through its own agreement, with a bank or a reseller that sells BankID. NortFox is not tied to one of them. The configuration names the certificate file, the file that holds its passphrase, and the environment: test or production. With no provider configured, the BankID operations refuse as in 2c.
+- **Done when:**
+  - The real provider passes the same contract tests as the fake provider of 2c, against a local stand-in for the relying party API that asks for a client certificate.
+  - The order carries the person's own IP address, as BankID asks, also with Caddy in front.
+  - A test pins the QR data against the example in BankID's documentation.
+  - Against BankID's test environment, with its public test certificate, an order starts, is collected as pending, and is cancelled. This test reaches an outside service, so it runs by hand or on a schedule, never as a required check. The test certificate is not stored in the repository: the test reads it from a path in its configuration.
+  - A login and a verification with a test BankID on the test environment work by hand. `deploy/README.md` lists the steps, and says how an install gets its agreement and its certificate.
+  - The passphrase, the certificate's private key and the order's QR start secret never appear in a log, in an answer or in clear in a table. A provider's error names only its kind and its status, as in 2c.
 
 ### Step 3: Bokföring
 
