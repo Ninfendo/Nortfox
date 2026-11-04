@@ -407,7 +407,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 
 **3o. bank: statements, booking rules, reconciliation**
 
-- **What:** import statement files (ISO 20022 camt.053, and CSV through a column mapping); booking a waiting line by hand, or linking it to a voucher that is already booked, as in the established system; booking rules that match a line on text, amount or counterparty and propose a voucher; reconciliation of each bank account against the statement.
+- **What:** import statement files (ISO 20022 camt.053, and CSV through a column mapping); booking a waiting line by hand, or linking it to a voucher that is already booked, as in the established system; booking rules that match a line on text, amount or counterparty and book it, as in the established system; reconciliation of each bank account against the statement.
 - **Done when:** importing the same file twice changes nothing; a line linked to a booked voucher changes nothing in the books and leaves the waiting lines; a rule can be tried as a dry run first; the reconciliation of the reference books shows no difference.
 
 **3p. supplier-invoices: leverantörsfakturor with approval**
@@ -423,18 +423,18 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
 **3r. start-page and messages (platform): the Startsida, the bell and messages**
 
 - **What:** the Startsida, the bell and the messages panel, as in the established system. They show the user what the earlier slices leave to do.
-  - One operation, with its MCP tool, lists what needs the user in the current company, within the user's own rights: supplier invoices that wait for the user's approval (3p), bank lines that wait to be booked or linked (3o), approved invoices that are due and in no payment file (3q), and VAT periods that wait (3i). The Att göra card is one client of it, with one row per kind of task, as in the established system.
-  - The key figures, worked out from the books, as in the established system: Omsättning, Kostnader and Resultat for the fiscal year, the unpaid supplier invoices, and each bank account's balance from its latest statement (3o). The established figures for customer invoices and financing are outside this plan.
+  - One operation, with its MCP tool, lists what needs the user in the current company, within the user's own rights: supplier invoices that wait for the user's approval (3p), bank lines that wait to be booked or linked (3o), approved invoices that are due and in no payment file (3q), and VAT periods that wait (3i). The Att göra card is one client of it, as in the established system.
+  - The key figures, as in the established system: Omsättning, Kostnader and Resultat for the fiscal year and the unpaid supplier invoices, worked out from the books, and each bank account's balance. The established card takes the balances from its bank link. NortFox reads statement files (3o), so it shows each account's balance from its latest statement. The established figures for customer invoices and financing are outside this plan.
   - The onboarding card (Kom igång), with the set-up tasks that have a screen by then.
   - The bell lists the user's notices, made from outbox events (3j): the supplier-invoice approval notices (3p) and the reminder before an automatic lock run (3j). As in the established system, the approval notices also go by e-mail to a user who has them on, when the install names a mail server.
   - The messages panel: the users of a company write to each other, on their own or in a thread on a voucher (3d) or a supplier invoice (3p). A message changes nothing in the books.
   - Each of these is an operation in the registry, with its MCP tool, and the screens call the same operations. The established API has none of them, so 3r has no compatible endpoint.
   - 3r's issue holds the detail, and settles what the established system's help pages leave open.
 - **Done when:**
-  - Through REST, MCP and the Startsida, the list of what needs the user gives the same rows. A record leaves its row once it is handled. Another user, and a member of another company, never sees it.
+  - Through REST, MCP and the Startsida, the list of what needs the user gives the same rows. A record leaves its row once it is handled. A supplier invoice that waits for approval shows only to the users whose approval it waits for. A record of the other kinds shows to each user whose rights cover it, and to no other user. A member of another company never sees any of them.
   - With a fixed clock, the key figures for the reference books equal numbers worked out by hand.
-  - A notice is made only when its transaction commits, and it reaches only the users it is for.
-  - A thread on a voucher or a supplier invoice is read only by users who may see that voucher or invoice, and it leaves the books as they were.
+  - Through REST, MCP and the bell, the approvers of a supplier invoice's step get its approval notice, and no other user gets that notice. The reminder before an automatic lock run shows in the app to the users it is for, the chosen number of days before the run. A notice is made only when its transaction commits.
+  - Through REST, MCP and the messages panel, a user starts a thread on a voucher and one on a supplier invoice with a chosen colleague, and the colleague reads and answers it. Every user who may see that voucher or invoice reads its thread. A user who neither takes part in the thread nor may see its voucher or invoice never reads it, and a member of another company never does. The thread leaves the books as they were.
 
 **3s. tax-agency: Skatteverket by API**
 
@@ -450,7 +450,7 @@ The ledger comes first, then what a voucher carries, then the reports and SIE so
   - Against the stand-in, sending a booked report gives a draft and Skatteverket's checks, and no operation signs. Once the stand-in marks the draft signed, the receipt is a file on the VAT voucher.
   - Against the stand-in, the daily read brings in each line on the tax account once, and one payment that shows on a bank statement and on the tax account is booked once.
   - A test against Skatteverket's test service runs in a workflow of its own, on a schedule and on demand, as in 2f. No required check needs it. Without its keys it fails, and it never skips.
-  - The API keys, the certificate's private key and Skatteverket's tokens never appear in a log, in an answer or in clear in a table.
+  - The API keys, the private key of the organisation certificate (organisationslegitimation) and Skatteverket's tokens never appear in a log, in an answer or in clear in a table.
 
 ### Step 4: the rest of the platform
 
