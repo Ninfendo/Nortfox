@@ -52,8 +52,10 @@
 // pieces at run time, or other code written to hide what it runs. Two more
 // halves hold part of that: modules/memberships/one-function.db.test.ts
 // reads the catalog (no other routine the app may run reads the memberships
-// across companies, by any spelling, and none sets a setting, runs dynamic
-// SQL or writes a name in SQL's Unicode escapes), and authorize, tx.enter
+// across companies, by any spelling; no routine, whoever may run it, and no
+// view, default, check, index, policy or trigger condition sets a setting,
+// runs dynamic SQL or writes a name in SQL's Unicode escapes, but a pinned
+// few; and no table or view has a rule), and authorize, tx.enter
 // and a transaction in a company refuse at run time an object that
 // resolve.ts did not make. A statement joined at run time in the server's
 // code that sets a setting is caught by neither: a change from outside is

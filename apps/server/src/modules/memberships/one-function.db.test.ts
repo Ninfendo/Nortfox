@@ -10,15 +10,22 @@
 // the memberships and the companies, so a request reads no membership and no
 // company outside its company. Of the routines the app may run (functions,
 // procedures and aggregates, in any schema), no other reads the memberships
-// or the companies as the owner, and none sets a setting, runs dynamic SQL
-// (by EXECUTE, or through one of PostgreSQL's functions that run SQL from a
-// text or read a table, a schema or the database by name, such as
-// query_to_xml) or writes a name in SQL's Unicode escapes. The probes show
-// that the catalog check finds a second such function, also one that reads
-// them through another function, a procedure, or an aggregate's function; a
-// routine that runs SQL through each of those functions of PostgreSQL's; a
-// routine that sets the transaction's company, as the owner or as the app;
-// and an app policy by person.
+// or the companies as the owner. No routine at all, whoever may run it, sets
+// a setting, runs dynamic SQL (by EXECUTE, or through one of PostgreSQL's
+// functions that run SQL from a text or read a table, a schema or the
+// database by name, such as query_to_xml) or writes a name in SQL's Unicode
+// escapes, but the last system administrator's check and the migrations'
+// helpers, while the app may not run them: PostgreSQL runs a trigger on a
+// write with no right to run it. No SQL that the catalog keeps and runs on a
+// statement does either: a view's query, a default, a generated column, a
+// check constraint, an index's expression, a policy or a trigger's
+// condition. And no table or view has a rule but a view's own query. The
+// probes show that the catalog check finds a second such function, also one
+// that reads them through another function, a procedure, or an aggregate's
+// function; a routine that runs SQL through each of those functions of
+// PostgreSQL's; a routine that sets the transaction's company, as the owner
+// or as the app, also a trigger and one that the app may not run; such SQL
+// in each place the catalog keeps it; a rule; and an app policy by person.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -47,11 +54,11 @@ interface ActiveMembership {
   readonly database_number: number;
 }
 
-/** The catalog check's problems, after a routine's name. */
+/** The catalog check's problems, after a routine's name, or after the place of SQL that the catalog keeps. */
 const READS = `the app may run it, it runs as the owner, and it reads ${GUARDED_TABLES.join(" or ")}, which only ${THE_FUNCTION} may.`;
 const AGGREGATE_READS = `the app may run it, a function of the aggregate runs as the owner, and it reads ${GUARDED_TABLES.join(" or ")}, which only ${THE_FUNCTION} may.`;
 const DYNAMIC =
-  "the app may run it, and it runs dynamic SQL (EXECUTE, or one of PostgreSQL's functions that run SQL from a text or read a table, a schema or the database by name), whose reads and settings no check can see.";
+  "it runs dynamic SQL (EXECUTE, or one of PostgreSQL's functions that run SQL from a text or read a table, a schema or the database by name), whose reads and settings no check can see.";
 
 /**
  * PostgreSQL's own functions that run SQL from a text (query_to_xml and its
@@ -80,9 +87,50 @@ const RUNS_SQL = [
   "ts_stat",
   "ts_rewrite",
 ] as const;
-const ESCAPES = "the app may run it, and it writes a name in SQL's Unicode escapes (U&), which no check can read.";
+const ESCAPES = "it writes a name in SQL's Unicode escapes (U&), which no check can read.";
 const SETS =
-  "the app may run it, and it sets a setting itself (set_config, SET LOCAL or SET SESSION, a SET or RESET of a nortfox setting, RESET ALL, or pg_settings). Only the server's database layer sets the transaction's company, actor and channel.";
+  "it sets a setting itself (set_config, SET LOCAL or SET SESSION, a SET or RESET of a nortfox setting, RESET ALL, or pg_settings). Only the server's database layer sets the transaction's company, actor and channel.";
+/** The catalog check's problem of a rule, after its relation's name and the rule's. */
+const RULE = "A rule runs statements of its own beside a statement on its table or view, which no check reads. Only a view's own query (_RETURN) may be a rule.";
+
+/** A routine that may still do one thing that the check counts, and why. */
+interface Allowed {
+  /** Its schema, name and arguments, as the catalog prints them. */
+  readonly routine: string;
+  readonly why: Exclude<Why, "reads">;
+  readonly reason: string;
+}
+
+/**
+ * The routines that may still set a setting or run dynamic SQL, each by its
+ * name and arguments and for one reason, while the app may not run it. A
+ * test pins the list: with none allowed, the migrated database shows exactly
+ * these.
+ */
+const ALLOWED: readonly Allowed[] = [
+  {
+    routine: "access.keep_system_administrator()",
+    why: "sets",
+    reason: "The last system administrator's check, a trigger. It sets the company for its own two statements and then puts the transaction's company back (last-admin.db.test.ts).",
+  },
+  { routine: "meta.hide_statistics(target regclass)", why: "dynamic", reason: "A migration's helper: it sets the statistics targets of a table. Only the owner runs it, in a migration." },
+  {
+    routine: "meta.protect_company_table(target regclass, key_column name)",
+    why: "dynamic",
+    reason: "A migration's helper: it gives a company table its row level security, policies and triggers. Only the owner runs it, in a migration.",
+  },
+  {
+    routine: "meta.protect_install_table(target regclass)",
+    why: "dynamic",
+    reason: "A migration's helper: it gives an install-wide table its row level security, policy and trigger. Only the owner runs it, in a migration.",
+  },
+];
+
+/**
+ * The part of a trigger's definition that is its condition (WHEN). The rest
+ * names the trigger's function, which counts as a routine.
+ */
+const TRIGGER_CONDITION = " WHEN \\((.*)\\) EXECUTE FUNCTION ";
 
 /** The start of a name in a function's body: nothing of an identifier just before it. */
 const NAME_START = "(?:^|[^[:alnum:]_$])";
@@ -150,34 +198,48 @@ const RULES: readonly { readonly why: Why; readonly word: string; readonly patte
  *   name, at any depth. An aggregate runs its functions (the step, the final
  *   function and the rest) with its owner's right to run them, so it counts
  *   when one of them reads as the owner, also one that the app may not run.
- * - A routine that the app may run and that sets a setting itself, as the
- *   owner or as the app, at any depth, would let a statement enter a company
- *   that the one function did not give: only the server's database layer
- *   sets them. Trigger functions are left out: no one calls one, and the
- *   last administrator's check sets the company for its own statements and
- *   puts it back.
- * - A routine that the app may run and that runs dynamic SQL, by EXECUTE or
- *   through one of PostgreSQL's functions that run SQL from a text or read
- *   by name (RUNS_SQL), or writes a name in SQL's Unicode escapes, at any
- *   depth, counts too, since no text match can see what it reads or sets.
+ *   A trigger function's reads are left out: the app cannot call one, and a
+ *   trigger gives its statement no rows.
+ * - A routine that sets a setting itself, as the owner or as the app, at any
+ *   depth, would let a statement enter a company that the one function did
+ *   not give: only the server's database layer sets them. So would a routine
+ *   that runs dynamic SQL, by EXECUTE or through one of PostgreSQL's
+ *   functions that run SQL from a text or read by name (RUNS_SQL), or that
+ *   writes a name in SQL's Unicode escapes, since no text match can see what
+ *   it reads or sets. Such a routine counts whoever may run it. PostgreSQL
+ *   runs a trigger on each write of its table with no right to run it, and a
+ *   default, a check or a trigger in a statement of a routine that runs as
+ *   the owner calls a routine with the owner's right. `allowed` names the few
+ *   that may, each for one reason, while the app may not run them.
+ * - The SQL that the catalog keeps and runs on a statement counts the same
+ *   way, when it does one of those things itself or calls a routine that
+ *   does: a view's query, a column's default or generated expression, a
+ *   check constraint of a table or a domain, a domain's default, an index's
+ *   expressions and condition, a policy, and a trigger's condition.
+ * - A rule runs statements of its own beside a statement on its table or
+ *   view, which no check reads. So no table or view has a rule, but a view's
+ *   own query, which PostgreSQL keeps as the rule _RETURN and reads the text
+ *   of above. PostgreSQL gives that name to no other rule (42P17 on a table,
+ *   and a view has only one).
  *
  * And the app's only policy on either table is the company policy.
  */
-async function oneFunctionProblems(client: Client): Promise<string[]> {
+async function oneFunctionProblems(client: Client, allowed: readonly Allowed[] = ALLOWED): Promise<string[]> {
   // The recursive query's estimated cost makes PostgreSQL compile it with JIT,
   // which takes a second or more, while the query itself runs in milliseconds.
   await client.query("SET jit = off");
-  const readers = await client.query<{ name: string; why: Why; aggregate: boolean }>(
+  const readers = await client.query<{ name: string; routine: string | null; why: Why; aggregate: boolean; app_runs: boolean }>(
     `
     WITH RECURSIVE texts AS (
       SELECT p.oid, p.proname::text AS proname, n.nspname || '.' || p.proname AS name,
+        n.nspname || '.' || p.proname || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' AS routine,
         CASE WHEN p.prokind = 'a' THEN '' ELSE pg_catalog.pg_get_functiondef(p.oid) END AS body
       FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
         AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend AS d WHERE d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid = p.oid AND d.deptype = 'e')
     ), functions AS MATERIALIZED (
       SELECT t.*, pg_catalog.lower(t.body) AS small FROM texts AS t
-    ), rules AS (
+    ), patterns AS (
       SELECT * FROM ROWS FROM (pg_catalog.unnest($2::text[]), pg_catalog.unnest($3::text[]), pg_catalog.unnest($4::text[])) AS u (why, word, pattern)
     ), support AS (
       SELECT a.aggfnoid::pg_catalog.oid AS aggregate, s.fn
@@ -186,21 +248,67 @@ async function oneFunctionProblems(client: Client): Promise<string[]> {
         (a.aggdeserialfn::pg_catalog.oid), (a.aggmtransfn::pg_catalog.oid), (a.aggminvtransfn::pg_catalog.oid), (a.aggmfinalfn::pg_catalog.oid)) AS s (fn)
       WHERE s.fn <> 0
     ), reading AS (
-      SELECT f.oid, f.proname, u.why FROM functions AS f JOIN rules AS u
+      SELECT f.oid, f.proname, u.why FROM functions AS f JOIN patterns AS u
         ON CASE WHEN pg_catalog.strpos(f.small, u.word) = 0 THEN false ELSE f.body ~* u.pattern END
       UNION
       SELECT f.oid, f.proname, r.why FROM functions AS f JOIN reading AS r ON f.oid <> r.oid
         AND (EXISTS (SELECT FROM support AS s WHERE s.aggregate = f.oid AND s.fn = r.oid)
           OR CASE WHEN pg_catalog.strpos(f.small, pg_catalog.lower(r.proname)) = 0 THEN false
             ELSE f.body ~* ($5 || pg_catalog.regexp_replace(r.proname, '([^[:alnum:]_])', '[\\1]', 'g') || $6) END)
+    ), relations AS (
+      SELECT c.oid, c.relkind FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+      WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+    ), kept AS (
+      SELECT 'the view ' || c.oid::pg_catalog.regclass::text AS place, pg_catalog.pg_get_viewdef(c.oid) AS body
+      FROM relations AS c WHERE c.relkind IN ('v', 'm')
+      UNION ALL
+      SELECT CASE WHEN a.attgenerated = '' THEN 'the default of ' ELSE 'the generated column ' END
+          || d.adrelid::pg_catalog.regclass::text || '.' || pg_catalog.quote_ident(a.attname),
+        pg_catalog.pg_get_expr(d.adbin, d.adrelid)
+      FROM pg_catalog.pg_attrdef AS d JOIN relations AS c ON c.oid = d.adrelid
+        JOIN pg_catalog.pg_attribute AS a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+      UNION ALL
+      SELECT 'the check constraint ' || pg_catalog.quote_ident(x.conname) || ' of '
+          || CASE WHEN x.conrelid = 0 THEN 'the domain ' || x.contypid::pg_catalog.regtype::text ELSE x.conrelid::pg_catalog.regclass::text END,
+        pg_catalog.pg_get_constraintdef(x.oid)
+      FROM pg_catalog.pg_constraint AS x JOIN pg_catalog.pg_namespace AS n ON n.oid = x.connamespace
+      WHERE x.contype = 'c' AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+      UNION ALL
+      SELECT 'the default of the domain ' || t.oid::pg_catalog.regtype::text, pg_catalog.pg_get_expr(t.typdefaultbin, 0)
+      FROM pg_catalog.pg_type AS t JOIN pg_catalog.pg_namespace AS n ON n.oid = t.typnamespace
+      WHERE t.typdefaultbin IS NOT NULL AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+      UNION ALL
+      SELECT 'the index ' || x.indexrelid::pg_catalog.regclass::text, pg_catalog.pg_get_indexdef(x.indexrelid)
+      FROM pg_catalog.pg_index AS x JOIN relations AS c ON c.oid = x.indrelid
+      WHERE x.indexprs IS NOT NULL OR x.indpred IS NOT NULL
+      UNION ALL
+      SELECT 'the policy ' || pg_catalog.quote_ident(p.polname) || ' of ' || p.polrelid::pg_catalog.regclass::text,
+        pg_catalog.concat_ws(' ', pg_catalog.pg_get_expr(p.polqual, p.polrelid), pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid))
+      FROM pg_catalog.pg_policy AS p JOIN relations AS c ON c.oid = p.polrelid
+      UNION ALL
+      SELECT 'the condition of the trigger ' || pg_catalog.quote_ident(t.tgname) || ' of ' || t.tgrelid::pg_catalog.regclass::text,
+        COALESCE(pg_catalog.substring(pg_catalog.pg_get_triggerdef(t.oid), $7), pg_catalog.pg_get_triggerdef(t.oid))
+      FROM pg_catalog.pg_trigger AS t JOIN relations AS c ON c.oid = t.tgrelid
+      WHERE t.tgqual IS NOT NULL
+    ), stored AS MATERIALIZED (
+      SELECT k.place, k.body, pg_catalog.lower(k.body) AS small FROM kept AS k
     )
-    SELECT DISTINCT f.name, r.why, p.prokind = 'a' AS aggregate
+    SELECT DISTINCT 0 AS kind, f.name, f.routine, r.why, p.prokind = 'a' AS aggregate,
+      pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE') AS app_runs
     FROM reading AS r JOIN functions AS f ON f.oid = r.oid JOIN pg_catalog.pg_proc AS p ON p.oid = r.oid
-    WHERE pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE') AND p.prorettype <> 'pg_catalog.trigger'::pg_catalog.regtype
-      AND (r.why <> 'reads' OR (f.name <> $1 AND (p.prosecdef OR EXISTS (
+    WHERE r.why <> 'reads' OR (pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE')
+      AND p.prorettype NOT IN ('pg_catalog.trigger'::pg_catalog.regtype, 'pg_catalog.event_trigger'::pg_catalog.regtype)
+      AND f.name <> $1 AND (p.prosecdef OR EXISTS (
         SELECT FROM support AS s JOIN reading AS sr ON sr.oid = s.fn AND sr.why = 'reads' JOIN pg_catalog.pg_proc AS sp ON sp.oid = s.fn
-        WHERE s.aggregate = r.oid AND sp.prosecdef))))
-    ORDER BY 1, 2`,
+        WHERE s.aggregate = r.oid AND sp.prosecdef)))
+    UNION
+    SELECT 1, s.place, NULL, u.why, false, false FROM stored AS s JOIN patterns AS u
+      ON u.why <> 'reads' AND CASE WHEN pg_catalog.strpos(s.small, u.word) = 0 THEN false ELSE s.body ~* u.pattern END
+    UNION
+    SELECT 1, s.place, NULL, r.why, false, false FROM stored AS s JOIN reading AS r
+      ON r.why <> 'reads' AND CASE WHEN pg_catalog.strpos(s.small, pg_catalog.lower(r.proname)) = 0 THEN false
+        ELSE s.body ~* ($5 || pg_catalog.regexp_replace(r.proname, '([^[:alnum:]_])', '[\\1]', 'g') || $6) END
+    ORDER BY 1, 2, 4`,
     [
       THE_FUNCTION,
       RULES.map((rule) => rule.why),
@@ -208,7 +316,14 @@ async function oneFunctionProblems(client: Client): Promise<string[]> {
       RULES.map((rule) => rule.pattern),
       `${NAME_START}"?`,
       `"?${SQL_SPACE}*\\(`,
+      TRIGGER_CONDITION,
     ],
+  );
+  const rules = await client.query<{ relation: string; name: string }>(
+    `SELECT r.ev_class::pg_catalog.regclass::text AS relation, r.rulename AS name
+     FROM pg_catalog.pg_rewrite AS r JOIN pg_catalog.pg_class AS c ON c.oid = r.ev_class JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND r.rulename <> '_RETURN'
+     ORDER BY 1, 2`,
   );
   const policies = await client.query<{ relation: string; name: string; command: string; using: string | null; check: string | null }>(
     `SELECT c.oid::pg_catalog.regclass::text AS relation, p.polname AS name, p.polcmd::text AS command,
@@ -219,7 +334,11 @@ async function oneFunctionProblems(client: Client): Promise<string[]> {
     [GUARDED_TABLES],
   );
   const why: Readonly<Record<Why, string>> = { reads: READS, dynamic: DYNAMIC, sets: SETS, escapes: ESCAPES };
-  const problems = readers.rows.map((row) => `${row.name}: ${row.why === "reads" && row.aggregate ? AGGREGATE_READS : why[row.why]}`);
+  const counted = readers.rows.filter((row) => row.app_runs || !allowed.some((allowance) => allowance.routine === row.routine && allowance.why === row.why));
+  const problems = [...new Set(counted.map((row) => `${row.name}: ${row.why === "reads" && row.aggregate ? AGGREGATE_READS : why[row.why]}`))];
+  for (const rule of rules.rows) {
+    problems.push(`${rule.relation}: it has the rule ${rule.name}. ${RULE}`);
+  }
   for (const table of GUARDED_TABLES) {
     const own = policies.rows.filter((row) => row.relation === table);
     if (!own.some((row) => row.command === "*" && row.using === COMPANY_CHECK && row.check === COMPANY_CHECK)) {
@@ -500,7 +619,7 @@ describe("the one membership function", () => {
         ).toEqual([`ledger.peek_builtin: ${DYNAMIC}`]);
       });
 
-      it("finds it as the app too, and through a function that the app may not run itself", async () => {
+      it("finds it as the app too, and through a function that the app may not run itself, which counts as well", async () => {
         expect(
           await problemsAfter(`
             CREATE FUNCTION ledger.export_table(s text, t text) RETURNS xml LANGUAGE sql SET search_path = pg_catalog, pg_temp
@@ -511,7 +630,7 @@ describe("the one membership function", () => {
             CREATE FUNCTION access.dump_through() RETURNS xml LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
               RETURN access.dump_schema();
             GRANT EXECUTE ON FUNCTION access.dump_through() TO nortfox_app;`),
-        ).toEqual([`access.dump_through: ${DYNAMIC}`, `ledger.export_table: ${DYNAMIC}`]);
+        ).toEqual([`access.dump_schema: ${DYNAMIC}`, `access.dump_through: ${DYNAMIC}`, `ledger.export_table: ${DYNAMIC}`]);
       });
 
       it("does not take a longer name, or a word inside another, for one", async () => {
@@ -621,7 +740,7 @@ describe("the one membership function", () => {
         ).toEqual([`ledger.work_in: ${SETS}`]);
       });
 
-      it("finds it in any schema, as a procedure, and through a function that the app may not run itself", async () => {
+      it("finds it in any schema, as a procedure, and through a function that the app may not run itself, which counts as well", async () => {
         expect(
           await problemsAfter(`
             CREATE FUNCTION public.work_in(company uuid) RETURNS text LANGUAGE sql SET search_path = pg_catalog, pg_temp
@@ -635,7 +754,7 @@ describe("the one membership function", () => {
             CREATE FUNCTION ledger.work_through(company uuid) RETURNS text LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
               RETURN ledger.set_company(company);
             GRANT EXECUTE ON FUNCTION ledger.work_through(uuid) TO nortfox_app;`),
-        ).toEqual([`ledger.enter: ${SETS}`, `ledger.work_through: ${SETS}`, `public.work_in: ${SETS}`]);
+        ).toEqual([`ledger.enter: ${SETS}`, `ledger.set_company: ${SETS}`, `ledger.work_through: ${SETS}`, `public.work_in: ${SETS}`]);
       });
 
       it("needs no look at a function's SET clause: the owner may not give one a setting of ours", async () => {
@@ -646,7 +765,7 @@ describe("the one membership function", () => {
         ).rejects.toMatchObject({ code: "42501", message: 'permission denied to set parameter "nortfox.company_id"' });
       });
 
-      it("does not take a read of a setting, an UPDATE's SET, a SET clause of the search path, or a trigger for one", async () => {
+      it("does not take a read of a setting, an UPDATE's SET or a SET clause of the search path for one", async () => {
         expect(
           await problemsAfter(`
             CREATE FUNCTION ledger.read_company() RETURNS text LANGUAGE plpgsql STABLE SET search_path = pg_catalog, pg_temp
@@ -654,11 +773,155 @@ describe("the one membership function", () => {
             GRANT EXECUTE ON FUNCTION ledger.read_company() TO nortfox_app;
             CREATE FUNCTION ledger.rename_none() RETURNS void LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
               AS $rename$ BEGIN UPDATE ledger.companies SET name = name WHERE false; END $rename$;
-            GRANT EXECUTE ON FUNCTION ledger.rename_none() TO nortfox_app;
+            GRANT EXECUTE ON FUNCTION ledger.rename_none() TO nortfox_app;`),
+        ).toEqual([]);
+      });
+    });
+
+    describe("a routine that the app may not run, which PostgreSQL still runs on the app's statements: a trigger on a write of its table", () => {
+      it("finds a trigger that sets the transaction's company, also one that the app may run", async () => {
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION access.follow_company() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              AS $f$ BEGIN IF NEW.details ? 'company' THEN PERFORM set_config('nortfox.company_id', NEW.details ->> 'company', true); END IF; RETURN NULL; END $f$;
+            CREATE TRIGGER account_events_follow AFTER INSERT ON access.account_events FOR EACH ROW EXECUTE FUNCTION access.follow_company();
             CREATE FUNCTION ledger.set_trigger() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
               AS $set$ BEGIN PERFORM set_config('nortfox.company_id', NEW.company_id::text, true); RETURN NULL; END $set$;
             GRANT EXECUTE ON FUNCTION ledger.set_trigger() TO nortfox_app;`),
+        ).toEqual([`access.follow_company: ${SETS}`, `ledger.set_trigger: ${SETS}`]);
+      });
+
+      it("finds a trigger that runs dynamic SQL as the app, one that writes a name in Unicode escapes, and one that calls a routine that sets the company", async () => {
+        expect(
+          await problemsAfter(String.raw`
+            CREATE FUNCTION ledger.run_trigger() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
+              AS $run$ BEGIN EXECUTE TG_ARGV[0]; RETURN NULL; END $run$;
+            CREATE FUNCTION ledger.escaped_trigger() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              AS $esc$ BEGIN PERFORM pg_catalog.u&"set\005Fconfig"('nortfox.company_id', NEW.company_id::text, true); RETURN NULL; END $esc$;
+            CREATE FUNCTION ledger.set_company(company text) RETURNS text LANGUAGE sql SET search_path = pg_catalog, pg_temp
+              RETURN pg_catalog.set_config('nortfox.company_id', company, true);
+            CREATE FUNCTION ledger.calls_setter() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              AS $calls$ BEGIN PERFORM ledger.set_company(NEW.company_id::text); RETURN NULL; END $calls$;`),
+        ).toEqual([`ledger.calls_setter: ${SETS}`, `ledger.escaped_trigger: ${ESCAPES}`, `ledger.run_trigger: ${DYNAMIC}`, `ledger.set_company: ${SETS}`]);
+      });
+
+      it("does not take a trigger's read of the memberships as the owner for one: the app cannot call a trigger function, and a trigger gives its statement no rows", async () => {
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION access.count_on_write() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              AS $count$ BEGIN PERFORM count(*) FROM access.memberships; RETURN NULL; END $count$;
+            GRANT EXECUTE ON FUNCTION access.count_on_write() TO nortfox_app;`),
         ).toEqual([]);
+      });
+    });
+
+    describe("the routines that may set a setting or run dynamic SQL", () => {
+      it("are only the last system administrator's check, which puts the company back, and the migrations' helpers", async () => {
+        expect(await oneFunctionProblems(owner, [])).toEqual([
+          `access.keep_system_administrator: ${SETS}`,
+          `meta.hide_statistics: ${DYNAMIC}`,
+          `meta.protect_company_table: ${DYNAMIC}`,
+          `meta.protect_install_table: ${DYNAMIC}`,
+        ]);
+      });
+
+      it("count again when the app may run one, when one does something else, and for another routine of the same name", async () => {
+        expect(await problemsAfter("GRANT EXECUTE ON FUNCTION meta.hide_statistics(regclass) TO nortfox_app;")).toEqual([`meta.hide_statistics: ${DYNAMIC}`]);
+        expect(
+          await problemsAfter(`
+            CREATE OR REPLACE FUNCTION access.keep_system_administrator() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              AS $admin$ BEGIN EXECUTE 'SELECT 1'; RETURN NULL; END $admin$;`),
+        ).toEqual([`access.keep_system_administrator: ${DYNAMIC}`]);
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION access.keep_system_administrator(company uuid) RETURNS text LANGUAGE sql SET search_path = pg_catalog, pg_temp
+              RETURN pg_catalog.set_config('nortfox.company_id', company::text, true);`),
+        ).toEqual([`access.keep_system_administrator: ${SETS}`]);
+      });
+    });
+
+    describe("SQL that the catalog keeps and runs on the app's statements", () => {
+      const company = "'5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a'";
+      it.each([
+        [
+          "a view's query",
+          "CREATE VIEW access.follow WITH (security_invoker = true) AS SELECT pg_catalog.set_config('nortfox.company_id', e.details ->> 'company', true) AS company FROM access.account_events AS e",
+          "the view access.follow",
+        ],
+        ["a column's default", `CREATE TABLE access.follow (id uuid, company text DEFAULT pg_catalog.set_config('nortfox.company_id', ${company}, true))`, "the default of access.follow.company"],
+        [
+          "a table's check constraint",
+          "ALTER TABLE access.account_events ADD CONSTRAINT follow CHECK (pg_catalog.set_config('nortfox.company_id', details ->> 'company', true) IS NOT NULL) NOT VALID",
+          "the check constraint follow of access.account_events",
+        ],
+        [
+          "a domain's check constraint",
+          "CREATE DOMAIN access.follow AS text CONSTRAINT follow CHECK (pg_catalog.set_config('nortfox.company_id', VALUE, true) IS NOT NULL)",
+          "the check constraint follow of the domain access.follow",
+        ],
+        ["a domain's default", `CREATE DOMAIN access.follow AS text DEFAULT pg_catalog.set_config('nortfox.company_id', ${company}, true)`, "the default of the domain access.follow"],
+        [
+          "a policy",
+          "CREATE POLICY follow ON access.account_events AS RESTRICTIVE FOR INSERT TO nortfox_app WITH CHECK (pg_catalog.set_config('nortfox.company_id', details ->> 'company', true) IS NOT NULL)",
+          "the policy follow of access.account_events",
+        ],
+        [
+          "a trigger's condition",
+          "CREATE TRIGGER follow AFTER INSERT ON access.account_events FOR EACH ROW WHEN (pg_catalog.set_config('nortfox.company_id', NEW.details ->> 'company', true) IS NOT NULL) EXECUTE FUNCTION ledger.refuse_truncate()",
+          "the condition of the trigger follow of access.account_events",
+        ],
+      ])("finds one that sets a setting: %s", async (_case, setup, label) => {
+        expect(await problemsAfter(`${setup};`)).toEqual([`${label}: ${SETS}`]);
+      });
+
+      it("finds a generated column and an index's expression that call a routine that sets one, which counts too", async () => {
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION ledger.pin_company(company text) RETURNS text LANGUAGE sql IMMUTABLE SET search_path = pg_catalog, pg_temp
+              RETURN pg_catalog.set_config('nortfox.company_id', company, true);
+            CREATE TABLE access.follow (company text, pinned text GENERATED ALWAYS AS (ledger.pin_company(company)) STORED);
+            CREATE INDEX follow_pinned ON access.follow ((ledger.pin_company(company)));`),
+        ).toEqual([`ledger.pin_company: ${SETS}`, `the generated column access.follow.pinned: ${SETS}`, `the index access.follow_pinned: ${SETS}`]);
+      });
+
+      it("finds a default that calls a setter that the app may not run, which runs in a statement of the owner's, and a view that runs dynamic SQL", async () => {
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION ledger.set_company(company text) RETURNS text LANGUAGE sql SET search_path = pg_catalog, pg_temp
+              RETURN pg_catalog.set_config('nortfox.company_id', company, true);
+            CREATE TABLE access.follow (company text DEFAULT ledger.set_company(${company}));
+            CREATE VIEW access.dump WITH (security_invoker = true) AS SELECT pg_catalog.query_to_xml('SELECT 1', true, false, '') AS x;`),
+        ).toEqual([`ledger.set_company: ${SETS}`, `the default of access.follow.company: ${SETS}`, `the view access.dump: ${DYNAMIC}`]);
+      });
+
+      it("does not take a read of a setting, a plain check or a trigger's own function for one", async () => {
+        expect(
+          await problemsAfter(`
+            CREATE TABLE access.follow (company text DEFAULT pg_catalog.current_setting('nortfox.company_id', true), note text CHECK (note ~ '^[a-z]+$'));
+            CREATE VIEW access.follow_view WITH (security_invoker = true) AS SELECT pg_catalog.current_setting('nortfox.company_id', true) AS company;
+            CREATE TRIGGER follow AFTER INSERT ON access.follow FOR EACH ROW WHEN (NEW.note IS NOT NULL) EXECUTE FUNCTION access.keep_system_administrator();`),
+        ).toEqual([]);
+      });
+    });
+
+    it("finds every rule but a view's own query: a rule runs statements of its own beside the app's", async () => {
+      expect(
+        await problemsAfter(`
+          CREATE RULE account_events_follow AS ON INSERT TO access.account_events WHERE NEW.details ? 'company'
+            DO ALSO SELECT pg_catalog.set_config('nortfox.company_id', NEW.details ->> 'company', true);
+          CREATE RULE keep_events AS ON DELETE TO access.account_events DO INSTEAD NOTHING;
+          CREATE VIEW access.recent_events WITH (security_invoker = true) AS SELECT e.id, e.kind FROM access.account_events AS e;
+          CREATE RULE add_event AS ON INSERT TO access.recent_events DO INSTEAD NOTHING;`),
+      ).toEqual([
+        `access.account_events: it has the rule account_events_follow. ${RULE}`,
+        `access.account_events: it has the rule keep_events. ${RULE}`,
+        `access.recent_events: it has the rule add_event. ${RULE}`,
+      ]);
+      expect(await problemsAfter("CREATE VIEW access.recent_events WITH (security_invoker = true) AS SELECT e.id, e.kind FROM access.account_events AS e;")).toEqual([]);
+      // PostgreSQL gives a view's own name to no other rule.
+      await expect(problemsAfter(`CREATE RULE "_RETURN" AS ON INSERT TO access.account_events DO INSTEAD NOTHING;`)).rejects.toMatchObject({
+        code: "42P17",
+        message: 'non-view rule for "account_events" must not be named "_RETURN"',
       });
     });
 

@@ -16,9 +16,11 @@
 // request that read the old idle time does not undo it. A person's change of
 // one membership leaves a session that works in another company, or in
 // none, on its own idle time, also when the session chooses the other
-// company while the change runs. Every request of a burst after the idle
-// time is refused. After logout the cookie is refused: that half is in
-// sessions.db.test.ts. The server's clock is moved forwards.
+// company while the change runs. A member's lower idle time leaves another
+// member's session in the same company on that member's own idle time.
+// Every request of a burst after the idle time is refused. After logout the
+// cookie is refused: that half is in sessions.db.test.ts. The server's clock
+// is moved forwards.
 
 import type { Client, QueryResult, QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -252,6 +254,22 @@ describe("idle logout", () => {
       expect((await getAs(server, session, "/v1/session")).status).toBe(401);
       expect((await endOf(session))?.end_reason).toBe("idle");
     });
+  });
+
+  it("leaves another member's session in the company on that member's own idle time, when one member lowers theirs", async () => {
+    const first = await memberInCompany(480);
+    const second = await memberInCompany(480);
+    expect((await changeOwn(first.session, { idleTimeout: 15 })).status).toBe(200);
+    // The lowering reaches the first member's session at once, and leaves the second member's row as it was.
+    expect(await idleOf(first.session)).toBe(15);
+    expect(await idleOf(second.session)).toBe(480);
+    expect(await endOf(second.session)).toEqual({ ended_at: null, end_reason: null });
+    server.clock.advance(20 * MINUTE);
+    expect((await getAs(server, second.session, "/v1/company")).status).toBe(200);
+    expect(await idleOf(second.session)).toBe(480);
+    expect(await endOf(second.session)).toEqual({ ended_at: null, end_reason: null });
+    expect((await getAs(server, first.session, "/v1/company")).status).toBe(401);
+    expect((await endOf(first.session))?.end_reason).toBe("idle");
   });
 
   it("does not bring a session back that went past its idle time, when the idle time is raised later", async () => {
