@@ -37,19 +37,23 @@
 // A name counts quoted or not (also with its quotes escaped in a JS string),
 // in any case, with a schema in front, and with any space, line break or SQL
 // comment around its dot. Each rule reads the whole file with its JS escapes
-// (\u and \x) read as their characters, so a name over several lines or
-// behind an escape is caught, and a problem names the line where its match
-// starts. The text cannot see a name or a statement joined from pieces at
-// run time, or other code written to hide what it runs. Two more halves hold
-// part of that: modules/memberships/one-function.db.test.ts reads the
-// catalog (no other function the app may run reads the memberships across
-// companies, by any spelling, or runs dynamic SQL), and authorize, tx.enter
+// read as JS reads them in a string: \t, \n and the other escapes of one
+// letter as their control characters, \u and \x as their characters, a
+// backslash before any other character as that character, and a line
+// continuation as nothing. So a name over several lines, behind an escape
+// or right after one is caught, and a problem names the line where its
+// match starts. The text cannot see a name or a statement joined from
+// pieces at run time, or other code written to hide what it runs. Two more
+// halves hold part of that: modules/memberships/one-function.db.test.ts
+// reads the catalog (no other routine the app may run reads the memberships
+// across companies, by any spelling, and none sets a setting, runs dynamic
+// SQL or writes a name in SQL's Unicode escapes), and authorize, tx.enter
 // and a transaction in a company refuse at run time an object that
-// resolve.ts did not make. A statement joined at run time that sets a
-// setting is caught by neither: a change from outside is read in full before
-// it merges (AGENTS.md). A test file is not read: the tests read and write
-// the table and set the settings by hand to prove the database's rules, and
-// build their principals through resolve.ts.
+// resolve.ts did not make. A statement joined at run time in the server's
+// code that sets a setting is caught by neither: a change from outside is
+// read in full before it merges (AGENTS.md). A test file is not read: the
+// tests read and write the table and set the settings by hand to prove the
+// database's rules, and build their principals through resolve.ts.
 
 /** The one file that calls the one function and makes its objects. */
 export const RESOLVE = "apps/server/src/modules/memberships/resolve.ts";
@@ -116,15 +120,59 @@ function dotted(schema: string, name: string): string {
   return `${NOT_AN_IDENTIFIER_BEFORE}${QUOTE}${schema}${QUOTE}${SQL_SPACE}*\\.${SQL_SPACE}*${QUOTE}${name}${QUOTE}${NOT_AN_IDENTIFIER_AFTER}`;
 }
 
-/** A JS escape: \u{…}, \uNNNN or \xNN. */
-const JS_ESCAPE = /\\u\{[0-9a-fA-F]+\}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}/g;
+/**
+ * A JS escape: \u{…}, \uNNNN or \xNN; a backslash before a line break, a
+ * line continuation; or a backslash before any other character, also
+ * another backslash, read from left to right.
+ */
+const JS_ESCAPE = /\\(?:u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|\r\n|[\s\S])/g;
 
-/** A file's text with each JS escape read as its character. One that names a line break, or no character, reads as a space, so each line keeps its number. */
-function unescaped(text: string): string {
-  return text.replace(JS_ESCAPE, (escape) => {
-    const point = Number.parseInt(escape.slice(2).replace(/[{}]/g, ""), 16);
+/** The escapes of one letter that JS reads as a control character, each as that character, but a line break as a space, so each line keeps its number. */
+const CONTROL_ESCAPES: Readonly<Record<string, string>> = { b: "\b", f: "\f", n: " ", r: " ", t: "\t", v: "\v", "0": "\0" };
+
+/** A file's text as the rules read it, and where in it a line continuation took out a line break. */
+interface ReadText {
+  readonly text: string;
+  readonly joins: readonly number[];
+}
+
+/** The line breaks that a backslash before them makes a line continuation: CR LF, LF, CR, and the line and paragraph separators. */
+const CONTINUED: ReadonlySet<string> = new Set(["\r\n", "\n", "\r", String.fromCodePoint(0x2028), String.fromCodePoint(0x2029)]);
+
+/** One JS escape as its character: a code point that names a line break, or no character, as a space; a line continuation as nothing. */
+function escapedCharacter(escape: string): string {
+  const rest = escape.slice(1);
+  if (/^(?:u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2})$/.test(rest)) {
+    const point = Number.parseInt(rest.slice(1).replace(/[{}]/g, ""), 16);
     return point > 0x10ffff || point === 0x0a || point === 0x0d ? " " : String.fromCodePoint(point);
+  }
+  if (CONTINUED.has(rest)) {
+    return "";
+  }
+  return CONTROL_ESCAPES[rest] ?? rest;
+}
+
+/**
+ * A file's text with each JS escape read as JS reads it in a string, from
+ * left to right: \t, \n and the other escapes of one letter as their
+ * control characters, \u and \x as their characters, a backslash before any
+ * other character as that character, and a line continuation as nothing, so
+ * a name over two lines that it joins is one name. Each line keeps its
+ * number: a line break as a space, and the place of each line that a
+ * continuation joins to the next is kept.
+ */
+function unescaped(source: string): ReadText {
+  const joins: number[] = [];
+  let shorter = 0;
+  const text = source.replace(JS_ESCAPE, (escape: string, offset: number) => {
+    const read = escapedCharacter(escape);
+    if (escape === "\\\n" || escape === "\\\r\n") {
+      joins.push(offset - shorter);
+    }
+    shorter += escape.length - read.length;
+    return read;
   });
+  return { text, joins };
 }
 
 /** The one function, by its bare name, in any case: a schema in front, quoted or not, does not hide it. */
@@ -232,10 +280,10 @@ const RULES: readonly Rule[] = [
   },
 ];
 
-/** The line of `text` that holds the character at `index`, counted from 1. */
-function lineAt(text: string, index: number): number {
-  let line = 1;
-  for (let end = text.indexOf("\n"); end !== -1 && end < index; end = text.indexOf("\n", end + 1)) {
+/** The line of the file that holds the character at `index` of its read text, counted from 1: the read text's line breaks before it, and the ones that a continuation took out. */
+function lineAt(read: ReadText, index: number): number {
+  let line = 1 + read.joins.filter((join) => join <= index).length;
+  for (let end = read.text.indexOf("\n"); end !== -1 && end < index; end = read.text.indexOf("\n", end + 1)) {
     line += 1;
   }
   return line;
@@ -244,11 +292,11 @@ function lineAt(text: string, index: number): number {
 /** The problems of one file, as "<line>: <problem>": one for each line and rule, the first pattern's that matches there, by line and then in the order of the rules. */
 function fileProblems(file: SourceFile): string[] {
   const found: { readonly line: number; readonly rule: number; readonly problem: string }[] = [];
-  const text = unescaped(file.text);
+  const read = unescaped(file.text);
   RULES.forEach((rule, index) => {
     for (const pattern of rule.patterns(file.path)) {
-      for (const match of text.matchAll(pattern)) {
-        const line = lineAt(text, match.index);
+      for (const match of read.text.matchAll(pattern)) {
+        const line = lineAt(read, match.index);
         if (!found.some((seen) => seen.line === line && seen.rule === index)) {
           found.push({ line, rule: index, problem: rule.problem(match) });
         }

@@ -125,6 +125,9 @@ describe("the paths and the methods", () => {
     ["PUT", "/v1/health", "GET, HEAD"],
     ["DELETE", "/v1/test-accounts", "GET, HEAD"],
     ["OPTIONS", "/v1/company", "GET, HEAD"],
+    ["PATCH", "/v1/me/companies/recent", "GET, HEAD"],
+    ["DELETE", "/v1/me/companies/recent", "GET, HEAD"],
+    ["GET", `/v1/me/companies/${COMPANY}`, "PATCH"],
   ])("answers %s %s with 405 method-not-allowed and Allow: %s", async (method, path, allow) => {
     const database = untouchedDatabase();
     const response = await app(database).request(path, { method });
@@ -164,6 +167,29 @@ describe("the paths and the methods", () => {
     const response = await hono.request("/v1/test-accounts", { method: "DELETE" });
     expect(response.status).toBe(405);
     expect(response.headers.get("allow")).toBe("GET, HEAD, POST");
+  });
+
+  it("answers a path before a path with a parameter in its place, whatever the registry's order", async () => {
+    for (const registry of [TEST_REGISTRY, [...TEST_REGISTRY].reverse()]) {
+      const { hono } = buildTestApp({ database: untouchedDatabase(), resolve: testResolver(TOKENS), registry });
+      const answers = [];
+      for (const [method, path] of [
+        ["PATCH", "/v1/me/companies/recent"],
+        ["DELETE", "/v1/me/companies/recent"],
+        ["GET", `/v1/me/companies/${COMPANY}`],
+      ] as const) {
+        const response = await hono.request(path, { method });
+        answers.push([method, path, response.status, response.headers.get("allow")]);
+      }
+      expect(answers).toEqual([
+        ["PATCH", "/v1/me/companies/recent", 405, "GET, HEAD"],
+        ["DELETE", "/v1/me/companies/recent", 405, "GET, HEAD"],
+        ["GET", `/v1/me/companies/${COMPANY}`, 405, "PATCH"],
+      ]);
+      // The path's own operation still answers it.
+      expect((await hono.request("/v1/me/companies/recent")).status).toBe(401);
+      expect((await hono.request(`/v1/me/companies/${COMPANY}`, { method: "PATCH" })).status).toBe(401);
+    }
   });
 
   it("answers HEAD as GET, with no body", async () => {

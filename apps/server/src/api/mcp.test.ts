@@ -437,7 +437,7 @@ const TOOLS = [
     name: "getCompany",
     title: "Read the company",
     description:
-      "Gives the company you work in: its id, name, organisation number and database number. Every other tool works in this company too.",
+      "Gives the company you work in: its id, name, organisation number and database number. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
     inputSchema: NO_INPUT,
     outputSchema: {
       type: "object",

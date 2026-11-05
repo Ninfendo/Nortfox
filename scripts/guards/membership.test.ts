@@ -8,7 +8,8 @@
 // the memberships, a principal or a company access built by hand, the token
 // that only resolve.ts holds, a file that sets the transaction's company or
 // actor itself, by name or by a SET, RESET or DO statement, also with a name
-// over several lines or through a JS escape, a name in SQL's Unicode
+// over several lines or a line continuation, through a JS escape or right
+// after one, a name in SQL's Unicode
 // escapes, a second caller of the deletion's form, and code that names a
 // test's path. The catalog's half is
 // apps/server/src/modules/memberships/one-function.db.test.ts.
@@ -398,6 +399,51 @@ describe("the membership guard", () => {
 
     it("reads a JS escape as its character, keeps each line's number, and leaves an escape of no character", () => {
       expect(problemsWith(HANDLER, 'const a = "\\x0A\\u{110000}";', "const b = 'nortfox\\u002Ecompany_id';")).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
+    });
+
+    it.each([
+      ["SET LOCAL after a tab", "await tx.query(`\\tSET LOCAL\\tnortfox.company_id = '${companyId}'`);"],
+      ["SET LOCAL after a line break, a return, a vertical tab, a form feed, a backspace and a NUL", "await tx.query(`\\n\\r\\v\\f\\b\\0SET LOCAL ${setting} = '${companyId}'`);"],
+      ["SET SESSION with a line break between", "await tx.query(`SET\\nSESSION ${setting} TO '${companyId}'`);"],
+      ["a plain SET after a line break", 'await tx.query("\\nSET " + setting + " = $1", [companyId]);'],
+      ["a plain SET after a return and a line break", 'await tx.query("SELECT 1;\\r\\nset " + setting + " = $1", [companyId]);'],
+      ["RESET after a tab", "await tx.query(`\\tRESET ${setting}`);"],
+      ["set_config after a line break", 'await tx.query("SELECT\\nset_config($1, $2, true)", [name, companyId]);'],
+      ["pg_settings after a tab", "await tx.query('SELECT setting FROM\\tpg_settings WHERE name = $1', [setting]);"],
+      ["a DO block after a line break", 'await tx.query("\\nDO $$ BEGIN EXECUTE x; END $$");'],
+      ["a setting's name after a tab", "const name = '\\tnortfox.company_id';"],
+      ["SET LOCAL with an escape that JS reads as the letter", "await tx.query(`S\\ET L\\OCAL ${setting} = '${companyId}'`);"],
+      ["set_config with an escape that JS reads as the letter", 'await tx.query("SELECT set_\\config($1, $2, true)", [setting, companyId]);'],
+      ["a setting's name with escapes that JS reads as the letters", 'const name = "n\\ortfox\\.company\\_id";'],
+    ])("fails it %s", (_case, line) => {
+      expect(problemsWith(HANDLER, "const ok = 1;", line)).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
+    });
+
+    it.each([
+      ["after a tab", 'await tx.query("SELECT * FROM\\taccess.memberships");', readsTable("access.memberships")],
+      ["with an escape that JS reads as the letter", 'await tx.query("SELECT * FROM access.member\\ships");', readsTable("access.memberships")],
+      ["the people of the company after a line break", 'await tx.query("SELECT * FROM\\ncompany_people($1)");', readsTable("access.company_people")],
+      ["the one function after a tab", 'await tx.query("SELECT * FROM\\tactive_membership($1)");', FUNCTION_ELSEWHERE],
+      ["the one function with an escape that JS reads as the letter", 'await tx.query("SELECT * FROM access.active\\_membership($1)");', FUNCTION_ELSEWHERE],
+    ])("fails a table or the one function %s", (_case, line, problem) => {
+      expect(problemsWith(HANDLER, "const ok = 1;", line)).toEqual([`${HANDLER}:2: ${problem}`]);
+    });
+
+    it("joins a line that a JS line continuation ends to the next, and keeps the next lines' numbers", () => {
+      expect(problemsWith(HANDLER, "const ok = 1;", 'const name = "nortfox.com\\', 'pany_id";', "x as CompanyAccess")).toEqual([
+        `${HANDLER}:2: ${SETS_SETTINGS}`,
+        `${HANDLER}:4: ${builtByHand("CompanyAccess")}`,
+      ]);
+      expect(problemsWith(HANDLER, "const ok = 1;\r", 'await tx.query("SELECT * FROM access.mem\\\r', 'berships");\r', "x as CompanyAccess\r")).toEqual([
+        `${HANDLER}:2: ${readsTable("access.memberships")}`,
+        `${HANDLER}:4: ${builtByHand("CompanyAccess")}`,
+      ]);
+      // A statement that starts the next line is on the next line.
+      expect(problemsWith(HANDLER, "const ok = 1;", 'await tx.query("SELECT 1; \\', 'SET LOCAL nortfox.company_id = $1", [companyId]);')).toEqual([`${HANDLER}:3: ${SETS_SETTINGS}`]);
+    });
+
+    it("reads an escaped backslash as one, so the letter after it starts no escape", () => {
+      expect(problemsWith(HANDLER, 'const words = "a\\\\nset_config b";')).toEqual([]);
     });
   });
 

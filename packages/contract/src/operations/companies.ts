@@ -113,7 +113,7 @@ export const getCompany = defineOperation({
     "Gives the company the request works in: its id, name, organisation number and tenant id. The company comes from the request's credential.",
   output: Company,
   permission: "company:read",
-  tool: "Gives the company you work in: its id, name, organisation number and database number. Every other tool works in this company too.",
+  tool: "Gives the company you work in: its id, name, organisation number and database number. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
   assistant: true,
   writes: false,
 });

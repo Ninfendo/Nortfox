@@ -82,7 +82,7 @@ Each request runs in one database transaction, with the company, the actor, the 
 
 ## Requests on `/v1`
 
-- Paths and names are case-sensitive. A path has no trailing slash. An unknown path gets 404 `not-found`. A known path with another method gets 405 `method-not-allowed`, with the methods it takes in `Allow`.
+- Paths and names are case-sensitive. A path has no trailing slash. An unknown path gets 404 `not-found`. A known path with another method gets 405 `method-not-allowed`, with the methods it takes in `Allow`. A fixed path comes before a path with a parameter in its place, as in OpenAPI: `PATCH /v1/me/companies/recent` gets 405 with `Allow: GET, HEAD`, and never reaches `updateMyMembership`.
 - A path parameter is one segment of the path, such as the id in `/v1/users/{userId}`. Its value is checked like any field: a bad one is a field problem at `/userId`.
 - A query parameter that the operation does not declare is refused, and so is a parameter given twice.
 - A body is JSON in UTF-8, sent as `application/json`. Another media type gets 415 `unsupported-media-type`. A body that does not parse gets 400 `malformed-json`. A body over 1 MiB gets 413 `payload-too-large`.
