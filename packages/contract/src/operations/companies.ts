@@ -11,7 +11,7 @@ import { z } from "zod";
 import { ADMIN_LEVELS } from "../access/permissions.ts";
 import { personal } from "../fields.ts";
 import { defineListOperation, defineOperation } from "../operation.ts";
-import { noNul } from "../text.ts";
+import { noNul, wellFormed } from "../text.ts";
 
 /** An organisation number: ten digits with a hyphen after the sixth. */
 const ORGANIZATION_NUMBER = /^[0-9]{6}-[0-9]{4}$/;
@@ -129,7 +129,7 @@ export const createCompany = defineOperation({
     "Makes a company with its name and organisation number, and makes the signed-in person its owner, a system administrator, in the same transaction. " +
     "The company gets its tenant id, a number that is never given out again. The organisation number never changes.",
   body: z.strictObject({
-    name: z.string().min(1).max(200).check(noNul()).meta({ description: "The company's name." }),
+    name: z.string().min(1).max(200).check(noNul(), wellFormed()).meta({ description: "The company's name." }),
     organizationNumber: z.string().regex(ORGANIZATION_NUMBER).meta({ description: "The organisation number: ten digits with a hyphen after the sixth." }),
   }),
   output: Company,
@@ -151,7 +151,7 @@ export const listCompanies = defineListOperation({
     "Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. " +
     "query keeps the companies whose name or organisation number holds it, in any letter case.",
   query: z.strictObject({
-    query: z.string().min(1).max(200).check(noNul()).optional().meta({ description: "A part of the company's name, in any letter case, or of its organisation number." }),
+    query: z.string().min(1).max(200).check(noNul(), wellFormed()).optional().meta({ description: "A part of the company's name, in any letter case, or of its organisation number." }),
   }),
   item: CompanyChoice,
   permission: "signed-in",
@@ -187,11 +187,11 @@ export const updateMyMembership = defineOperation({
     workEmail: z
       .email({ pattern: z.regexes.unicodeEmail })
       .max(254)
-      .check(noNul())
+      .check(noNul(), wellFormed())
       .nullable()
       .optional()
       .meta({ description: "The work e-mail address in this company, or null for none." }),
-    workPhone: z.string().min(1).max(50).check(noNul()).nullable().optional().meta({ description: "The work phone number in this company, or null for none." }),
+    workPhone: z.string().min(1).max(50).check(noNul(), wellFormed()).nullable().optional().meta({ description: "The work phone number in this company, or null for none." }),
     idleTimeout: IdleTimeout.optional(),
   }),
   output: Membership,

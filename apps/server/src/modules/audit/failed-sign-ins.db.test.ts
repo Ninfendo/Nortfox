@@ -193,7 +193,13 @@ describe("the behandlingshistorik of a failed sign-in", () => {
     const { session } = await signIn(server, person, { ipAddress: ADDRESS });
     expect((await chooseCompany(server, session, alfa)).status).toBe(200);
     expect((await passwordStep(server, person.email, "fel-direkt", { ipAddress: ADDRESS })).status).toBe(422);
-    expect((await entriesOf(person)).map((entry) => entry.company_id).sort()).toEqual([alfa, beta].sort());
+    // The count of the last hour takes the failed sign-in, not the one that succeeded before it.
+    expect((await entriesOf(person)).map((entry) => [entry.company_id, entry.details["failuresInLastHour"]]).sort()).toEqual(
+      [
+        [alfa, 1],
+        [beta, 1],
+      ].sort(),
+    );
   });
 
   it("writes nothing in a company that the person stops being an active member of before its entry is written", async () => {

@@ -226,6 +226,18 @@ describe("updateMyMembership", () => {
     }
   });
 
+  it("refuses a work contact with a lone surrogate as a field problem, and keeps what was there", async () => {
+    expect((await change(beta.id, { workEmail: "alva.berg@example.com", workPhone: "070-174 06 07" })).status).toBe(200);
+    for (const body of [{ workPhone: "070 \uD800" }, { workEmail: "a\uDC00@example.com" }]) {
+      const field = Object.keys(body)[0] ?? "";
+      const problem = await jsonOf<ProblemBody>(await change(beta.id, body), 400);
+      expect(problem.errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
+        ["invalid-value", `/${field}`, `The field /${field} holds a lone surrogate, which is not a character.`],
+      ]);
+    }
+    expect(await contactsOf(beta.id)).toEqual([{ work_email: "alva.berg@example.com", work_phone: "070-174 06 07" }]);
+  });
+
   it("leaves no token in an answer and no secret at rest", async () => {
     expectNoTokensFromSignInApps();
     await expectNoSecretsAtRestFromSignInApps(db);

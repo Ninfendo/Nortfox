@@ -7,8 +7,10 @@
 // function: a file that calls the function elsewhere, a handler that reads
 // the memberships, a principal or a company access built by hand, the token
 // that only resolve.ts holds, a file that sets the transaction's company or
-// actor itself, also with a name over several lines, a second caller of the
-// deletion's form, and code that imports a test. The catalog's half is
+// actor itself, by name or by a SET, RESET or DO statement, also with a name
+// over several lines or through a JS escape, a name in SQL's Unicode
+// escapes, a second caller of the deletion's form, and code that names a
+// test's path. The catalog's half is
 // apps/server/src/modules/memberships/one-function.db.test.ts.
 
 import { readFileSync } from "node:fs";
@@ -60,12 +62,14 @@ function builtByHand(name: string): string {
 
 const TOKEN_ELSEWHERE = `names MEMBERSHIP_TOKEN, which never leaves ${RESOLVE}.`;
 
-const SETS_SETTINGS = `sets the transaction's company, actor or channel itself (set_config, SET LOCAL, SET SESSION, pg_settings, or nortfox.company_id, nortfox.actor_id, nortfox.actor_kind or nortfox.channel). Only ${DATABASE} sets them: a company comes from the one function's answer, as a company access or through tx.enter.`;
+const SETS_SETTINGS = `sets the transaction's company, actor or channel itself (set_config, a SET or RESET statement, pg_settings, a DO block, or nortfox.company_id, nortfox.actor_id, nortfox.actor_kind or nortfox.channel). Only ${DATABASE} sets them: a company comes from the one function's answer, as a company access or through tx.enter.`;
+
+const UNICODE_ESCAPES = "writes a name or a text in SQL's Unicode escapes (U&), which hide a name from this guard. Write it as it is.";
 
 const SECOND_DELETION_CALLER = `calls liveForDeletion, which only ${DELETE_ME} calls.`;
 
 function importsTest(specifier: string): string {
-  return `imports a test or a test helper (${specifier}). The guard does not read the tests, so code that the server runs never imports one.`;
+  return `names a test or a test helper (${specifier}). The guard does not read the tests, so code that the server runs never loads one.`;
 }
 
 describe("the server's source", () => {
@@ -139,8 +143,9 @@ describe("the membership guard", () => {
       ["in capitals", "select * from ACCESS.ACTIVE_MEMBERSHIP($1)"],
       ["quoted", 'SELECT * FROM "access"."active_membership"($1)'],
       ["with spaces around the dot", "SELECT * FROM access . active_membership($1)"],
-      ["by its bare name", "SET search_path = access; SELECT * FROM active_membership($1)"],
+      ["by its bare name", "SELECT * FROM active_membership($1)"],
       ["in a comment", "// The resolver asks access.active_membership itself."],
+      ["through a JS escape", 'const sql = "SELECT * FROM access.active\\u005Fmembership($1)";'],
     ])("fails it %s", (_case, line) => {
       expect(problemsWith("apps/server/src/auth/resolver.ts", "const x = 1;", line)).toEqual([`apps/server/src/auth/resolver.ts:2: ${FUNCTION_ELSEWHERE}`]);
     });
@@ -173,8 +178,13 @@ describe("the membership guard", () => {
       ["half quoted", 'UPDATE access."memberships" SET status = $1', "access.memberships"],
       ["with spaces around the dot", "DELETE FROM access .\tmemberships", "access.memberships"],
       ["in a comment", "/* reads access.memberships */", "access.memberships"],
+      ["quoted inside a JS string", 'await tx.query("SELECT * FROM \\"access\\".\\"memberships\\"");', "access.memberships"],
+      ["with SQL comments around the dot", "SELECT * FROM access/* the schema */./**/memberships", "access.memberships"],
+      ["with a line comment before the dot", "SELECT * FROM access -- the schema\n  .memberships", "access.memberships"],
+      ["through a JS escape", 'const sql = "SELECT * FROM access\\x2Ememberships";', "access.memberships"],
       ["through the people of the company", "SELECT * FROM access.company_people($1)", "access.company_people"],
       ["through the people of the company, by its bare name", "SELECT * FROM company_people($1)", "access.company_people"],
+      ["through the people of the company, in capitals", "SELECT * FROM ACCESS.COMPANY_PEOPLE($1)", "access.company_people"],
     ])("fails it %s", (_case, line, name) => {
       expect(problemsWith(HANDLER, line)).toEqual([`${HANDLER}:1: ${readsTable(name)}`]);
     });
@@ -279,7 +289,29 @@ describe("the membership guard", () => {
       ["in a comment", "// The handler sets nortfox.company_id for the company it reads."],
       ["with SET LOCAL and the name from elsewhere", "await tx.query(`SET LOCAL ${setting} = '${companyId}'`);"],
       ["with SET SESSION, in small letters", "await tx.query(`set session ${setting} to '${companyId}'`);"],
+      ["with SET LOCAL inside a statement", "await tx.query(`${begin} SET LOCAL ${setting} = '${companyId}'`);"],
+      ["with SET SESSION inside a statement, in small letters", "await tx.query(`${begin} set session ${setting} to '${companyId}'`);"],
+      ["with a comment between SET and LOCAL", "await tx.query(`${begin} SET/**/LOCAL ${setting} = '${companyId}'`);"],
       ["through pg_settings", "await tx.query('UPDATE pg_catalog.pg_settings SET setting = $2 WHERE name = $1', [setting, companyId]);"],
+      ["through pg_settings in capitals", "await tx.query('SELECT setting FROM PG_CATALOG.PG_SETTINGS WHERE name = $1', [setting]);"],
+      ["a setting's name in capitals, and nothing else", "// The handler reads NORTFOX.COMPANY_ID itself."],
+      ["a setting's name quoted inside a JS string", 'const name = "\\"nortfox\\".\\"actor_id\\"";'],
+      ["a setting's name with SQL comments around the dot","await tx.query(`SELECT current_setting('x') FROM nortfox/**/./**/channel`);"],
+      ["a setting's name through a JS escape", 'const name = "nortfox\\u{2E}company_id";'],
+      ["by set_config through a JS escape", 'await tx.query("SELECT pg_catalog.set\\u005Fconfig($1, $2, true)", [setting, companyId]);'],
+      ["with a plain SET and the name from elsewhere", "await tx.query(`SET ${setting} TO '${companyId}'`);"],
+      ["with a plain SET and =", "await tx.query(`SET ${setting} = '${companyId}'`);"],
+      ["with a plain SET after a statement, in small letters", "await tx.query(`SELECT 1; set ${setting} = '${companyId}'`);"],
+      ["with a plain SET after a comment", "await tx.query(`/* the company */ SET ${setting} = '${companyId}'`);"],
+      ["with a plain SET and a comment after it", "await tx.query(`SET/* the company */${setting} = '${companyId}'`);"],
+      ["with a plain SET in a string", 'await tx.query("SET " + setting + " = $1", [companyId]);'],
+      ["with a plain SET of the search path", "await tx.query('SET search_path = access, pg_catalog');"],
+      ["with SET ROLE", "await tx.query('SET ROLE nortfox_owner');"],
+      ["with RESET", "await tx.query(`RESET ${setting}`);"],
+      ["with RESET in small letters, after a statement", "await tx.query(`SELECT 1; reset all`);"],
+      ["through a DO block", "await tx.query(`DO $$ BEGIN EXECUTE ${statement}; END $$`);"],
+      ["through a DO block in small letters, with a tag", "await tx.query(`do $body$ begin execute ${statement}; end $body$`);"],
+      ["through a DO block with its language and a string", "await tx.query(\"DO LANGUAGE plpgsql 'BEGIN EXECUTE x; END'\");"],
     ])("fails it %s", (_case, line) => {
       expect(problemsWith(HANDLER, "const ok = 1;", line)).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
     });
@@ -288,8 +320,20 @@ describe("the membership guard", () => {
       ["SET LOCAL with a line break after the dot", ["await tx.query(`SET LOCAL nortfox.", "    company_id = '${companyId}'`);"]],
       ["a line break before the dot", ["await tx.query(`SELECT set_value FROM x WHERE n = 'nortfox", "  .company_id'`);"]],
       ["quoted, with line breaks on both sides of the dot", ['const name = `"nortfox"', "  .", '  "actor_id"`;']],
+      ["SET and LOCAL on two lines, with a line comment between", ["await tx.query(`${begin} SET -- the company", "  LOCAL ${setting} = '${companyId}'`);"]],
     ])("fails it with the name over several lines: %s", (_case, lines) => {
       expect(problemsWith(HANDLER, "const ok = 1;", ...lines)).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
+    });
+
+    it("names the line of a SET that starts a statement, also when its quote or a line comment is on the line before", () => {
+      expect(problemsWith(HANDLER, "const ok = 1;", "await tx.query(`", "  SET ${setting} = '${companyId}'`);")).toEqual([`${HANDLER}:3: ${SETS_SETTINGS}`]);
+      expect(problemsWith(HANDLER, "const ok = 1;", "await tx.query(`-- the company", "  SET ${setting} = '${companyId}'`);")).toEqual([`${HANDLER}:3: ${SETS_SETTINGS}`]);
+    });
+
+    it("fails a SET of the search path, and not the bare name of the memberships that it then reads", () => {
+      expect(problemsWith(HANDLER, "await tx.query('SET search_path = access, pg_catalog');", "await tx.query('SELECT user_id, status FROM memberships');")).toEqual([
+        `${HANDLER}:1: ${SETS_SETTINGS}`,
+      ]);
     });
 
     it("fails it in the memberships module and in resolve.ts too", () => {
@@ -322,9 +366,65 @@ describe("the membership guard", () => {
         ),
       ).toEqual([]);
     });
+
+    it("does not take an UPDATE's SET, a set of values, a setter or a word in a text for a SET statement, nor a loop for a DO block", () => {
+      expect(
+        problemsWith(
+          HANDLER,
+          "await tx.query('UPDATE ledger.companies SET name = $1 WHERE company_id = $2', [name, id]);",
+          "await tx.query(`UPDATE ledger.companies",
+          "   SET name = $1",
+          "   WHERE company_id = $2`, [name, id]);",
+          "await tx.query('INSERT INTO x (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET name = excluded.name');",
+          "await tx.query('INSERT INTO x (id) VALUES ($1) ON CONFLICT DO NOTHING');",
+          `await tx.query('UPDATE "ledger"."companies" SET name = $1 WHERE company_id = $2', [name, id]);`,
+          'await tx.query("UPDATE \\"ledger\\".\\"companies\\" SET name = $1 WHERE company_id = $2", [name, id]);',
+          "await tx.query('SET CONSTRAINTS ALL IMMEDIATE');",
+          "await tx.query('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');",
+          "const kinds = new Set(['set-session', 'set-device']);",
+          'headers.append("Set-Cookie", value);',
+          "#count = 0;",
+          "  set count(value) { this.#count = value; }",
+          "const a = 1;",
+          "set = a;",
+          "do {",
+          "  i += 1;",
+          "} while (i < 3);",
+          "// They do it once, and set it then.",
+          'throw new Error("NORTFOX_PUBLIC_ORIGIN is not set. Set it to the origin.");',
+        ),
+      ).toEqual([]);
+    });
+
+    it("reads a JS escape as its character, keeps each line's number, and leaves an escape of no character", () => {
+      expect(problemsWith(HANDLER, 'const a = "\\x0A\\u{110000}";', "const b = 'nortfox\\u002Ecompany_id';")).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
+    });
   });
 
-  describe("code that imports a test", () => {
+  describe("a name in SQL's Unicode escapes", () => {
+    it.each([
+      ["set_config and the company's setting", String.raw`await tx.query("SELECT pg_catalog.U&\"set\005Fconfig\"(U&'\006Eortfox.company\005Fid', $1, true)", [beta]);`],
+      ["the company's setting", String.raw`SET U&"\006Eortfox".U&"company\005Fid" = '5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a'`],
+      ["the one function", String.raw`SELECT * FROM access.U&"active\005Fmembership"()`],
+      ["the memberships", String.raw`SELECT user_id FROM access.U&"\006Demberships"`],
+      ["in small letters", String.raw`SELECT user_id FROM access.u&"\006Demberships"`],
+      ["in a text", String.raw`SELECT pg_catalog.current_setting(U&'nortfox\002Ecompany_id')`],
+      ["quoted inside a JS string", String.raw`await tx.query("SELECT user_id FROM access.U&\"\006Demberships\"");`],
+    ])("fails %s", (_case, line) => {
+      expect(problemsWith(HANDLER, line)).toEqual([`${HANDLER}:1: ${UNICODE_ESCAPES}`]);
+    });
+
+    it("fails them in resolve.ts and in db/database.ts too", () => {
+      expect(problemsWith(DATABASE, String.raw`const SET_COMPANY = "SELECT pg_catalog.set_config(U&'nortfox.company\005Fid', $1, true)";`)).toEqual([`${DATABASE}:1: ${UNICODE_ESCAPES}`]);
+      expect(membershipProblems([{ path: RESOLVE, text: `${RESOLVE_FILE.text}\n${String.raw`SELECT * FROM access.U&"\006Demberships"`}` }])).toEqual([`${RESOLVE}:9: ${UNICODE_ESCAPES}`]);
+    });
+
+    it("does not take an and or a name that ends in u for one", () => {
+      expect(problemsWith(HANDLER, "const both = a && 'b';", "const menu = menu&'x';", "const flags = U & 0x1;")).toEqual([]);
+    });
+  });
+
+  describe("code that names a test's path", () => {
     it.each([
       ["a test file", 'import { workIn } from "./work-in.test.ts";', "./work-in.test.ts"],
       ["a database test, by a path with no extension", 'export { workIn } from "../companies/peek.db.test";', "../companies/peek.db.test"],
@@ -332,16 +432,23 @@ describe("the membership guard", () => {
       ["a test helper", 'import { asMember } from "../../../test/memberships.ts";', "../../../test/memberships.ts"],
       ["by a dynamic import", 'const helper = await import("../../test/database.ts");', "../../test/database.ts"],
       ["for its side effects", 'import "./setup.test.js";', "./setup.test.js"],
-      ["with the import over two lines", 'import { asMember } from\n  "../../../test/memberships.ts";', "../../../test/memberships.ts"],
+      ["by a require of another name", "const load = createRequire(import.meta.url); const helper = load('../../../test/memberships.ts');", "../../../test/memberships.ts"],
+      ["in a URL", 'const helper = new URL("../../test/database.ts", import.meta.url);', "../../test/database.ts"],
+      ["by a path built in a template", "const helper = await import(`../../test/${name}.ts`);", "../../test/${name}.ts"],
+      ["from the root", "const helper = load('/app/apps/server/test/memberships.ts');", "/app/apps/server/test/memberships.ts"],
     ])("fails %s", (_case, line, specifier) => {
       expect(problemsWith(HANDLER, line)).toEqual([`${HANDLER}:1: ${importsTest(specifier)}`]);
+    });
+
+    it("names the line of the path, with the import over two lines", () => {
+      expect(problemsWith(HANDLER, "import { asMember } from", '  "../../../test/memberships.ts";')).toEqual([`${HANDLER}:2: ${importsTest("../../../test/memberships.ts")}`]);
     });
 
     it("fails it in a workspace package too", () => {
       expect(problemsWith("packages/contract/src/work-in.ts", 'export * from "./work-in.test.ts";')).toEqual([`packages/contract/src/work-in.ts:1: ${importsTest("./work-in.test.ts")}`]);
     });
 
-    it("does not take another module for a test", () => {
+    it("does not take another module, a host or a word in a text for a test", () => {
       expect(
         problemsWith(
           HANDLER,
@@ -351,6 +458,12 @@ describe("the membership guard", () => {
           'import { attest } from "./attest.ts";',
           'import { testing } from "./testing.ts";',
           "// The test of this file is apps/server/test/memberships.ts.",
+          'const origin = "https://nortfox.test";',
+          'const host = "nortfox.test";',
+          'const words = "the test/ folder";',
+          'const steps = "run it from the /test/folder";',
+          'const route = "/v1/tests/x";',
+          "const plan = './notes.test-plan.md';",
         ),
       ).toEqual([]);
     });

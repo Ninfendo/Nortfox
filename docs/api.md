@@ -248,7 +248,7 @@ The field problems:
 | `unknown-field` | A body field or a tool argument that the operation does not declare. |
 | `missing-field` | A field that the operation needs is missing. |
 | `invalid-type` | A field has the wrong JSON type. `data.expected` names the right one. |
-| `invalid-value` | A field holds a value it does not take. `data.allowed` lists the values when there is a list. No text that the server stores or looks up takes U+0000, which PostgreSQL's text cannot hold. |
+| `invalid-value` | A field holds a value it does not take. `data.allowed` lists the values when there is a list. No text that the server stores or looks up takes U+0000, which PostgreSQL's text cannot hold, or a lone surrogate (half of a character, which JSON can send as an escape such as `\ud800`). |
 | `too-short`, `too-long` | A text or a list is shorter or longer than it may be. |
 | `not-an-integer` | A number that must be whole is not. |
 | `out-of-range` | A number or an amount is outside its bounds. |

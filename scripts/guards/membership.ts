@@ -8,7 +8,7 @@
 // that code:
 //
 // - Only modules/memberships/resolve.ts names access.active_membership, the
-//   one function, by any spelling.
+//   one function, by its bare name, so a schema or quotes do not hide it.
 // - Only the files of modules/memberships/ name the memberships table or the
 //   people of a company (access.company_people); every other module imports
 //   their functions. The table guard names the table for its reason.
@@ -19,24 +19,35 @@
 // - Only modules/users/delete-me.ts calls liveForDeletion, the deletion's
 //   form of the function, which gives inactive memberships too.
 // - Only db/database.ts sets the transaction's company, actor, actor's kind
-//   or channel: no other file names them (nortfox.company_id and the rest,
-//   quoted or not, in any case, with any space or line break around the dot),
+//   or channel: no other file names them (nortfox.company_id and the rest),
 //   or names a way to set a setting whose name comes from elsewhere:
-//   set_config by any spelling, SET LOCAL, SET SESSION or pg_settings. The
-//   migration runner pins its own search path with set_config, for its
-//   reason. A transaction in a company takes its company only as a company
-//   access (db/database.ts), which only resolve.ts makes.
-// - No file imports a test or a test helper (a *.test.* file, or a file in a
-//   test/ folder): the guard reads neither.
+//   set_config, a SET or RESET statement (SET LOCAL and SET SESSION
+//   anywhere, and a plain SET or RESET where it starts a statement: after a
+//   quote or a semicolon), pg_settings, or a DO block, which runs statements
+//   that a text cannot read. SET CONSTRAINTS and SET TRANSACTION set no
+//   setting. The migration runner pins its own search path with set_config,
+//   for its reason. A transaction in a company takes its company only as a
+//   company access (db/database.ts), which only resolve.ts makes.
+// - No file writes a name or a text in SQL's Unicode escapes (U&"…" or
+//   U&'…'), which the server never needs.
+// - No file names the path of a test or a test helper (a *.test.* file, or a
+//   file in a test/ folder), in any string, for any import or loader: the
+//   guard reads neither.
 //
-// Each rule reads the whole file, so a name over several lines is caught,
-// and a problem names the line where its match starts. The text cannot see
-// everything, such as a name joined from pieces at run time, so two more
-// halves hold the rest: modules/memberships/one-function.db.test.ts reads the
+// A name counts quoted or not (also with its quotes escaped in a JS string),
+// in any case, with a schema in front, and with any space, line break or SQL
+// comment around its dot. Each rule reads the whole file with its JS escapes
+// (\u and \x) read as their characters, so a name over several lines or
+// behind an escape is caught, and a problem names the line where its match
+// starts. The text cannot see a name or a statement joined from pieces at
+// run time, or other code written to hide what it runs. Two more halves hold
+// part of that: modules/memberships/one-function.db.test.ts reads the
 // catalog (no other function the app may run reads the memberships across
 // companies, by any spelling, or runs dynamic SQL), and authorize, tx.enter
 // and a transaction in a company refuse at run time an object that
-// resolve.ts did not make. A test file is not read: the tests read and write
+// resolve.ts did not make. A statement joined at run time that sets a
+// setting is caught by neither: a change from outside is read in full before
+// it merges (AGENTS.md). A test file is not read: the tests read and write
 // the table and set the settings by hand to prove the database's rules, and
 // build their principals through resolve.ts.
 
@@ -94,12 +105,34 @@ export function scansFile(path: string): boolean {
 const NOT_AN_IDENTIFIER_BEFORE = "(?<![\\w$])";
 const NOT_AN_IDENTIFIER_AFTER = "(?![\\w$])";
 
+/** A double quote of a SQL name, or none, also escaped in a JS string. */
+const QUOTE = '(?:\\\\?")?';
+
+/** SQL's space between two words: white space, a line break, or a comment of either kind. */
+const SQL_SPACE = "(?:\\s|/\\*[\\s\\S]*?\\*/|--[^\\n]*(?:\\n|$))";
+
+/** A name with a dot: its two parts, quoted or not, with any space, line break or comment around the dot. */
+function dotted(schema: string, name: string): string {
+  return `${NOT_AN_IDENTIFIER_BEFORE}${QUOTE}${schema}${QUOTE}${SQL_SPACE}*\\.${SQL_SPACE}*${QUOTE}${name}${QUOTE}${NOT_AN_IDENTIFIER_AFTER}`;
+}
+
+/** A JS escape: \u{…}, \uNNNN or \xNN. */
+const JS_ESCAPE = /\\u\{[0-9a-fA-F]+\}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}/g;
+
+/** A file's text with each JS escape read as its character. One that names a line break, or no character, reads as a space, so each line keeps its number. */
+function unescaped(text: string): string {
+  return text.replace(JS_ESCAPE, (escape) => {
+    const point = Number.parseInt(escape.slice(2).replace(/[{}]/g, ""), 16);
+    return point > 0x10ffff || point === 0x0a || point === 0x0d ? " " : String.fromCodePoint(point);
+  });
+}
+
 /** The one function, by its bare name, in any case: a schema in front, quoted or not, does not hide it. */
 const THE_FUNCTION = new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}active_membership${NOT_AN_IDENTIFIER_AFTER}`, "gi");
 
-/** The memberships by their schema's name, quoted or not, in any case, with any space around the dot; the people of a company by any spelling. */
+/** The memberships by their schema's name, in any case; the people of a company by its bare name, in any case. */
 const TABLES: readonly { readonly name: string; readonly pattern: RegExp }[] = [
-  { name: "access.memberships", pattern: new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}"?access"?\\s*\\.\\s*"?memberships${NOT_AN_IDENTIFIER_AFTER}`, "gi") },
+  { name: "access.memberships", pattern: new RegExp(dotted("access", "memberships"), "gi") },
   { name: "access.company_people", pattern: new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}company_people${NOT_AN_IDENTIFIER_AFTER}`, "gi") },
 ];
 
@@ -121,21 +154,38 @@ const BY_HAND: readonly RegExp[] = [
 const SET_CONFIG = new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}set_config${NOT_AN_IDENTIFIER_AFTER}`, "gi");
 
 /**
- * The transaction's settings, quoted or not, in any case, with any space
- * around the dot; and the statements that set a setting by a name from
- * elsewhere, SET LOCAL, SET SESSION and pg_settings.
+ * The transaction's settings, in any case; and the ways to set a setting by
+ * a name from elsewhere, in any case: SET LOCAL and SET SESSION anywhere; a
+ * SET or a RESET that starts a statement, after a semicolon or a string's
+ * opening quote, but not SET CONSTRAINTS, SET TRANSACTION, or a JS setter or
+ * variable named set; pg_settings; and a DO block, with its body
+ * dollar-quoted or a string. A double quote after a letter, a digit or a
+ * backslash closes a SQL name, as in UPDATE "access"."x" SET, so it starts
+ * no statement.
  */
 const SETTINGS: readonly RegExp[] = [
-  new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}"?nortfox"?\\s*\\.\\s*"?(company_id|actor_id|actor_kind|channel)"?${NOT_AN_IDENTIFIER_AFTER}`, "gi"),
-  new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}set\\s+(local|session)${NOT_AN_IDENTIFIER_AFTER}`, "gi"),
+  new RegExp(dotted("nortfox", "(?:company_id|actor_id|actor_kind|channel)"), "gi"),
+  new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}set${SQL_SPACE}+(?:local|session)${NOT_AN_IDENTIFIER_AFTER}`, "gi"),
+  new RegExp(
+    `(?<=(?:[;'\`]|(?<![\\w$\\\\])")${SQL_SPACE}*)(?:re)?set(?=${SQL_SPACE})(?!${SQL_SPACE}*(?:[=(]|(?:constraints|transaction)${NOT_AN_IDENTIFIER_AFTER}|[\\w$#]+\\s*\\())`,
+    "gi",
+  ),
   new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}pg_settings${NOT_AN_IDENTIFIER_AFTER}`, "gi"),
+  new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}do${SQL_SPACE}+(?:language${SQL_SPACE}+\\S+${SQL_SPACE}+)?(?:\\$|e?')`, "gi"),
 ];
+
+/** A name or a text in SQL's Unicode escapes, U&"…" or U&'…', in any case, its quote also escaped in a JS string. */
+const UNICODE_ESCAPES = new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}u&\\\\?["']`, "gi");
 
 const TOKEN = /\bMEMBERSHIP_TOKEN\b/g;
 const DELETION = /\bliveForDeletion\b/g;
 
-/** An import, an export from, a dynamic import or a require of a *.test.* file or of a file in a test/ folder. The first group is the path. */
-const TEST_IMPORT = /(?<![\w$.])(?:from|import|require)\s*\(?\s*["'`]((?:[^"'`\r\n]*\/)?(?:test\/[^"'`\r\n]*|[^"'`\r\n/]*\.test(?:\.[cm]?[jt]sx?)?))["'`]/g;
+/**
+ * A path, in any string, of a *.test.* file or of a file in a test/ folder,
+ * whatever import or loader takes it: it has a slash, and no space or colon.
+ * The first group is the path.
+ */
+const TEST_PATH = /["'`]((?:[^"'`\s:]*\/)(?:test\/[^"'`\s:]*|[^"'`\s:/]*\.test(?:\.[cm]?[jt]sx?)?))["'`]/g;
 
 /** A rule of the guard: what breaks it in a file of `path`, none where it does not hold, and its problem. */
 interface Rule {
@@ -166,15 +216,19 @@ const RULES: readonly Rule[] = [
   {
     patterns: (path) => (path === DATABASE ? [] : Object.hasOwn(SETTING_EXCEPTIONS, path) ? SETTINGS : [...SETTINGS, SET_CONFIG]),
     problem: () =>
-      `sets the transaction's company, actor or channel itself (set_config, SET LOCAL, SET SESSION, pg_settings, or nortfox.company_id, nortfox.actor_id, nortfox.actor_kind or nortfox.channel). Only ${DATABASE} sets them: a company comes from the one function's answer, as a company access or through tx.enter.`,
+      `sets the transaction's company, actor or channel itself (set_config, a SET or RESET statement, pg_settings, a DO block, or nortfox.company_id, nortfox.actor_id, nortfox.actor_kind or nortfox.channel). Only ${DATABASE} sets them: a company comes from the one function's answer, as a company access or through tx.enter.`,
+  },
+  {
+    patterns: () => [UNICODE_ESCAPES],
+    problem: () => "writes a name or a text in SQL's Unicode escapes (U&), which hide a name from this guard. Write it as it is.",
   },
   {
     patterns: (path) => (path === RESOLVE || path === DELETE_ME ? [] : [DELETION]),
     problem: () => `calls liveForDeletion, which only ${DELETE_ME} calls.`,
   },
   {
-    patterns: () => [TEST_IMPORT],
-    problem: (found) => `imports a test or a test helper (${String(found[1])}). The guard does not read the tests, so code that the server runs never imports one.`,
+    patterns: () => [TEST_PATH],
+    problem: (found) => `names a test or a test helper (${String(found[1])}). The guard does not read the tests, so code that the server runs never loads one.`,
   },
 ];
 
@@ -190,10 +244,11 @@ function lineAt(text: string, index: number): number {
 /** The problems of one file, as "<line>: <problem>": one for each line and rule, the first pattern's that matches there, by line and then in the order of the rules. */
 function fileProblems(file: SourceFile): string[] {
   const found: { readonly line: number; readonly rule: number; readonly problem: string }[] = [];
+  const text = unescaped(file.text);
   RULES.forEach((rule, index) => {
     for (const pattern of rule.patterns(file.path)) {
-      for (const match of file.text.matchAll(pattern)) {
-        const line = lineAt(file.text, match.index);
+      for (const match of text.matchAll(pattern)) {
+        const line = lineAt(text, match.index);
         if (!found.some((seen) => seen.line === line && seen.rule === index)) {
           found.push({ line, rule: index, problem: rule.problem(match) });
         }

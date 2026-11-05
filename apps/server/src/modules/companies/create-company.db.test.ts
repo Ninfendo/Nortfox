@@ -173,6 +173,20 @@ describe("createCompany", () => {
     });
   });
 
+  it("refuses a name with a lone surrogate as a field problem, never a server failure, and makes nothing", async () => {
+    const companies = async (): Promise<number> => Number((await superuser.query<{ n: string }>("SELECT count(*) AS n FROM ledger.companies")).rows[0]?.n);
+    const before = await companies();
+    const reports = server.reports.length;
+    for (const name of ["Testbolaget \uD800 AB", "Testbolaget AB \uDC00"]) {
+      const problem = await jsonOf<ProblemBody>(await create({ name, organizationNumber: "556677-1234" }), 400);
+      expect(problem.errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
+        ["invalid-value", "/name", "The field /name holds a lone surrogate, which is not a character."],
+      ]);
+    }
+    expect(await companies()).toBe(before);
+    expect(server.reports.length).toBe(reports);
+  });
+
   it("needs a signed-in person", async () => {
     const answer = await server.send("/v1/companies", {
       method: "POST",

@@ -303,6 +303,18 @@ describe("the password sign-in", () => {
     expect(watched.reports).toEqual([]);
   });
 
+  it("refuses a lone surrogate in the identifier as a field problem, never a server failure", async () => {
+    const watched = signInApp(pool.database);
+    for (const identifier of ["ada.lind\uD800@example.com", `${PERSONAL_IDENTITY_NUMBERS[0]}\uDC00`]) {
+      const response = await passwordStep(watched, identifier, "fel-lösenord-här");
+      expect(response.status).toBe(400);
+      expect((await problemIn(response)).errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
+        ["invalid-value", "/identifier", "The field /identifier holds a lone surrogate, which is not a character."],
+      ]);
+    }
+    expect(watched.reports).toEqual([]);
+  });
+
   it("leaves no token but its challenges in an answer or a report, and no secret in clear in the database", async () => {
     expect(challengesIn(server.bodies)).toEqual(expect.arrayContaining(challenges));
     expectNoTokensFromSignInApps();
