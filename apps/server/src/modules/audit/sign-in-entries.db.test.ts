@@ -117,7 +117,7 @@ describe("the behandlingshistorik of a sign-in", () => {
     // The server's screen words of the entry.
     expect(ENTRY_WORDS.programs.users).toBe("Användare");
     expect(ENTRY_WORDS.headings["sign-in"]).toBe("Inloggning");
-    // The method and the time of the identification share the line Identifiering, as in "Identifiering: BankID, 2026-11-02 12:21:50".
+    // The method and the time of the identification share the line Identifiering, as in "Identifiering: <method>, <date and time>".
     expect(ENTRY_WORDS.details).toEqual({
       method: "Identifiering",
       identifiedAt: "Identifiering",

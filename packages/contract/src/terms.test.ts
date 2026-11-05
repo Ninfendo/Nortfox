@@ -3,9 +3,11 @@
 // The terms of each slice and their names in /v1 and the code
 // (docs/glossary.md). Each schema that a term names keeps its name in
 // openapi.json's components and its fields in their order, and the
-// glossary's row for the term names it. So a rename changes this file, the
-// glossary and the API together. Each part of a slice pins its own terms
-// here as it adds them.
+// glossary's row for the term names it. Each list of values that a term
+// names keeps its values in their order, and the glossary's row lists them
+// in that order. So a rename or a new value changes this file, the glossary
+// and the API together. Each part of a slice pins its own terms here as it
+// adds them.
 
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { readFileSync } from "node:fs";
@@ -166,10 +168,28 @@ describe("the terms in /v1", () => {
 describe("docs/glossary.md", () => {
   const rows = glossaryRows();
 
+  /** The last part of each name, as the glossary's row writes it in backticks. */
+  function wantedOf(names: readonly string[]): string[] {
+    return names.map((name) => String(name.split(".").at(-1)));
+  }
+
+  /** The glossary's row of the term whose names in /v1 are `names`. */
+  function rowOf(term: string, names: readonly string[]): string[] | undefined {
+    return rows.find((cells) => cells[0] === term && wantedOf(names).every((name) => backticked(cells[2] ?? "").includes(name)));
+  }
+
   it.each(TERMS)("lists the term %j with its names in /v1 and the code", (term, names) => {
-    const wanted = names.map((name) => name.split(".").at(-1));
-    const row = rows.find((cells) => cells[0] === term && wanted.every((name) => backticked(cells[2] ?? "").includes(String(name))));
-    expect(row, `docs/glossary.md has no row "${term}" whose names in /v1 are ${wanted.map((name) => `\`${String(name)}\``).join(", ")}.`).toBeDefined();
+    expect(rowOf(term, names), `docs/glossary.md has no row "${term}" whose names in /v1 are ${wantedOf(names).map((name) => `\`${name}\``).join(", ")}.`).toBeDefined();
+  });
+
+  it.each(Object.entries(VALUES))("lists the values of %s in their order, in the row of each term that names it", (name, values) => {
+    const terms = TERMS.filter(([, names]) => names.includes(name));
+    expect(terms, `No term names ${name}.`).not.toEqual([]);
+    const listed = values.map((value) => `\`${String(value)}\``);
+    const list = listed.length === 1 ? String(listed[0]) : `${listed.slice(0, -1).join(", ")} or ${String(listed.at(-1))}`;
+    for (const [term, names] of terms) {
+      expect(rowOf(term, names)?.slice(2).join(" | "), `docs/glossary.md's row "${term}" lists ${name} as ${list}.`).toContain(list);
+    }
   });
 
   it("reads each table row as four cells", () => {

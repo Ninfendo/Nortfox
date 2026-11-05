@@ -459,15 +459,22 @@ $touch$;
 
 -- A lower idle time of a membership lowers the idle time of each of its live
 -- sessions at once, at the membership's update, so it holds for a session
--- that makes no request too. A request of the session that writes the
--- session locks its row first (access.lock_session), and reads the
--- membership after the lock: so it either comes first, and this lowers what
--- it wrote, or waits for this transaction and reads the lower idle time.
+-- that makes no request too. It first locks the row of every live session
+-- of the membership, also one whose idle time is already as low or lower,
+-- and only then lowers each one above the new idle time. A request of the
+-- session that writes the session locks its row first
+-- (access.lock_session), and reads the membership after the lock: so it
+-- either comes first, and this lowers what it wrote, or waits for this
+-- transaction and reads the lower idle time. So a request that read a
+-- higher idle time before this commits never stores it.
 CREATE FUNCTION access.lower_session_idle() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $lower$
 BEGIN
+  PERFORM 1 FROM access.sessions AS s
+  WHERE s.current_company_id = NEW.company_id AND s.current_membership_id = NEW.id AND s.ended_at IS NULL
+  FOR NO KEY UPDATE OF s;
   UPDATE access.sessions AS s SET idle_timeout_minutes = NEW.idle_timeout_minutes
   WHERE s.current_company_id = NEW.company_id AND s.current_membership_id = NEW.id AND s.ended_at IS NULL
     AND s.idle_timeout_minutes > NEW.idle_timeout_minutes;

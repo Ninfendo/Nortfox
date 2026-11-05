@@ -49,6 +49,15 @@ describe("a stored text", () => {
     ]);
   });
 
+  it("is the check of every stored text of the companies and the memberships", () => {
+    /** What a field with U+0000 gets. */
+    const nul = (pointer: string): string[] => ["invalid-value", pointer, `The field ${pointer} holds the character U+0000, which no text may hold.`];
+    expect(problemsOf(bodySchema(createCompany) ?? z.never(), { name: "Testbolaget \u0000 AB", organizationNumber: "556677-1234" })).toEqual([nul("/name")]);
+    expect(problemsOf(querySchema(listCompanies) ?? z.never(), { query: "Alfa\u0000" })).toEqual([nul("/query")]);
+    expect(problemsOf(bodySchema(updateMyMembership) ?? z.never(), { workPhone: "070-174 06 07\u0000" })).toEqual([nul("/workPhone")]);
+    expect(problemsOf(bodySchema(updateMyMembership) ?? z.never(), { workEmail: "a\u0000@example.com" })).toEqual([nul("/workEmail")]);
+  });
+
   it("refuses a lone surrogate anywhere in it, as invalid-value, and takes a pair and every other text", () => {
     const text = z.strictObject({ note: z.string().check(wellFormed()) });
     for (const lone of LONE) {

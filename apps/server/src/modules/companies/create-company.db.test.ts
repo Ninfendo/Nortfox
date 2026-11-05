@@ -173,15 +173,19 @@ describe("createCompany", () => {
     });
   });
 
-  it("refuses a name with a lone surrogate as a field problem, never a server failure, and makes nothing", async () => {
+  it("refuses a name with a lone surrogate or U+0000 as a field problem, never a server failure, and makes nothing", async () => {
     const companies = async (): Promise<number> => Number((await superuser.query<{ n: string }>("SELECT count(*) AS n FROM ledger.companies")).rows[0]?.n);
     const before = await companies();
     const reports = server.reports.length;
-    for (const name of ["Testbolaget \uD800 AB", "Testbolaget AB \uDC00"]) {
+    const lone = "The field /name holds a lone surrogate, which is not a character.";
+    const nul = "The field /name holds the character U+0000, which no text may hold.";
+    for (const [name, detail] of [
+      ["Testbolaget \uD800 AB", lone],
+      ["Testbolaget AB \uDC00", lone],
+      ["Testbolaget \u0000 AB", nul],
+    ] as const) {
       const problem = await jsonOf<ProblemBody>(await create({ name, organizationNumber: "556677-1234" }), 400);
-      expect(problem.errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
-        ["invalid-value", "/name", "The field /name holds a lone surrogate, which is not a character."],
-      ]);
+      expect(problem.errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([["invalid-value", "/name", detail]]);
     }
     expect(await companies()).toBe(before);
     expect(server.reports.length).toBe(reports);

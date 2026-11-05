@@ -158,6 +158,15 @@ describe("the company choice", () => {
     }
   });
 
+  it("refuses a query with U+0000 as a field problem, never a server failure", async () => {
+    const reports = server.reports.length;
+    const problem = await jsonOf<ProblemBody>(await getAs(server, session, "/v1/companies?query=Alfa%00"), 400);
+    expect(problem.errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
+      ["invalid-value", "/query", "The field /query holds the character U+0000, which no text may hold."],
+    ]);
+    expect(server.reports.length).toBe(reports);
+  });
+
   it("pages over two companies of one name by their ids, each once", async () => {
     const someone = await addSignInIdentity(owner);
     const first = await aCompany(app, "Testbolaget Samma AB");

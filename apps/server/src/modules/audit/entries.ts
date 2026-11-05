@@ -13,7 +13,7 @@
 //   last step passed), the personnummer when the method gives one, the
 //   application (web, "Webb"), the IP address and the outcome. The method
 //   and the time share the line Identifiering, as the established entry
-//   shows them: "Identifiering: BankID, 2026-11-02 12:21:50". So an entry
+//   shows them: "Identifiering: <method>, <date and time>". So an entry
 //   of a switch of company is told from one of a new sign-in.
 // - A failed sign-in: the same, with the outcome failed, in each company
 //   where the tried identity is an active member, by that identity (choice

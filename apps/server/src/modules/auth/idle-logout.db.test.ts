@@ -22,6 +22,7 @@
 // cookie is refused: that half is in sessions.db.test.ts. The server's clock
 // is moved forwards.
 
+import { setTimeout as delay } from "node:timers/promises";
 import type { Client, QueryResult, QueryResultRow } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, gate, type AppPool, type Gate, type ProblemBody } from "../../../test/api.ts";
@@ -121,6 +122,26 @@ describe("idle logout", () => {
   async function idleOf(session: string): Promise<number | undefined> {
     return (await owner.query<{ idle_timeout_minutes: number }>("SELECT idle_timeout_minutes FROM access.sessions WHERE token_hash = $1", [tokenHash(session)])).rows[0]
       ?.idle_timeout_minutes;
+  }
+
+  /** Until a backend of the database waits for a lock, or `request` has its answer, whichever comes first: a request that takes no lock that another transaction holds waits for none. */
+  async function untilWaitingOrDone(request: Promise<unknown>): Promise<void> {
+    const answered: { done: boolean } = { done: false };
+    void request.then(
+      () => (answered.done = true),
+      () => (answered.done = true),
+    );
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      if (answered.done) {
+        return;
+      }
+      const found = await app.query("SELECT 1 FROM pg_catalog.pg_stat_activity WHERE datname = pg_catalog.current_database() AND wait_event_type = 'Lock'");
+      if ((found.rowCount ?? 0) > 0) {
+        return;
+      }
+      await delay(10);
+    }
+    throw new Error("No backend waited for a lock, and the request has no answer.");
   }
 
   function changeOwn(session: string, body: unknown): Promise<Response> {
@@ -406,6 +427,32 @@ describe("idle logout", () => {
       server.clock.advance(16 * MINUTE);
       expect((await getAs(server, session, "/v1/company")).status).toBe(401);
       expect((await endOf(session))?.end_reason).toBe("idle");
+    });
+
+    it("holds for a session last seen under less than the lower idle time, whose request reads a raise while the lower idle time commits", async () => {
+      const { person, session: laptop, membership } = await memberInCompany(15);
+      server.clock.advance(MINUTE);
+      const { session: phone } = await signIn(server, person);
+      expect((await chooseCompany(server, phone, company.id)).status).toBe(200);
+      // A raise reaches the laptop only at its next request: its row still holds 15.
+      expect((await changeOwn(phone, { idleTimeout: 480 })).status).toBe(200);
+      expect(await idleOf(laptop)).toBe(15);
+      server.clock.advance(2 * MINUTE);
+      // The idle time is lowered to 30 minutes, and the change waits before its commit.
+      const changer = await db.connect("app");
+      await begin(changer, { company: company.id, ...company.asOwner, channel: "rest" });
+      await changer.query("UPDATE access.memberships SET idle_timeout_minutes = 30 WHERE id = $1", [membership]);
+      // Meanwhile a request of the laptop reads 480 minutes, and waits for the change before it notes the session.
+      const request = getAs(server, laptop, "/v1/company");
+      await untilWaitingOrDone(request);
+      await changer.query("COMMIT");
+      expect((await request).status).toBe(200);
+      expect(await idleOf(laptop)).toBe(30);
+      // 45 minutes with no request of the laptop: past the 30 in force. A raise does not bring it back.
+      server.clock.advance(45 * MINUTE);
+      await asMember(app, company.id, company.asOwner, "UPDATE access.memberships SET idle_timeout_minutes = 480 WHERE id = $1", [membership]);
+      expect((await getAs(server, laptop, "/v1/company")).status).toBe(401);
+      expect((await endOf(laptop))?.end_reason).toBe("idle");
     });
 
     it("counts the lower of the session's idle time and the membership's, also when the session's row holds the higher one", async () => {

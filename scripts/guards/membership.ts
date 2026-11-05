@@ -25,11 +25,16 @@
 //   or names a way to set a setting whose name comes from elsewhere:
 //   set_config, a SET or RESET statement (SET LOCAL and SET SESSION
 //   anywhere, and a plain SET or RESET where it starts a statement: after a
-//   quote or a semicolon), pg_settings, or a DO block, which runs statements
-//   that a text cannot read. SET CONSTRAINTS and SET TRANSACTION set no
-//   setting. The migration runner pins its own search path with set_config,
-//   for its reason. A transaction in a company takes its company only as a
-//   company access (db/database.ts), which only resolve.ts makes.
+//   quote, a semicolon or a template's interpolation, which may end one,
+//   also glued to a quoted name or an interpolation, as SET"…" or
+//   SET${…}), pg_settings, or a DO block, also glued to its string or an
+//   interpolation, as DO'…' or DO${…}, which runs statements that a text
+//   cannot read. SET CONSTRAINTS and SET TRANSACTION set no setting, and an
+//   UPDATE names its table as it is, not through an interpolation, so its
+//   SET starts no statement. The migration runner pins its own search path
+//   with set_config, for its reason. A transaction in a company takes its
+//   company only as a company access (db/database.ts), which only
+//   resolve.ts makes.
 // - No file writes a name or a text in SQL's Unicode escapes (U&"…" or
 //   U&'…'), which the server never needs.
 // - No file names the path of a test or a test helper (a *.test.* file, or a
@@ -229,24 +234,42 @@ const BY_HAND: readonly RegExp[] = [
 const SET_CONFIG = new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}set_config${NOT_AN_IDENTIFIER_AFTER}`, "gi");
 
 /**
+ * What may follow a word with no space between and still be the next part
+ * of its statement: the opening quote of a SQL name, as in
+ * SET"nortfox.company_id", a double quote, also escaped in a JS string,
+ * before the first character of a setting's name or a template's
+ * interpolation; or a template's interpolation, ${…}, which may put in a
+ * quote or a space. A closing quote, as in "set", is followed by none of
+ * them.
+ */
+const GLUED = '(?:\\\\?"(?=[\\w$\\u0080-\\uffff])|\\$\\{)';
+
+/**
  * The transaction's settings, in any case; and the ways to set a setting by
  * a name from elsewhere, in any case: SET LOCAL and SET SESSION anywhere; a
- * SET or a RESET that starts a statement, after a semicolon or a string's
- * opening quote, but not SET CONSTRAINTS, SET TRANSACTION, or a JS setter or
- * variable named set; pg_settings; and a DO block, with its body
- * dollar-quoted or a string. A double quote after a letter, a digit or a
- * backslash closes a SQL name, as in UPDATE "access"."x" SET, so it starts
- * no statement.
+ * SET or a RESET that starts a statement, after a semicolon, a string's
+ * opening quote or a template's interpolation, which may end a statement,
+ * with a space, a comment, a quoted name or an interpolation after it, but
+ * not SET CONSTRAINTS, SET TRANSACTION, or a JS setter or variable named
+ * set; pg_settings; and a DO block, with its body dollar-quoted or a
+ * string, or a string or an interpolation glued to it. A double quote after
+ * a letter, a digit or a backslash closes a SQL name, as in UPDATE
+ * "access"."x" SET, so it starts no statement. So an UPDATE names its table
+ * as it is, not through an interpolation. PostgreSQL reads DO glued to a
+ * dollar quote or to E' as one name, so neither is a DO block.
  */
 const SETTINGS: readonly RegExp[] = [
   new RegExp(dotted("nortfox", "(?:company_id|actor_id|actor_kind|channel)"), "gi"),
   new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}set${SQL_SPACE}+(?:local|session)${NOT_AN_IDENTIFIER_AFTER}`, "gi"),
   new RegExp(
-    `(?<=(?:[;'\`]|(?<![\\w$\\\\])")${SQL_SPACE}*)(?:re)?set(?=${SQL_SPACE})(?!${SQL_SPACE}*(?:[=(]|(?:constraints|transaction)${NOT_AN_IDENTIFIER_AFTER}|[\\w$#]+\\s*\\())`,
+    `(?<=(?:[;'\`}]|(?<![\\w$\\\\])")${SQL_SPACE}*)(?:re)?set(?=${SQL_SPACE}|${GLUED})(?!${SQL_SPACE}*(?:[=(]|(?:constraints|transaction)${NOT_AN_IDENTIFIER_AFTER}|[\\w$#]+\\s*\\())`,
     "gi",
   ),
   new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}pg_settings${NOT_AN_IDENTIFIER_AFTER}`, "gi"),
-  new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}do${SQL_SPACE}+(?:language${SQL_SPACE}+\\S+${SQL_SPACE}+)?(?:\\$|e?')`, "gi"),
+  new RegExp(
+    `${NOT_AN_IDENTIFIER_BEFORE}do(?:${SQL_SPACE}*'|\\$\\{|${SQL_SPACE}+(?:\\$|e'|language(?:${SQL_SPACE}+|(?=["']))\\S+?${SQL_SPACE}*(?:\\$|e?')))`,
+    "gi",
+  ),
 ];
 
 /** A name or a text in SQL's Unicode escapes, U&"…" or U&'…', in any case, its quote also escaped in a JS string. */

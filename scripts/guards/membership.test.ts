@@ -393,6 +393,18 @@ describe("the membership guard", () => {
       ["through a DO block", "await tx.query(`DO $$ BEGIN EXECUTE ${statement}; END $$`);"],
       ["through a DO block in small letters, with a tag", "await tx.query(`do $body$ begin execute ${statement}; end $body$`);"],
       ["through a DO block with its language and a string", "await tx.query(\"DO LANGUAGE plpgsql 'BEGIN EXECUTE x; END'\");"],
+      ["with a plain SET glued to its quoted name", "await tx.query(`SET\"${setting}\" = '${companyId}'`);"],
+      ["with a plain SET glued to its quoted name, and TO glued to the value", "await tx.query(`SET\"${setting}\"TO'${companyId}'`);"],
+      ["with a plain SET glued to its quoted name after a semicolon, in small letters", "await tx.query(`SELECT 1;set\"${setting}\"='${companyId}'`);"],
+      ["with RESET glued to its quoted name", "await tx.query(`RESET\"${setting}\"`);"],
+      ["through a DO block glued to its string", "await tx.query(`DO'BEGIN EXECUTE ${statement}; END'`);"],
+      ["through a DO block whose language is glued to its string", "await tx.query(\"DO LANGUAGE plpgsql'BEGIN EXECUTE x; END'\");"],
+      ["through a DO block whose language is quoted and glued on both sides", "await tx.query(`DO LANGUAGE\"plpgsql\"'BEGIN EXECUTE ${statement}; END'`);"],
+      ["with a plain SET right after a template's interpolation", "await tx.query(`${prefix}SET ${setting} = '${companyId}'`);"],
+      ["with a plain SET after a template's interpolation and a space", "await tx.query(`${prefix} SET ${setting} = '${companyId}'`);"],
+      ["with RESET right after a template's interpolation", "await tx.query(`${prefix}RESET ${setting}`);"],
+      ["with a plain SET glued to a template's interpolation", "await tx.query(`SET${quotedSetting} = '${companyId}'`);"],
+      ["through a DO block glued to a template's interpolation", "await tx.query(`DO${body}`);"],
     ])("fails it %s", (_case, line) => {
       expect(problemsWith(HANDLER, "const ok = 1;", line)).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
     });
@@ -409,6 +421,7 @@ describe("the membership guard", () => {
     it("names the line of a SET that starts a statement, also when its quote or a line comment is on the line before", () => {
       expect(problemsWith(HANDLER, "const ok = 1;", "await tx.query(`", "  SET ${setting} = '${companyId}'`);")).toEqual([`${HANDLER}:3: ${SETS_SETTINGS}`]);
       expect(problemsWith(HANDLER, "const ok = 1;", "await tx.query(`-- the company", "  SET ${setting} = '${companyId}'`);")).toEqual([`${HANDLER}:3: ${SETS_SETTINGS}`]);
+      expect(problemsWith(HANDLER, "const ok = 1;", "await tx.query(`${prefix}", "SET ${setting} = '${companyId}'`);")).toEqual([`${HANDLER}:3: ${SETS_SETTINGS}`]);
     });
 
     it("fails a SET of the search path, and not the bare name of the memberships that it then reads", () => {
@@ -466,6 +479,11 @@ describe("the membership guard", () => {
           'headers.append("Set-Cookie", value);',
           "#count = 0;",
           "  set count(value) { this.#count = value; }",
+          "  get size() { return 1; } set size(value) { void value; }",
+          "  }",
+          "  set #size(value) {",
+          'const methods = ["get", "set", \'reset\', `set`, "do"];',
+          "const label = `${count} sets, ${count}settled`;",
           "const a = 1;",
           "set = a;",
           "do {",
@@ -475,6 +493,10 @@ describe("the membership guard", () => {
           'throw new Error("NORTFOX_PUBLIC_ORIGIN is not set. Set it to the origin.");',
         ),
       ).toEqual([]);
+    });
+
+    it("does not take DO glued to a dollar quote or to E' for a DO block: PostgreSQL reads each as one name", () => {
+      expect(problemsWith(HANDLER, "const words = \"DO$$x$$, DOE'x'\";")).toEqual([]);
     });
 
     it("reads a JS escape as its character, keeps each line's number, and leaves an escape of no character", () => {

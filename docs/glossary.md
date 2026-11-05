@@ -52,7 +52,7 @@ Pinned by slice 2b, the API and MCP spine. [docs/api.md](api.md) gives the API's
 
 ## Login
 
-Pinned by slice 2c, login, roles, tokens and MCP OAuth, as each of its parts adds them. [docs/api.md](api.md#signing-in) gives the sign-in's rules, and [The companies](api.md#the-companies) the rules of companies and memberships. `packages/contract/src/terms.test.ts` checks that each name below is the one `/v1` has, and the values of each list. `AuditEntry` is the one exception: it is the server's own type, since `/v1` reads no behandlingshistorik yet.
+Pinned by slice 2c, login, roles, tokens and MCP OAuth, as each of its parts adds them. [docs/api.md](api.md#signing-in) gives the sign-in's rules, and [The companies](api.md#the-companies) the rules of companies and memberships. `packages/contract/src/terms.test.ts` checks that each name below is the one `/v1` has, and that each list of values below is the one `/v1` has, in its order. `AuditEntry` is the one exception: it is the server's own type, since `/v1` reads no behandlingshistorik yet.
 
 | Term (sv / en) | What the law means | Name in /v1 and the code | Note |
 |---|---|---|---|

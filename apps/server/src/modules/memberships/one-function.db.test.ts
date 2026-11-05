@@ -165,7 +165,8 @@ type Why = "reads" | "dynamic" | "sets" | "escapes";
  *
  * The ways a text sets a setting: set_config; SET LOCAL or SET SESSION, of
  * any setting; a SET or a RESET of a setting of ours, also in an ALTER ...
- * SET; RESET ALL; and pg_settings. An UPDATE's SET names a column, never a
+ * SET, and also glued to the name's quote (SET"nortfox.company_id"); RESET
+ * ALL; and pg_settings. An UPDATE's SET names a column, never a
  * setting of ours. A function's SET clause needs no pattern: the owner may
  * not give one a setting of ours (42501), and pg_get_functiondef prints it in
  * the text that the patterns read.
@@ -179,7 +180,7 @@ const RULES: readonly { readonly why: Why; readonly word: string; readonly patte
   { why: "sets", word: "pg_settings", pattern: wordPattern("pg_settings") },
   { why: "sets", word: "local", pattern: `${NAME_START}set${SQL_SPACE}+local${NAME_END}` },
   { why: "sets", word: "session", pattern: `${NAME_START}set${SQL_SPACE}+session${NAME_END}` },
-  { why: "sets", word: "nortfox", pattern: `${NAME_START}(?:re)?set${SQL_SPACE}+"?nortfox"?${SQL_SPACE}*\\.` },
+  { why: "sets", word: "nortfox", pattern: `${NAME_START}(?:re)?set(?:${SQL_SPACE}+"?|")nortfox"?${SQL_SPACE}*\\.` },
   { why: "sets", word: "reset", pattern: `${NAME_START}reset${SQL_SPACE}+all${NAME_END}` },
   { why: "escapes", word: "u&", pattern: `${NAME_START}u&["']` },
 ];
@@ -729,6 +730,8 @@ describe("the one membership function", () => {
         ["with SET SESSION of another setting, in small letters", "LANGUAGE plpgsql AS $work$ BEGIN set session search_path = access; END $work$"],
         ["with a plain SET, quoted and in capitals", `LANGUAGE plpgsql AS $work$ BEGIN SET "NORTFOX"."COMPANY_ID" TO '5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a'; END $work$`],
         ["with a plain SET and comments", "LANGUAGE plpgsql AS $work$ BEGIN SET /* the company */ nortfox -- the setting\n .company_id = '5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a'; END $work$"],
+        ["with a plain SET glued to its quoted name", `LANGUAGE plpgsql AS $work$ BEGIN SET"nortfox.company_id"TO'5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a'; END $work$`],
+        ["with RESET glued to its quoted name, in small letters", `LANGUAGE plpgsql AS $work$ BEGIN reset"nortfox"."actor_id"; END $work$`],
         ["with RESET", "LANGUAGE plpgsql AS $work$ BEGIN RESET nortfox.actor_id; END $work$"],
         ["with RESET ALL", "LANGUAGE plpgsql AS $work$ BEGIN reset all; END $work$"],
         ["through pg_settings", "LANGUAGE plpgsql AS $work$ BEGIN UPDATE pg_catalog.pg_settings SET setting = company::text WHERE name = 'nortfox.company_id'; END $work$"],
