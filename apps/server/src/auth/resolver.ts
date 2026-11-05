@@ -33,7 +33,9 @@
 // on. The permissions are the session's snapshot of when it chose the
 // company, less a permission whose grant has ended. A request moves the
 // session's last sight on when it is a minute old or more, so a session is
-// not written on every request. A session runs as its user (decision 2).
+// not written on every request, and also when the idle time in force is not
+// the one the session was last seen under, so a raise made elsewhere holds
+// from the session's next request. A session runs as its user (decision 2).
 
 import type { ContextResolver, Principal, SecondStep, SignInMethod } from "../api/context.ts";
 import { commit, type Database, type Ending, type LookupQueryable, type Queryable } from "../db/database.ts";
@@ -166,7 +168,8 @@ export function sessionResolver(options: SessionResolverOptions): ContextResolve
           return commit(undefined);
         }
       }
-      if (at.getTime() - session.last_seen_at.getTime() >= TOUCH_AFTER_MS) {
+      // Noted once a minute, and at once when the idle time in force is not the one the session was last seen under, so a raise holds from now.
+      if (at.getTime() - session.last_seen_at.getTime() >= TOUCH_AFTER_MS || chosen.idleMinutes !== session.idle_timeout_minutes) {
         await seeSession(tx, session.session_id, at, chosen.idleMinutes);
       }
       const principal: Principal = {

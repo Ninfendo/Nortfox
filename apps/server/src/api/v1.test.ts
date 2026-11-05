@@ -405,9 +405,27 @@ describe("the shapes of slice 2c on /v1", () => {
           sent.end(JSON.stringify({ email: "anna@example.com" }));
         });
         expect(status).toBe(200);
-        expect(shapes.log.calls[0]?.request).toEqual({ ipAddress: expect.stringMatching(/^(::ffff:)?127\.0\.0\.1$/) as unknown });
+        // The server listens on both IPv4 and IPv6, and gives an IPv4 client's address as IPv4, not as ::ffff:127.0.0.1.
+        expect(shapes.log.calls[0]?.request).toEqual({ ipAddress: "127.0.0.1" });
       } finally {
         await server.close();
+      }
+    });
+
+    it("gives an IPv4 client's address in the IPv4-mapped IPv6 form as IPv4, and any other address as the socket gives it", async () => {
+      const addresses: readonly (readonly [string, string])[] = [
+        ["::ffff:192.0.2.1", "192.0.2.1"],
+        ["::FFFF:192.0.2.2", "192.0.2.2"],
+        ["192.0.2.3", "192.0.2.3"],
+        ["2001:db8::1", "2001:db8::1"],
+        ["::ffff:2001:db8", "::ffff:2001:db8"],
+        ["::ffff:192.0.2", "::ffff:192.0.2"],
+      ];
+      for (const [remoteAddress, given] of addresses) {
+        const shapes = shapeApp();
+        const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "anna@example.com" }) };
+        expect((await shapes.app.hono.request("/v1/test-sign-ins", init, { incoming: { socket: { remoteAddress } } })).status).toBe(200);
+        expect(shapes.log.calls[0]?.request, remoteAddress).toEqual({ ipAddress: given });
       }
     });
   });

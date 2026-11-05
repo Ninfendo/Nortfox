@@ -544,9 +544,12 @@ END;
 -- sight, at `at`, under the membership's idle time, `idle_minutes`. It gives
 -- false when the session is not the person's, or has ended. The server calls
 -- it only with a membership that the one membership function gave in the
--- same transaction, and the resolver checks on every request that it is
--- still the person's active one. The paired key holds the membership to its
--- company.
+-- same transaction, after it locked the membership's row FOR SHARE and read
+-- that it is still active: a change of its status waits for that lock, so
+-- it either came first, and nothing is chosen, or ends the session through
+-- memberships_end_sessions after the commit. The resolver checks on every
+-- request that it is still the person's active one. The paired key holds
+-- the membership to its company.
 CREATE FUNCTION access.choose_company(session uuid, company uuid, membership uuid, permissions jsonb, idle_minutes integer, at timestamptz) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp

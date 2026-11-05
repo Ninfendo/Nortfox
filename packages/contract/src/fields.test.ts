@@ -4,7 +4,9 @@
 // derives each operation's list of the marked fields from its output schema
 // (plan 2.1 and 2.2), so a marked field is never left off. These tests pin
 // the pointers it gives through every shape an output takes: nested objects,
-// a schema with a name of its own, optional and nullable fields, and lists.
+// a schema with a name of its own, optional and nullable fields, lists,
+// unions, intersections, tuples and records. A mark that no pointer names
+// throws.
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -71,5 +73,39 @@ describe("personalPointers", () => {
 
   it("loses the mark of a schema that a later meta() copies, so a field is marked last", () => {
     expect(personalPointers(z.strictObject({ name: personal(z.string()).meta({ description: "A copy." }) }))).toEqual([]);
+  });
+
+  it("follows each branch of a discriminated union (oneOf) and of an intersection (allOf), as the same field", () => {
+    const invitee = z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("person"), email: personal(z.string()) }),
+      z.strictObject({ kind: z.literal("address"), phone: personal(z.string()) }),
+    ]);
+    expect(personalPointers(z.strictObject({ invitee }))).toEqual(["/invitee/email", "/invitee/phone"]);
+    const both = z.intersection(z.object({ name: personal(z.string()) }), z.object({ id: z.uuid() }));
+    expect(personalPointers(z.strictObject({ both }))).toEqual(["/both/name"]);
+  });
+
+  it("names the items of a tuple and the values of a record with *", () => {
+    expect(personalPointers(z.strictObject({ pair: z.tuple([z.uuid(), personal(z.string())]) }))).toEqual(["/pair/*"]);
+    expect(personalPointers(z.strictObject({ byId: z.record(z.string(), Person) }))).toEqual(["/byId/*/name", "/byId/*/email"]);
+    expect(personalPointers(z.object({ id: z.uuid() }).catchall(personal(z.string())))).toEqual(["/*"]);
+  });
+
+  it("throws for a mark that no pointer names, so a marked field is never left off its list", () => {
+    // The keys of a record are its JSON Schema's propertyNames, which hold no field: the record itself is marked instead.
+    expect(() => personalPointers(z.strictObject({ byEmail: z.record(personal(z.email()), z.int()) }))).toThrow(
+      "The output holds personal() marks that no JSON Pointer reaches (1), under a key that personalPointers does not follow. Mark the field that holds each one.",
+    );
+    expect(() => personalPointers(z.strictObject({ byEmail: z.record(personal(z.email()), z.int()), byPhone: z.record(personal(z.string()), z.int()) }))).toThrow(
+      "(2)",
+    );
+    expect(personalPointers(z.strictObject({ byEmail: personal(z.record(z.email(), z.int())) }))).toEqual(["/byEmail"]);
+  });
+
+  it("reads a field that has the mark's own name like any other field", () => {
+    const output = z.strictObject({ "x-nortfox-personal": z.strictObject({ email: personal(z.string()), note: z.string() }), plain: z.strictObject({ "x-nortfox-personal": personal(z.string()) }) });
+    expect(personalPointers(output)).toEqual(["/x-nortfox-personal/email", "/plain/x-nortfox-personal"]);
+    // A mark that no pointer reaches still throws inside such a field.
+    expect(() => personalPointers(z.strictObject({ "x-nortfox-personal": z.record(personal(z.email()), z.int()) }))).toThrow("(1)");
   });
 });

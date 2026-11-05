@@ -128,6 +128,18 @@ describe("the behandlingshistorik of a sign-in", () => {
     expect(ENTRY_WORDS.applications.web).toBe("Webb");
   });
 
+  it("writes an IPv4 client's address as IPv4, also when the socket gives it in the IPv4-mapped IPv6 form", async () => {
+    const person = await addSignInIdentity(owner);
+    const company = await companyOf(person);
+    const { session } = await signIn(server, person);
+    // A server that listens on both IPv4 and IPv6 sees an IPv4 client as ::ffff:a.b.c.d.
+    expect((await chooseCompany(server, session, company, { ipAddress: `::ffff:${CHOICE_ADDRESS}` })).status).toBe(200);
+    server.clock.advance(MINUTE);
+    // An IPv6 client's address stays as it is (RFC 3849's documentation range).
+    expect((await chooseCompany(server, session, company, { ipAddress: "2001:db8::7" })).status).toBe(200);
+    expect((await entriesIn(company, person)).map((entry) => entry.details["ipAddress"])).toEqual([CHOICE_ADDRESS, "2001:db8::7"]);
+  });
+
   it("a sign-in with the personnummer and the password also writes the personnummer", async () => {
     const number = PERSONAL_IDENTITY_NUMBERS[0];
     const person = await addSignInIdentity(owner, { personalIdentityNumber: number });

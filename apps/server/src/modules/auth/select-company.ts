@@ -8,15 +8,21 @@
 // one answer before this runs. In one transaction as the person, in that
 // company:
 //
-// 1. The session stores the company, the membership and the person's
+// 1. The membership is held until the commit (holdActive): its row is locked
+//    and read again. A membership that stopped being active since the runner
+//    read it, such as by a deactivation that committed meanwhile, gets the
+//    runner's refusal, and nothing is chosen. A deactivation that comes
+//    later waits for the commit, and then ends the session. So the session
+//    never keeps a membership that is not active.
+// 2. The session stores the company, the membership and the person's
 //    permissions there now (access.choose_company), and is seen now, under
-//    the membership's idle time. The resolver checks the membership on every
-//    request, and the permissions hold until the session chooses a company
-//    again. A session that has ended since the resolver read it, such as by a
-//    logout at once, chooses nothing, and the call is answered as one with no
-//    actor (401).
-// 2. The person's recent companies get the choice.
-// 3. The company's behandlingshistorik gets the sign-in (choice 8: at each
+//    the membership's idle time, both as the held row gives them. The
+//    resolver checks the membership on every request, and the permissions
+//    hold until the session chooses a company again. A session that has
+//    ended since the resolver read it, such as by a logout at once, chooses
+//    nothing, and the call is answered as one with no actor (401).
+// 3. The person's recent companies get the choice.
+// 4. The company's behandlingshistorik gets the sign-in (choice 8: at each
 //    choice, also when switching), with the method, the second step, when
 //    the person identified, the personnummer when the method gives one, the
 //    application and the IP address of the request.
@@ -25,22 +31,27 @@
 // its idempotency key is kept outside every company table.
 
 import { platformPermissions, selectCompany } from "@nortfox/contract";
-import { credentialEnded, handlePerson, inputMembership, ok } from "../../api/operation.ts";
+import { companyNotAvailable, credentialEnded, handlePerson, inputMembership, ok } from "../../api/operation.ts";
 import { addEntry, signInEntryDetails } from "../audit/entries.ts";
 import { readCompany } from "../companies/get-company.ts";
+import { holdActive } from "../memberships/membership.ts";
 import { readMe } from "../users/identity.ts";
 
 export const selectCompanyHandler = handlePerson(selectCompany, async ({ context, tx, company, request, now }) => {
   const membership = inputMembership(company);
+  const held = await holdActive(tx, membership.membershipId, membership.personId);
+  if (held === undefined) {
+    return companyNotAvailable(selectCompany);
+  }
   const at = now();
   const { credential } = context;
-  const permissions = Object.fromEntries([...platformPermissions(membership.adminLevel)].map((permission) => [permission, null]));
+  const permissions = Object.fromEntries([...platformPermissions(held.adminLevel)].map((permission) => [permission, null]));
   const chosen = await tx.query<{ chosen: boolean }>("SELECT access.choose_company($1, $2, $3, $4, $5, $6) AS chosen", [
     credential.sessionId,
     membership.companyId,
     membership.membershipId,
     permissions,
-    membership.idleTimeoutMinutes,
+    held.idleTimeoutMinutes,
     at,
   ]);
   // A SELECT of one function call gives one row. A session that ended since the resolver read it, such as by a logout at once,
