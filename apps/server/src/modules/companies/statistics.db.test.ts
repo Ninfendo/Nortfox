@@ -138,43 +138,61 @@ describe("the planner's statistics", () => {
    * pages they read depends on what the reader's caches of roles hold, which
    * a change of any role in the cluster resets. Their rows and loops stay in.
    */
-  async function counts(sql: string): Promise<unknown[]> {
-    const run = async (): Promise<unknown[]> => {
-      const found = await reader.query<{ "QUERY PLAN": unknown }>(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`);
-      const nodes: unknown[] = [];
-      const walk = (node: Record<string, unknown>, underPolicy: boolean): void => {
-        const children = (node["Plans"] as Record<string, unknown>[] | undefined) ?? [];
-        const kept: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(node)) {
-          if (key === "Node Type") {
+  async function counts(sql: string, before?: () => Promise<void>): Promise<unknown[]> {
+    const nodes: unknown[] = [];
+    const walk = (node: Record<string, unknown>, underPolicy: boolean): void => {
+      const children = (node["Plans"] as Record<string, unknown>[] | undefined) ?? [];
+      const kept: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "Node Type") {
+          kept[key] = value;
+        } else if (typeof value === "number" && !key.includes("Time")) {
+          if (!key.endsWith(" Blocks")) {
             kept[key] = value;
-          } else if (typeof value === "number" && !key.includes("Time")) {
-            if (!key.endsWith(" Blocks")) {
-              kept[key] = value;
-            } else if (!underPolicy) {
-              kept[key] = children.reduce((own, child) => own - ((child[key] as number | undefined) ?? 0), value);
-            }
+          } else if (!underPolicy) {
+            kept[key] = children.reduce((own, child) => own - ((child[key] as number | undefined) ?? 0), value);
           }
         }
-        nodes.push(kept);
-        for (const child of children) {
-          walk(child, underPolicy || child["Parent Relationship"] === "InitPlan");
-        }
-      };
-      walk((found.rows[0]?.["QUERY PLAN"] as { Plan: Record<string, unknown> }[])[0]?.Plan ?? {}, false);
-      return nodes;
+      }
+      nodes.push(kept);
+      for (const child of children) {
+        walk(child, underPolicy || child["Parent Relationship"] === "InitPlan");
+      }
+    };
+    walk(await analyzed(sql, before), false);
+    return nodes;
+  }
+
+  /**
+   * The plan of the reader's EXPLAIN ANALYZE of `sql`, with the pages each
+   * node read. It runs twice, so that the first run's work is done, and
+   * `before` runs between the two.
+   */
+  async function analyzed(sql: string, before?: () => Promise<void>): Promise<Record<string, unknown>> {
+    const run = async (): Promise<Record<string, unknown>> => {
+      const found = await reader.query<{ "QUERY PLAN": unknown }>(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`);
+      return (found.rows[0]?.["QUERY PLAN"] as { Plan: Record<string, unknown> }[])[0]?.Plan ?? {};
     };
     await run();
+    await before?.();
     return run();
   }
 
-  /** The pairs of `sql` whose EXPLAIN ANALYZE counts differ for the reader, with both counts. */
-  async function differing(pairs: readonly (readonly [string, string])[]): Promise<string[]> {
+  /**
+   * The pairs of `sql` whose EXPLAIN ANALYZE counts differ for the reader,
+   * with both counts. With `change`, each pair is counted twice: once with
+   * `change` run just before the count of the first query, and once just
+   * before the count of the second.
+   */
+  async function differing(pairs: readonly (readonly [string, string])[], change?: () => Promise<void>): Promise<string[]> {
     const found: string[] = [];
+    const orders = change === undefined ? [[undefined, undefined]] : [[change, undefined], [undefined, change]];
     for (const [one, other] of pairs) {
-      const [ofOne, ofOther] = [JSON.stringify(await counts(one)), JSON.stringify(await counts(other))];
-      if (ofOne !== ofOther) {
-        found.push(`${one}: ${ofOne}, against ${other}: ${ofOther}`);
+      for (const [beforeOne, beforeOther] of orders) {
+        const [ofOne, ofOther] = [JSON.stringify(await counts(one, beforeOne)), JSON.stringify(await counts(other, beforeOther))];
+        if (ofOne !== ofOther) {
+          found.push(`${one}: ${ofOne}, against ${other}: ${ofOther}`);
+        }
       }
     }
     return found;
@@ -224,38 +242,50 @@ describe("the planner's statistics", () => {
     expect(await differing(pairs)).toEqual([]);
   });
 
+  /** The pages that the policy's subqueries (the InitPlans and what runs under them) read in the reader's EXPLAIN ANALYZE of `sql`. */
+  async function policyPages(sql: string, before?: () => Promise<void>): Promise<number> {
+    const pages = (node: Record<string, unknown>): number =>
+      Object.entries(node).reduce((sum, [key, value]) => (key.endsWith(" Blocks") && typeof value === "number" ? sum + value : sum), 0);
+    const sum = (node: Record<string, unknown>): number =>
+      ((node["Plans"] as Record<string, unknown>[] | undefined) ?? []).reduce(
+        (total, child) => total + (child["Parent Relationship"] === "InitPlan" ? pages(child) : sum(child)),
+        0,
+      );
+    return sum(await analyzed(sql, before));
+  }
+
   // A role made, changed or dropped anywhere in the cluster resets every
   // backend's caches of roles, and the reader's next query reads pg_roles
   // again, in its policy's subqueries. So the counts above must not depend on
   // what the reader's caches hold, or the comparison fails now and then, on a
-  // correct database, whenever another connection changes a role.
-  it("gives a reader the same counts in EXPLAIN ANALYZE while another connection makes and drops roles", async () => {
+  // correct database, whenever another connection changes a role. Here the
+  // change comes at a set point, just before the count of one query of each
+  // pair, and never by chance.
+  it("gives a reader the same counts in EXPLAIN ANALYZE just after another connection makes and drops a role", async () => {
     const tables = await companyTables(admin);
     const nobody = randomUUID();
     const of = (table: string, company: string): string => `SELECT * FROM ${table} WHERE company_id BETWEEN '${company}' AND '${company}'`;
+    const secret = `SELECT * FROM ledger.accounts WHERE description = '${SECRET}'`;
     const pairs = [
-      [`SELECT * FROM ledger.accounts WHERE description = '${SECRET}'`, "SELECT * FROM ledger.accounts WHERE description = 'Hemlig affär Eta'"] as const,
+      [secret, "SELECT * FROM ledger.accounts WHERE description = 'Hemlig affär Eta'"] as const,
       ...tables.map((table) => [of(table, scenario.companyB), of(table, nobody)] as const),
     ];
     const maker = await db.admin();
-    const stop = new AbortController();
-    let made = 0;
-    const changing = (async () => {
-      while (!stop.signal.aborted) {
-        const role = `${TEMPORARY_ROLE_PREFIX}${randomBytes(4).toString("hex")}`;
-        await maker.query(`CREATE ROLE ${role}`);
-        await maker.query(`DROP ROLE ${role}`);
-        made += 1;
-      }
-    })();
-    try {
-      expect(await scanningEveryRow(() => differing(pairs))).toEqual([]);
-      expect(await differing(pairs)).toEqual([]);
-    } finally {
-      stop.abort();
-      await changing;
+    const changeARole = async (): Promise<void> => {
+      const role = `${TEMPORARY_ROLE_PREFIX}${randomBytes(4).toString("hex")}`;
+      await maker.query(`CREATE ROLE ${role}`);
+      await maker.query(`DROP ROLE ${role}`);
+    };
+    // The change reaches the reader: its policy's subqueries read more pages
+    // just after it. Another test file may change a role at any time too, so
+    // the count without a change is the least of a few.
+    const without: number[] = [];
+    for (let run = 0; run < 5; run += 1) {
+      without.push(await policyPages(secret));
     }
-    expect(made).toBeGreaterThan(pairs.length);
+    expect(await policyPages(secret, changeARole)).toBeGreaterThan(Math.min(...without));
+    expect(await scanningEveryRow(() => differing(pairs, changeARole))).toEqual([]);
+    expect(await differing(pairs, changeARole)).toEqual([]);
   });
 
   /** The rows that the filters of the reader's EXPLAIN ANALYZE of `sql` removed, over every plan node. */
