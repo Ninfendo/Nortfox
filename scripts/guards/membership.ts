@@ -4,8 +4,10 @@
 // "Companies and members"; db/README.md, the schema access). This is the
 // guard's half that reads as text the code the server runs: its own source
 // and that of the workspace packages it may import, packages/contract and
-// packages/engine, in every code file's extension, outside their tests. In
-// that code:
+// packages/engine, in every code file's extension, outside their tests:
+// the *.test.ts files, which vitest runs and each package's build leaves
+// out. A file of another extension named like a test ships, so it is read.
+// In that code:
 //
 // - Only modules/memberships/resolve.ts names access.active_membership, the
 //   one function, by its bare name, so a schema or quotes do not hide it.
@@ -31,8 +33,10 @@
 // - No file writes a name or a text in SQL's Unicode escapes (U&"…" or
 //   U&'…'), which the server never needs.
 // - No file names the path of a test or a test helper (a *.test.* file, or a
-//   file in a test/ folder), in any string, for any import or loader: the
-//   guard reads neither.
+//   file in a test/ folder), in any string, for any import or loader, also
+//   by its bare name with a code extension: the guard reads neither. The
+//   packages' manifests map no imports (#…), point their exports only into
+//   src/ and its build in dist/, and name no test either (manifestProblems).
 //
 // A name counts quoted or not (also with its quotes escaped in a JS string),
 // in any case, with a schema in front, and with any space, line break or SQL
@@ -40,9 +44,11 @@
 // read as JS reads them in a string: \t, \n and the other escapes of one
 // letter as their control characters, \u and \x as their characters, a
 // backslash before any other character as that character, and a line
-// continuation as nothing. So a name over several lines, behind an escape
-// or right after one is caught, and a problem names the line where its
-// match starts. The text cannot see a name or a statement joined from
+// continuation as nothing. An escaped line feed or carriage return ends a
+// SQL line comment, as PostgreSQL ends one. So a name over several lines,
+// behind an escape or right after one, or after a line comment that an
+// escape ends, is caught, and a problem names the line where its match
+// starts. The text cannot see a name or a statement joined from
 // pieces at run time, or other code written to hide what it runs. Two more
 // halves hold part of that: modules/memberships/one-function.db.test.ts
 // reads the catalog (no other routine the app may run reads the memberships
@@ -74,11 +80,19 @@ export const SETTING_EXCEPTIONS: Readonly<Record<string, string>> = {
 export const DELETE_ME = "apps/server/src/modules/users/delete-me.ts";
 
 /** The code the server runs: its own source, and the workspace packages it may import. */
-const SCANNED = ["apps/server/src/", "packages/contract/src/", "packages/engine/src/"] as const;
+export const SCANNED = ["apps/server/src/", "packages/contract/src/", "packages/engine/src/"] as const;
 
-/** A file of code, and not a test. */
+/** The manifests of those packages, which say what a name of the package or a # import loads. */
+export const MANIFESTS = SCANNED.map((root) => root.replace(/src\/$/, "package.json"));
+
+/**
+ * A file of code; and a test, a *.test.ts file, which vitest runs and each
+ * package's tsconfig.build.json leaves out, so it never ships. A file of
+ * another extension named like a test is no test: it ships, and the guard
+ * reads it.
+ */
 const CODE = /\.[cm]?[jt]sx?$/;
-const TEST = /\.test\.[cm]?[jt]sx?$/;
+const TEST = ".test.ts";
 
 /** A file outside the memberships module that may name a table, which tables, and why. */
 export interface TableException {
@@ -100,9 +114,9 @@ export interface SourceFile {
   readonly text: string;
 }
 
-/** Whether the guard reads `path`: code that the server runs, not a test. */
+/** Whether the guard reads `path`: code that the server runs, not a test that the build leaves out. */
 export function scansFile(path: string): boolean {
-  return SCANNED.some((root) => path.startsWith(root)) && CODE.test(path) && !TEST.test(path);
+  return SCANNED.some((root) => path.startsWith(root)) && CODE.test(path) && !path.endsWith(TEST);
 }
 
 // Every pattern is global, for matchAll over a whole file, and \s takes a line break too.
@@ -112,8 +126,8 @@ const NOT_AN_IDENTIFIER_AFTER = "(?![\\w$])";
 /** A double quote of a SQL name, or none, also escaped in a JS string. */
 const QUOTE = '(?:\\\\?")?';
 
-/** SQL's space between two words: white space, a line break, or a comment of either kind. */
-const SQL_SPACE = "(?:\\s|/\\*[\\s\\S]*?\\*/|--[^\\n]*(?:\\n|$))";
+/** SQL's space between two words: white space, a line break, or a comment of either kind. A line comment ends at a line feed or a carriage return, as PostgreSQL ends it. */
+const SQL_SPACE = "(?:\\s|/\\*[\\s\\S]*?\\*/|--[^\\n\\r]*(?:[\\n\\r]|$))";
 
 /** A name with a dot: its two parts, quoted or not, with any space, line break or comment around the dot. */
 function dotted(schema: string, name: string): string {
@@ -127,24 +141,29 @@ function dotted(schema: string, name: string): string {
  */
 const JS_ESCAPE = /\\(?:u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|\r\n|[\s\S])/g;
 
-/** The escapes of one letter that JS reads as a control character, each as that character, but a line break as a space, so each line keeps its number. */
-const CONTROL_ESCAPES: Readonly<Record<string, string>> = { b: "\b", f: "\f", n: " ", r: " ", t: "\t", v: "\v", "0": "\0" };
+/** The escapes of one letter that JS reads as a control character, each as that character. */
+const CONTROL_ESCAPES: Readonly<Record<string, string>> = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "0": "\0" };
 
-/** A file's text as the rules read it, and where in it a line continuation took out a line break. */
+/**
+ * A file's text as the rules read it; where in it a line continuation took
+ * out a line break of the file; and where an escape put in a line feed that
+ * the file does not hold.
+ */
 interface ReadText {
   readonly text: string;
   readonly joins: readonly number[];
+  readonly breaks: readonly number[];
 }
 
 /** The line breaks that a backslash before them makes a line continuation: CR LF, LF, CR, and the line and paragraph separators. */
 const CONTINUED: ReadonlySet<string> = new Set(["\r\n", "\n", "\r", String.fromCodePoint(0x2028), String.fromCodePoint(0x2029)]);
 
-/** One JS escape as its character: a code point that names a line break, or no character, as a space; a line continuation as nothing. */
+/** One JS escape as its character: a code point that names no character as a space; a line continuation as nothing. */
 function escapedCharacter(escape: string): string {
   const rest = escape.slice(1);
   if (/^(?:u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2})$/.test(rest)) {
     const point = Number.parseInt(rest.slice(1).replace(/[{}]/g, ""), 16);
-    return point > 0x10ffff || point === 0x0a || point === 0x0d ? " " : String.fromCodePoint(point);
+    return point > 0x10ffff ? " " : String.fromCodePoint(point);
   }
   if (CONTINUED.has(rest)) {
     return "";
@@ -157,22 +176,28 @@ function escapedCharacter(escape: string): string {
  * left to right: \t, \n and the other escapes of one letter as their
  * control characters, \u and \x as their characters, a backslash before any
  * other character as that character, and a line continuation as nothing, so
- * a name over two lines that it joins is one name. Each line keeps its
- * number: a line break as a space, and the place of each line that a
- * continuation joins to the next is kept.
+ * a name over two lines that it joins is one name. An escaped line feed or
+ * carriage return is one, so a SQL line comment ends there, as PostgreSQL
+ * ends it. Each line keeps its number: the place of each line feed that an
+ * escape put in is kept, and of each line that a continuation joins to the
+ * next.
  */
 function unescaped(source: string): ReadText {
   const joins: number[] = [];
+  const breaks: number[] = [];
   let shorter = 0;
   const text = source.replace(JS_ESCAPE, (escape: string, offset: number) => {
     const read = escapedCharacter(escape);
     if (escape === "\\\n" || escape === "\\\r\n") {
       joins.push(offset - shorter);
     }
+    if (read === "\n") {
+      breaks.push(offset - shorter);
+    }
     shorter += escape.length - read.length;
     return read;
   });
-  return { text, joins };
+  return { text, joins, breaks };
 }
 
 /** The one function, by its bare name, in any case: a schema in front, quoted or not, does not hide it. */
@@ -230,10 +255,19 @@ const DELETION = /\bliveForDeletion\b/g;
 
 /**
  * A path, in any string, of a *.test.* file or of a file in a test/ folder,
- * whatever import or loader takes it: it has a slash, and no space or colon.
- * The first group is the path.
+ * whatever import or loader takes it, with no space or colon: a path to a
+ * test/ folder, also one that starts there; a path with a slash to a *.test
+ * file, with a code extension or none; or the bare name of a *.test file
+ * with a code extension, as a path joined to a folder takes it. A bare name
+ * with no extension is a host's, as nortfox.test. The first group is the
+ * path.
  */
-const TEST_PATH = /["'`]((?:[^"'`\s:]*\/)(?:test\/[^"'`\s:]*|[^"'`\s:/]*\.test(?:\.[cm]?[jt]sx?)?))["'`]/g;
+const TEST_PATH = /["'`]((?:[^"'`\s:]*\/)?test\/[^"'`\s:]*|[^"'`\s:]*\/[^"'`\s:/]*\.test(?:\.[cm]?[jt]sx?)?|[^"'`\s:/]+\.test\.[cm]?[jt]sx?)["'`]/g;
+
+/** The problem of a test's path that TEST_PATH found. */
+function namesTest(found: RegExpExecArray): string {
+  return `names a test or a test helper (${String(found[1])}). The guard does not read the tests, so code that the server runs never loads one.`;
+}
 
 /** A rule of the guard: what breaks it in a file of `path`, none where it does not hold, and its problem. */
 interface Rule {
@@ -276,13 +310,13 @@ const RULES: readonly Rule[] = [
   },
   {
     patterns: () => [TEST_PATH],
-    problem: (found) => `names a test or a test helper (${String(found[1])}). The guard does not read the tests, so code that the server runs never loads one.`,
+    problem: (found) => namesTest(found),
   },
 ];
 
-/** The line of the file that holds the character at `index` of its read text, counted from 1: the read text's line breaks before it, and the ones that a continuation took out. */
+/** The line of the file that holds the character at `index` of its read text, counted from 1: the read text's line feeds before it but the ones that an escape put in, and the ones that a continuation took out. */
 function lineAt(read: ReadText, index: number): number {
-  let line = 1 + read.joins.filter((join) => join <= index).length;
+  let line = 1 + read.joins.filter((join) => join <= index).length - read.breaks.filter((put) => put < index).length;
   for (let end = read.text.indexOf("\n"); end !== -1 && end < index; end = read.text.indexOf("\n", end + 1)) {
     line += 1;
   }
@@ -322,6 +356,46 @@ export function membershipProblems(files: readonly SourceFile[]): string[] {
   }
   for (const file of read) {
     problems.push(...fileProblems(file).map((problem) => `${file.path}:${problem}`));
+  }
+  return problems;
+}
+
+/** The fields of a manifest that name a file of the package that a name of the package loads: its exports and its entry points. */
+const ENTRY_FIELDS = ["exports", "main", "module", "browser"] as const;
+
+/** Every text in a manifest's value, at any depth. */
+function textsOf(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.values(value).flatMap(textsOf);
+  }
+  return [];
+}
+
+/**
+ * What in the manifests of the packages the guard reads would let their
+ * code load a file that the guard does not read, as "<path>: <problem>";
+ * empty when nothing does: an imports field, whose # names the guard does
+ * not follow; an export or an entry point outside src/ and its build in
+ * dist/; and the path of a test or a test helper, in any string.
+ */
+export function manifestProblems(files: readonly SourceFile[]): string[] {
+  const problems: string[] = [];
+  for (const file of files) {
+    const manifest = JSON.parse(file.text) as Readonly<Record<string, unknown>>;
+    if (Object.hasOwn(manifest, "imports")) {
+      problems.push(`${file.path}: maps imports (#…), whose files the guard does not follow. Import a file of the package by its path.`);
+    }
+    for (const target of ENTRY_FIELDS.flatMap((field) => textsOf(manifest[field]))) {
+      if (!/^\.\/(?:src|dist)\//.test(target) || target.split("/").includes("..")) {
+        problems.push(`${file.path}: points ${target} outside src/ and its build in dist/, where the guard does not read.`);
+      }
+    }
+    for (const found of file.text.matchAll(TEST_PATH)) {
+      problems.push(`${file.path}: ${namesTest(found)}`);
+    }
   }
   return problems;
 }

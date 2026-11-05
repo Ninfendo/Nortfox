@@ -14,7 +14,7 @@
 // keeps the membership; one that runs while the membership is disconnected
 // and given another person is refused too. access.choose_company, the lookup function that
 // stores the session's choice, chooses only for the transaction's person's
-// own live session.
+// own live session, and never moves the session's last sight back.
 
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -373,11 +373,21 @@ describe("a session's membership", () => {
   });
 
   describe("access.choose_company", () => {
-    async function choose(app: Client, actor: string, session: string, company: string, membership: string): Promise<boolean> {
+    async function choose(app: Client, actor: string, session: string, company: string, membership: string, at?: Date): Promise<boolean> {
       return inTransaction(app, { actor, kind: "user", channel: "rest" }, async () => {
-        const found = await app.query<{ chosen: boolean }>("SELECT access.choose_company($1, $2, $3, '{}'::jsonb, 120, pg_catalog.now()) AS chosen", [session, company, membership]);
+        const found = await app.query<{ chosen: boolean }>("SELECT access.choose_company($1, $2, $3, '{}'::jsonb, 120, coalesce($4, pg_catalog.now())) AS chosen", [
+          session,
+          company,
+          membership,
+          at ?? null,
+        ]);
         return found.rows[0]?.chosen ?? false;
       });
+    }
+
+    /** The session's last sight, as its row holds it. */
+    async function lastSeen(id: string): Promise<Date | undefined> {
+      return (await owner.query<{ last_seen_at: Date }>("SELECT last_seen_at FROM access.sessions WHERE id = $1", [id])).rows[0]?.last_seen_at;
     }
 
     async function sessionRow(token: string): Promise<{ id: string; current_company_id: string | null }> {
@@ -399,6 +409,18 @@ describe("a session's membership", () => {
       expect((await sessionRow(session)).current_company_id).toBe(company.id);
       await owner.query("UPDATE access.sessions SET ended_at = now(), end_reason = 'logout' WHERE id = $1", [id]);
       expect(await choose(app, person.id, id, company.id, membership)).toBe(false);
+    });
+
+    it("notes the choice as the session's last sight, and never moves it back for a choice whose time is older", async () => {
+      const { person, session, membership } = await memberInCompany();
+      const { id } = await sessionRow(session);
+      const seen = (await lastSeen(id)) ?? new Date(Number.NaN);
+      const later = new Date(seen.getTime() + 10 * MINUTE);
+      expect(await choose(app, person.id, id, company.id, membership, later)).toBe(true);
+      expect(await lastSeen(id)).toEqual(later);
+      // Another request of the session noted a later time before this choice was stored.
+      expect(await choose(app, person.id, id, company.id, membership, new Date(seen.getTime() + 5 * MINUTE))).toBe(true);
+      expect(await lastSeen(id)).toEqual(later);
     });
 
     it("refuses a membership of another company, by the paired key", async () => {

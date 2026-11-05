@@ -143,6 +143,36 @@ describe("the company choice", () => {
     expect(await jsonOf<Page>(await getAs(server, otherSession, "/v1/companies"))).toEqual({ items: [], total: 0 });
   });
 
+  it("finds a company by its organisation number with or without the hyphen, and none by hyphens alone", async () => {
+    const found = async (query: string): Promise<Page> => jsonOf<Page>(await getAs(server, session, `/v1/companies?query=${encodeURIComponent(query)}`));
+    for (const query of ["5560000167", "556000-0167", "0000167", "60000", "6000-01", "556000-"]) {
+      const page = await found(query);
+      expect(
+        page.items.map((item) => item.company.name),
+        query,
+      ).toEqual(["Testbolaget Alfa AB", "Testbolaget Beta AB"]);
+      expect(page.total, query).toBe(2);
+    }
+    for (const query of ["-", "---", "5560000168", "556000-01671"]) {
+      expect(await found(query), query).toEqual({ items: [], total: 0 });
+    }
+  });
+
+  it("pages over two companies of one name by their ids, each once", async () => {
+    const someone = await addSignInIdentity(owner);
+    const first = await aCompany(app, "Testbolaget Samma AB");
+    const second = await aCompany(app, "Testbolaget Samma AB");
+    await addMembership(app, owner, first, { user: someone.id });
+    await addMembership(app, owner, second, { user: someone.id });
+    const own = (await signIn(server, someone)).session;
+    const one = await jsonOf<Page>(await getAs(server, own, "/v1/companies?limit=1"));
+    expect(one.total).toBe(2);
+    const two = await jsonOf<Page>(await getAs(server, own, `/v1/companies?limit=1&cursor=${encodeURIComponent(one.nextCursor ?? "")}`));
+    expect(two.total).toBe(2);
+    expect(two.nextCursor).toBeUndefined();
+    expect([...one.items, ...two.items].map((item) => item.company.id)).toEqual([first.id, second.id].sort());
+  });
+
   it("works in no company before a choice", async () => {
     expect(await jsonOf(await getAs(server, session, "/v1/session"))).toEqual({ user: { id: person.id, name: "Alva Berg", email: person.email, language: "sv" } });
     const me = await jsonOf(await getAs(server, session, "/v1/me"));

@@ -9,16 +9,31 @@
 // that only resolve.ts holds, a file that sets the transaction's company or
 // actor itself, by name or by a SET, RESET or DO statement, also with a name
 // over several lines or a line continuation, through a JS escape or right
-// after one, a name in SQL's Unicode
-// escapes, a second caller of the deletion's form, and code that names a
-// test's path. The catalog's half is
+// after one, or after a SQL line comment that an escaped line break ends, a
+// name in SQL's Unicode escapes, a second caller of the deletion's form,
+// code that names a test's path, also by its bare name, and a manifest that
+// maps imports, points outside the source or names a test. It reads a
+// test-named file that the build ships. The catalog's half is
 // apps/server/src/modules/memberships/one-function.db.test.ts.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { gitText, nulList } from "../names/git.ts";
-import { DATABASE, DELETE_ME, MEMBERSHIPS_MODULE, RESOLVE, SETTING_EXCEPTIONS, TABLE_EXCEPTIONS, membershipProblems, scansFile, type SourceFile } from "./membership.ts";
+import {
+  DATABASE,
+  DELETE_ME,
+  MANIFESTS,
+  MEMBERSHIPS_MODULE,
+  RESOLVE,
+  SCANNED,
+  SETTING_EXCEPTIONS,
+  TABLE_EXCEPTIONS,
+  manifestProblems,
+  membershipProblems,
+  scansFile,
+  type SourceFile,
+} from "./membership.ts";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -27,6 +42,22 @@ const tracked = nulList(gitText(ROOT, ["ls-files", "-z", "--cached", "--others",
 /** The files the guard reads, as they are in the repository. */
 function serverSource(): SourceFile[] {
   return tracked.filter((path) => scansFile(path)).map((path) => ({ path, text: readFileSync(`${ROOT}/${path}`, "utf8") }));
+}
+
+/** The packages whose source the guard reads, each built from its src/ by its tsconfig.build.json. */
+const BUILT_PACKAGES = SCANNED.map((root) => root.replace(/src\/$/, ""));
+
+/** A glob of a tsconfig's exclude as a pattern: ** / for any folders, * for any part of a name. */
+function globPattern(glob: string): RegExp {
+  const parts = glob.split(/(\*\*\/|\*)/).map((part) => (part === "**/" ? "(?:[^/]+/)*" : part === "*" ? "[^/]*" : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")));
+  return new RegExp(`^${parts.join("")}$`);
+}
+
+/** What the build of the package at `root` leaves out of its source, as patterns of a path from the package's folder. */
+function buildExclusions(root: string): RegExp[] {
+  const text = readFileSync(`${ROOT}/${root}tsconfig.build.json`, "utf8").replace(/^\s*\/\/.*$/gm, "");
+  const config = JSON.parse(text) as { readonly exclude?: readonly string[] };
+  return (config.exclude ?? []).map(globPattern);
 }
 
 /** resolve.ts as the guard needs it to be: it calls the function. */
@@ -102,7 +133,12 @@ describe("the files the guard reads", () => {
     ["packages/contract/src/operations/companies.ts", true],
     ["packages/engine/src/money.ts", true],
     ["apps/server/src/api/operation.test.ts", false],
-    ["apps/server/src/later/page.test.tsx", false],
+    ["apps/server/src/later/page.test.tsx", true],
+    ["apps/server/src/modules/companies/enter-any.test.mts", true],
+    ["apps/server/src/later/thing.test.cts", true],
+    ["apps/server/src/later/thing.test.js", true],
+    ["apps/server/src/later/thing.test.mjs", true],
+    ["packages/contract/src/thing.test.mts", true],
     ["apps/server/src/modules/memberships/resolve.db.test.ts", false],
     ["packages/contract/src/operation.test.ts", false],
     ["packages/engine/src/money.property.test.ts", false],
@@ -114,6 +150,50 @@ describe("the files the guard reads", () => {
     ["apps/server/src/README.md", false],
   ])("reads %s: %s", (path, read) => {
     expect(scansFile(path)).toBe(read);
+  });
+
+  it("skips only the files that the build leaves out, so every file it skips is a test that never ships", () => {
+    const names = [
+      "x.ts",
+      "x.test.ts",
+      "deep/er/x.db.test.ts",
+      "x.property.test.ts",
+      "x.test.mts",
+      "x.test.cts",
+      "x.test.tsx",
+      "x.test.js",
+      "x.test.mjs",
+      "x.test.cjs",
+      "x.test.jsx",
+      "x.mts",
+      "deep/x.test-plan.ts",
+    ];
+    for (const root of BUILT_PACKAGES) {
+      const excluded = buildExclusions(root);
+      expect(excluded.length, root).toBeGreaterThan(0);
+      for (const name of names) {
+        const path = `${root}src/${name}`;
+        expect(scansFile(path), path).toBe(!excluded.some((pattern) => pattern.test(`src/${name}`)));
+      }
+      // Every file of the repository that the guard skips there is one the build leaves out.
+      for (const path of tracked.filter((file) => file.startsWith(`${root}src/`) && /\.[cm]?[jt]sx?$/.test(file) && !scansFile(file))) {
+        expect(
+          excluded.some((pattern) => pattern.test(path.slice(root.length))),
+          path,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("reads a test-named file that is no test, and fails code that loads it by its bare name", () => {
+    const hidden = "apps/server/src/modules/companies/enter-any.test.mts";
+    expect(problemsWith(hidden, "export async function enterAny(tx, company) {", `  await tx.query("SELECT pg_catalog.set_config('nortfox.company_id', $1, true)", [company]);`, "}")).toEqual([
+      `${hidden}:2: ${SETS_SETTINGS}`,
+    ]);
+    const loader = "apps/server/src/modules/companies/read-other.ts";
+    expect(problemsWith(loader, "const load = createRequire(import.meta.url);", 'const { enterAny } = load(join(import.meta.dirname, "enter-any.test.mjs"));')).toEqual([
+      `${loader}:2: ${importsTest("enter-any.test.mjs")}`,
+    ]);
   });
 
   it("finds nothing in a test file or outside the code the server runs, whatever it names", () => {
@@ -442,6 +522,35 @@ describe("the membership guard", () => {
       expect(problemsWith(HANDLER, "const ok = 1;", 'await tx.query("SELECT 1; \\', 'SET LOCAL nortfox.company_id = $1", [companyId]);')).toEqual([`${HANDLER}:3: ${SETS_SETTINGS}`]);
     });
 
+    it.each([
+      ["a plain SET after a line comment that a \\n escape ends", 'await tx.query("-- the company\\nSET " + name + " = $1", [companyId]);'],
+      ["RESET after a line comment that a \\r escape ends", 'await tx.query("-- the company\\rRESET " + name);'],
+      ["a plain SET after a line comment that a \\u000a escape ends", 'await tx.query("-- the company\\u000aSET " + name + " = $1", [companyId]);'],
+      ["a plain SET after a line comment that a \\u000D escape ends", 'await tx.query("-- the company\\u000DSET " + name + " = $1", [companyId]);'],
+      ["a plain SET after a line comment that a \\x0a escape ends", 'await tx.query("-- the company\\x0aSET " + name + " = $1", [companyId]);'],
+      ["a plain SET after a line comment that a \\x0d escape ends", 'await tx.query("-- the company\\x0dSET " + name + " = $1", [companyId]);'],
+      ["a plain SET after a line comment that a \\u{a} escape ends", 'await tx.query("-- the company\\u{a}SET " + name + " = $1", [companyId]);'],
+      ["a setting's name with a line comment before its dot that a \\n escape ends", `await tx.query("-- the company\\nSELECT 1 FROM nortfox -- the schema\\n.company_id");`],
+      ["a DO block with a line comment that a \\n escape ends", 'await tx.query("DO -- the block\\n$$ BEGIN EXECUTE x; END $$");'],
+    ])("fails it %s, on its own line", (_case, line) => {
+      expect(problemsWith(HANDLER, "const ok = 1;", line, "const after = 1;")).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
+    });
+
+    it("fails the memberships with a line comment before the dot that a \\n escape ends, and keeps the next lines' numbers", () => {
+      expect(problemsWith(HANDLER, "const ok = 1;", 'await tx.query("SELECT * FROM access -- the schema\\n.memberships WHERE id = $1", [id]);', "x as CompanyAccess")).toEqual([
+        `${HANDLER}:2: ${readsTable("access.memberships")}`,
+        `${HANDLER}:3: ${builtByHand("CompanyAccess")}`,
+      ]);
+      expect(problemsWith(HANDLER, 'const a = "x\\r\\ny\\n\\nz";', 'await tx.query("-- the company\\nSET " + name);', "x as CompanyAccess")).toEqual([
+        `${HANDLER}:2: ${SETS_SETTINGS}`,
+        `${HANDLER}:3: ${builtByHand("CompanyAccess")}`,
+      ]);
+    });
+
+    it("does not take an UPDATE's SET after a line comment that a \\n escape ends for a SET statement", () => {
+      expect(problemsWith(HANDLER, 'await tx.query("-- the company\\nUPDATE ledger.companies SET name = $1 WHERE company_id = $2", [name, id]);')).toEqual([]);
+    });
+
     it("reads an escaped backslash as one, so the letter after it starts no escape", () => {
       expect(problemsWith(HANDLER, 'const words = "a\\\\nset_config b";')).toEqual([]);
     });
@@ -482,6 +591,10 @@ describe("the membership guard", () => {
       ["in a URL", 'const helper = new URL("../../test/database.ts", import.meta.url);', "../../test/database.ts"],
       ["by a path built in a template", "const helper = await import(`../../test/${name}.ts`);", "../../test/${name}.ts"],
       ["from the root", "const helper = load('/app/apps/server/test/memberships.ts');", "/app/apps/server/test/memberships.ts"],
+      ["by its bare name, joined to a folder", 'const helper = load(join(import.meta.dirname, "enter-any.test.mjs"));', "enter-any.test.mjs"],
+      ["a database test by its bare name", "const helper = load(resolve(here, 'peek.db.test.ts'));", "peek.db.test.ts"],
+      ["a .cjs test by its bare name, in a template", "const helper = load(`peek.test.cjs`);", "peek.test.cjs"],
+      ["a test helper by a path that starts at its folder", 'const helper = load(join(root, "test/memberships.ts"));', "test/memberships.ts"],
     ])("fails %s", (_case, line, specifier) => {
       expect(problemsWith(HANDLER, line)).toEqual([`${HANDLER}:1: ${importsTest(specifier)}`]);
     });
@@ -506,12 +619,63 @@ describe("the membership guard", () => {
           "// The test of this file is apps/server/test/memberships.ts.",
           'const origin = "https://nortfox.test";',
           'const host = "nortfox.test";',
+          'const api = "api.nortfox.test";',
+          'const name = "latest.ts";',
+          'const other = "contest.mjs";',
+          'const notes = "notes.test-plan.ts";',
           'const words = "the test/ folder";',
           'const steps = "run it from the /test/folder";',
           'const route = "/v1/tests/x";',
           "const plan = './notes.test-plan.md';",
         ),
       ).toEqual([]);
+    });
+  });
+
+  describe("the manifests of the code the server runs", () => {
+    const MANIFEST = "packages/contract/package.json";
+
+    /** A manifest of the contract package with `fields` beside its name. */
+    function manifestWith(fields: Record<string, unknown>): SourceFile {
+      return { path: MANIFEST, text: JSON.stringify({ name: "@nortfox/contract", ...fields }, null, 2) };
+    }
+
+    it("map no imports, point their exports only into src/ and dist/, and name no test", () => {
+      expect(MANIFESTS).toEqual(BUILT_PACKAGES.map((root) => `${root}package.json`));
+      expect(manifestProblems(MANIFESTS.map((path) => ({ path, text: readFileSync(`${ROOT}/${path}`, "utf8") })))).toEqual([]);
+    });
+
+    it("fails a manifest that maps imports, whose files the guard does not read", () => {
+      expect(manifestProblems([manifestWith({ imports: { "#anywhere": "./src/companies/enter-any.ts" } })])).toEqual([
+        `${MANIFEST}: maps imports (#…), whose files the guard does not follow. Import a file of the package by its path.`,
+      ]);
+    });
+
+    it("fails an export or an entry point outside src/ and dist/", () => {
+      expect(
+        manifestProblems([
+          manifestWith({
+            main: "./lib/index.js",
+            exports: {
+              ".": { "@nortfox/source": "./src/index.ts", default: "./dist/index.js" },
+              "./peek": { default: "./scripts/peek.ts" },
+              "./back": "./src/../scripts/peek.ts",
+            },
+          }),
+        ]),
+      ).toEqual([
+        `${MANIFEST}: points ./scripts/peek.ts outside src/ and its build in dist/, where the guard does not read.`,
+        `${MANIFEST}: points ./src/../scripts/peek.ts outside src/ and its build in dist/, where the guard does not read.`,
+        `${MANIFEST}: points ./lib/index.js outside src/ and its build in dist/, where the guard does not read.`,
+      ]);
+    });
+
+    it("fails a manifest that names a test or a test helper", () => {
+      expect(manifestProblems([manifestWith({ exports: { "./peek": "./src/peek.db.test.ts", "./helper": "./test/memberships.ts" } })])).toEqual([
+        `${MANIFEST}: points ./test/memberships.ts outside src/ and its build in dist/, where the guard does not read.`,
+        `${MANIFEST}: ${importsTest("./src/peek.db.test.ts")}`,
+        `${MANIFEST}: ${importsTest("./test/memberships.ts")}`,
+      ]);
     });
   });
 

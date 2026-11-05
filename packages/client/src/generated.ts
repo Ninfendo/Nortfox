@@ -315,7 +315,7 @@ export interface Operations {
   /**
    * List your companies
    *
-   * Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name or organisation number holds it, in any letter case.
+   * Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.
    *
    * `GET /v1/companies`
    *
@@ -326,7 +326,7 @@ export interface Operations {
   listCompanies(
     input?: {
       /**
-       * A part of the company's name, in any letter case, or of its organisation number.
+       * A part of the company's name, in any letter case, or of its organisation number, with or without the hyphen.
        */
       readonly query?: string;
       /**

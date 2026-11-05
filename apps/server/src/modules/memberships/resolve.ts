@@ -163,7 +163,7 @@ export async function activeMemberships(tx: Queryable): Promise<readonly Resolve
 
 /** What a page of the person's companies asks for: a part of the name or the organisation number, where the page starts, and its length. */
 export interface MembershipPageRequest {
-  /** A part of the company's name, in any letter case, or of its organisation number. */
+  /** A part of the company's name, in any letter case, or of its organisation number, with or without the hyphen. */
   readonly query?: string;
   /** The sort key of the last company of the page before: its name and its id. */
   readonly after?: readonly string[];
@@ -178,8 +178,14 @@ export interface MembershipPage {
   readonly total: number;
 }
 
-/** The condition of the companies that a query keeps: $1 is the query, or NULL for every company. */
-const KEPT = "($1::text IS NULL OR strpos(lower(m.company_name), lower($1)) > 0 OR strpos(m.organization_number, $1) > 0)";
+/**
+ * The condition of the companies that a query keeps: $1 is the query, or
+ * NULL for every company. A part of the name, in any letter case; or a part
+ * of the organisation number, with or without the hyphen: the query's digits
+ * in the number's, when the query holds digits and nothing else but hyphens.
+ */
+const KEPT = `($1::text IS NULL OR strpos(lower(m.company_name), lower($1)) > 0
+  OR (translate($1, '-', '') ~ '^[0-9]+$' AND strpos(translate(m.organization_number, '-', ''), translate($1, '-', '')) > 0))`;
 
 /**
  * A page of the transaction's person's active memberships, by the company's

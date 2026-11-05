@@ -187,7 +187,7 @@ const COMPANY_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        query: { description: "A part of the company's name, in any letter case, or of its organisation number.", type: "string", minLength: 1, maxLength: 200 },
+        query: { description: "A part of the company's name, in any letter case, or of its organisation number, with or without the hyphen.", type: "string", minLength: 1, maxLength: 200 },
         limit: { type: "integer", default: 100, description: "How many items a page holds: from 1 to 500. Any other whole number gives 100." },
         cursor: { description: "Where the page starts: the nextCursor of the page before. Leave it out for the first page.", type: "string" },
       },

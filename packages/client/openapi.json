@@ -1474,7 +1474,7 @@
           "companies"
         ],
         "summary": "List your companies",
-        "description": "Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name or organisation number holds it, in any letter case.",
+        "description": "Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.",
         "x-nortfox": {
           "permission": "signed-in",
           "tool": "Lists the companies where you are an active member, with your system administrator's level in each.",
@@ -1496,10 +1496,10 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200,
-              "description": "A part of the company's name, in any letter case, or of its organisation number."
+              "description": "A part of the company's name, in any letter case, or of its organisation number, with or without the hyphen."
             },
             "required": false,
-            "description": "A part of the company's name, in any letter case, or of its organisation number.",
+            "description": "A part of the company's name, in any letter case, or of its organisation number, with or without the hyphen.",
             "name": "query",
             "in": "query"
           },

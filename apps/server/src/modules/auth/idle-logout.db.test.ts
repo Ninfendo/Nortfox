@@ -115,6 +115,12 @@ describe("idle logout", () => {
       .rows[0];
   }
 
+  /** The idle time that the session's row holds: the one it was last seen under. */
+  async function idleOf(session: string): Promise<number | undefined> {
+    return (await owner.query<{ idle_timeout_minutes: number }>("SELECT idle_timeout_minutes FROM access.sessions WHERE token_hash = $1", [tokenHash(session)])).rows[0]
+      ?.idle_timeout_minutes;
+  }
+
   function changeOwn(session: string, body: unknown): Promise<Response> {
     return writeAs(server, session, "PATCH", `/v1/me/companies/${company.id}`, body);
   }
@@ -347,6 +353,22 @@ describe("idle logout", () => {
       expect((await getAs(server, laptop, "/v1/company")).status).toBe(401);
       expect((await endOf(laptop))?.end_reason).toBe("idle");
       expect((await getAs(server, tablet, "/v1/company")).status).toBe(200);
+    });
+
+    it("leaves a session on the lower idle time it was last seen under, when another session raises the idle time and then lowers it to more than that", async () => {
+      const { person, session: laptop } = await memberInCompany(15);
+      server.clock.advance(MINUTE);
+      const { session: phone } = await signIn(server, person);
+      expect((await chooseCompany(server, phone, company.id)).status).toBe(200);
+      // A raise reaches the laptop only at its next request, so the lowering to 120 minutes leaves it at the 15 it was seen under.
+      expect((await changeOwn(phone, { idleTimeout: 480 })).status).toBe(200);
+      expect((await changeOwn(phone, { idleTimeout: 120 })).status).toBe(200);
+      expect(await idleOf(laptop)).toBe(15);
+      expect(await idleOf(phone)).toBe(120);
+      // 30 minutes with no request of the laptop: past its 15.
+      server.clock.advance(30 * MINUTE);
+      expect((await getAs(server, laptop, "/v1/company")).status).toBe(401);
+      expect((await endOf(laptop))?.end_reason).toBe("idle");
     });
 
     it("holds for a session whose request notes it while the lower idle time commits", async () => {

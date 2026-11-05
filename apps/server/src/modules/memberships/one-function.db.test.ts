@@ -11,9 +11,12 @@
 // company outside its company. Of the routines the app may run (functions,
 // procedures and aggregates, in any schema), no other reads the memberships
 // or the companies as the owner, and none sets a setting, runs dynamic SQL
-// or writes a name in SQL's Unicode escapes. The probes show that the
-// catalog check finds a second such function, also one that reads them
-// through another function, a procedure, or an aggregate's function; a
+// (by EXECUTE, or through one of PostgreSQL's functions that run SQL from a
+// text or read a table, a schema or the database by name, such as
+// query_to_xml) or writes a name in SQL's Unicode escapes. The probes show
+// that the catalog check finds a second such function, also one that reads
+// them through another function, a procedure, or an aggregate's function; a
+// routine that runs SQL through each of those functions of PostgreSQL's; a
 // routine that sets the transaction's company, as the owner or as the app;
 // and an app policy by person.
 
@@ -47,7 +50,36 @@ interface ActiveMembership {
 /** The catalog check's problems, after a routine's name. */
 const READS = `the app may run it, it runs as the owner, and it reads ${GUARDED_TABLES.join(" or ")}, which only ${THE_FUNCTION} may.`;
 const AGGREGATE_READS = `the app may run it, a function of the aggregate runs as the owner, and it reads ${GUARDED_TABLES.join(" or ")}, which only ${THE_FUNCTION} may.`;
-const DYNAMIC = "the app may run it, and it runs dynamic SQL, whose reads and settings no check can see.";
+const DYNAMIC =
+  "the app may run it, and it runs dynamic SQL (EXECUTE, or one of PostgreSQL's functions that run SQL from a text or read a table, a schema or the database by name), whose reads and settings no check can see.";
+
+/**
+ * PostgreSQL's own functions that run SQL from a text (query_to_xml and its
+ * forms, ts_stat and ts_rewrite), read a table by a regclass that may be
+ * made at run time (table_to_xml and its forms), read whole schemas or the
+ * database (schema_to_xml, database_to_xml and their forms), or read a
+ * cursor that another statement opened (cursor_to_xml and its form).
+ * PostgreSQL records no dependency on one of its own functions, so the
+ * catalog's pg_depend does not show a call: the text does.
+ */
+const RUNS_SQL = [
+  "query_to_xml",
+  "query_to_xmlschema",
+  "query_to_xml_and_xmlschema",
+  "table_to_xml",
+  "table_to_xmlschema",
+  "table_to_xml_and_xmlschema",
+  "schema_to_xml",
+  "schema_to_xmlschema",
+  "schema_to_xml_and_xmlschema",
+  "database_to_xml",
+  "database_to_xmlschema",
+  "database_to_xml_and_xmlschema",
+  "cursor_to_xml",
+  "cursor_to_xmlschema",
+  "ts_stat",
+  "ts_rewrite",
+] as const;
 const ESCAPES = "the app may run it, and it writes a name in SQL's Unicode escapes (U&), which no check can read.";
 const SETS =
   "the app may run it, and it sets a setting itself (set_config, SET LOCAL or SET SESSION, a SET or RESET of a nortfox setting, RESET ALL, or pg_settings). Only the server's database layer sets the transaction's company, actor and channel.";
@@ -94,6 +126,7 @@ const RULES: readonly { readonly why: Why; readonly word: string; readonly patte
   { why: "reads", word: "memberships", pattern: namePattern("access", "memberships") },
   { why: "reads", word: "companies", pattern: namePattern("ledger", "companies") },
   { why: "dynamic", word: "execute", pattern: wordPattern("execute") },
+  ...RUNS_SQL.map((name) => ({ why: "dynamic" as const, word: name, pattern: wordPattern(name) })),
   { why: "sets", word: "set_config", pattern: wordPattern("set_config") },
   { why: "sets", word: "pg_settings", pattern: wordPattern("pg_settings") },
   { why: "sets", word: "local", pattern: `${NAME_START}set${SQL_SPACE}+local${NAME_END}` },
@@ -123,9 +156,10 @@ const RULES: readonly { readonly why: Why; readonly word: string; readonly patte
  *   sets them. Trigger functions are left out: no one calls one, and the
  *   last administrator's check sets the company for its own statements and
  *   puts it back.
- * - A routine that the app may run and that runs dynamic SQL (EXECUTE), or
- *   writes a name in SQL's Unicode escapes, at any depth, counts too, since
- *   no text match can see what it reads or sets.
+ * - A routine that the app may run and that runs dynamic SQL, by EXECUTE or
+ *   through one of PostgreSQL's functions that run SQL from a text or read
+ *   by name (RUNS_SQL), or writes a name in SQL's Unicode escapes, at any
+ *   depth, counts too, since no text match can see what it reads or sets.
  *
  * And the app's only policy on either table is the company policy.
  */
@@ -432,6 +466,65 @@ describe("the one membership function", () => {
             AS $run$ BEGIN EXECUTE statement; END $run$;
           GRANT EXECUTE ON FUNCTION ledger.run_statement(text) TO nortfox_app;`),
       ).toEqual([`ledger.run_statement: ${DYNAMIC}`]);
+    });
+
+    describe("a function that the app may run and that runs SQL through one of PostgreSQL's own functions", () => {
+      it.each([
+        ["query_to_xml over a joined name", "RETURN pg_catalog.query_to_xml('SELECT company_id, live_user_id FROM access.' || 'member' || 'ships', true, false, '')::text"],
+        ["query_to_xml over a query it is given", "RETURN pg_catalog.query_to_xml(a, true, false, '')::text"],
+        ["query_to_xmlschema", "RETURN pg_catalog.query_to_xmlschema(a, true, false, '')::text"],
+        ["query_to_xml_and_xmlschema", "RETURN pg_catalog.query_to_xml_and_xmlschema(a, true, false, '')::text"],
+        ["table_to_xml with a table named at run time", "RETURN pg_catalog.table_to_xml(('access.' || a)::pg_catalog.regclass, true, false, '')::text"],
+        ["table_to_xmlschema", "RETURN pg_catalog.table_to_xmlschema(a::pg_catalog.regclass, true, false, '')::text"],
+        ["table_to_xml_and_xmlschema", "RETURN pg_catalog.table_to_xml_and_xmlschema(a::pg_catalog.regclass, true, false, '')::text"],
+        ["schema_to_xml, with no name joined", "RETURN pg_catalog.schema_to_xml('access', true, false, '')::text"],
+        ["schema_to_xmlschema", "RETURN pg_catalog.schema_to_xmlschema(a::name, true, false, '')::text"],
+        ["schema_to_xml_and_xmlschema", "RETURN pg_catalog.schema_to_xml_and_xmlschema(a::name, true, false, '')::text"],
+        ["database_to_xml", "RETURN pg_catalog.database_to_xml(true, false, '')::text"],
+        ["database_to_xmlschema", "RETURN pg_catalog.database_to_xmlschema(true, false, a)::text"],
+        ["database_to_xml_and_xmlschema", "RETURN pg_catalog.database_to_xml_and_xmlschema(true, false, a)::text"],
+        ["cursor_to_xml", "RETURN pg_catalog.cursor_to_xml(a::pg_catalog.refcursor, 10, true, false, '')::text"],
+        ["cursor_to_xmlschema", "RETURN pg_catalog.cursor_to_xmlschema(a::pg_catalog.refcursor, true, false, '')::text"],
+        ["ts_stat", "RETURN (SELECT pg_catalog.count(*) FROM pg_catalog.ts_stat(a))::text"],
+        ["ts_rewrite", "RETURN pg_catalog.ts_rewrite('x'::pg_catalog.tsquery, a)::text"],
+        [
+          "query_to_xml over a call of set_config that it formats, in capitals",
+          `LANGUAGE plpgsql AS $peek$ BEGIN RETURN PG_CATALOG.QUERY_TO_XML(pg_catalog.format('SELECT pg_catalog.set_' || 'config(%L, %L, true)', 'nort' || 'fox.company_id', a), true, false, '')::text; END $peek$`,
+        ],
+      ])("%s", async (_case, body) => {
+        const language = body.startsWith("LANGUAGE") ? "" : "LANGUAGE sql";
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION ledger.peek_builtin(a text) RETURNS text ${language} SECURITY DEFINER SET search_path = pg_catalog, pg_temp ${body};
+            GRANT EXECUTE ON FUNCTION ledger.peek_builtin(text) TO nortfox_app;`),
+        ).toEqual([`ledger.peek_builtin: ${DYNAMIC}`]);
+      });
+
+      it("finds it as the app too, and through a function that the app may not run itself", async () => {
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION ledger.export_table(s text, t text) RETURNS xml LANGUAGE sql SET search_path = pg_catalog, pg_temp
+              RETURN pg_catalog.query_to_xml(pg_catalog.format('SELECT * FROM %I.%I', s, t), true, false, '');
+            GRANT EXECUTE ON FUNCTION ledger.export_table(text, text) TO nortfox_app;
+            CREATE FUNCTION access.dump_schema() RETURNS xml LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              RETURN pg_catalog."schema_to_xml"('access', true, false, '');
+            CREATE FUNCTION access.dump_through() RETURNS xml LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              RETURN access.dump_schema();
+            GRANT EXECUTE ON FUNCTION access.dump_through() TO nortfox_app;`),
+        ).toEqual([`access.dump_through: ${DYNAMIC}`, `ledger.export_table: ${DYNAMIC}`]);
+      });
+
+      it("does not take a longer name, or a word inside another, for one", async () => {
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION ledger.query_to_xml_text(a text) RETURNS text LANGUAGE sql SET search_path = pg_catalog, pg_temp
+              RETURN 'totp_secrets_state_known' || a;
+            GRANT EXECUTE ON FUNCTION ledger.query_to_xml_text(text) TO nortfox_app;
+            CREATE FUNCTION ledger.calls_it(a text) RETURNS text LANGUAGE sql SET search_path = pg_catalog, pg_temp
+              RETURN ledger.query_to_xml_text(a);
+            GRANT EXECUTE ON FUNCTION ledger.calls_it(text) TO nortfox_app;`),
+        ).toEqual([]);
+      });
     });
 
     it("finds such a function that writes a name in SQL's Unicode escapes, which no text match reads", async () => {

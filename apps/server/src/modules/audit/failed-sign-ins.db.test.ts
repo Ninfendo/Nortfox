@@ -162,6 +162,28 @@ describe("the behandlingshistorik of a failed sign-in", () => {
     expect(account.rows).toHaveLength(5);
   });
 
+  it("writes one entry per identity: two members' failed sign-ins in one company inside the same minute give one each", async () => {
+    const first = await addSignInIdentity(owner);
+    const second = await addSignInIdentity(owner);
+    const shared: Company = await aCompany(app, "Testbolaget Delad AB");
+    await addMembership(app, owner, shared, { user: first.id });
+    await addMembership(app, owner, shared, { user: second.id });
+    expect((await passwordStep(server, first.email, "fel-första", { ipAddress: ADDRESS })).status).toBe(422);
+    await server.app.afterAnswer.idle();
+    server.clock.advance(10 * SECOND);
+    expect((await passwordStep(server, second.email, "fel-andra", { ipAddress: ADDRESS })).status).toBe(422);
+    await server.app.afterAnswer.idle();
+    const entries = await superuser.query<{ subject_id: string; failures: number }>(
+      `SELECT subject_id, (details ->> 'failuresInLastHour')::integer AS failures FROM access.events
+       WHERE company_id = $1 AND heading = 'sign-in' AND details ->> 'outcome' = 'failed' ORDER BY at`,
+      [shared.id],
+    );
+    expect(entries.rows).toEqual([
+      { subject_id: first.id, failures: 1 },
+      { subject_id: second.id, failures: 1 },
+    ]);
+  });
+
   it("counts the failed sign-ins of the last hour only, by the database's clock", async () => {
     const { person, alfa, beta } = await memberOfTwo();
     // A failure 61 minutes ago and one 59 minutes ago, stamped as the database would have; the trigger that stamps the time is off for the insert.

@@ -149,9 +149,15 @@ export const listCompanies = defineListOperation({
   summary: "List your companies",
   description:
     "Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. " +
-    "query keeps the companies whose name or organisation number holds it, in any letter case.",
+    "query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.",
   query: z.strictObject({
-    query: z.string().min(1).max(200).check(noNul(), wellFormed()).optional().meta({ description: "A part of the company's name, in any letter case, or of its organisation number." }),
+    query: z
+      .string()
+      .min(1)
+      .max(200)
+      .check(noNul(), wellFormed())
+      .optional()
+      .meta({ description: "A part of the company's name, in any letter case, or of its organisation number, with or without the hyphen." }),
   }),
   item: CompanyChoice,
   permission: "signed-in",

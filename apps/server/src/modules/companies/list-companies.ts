@@ -4,8 +4,9 @@
 // person is an active member, by name, with the person's system
 // administrator's level in each, from the one membership function
 // (modules/memberships/resolve.ts). query keeps those whose name, in any
-// letter case, or organisation number holds it. A page's cursor holds the
-// last company's name and id, and belongs to the person.
+// letter case, or organisation number, with or without the hyphen, holds
+// it (docs/design/app-shell.md, the company switcher). A page's cursor
+// holds the last company's name and id, and belongs to the person.
 
 import { listCompanies, type CompanyChoice } from "@nortfox/contract";
 import { handlePersonList, ok } from "../../api/operation.ts";
