@@ -36,7 +36,7 @@ describe("money on the wire", () => {
     app = await db.connect("app");
     books = await addBooks(app);
     pool = appPool(db, 2);
-    server = buildTestApp({ database: pool.database, resolve: testResolver({ writer: principalOf(books.company) }) });
+    server = buildTestApp({ database: pool.database, resolve: testResolver({ writer: await principalOf(books.company) }) });
   });
 
   afterAll(async () => {

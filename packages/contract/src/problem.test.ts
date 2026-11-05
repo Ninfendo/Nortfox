@@ -318,11 +318,12 @@ describe("the problem codes", () => {
       "series-code-changed",
       "immutable-field",
       "install-not-empty",
+      "last-system-administrator",
       "period-outside-fiscal-year",
       "fiscal-year-strands-rows",
     ];
     expect(Object.entries(PROBLEM_CODES).filter(([, status]) => status === 422).map(([code]) => code).sort()).toEqual(
-      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid"].sort(),
+      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid", "company-not-available"].sort(),
     );
   });
 

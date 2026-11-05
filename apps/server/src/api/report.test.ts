@@ -11,7 +11,7 @@
 
 import { DatabaseError } from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TEST_INSTALL_KEY, CURSOR_KEY, TEST_VERSION, testResolver, untouchedDatabase } from "../../test/api.ts";
+import { TEST_INSTALL_KEY, CURSOR_KEY, TEST_VERSION, principalOf, testResolver, untouchedDatabase } from "../../test/api.ts";
 import { createApp } from "../app.ts";
 import { newToken } from "../auth/tokens.ts";
 import { errorReport, reportSafely, scrub } from "./report.ts";
@@ -147,7 +147,7 @@ describe("the default reporter", () => {
     const database = { ...untouchedDatabase(), read: () => Promise.reject(databaseError()) };
     const { hono } = createApp({
       version: TEST_VERSION,
-      resolve: testResolver({ t: { personId: "8a9b0c1d-2e3f-4a5b-8c7d-6e5f4a3b2c1d", actorKind: "user", credential: { kind: "session", sessionId: "s", method: "password-email" }, company: { companyId: "c", permissions: new Set(["company:read"]) } } }),
+      resolve: testResolver({ t: await principalOf("0d1c2b3a-4958-4a6b-8c7d-9e0f1a2b3c4d", { kind: "user", permissions: ["company:read"] }) }),
       database,
       cursorKey: CURSOR_KEY,
       installKey: TEST_INSTALL_KEY,

@@ -92,6 +92,8 @@ export const KEYS: Readonly<Record<string, string>> = {
   "ledger.deleted_vouchers": "id",
   "ledger.deleted_voucher_rows": "id",
   "ledger.idempotency_keys": "id",
+  "access.memberships": "id",
+  "access.events": "id",
 };
 
 /** A made-up fingerprint of a request, as the server stores it with an idempotency key. */
@@ -138,13 +140,37 @@ function vouchersOf(scenario: Scenario, company: string): ScenarioVouchers {
 }
 
 /**
+ * The statement that inserts a company: its id, its name and its organisation
+ * number. A company needs an active system administrator by the commit, so a
+ * transaction that commits it adds its owner too (INSERT_OWNER).
+ */
+const INSERT_COMPANY = "INSERT INTO ledger.companies AS t (company_id, name, organization_number) VALUES ($1, $2, $3) RETURNING to_jsonb(t) AS row";
+
+/** The statement that adds a company's first membership, its owner's, active: its id, the company and the person. */
+const INSERT_OWNER = `INSERT INTO access.memberships AS t (id, company_id, user_id, status, admin_level)
+                      VALUES ($1, $2, $3, 'active', 'owner') RETURNING to_jsonb(t) AS row`;
+
+/** The statement that adds an entry of the behandlingshistorik that changes no company row: its id, the company, the person it is about and its details. */
+const INSERT_EVENT = `INSERT INTO access.events AS t (id, company_id, program, heading, subject_id, details, at)
+                      VALUES ($1, $2, 'users', 'sign-in', $3, $4, '2030-05-15 08:30:00+00') RETURNING to_jsonb(t) AS row`;
+
+/**
  * For each company table, a valid insert of a row for `company`, so a test can
  * show that a role that may not write that company's rows is refused.
  */
 export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Scenario) => Write>> = {
   "ledger.companies": (company) => ({
-    sql: "INSERT INTO ledger.companies (company_id, name, organization_number) VALUES ($1, 'Testbolaget Gamma AB', '556000-0167')",
+    sql: INSERT_COMPANY,
+    params: [company, "Testbolaget Gamma AB", "556000-0167"],
+  }),
+  // An invitation: it holds no person, and the company's rules let it in.
+  "access.memberships": (company) => ({
+    sql: "INSERT INTO access.memberships (company_id, status) VALUES ($1, 'invited')",
     params: [company],
+  }),
+  "access.events": (company) => ({
+    sql: INSERT_EVENT,
+    params: [randomUUID(), company, null, {}],
   }),
   "ledger.reader_roles": (company) => ({
     sql: "INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, 'nortfox_test_reader_c'::pg_catalog.regrole)",
@@ -250,19 +276,39 @@ export interface AppWrite extends Write {
  * not cover.
  */
 export const APP_WRITES: Readonly<Record<string, Readonly<Partial<Record<"INSERT" | "UPDATE" | "DELETE", (scenario: Scenario) => AppWrite>>>>> = {
+  // A company alone: each test of a write rolls it back, or refuses it, before the commit's check of its system administrator.
   "ledger.companies": {
     INSERT: () => {
       const company = randomUUID();
       return {
         company,
-        sql: "INSERT INTO ledger.companies (company_id, name, organization_number) VALUES ($1, 'Testbolaget Delta AB', '599999-0129')",
-        params: [company],
+        sql: INSERT_COMPANY,
+        params: [company, "Testbolaget Delta AB", "599999-0129"],
       };
     },
     UPDATE: (scenario) => ({
       company: scenario.companyA,
-      sql: "UPDATE ledger.companies SET organization_number = '599999-0129' WHERE company_id = $1",
+      sql: "UPDATE ledger.companies SET name = 'Testbolaget Alfa Ekonomi AB' WHERE company_id = $1",
       params: [scenario.companyA],
+    }),
+  },
+  "access.memberships": {
+    INSERT: (scenario) => ({
+      company: scenario.companyA,
+      sql: "INSERT INTO access.memberships (company_id, status) VALUES ($1, 'invited')",
+      params: [scenario.companyA],
+    }),
+    UPDATE: (scenario) => ({
+      company: scenario.companyA,
+      sql: "UPDATE access.memberships SET idle_timeout_minutes = 60 WHERE company_id = $1 AND admin_level = 'owner'",
+      params: [scenario.companyA],
+    }),
+  },
+  "access.events": {
+    INSERT: (scenario) => ({
+      company: scenario.companyA,
+      sql: INSERT_EVENT,
+      params: [randomUUID(), scenario.companyA, null, {}],
     }),
   },
   "ledger.fiscal_years": {
@@ -528,7 +574,6 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
   const integration = randomUUID();
   const [readerA, readerB] = TEST_READERS;
   const changes: Change[] = [];
-  const insertCompany = "INSERT INTO ledger.companies AS t (company_id, name, organization_number) VALUES ($1, $2, $3) RETURNING to_jsonb(t) AS row";
   const bind = "INSERT INTO ledger.reader_roles AS t (id, company_id, role_oid) VALUES ($1, $2, $3::pg_catalog.regrole) RETURNING to_jsonb(t) AS row";
   /** The automatic lock row that a new company gets with it. */
   const automaticLockOf = (company: string): Made => ({
@@ -536,30 +581,85 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     find: { sql: "SELECT t.id, pg_catalog.to_jsonb(t) AS row FROM ledger.automatic_locks AS t WHERE t.company_id = $1", params: [company] },
   });
 
-  // The companies, by the app: a user makes one through REST, an integration
-  // the other through MCP. Each comes with its automatic lock row.
+  // The people, as the database's own functions make them, as the owner: the
+  // user, the person the integration acts for, and a member who comes by an
+  // invitation. The internal system user is nobody's person.
+  const member = randomUUID();
+  for (const [person, name] of [
+    [user, "Alva Berg"],
+    [integration, "Bodil Ek"],
+    [member, "Cecilia Dahl"],
+  ] as const) {
+    await owner.query("INSERT INTO access.identities (id, name, email) VALUES ($1, $2, $3)", [person, name, `person-${person}@example.com`]);
+  }
+
+  // The companies, by the app, each in one transaction with its owner, the
+  // person who makes it: a user makes one through REST, and an integration
+  // the other through MCP, for its person. Each comes with its automatic
+  // lock row.
+  const ownerA = randomUUID();
+  const ownerB = randomUUID();
   changes.push(
-    ...(await change(
+    ...(await changeOfSteps(
       app,
       { company: companyA, actor: user, kind: "user", channel: "rest" },
-      "ledger.companies",
-      "INSERT",
-      companyA,
-      { sql: insertCompany, params: [companyA, "Testbolaget Alfa AB", "556000-0167"] },
+      [
+        { table: "ledger.companies", operation: "INSERT", rowId: companyA, write: { sql: INSERT_COMPANY, params: [companyA, "Testbolaget Alfa AB", "556000-0167"] } },
+        { table: "access.memberships", operation: "INSERT", rowId: ownerA, write: { sql: INSERT_OWNER, params: [ownerA, companyA, user] } },
+      ],
       [automaticLockOf(companyA)],
     )),
-    ...(await change(
+    ...(await changeOfSteps(
       app,
       { company: companyB, actor: integration, kind: "integration", channel: "mcp" },
-      "ledger.companies",
-      "INSERT",
-      companyB,
-      { sql: insertCompany, params: [companyB, "Testbolaget Beta AB", "599999-0129"] },
+      [
+        { table: "ledger.companies", operation: "INSERT", rowId: companyB, write: { sql: INSERT_COMPANY, params: [companyB, "Testbolaget Beta AB", "599999-0129"] } },
+        { table: "access.memberships", operation: "INSERT", rowId: ownerB, write: { sql: INSERT_OWNER, params: [ownerB, companyB, integration] } },
+      ],
       [automaticLockOf(companyB)],
     )),
     ...(await change(app, { company: companyA, actor: system, kind: "system" }, "ledger.companies", "UPDATE", companyA, {
       sql: "UPDATE ledger.companies AS t SET name = $2 WHERE t.company_id = $1 RETURNING to_jsonb(t) AS row",
       params: [companyA, "Testbolaget Alfa Konsult AB"],
+    })),
+  );
+
+  // The memberships, by the app: A invites a member, who accepts, and is
+  // deactivated; B invites someone who has not answered yet.
+  const memberA = randomUUID();
+  const invitedB = randomUUID();
+  const invite = "INSERT INTO access.memberships AS t (id, company_id, status) VALUES ($1, $2, 'invited') RETURNING to_jsonb(t) AS row";
+  const setMembership = (set: string): string => `UPDATE access.memberships AS t SET ${set} WHERE t.id = $1 RETURNING to_jsonb(t) AS row`;
+  changes.push(
+    ...(await change(app, { company: companyA, actor: user, kind: "user", channel: "rest" }, "access.memberships", "INSERT", memberA, {
+      sql: invite,
+      params: [memberA, companyA],
+    })),
+    ...(await change(app, { company: companyA, actor: member, kind: "user", channel: "rest" }, "access.memberships", "UPDATE", memberA, {
+      sql: setMembership("status = 'active', user_id = $2"),
+      params: [memberA, member],
+    })),
+    ...(await change(app, { company: companyA, actor: system, kind: "system" }, "access.memberships", "UPDATE", memberA, {
+      sql: setMembership("status = 'inactive'"),
+      params: [memberA],
+    })),
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.memberships", "INSERT", invitedB, {
+      sql: invite,
+      params: [invitedB, companyB],
+    })),
+  );
+
+  // The entries that change no company row, by the app: a sign-in in each company.
+  const eventA = randomUUID();
+  const eventB = randomUUID();
+  changes.push(
+    ...(await change(app, { company: companyA, actor: user, kind: "user", channel: "rest" }, "access.events", "INSERT", eventA, {
+      sql: INSERT_EVENT,
+      params: [eventA, companyA, user, { method: "password-email", secondStep: "totp", application: "web", outcome: "signed-in" }],
+    })),
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.events", "INSERT", eventB, {
+      sql: INSERT_EVENT,
+      params: [eventB, companyB, integration, { method: "password-email", secondStep: "totp", application: "Testklienten", outcome: "signed-in" }],
     })),
   );
 

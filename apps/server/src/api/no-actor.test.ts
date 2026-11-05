@@ -28,7 +28,7 @@ import {
 import { resolveNoActor, type ContextResolver } from "./context.ts";
 
 const COMPANY = randomUUID();
-const TOKENS = { nobody: principalOf(COMPANY, { permissions: [] }) };
+const TOKENS = { nobody: await principalOf(COMPANY, { permissions: [] }) };
 
 /** The operations that need an actor: every one but the public ones and those that run before sign-in. */
 const DATA_OPERATIONS = TEST_REGISTRY.filter((operation) => ![PUBLIC, NONE].includes(operation["x-nortfox"].permission));
@@ -80,17 +80,35 @@ function send(database: ReturnType<typeof untouchedDatabase>, sent: Sent, creden
 
 describe("no actor", () => {
   it("covers every operation that needs an actor, and a write's bad bodies and missing key", () => {
-    expect(DATA_OPERATIONS.map((operation) => operation.operationId)).toEqual(["getCompany", "logout", "getSession", "getMe", "testBookVoucher", "testListAccounts"]);
+    expect(DATA_OPERATIONS.map((operation) => operation.operationId)).toEqual([
+      "getCompany",
+      "logout",
+      "getSession",
+      "getMe",
+      "createCompany",
+      "listCompanies",
+      "listRecentCompanies",
+      "selectCompany",
+      "updateMyMembership",
+      "testBookVoucher",
+      "testListAccounts",
+    ]);
     expect(PERMISSION_OPERATIONS.map((operation) => operation.operationId)).toEqual(["getCompany", "testBookVoucher", "testListAccounts"]);
-    const writeLabels = (path: string): string[] => [
-      ...QUERIES.map((query) => `POST ${path}${query}`),
-      `POST ${path} with no body`,
-      `POST ${path} with text/plain`,
-      `POST ${path} with malformed JSON`,
-      `POST ${path} with a body over 1 MiB`,
-      `POST ${path} with no key`,
+    const writeLabels = (path: string, method = "POST"): string[] => [
+      ...QUERIES.map((query) => `${method} ${path}${query}`),
+      `${method} ${path} with no body`,
+      `${method} ${path} with text/plain`,
+      `${method} ${path} with malformed JSON`,
+      `${method} ${path} with a body over 1 MiB`,
+      `${method} ${path} with no key`,
     ];
-    expect(CASES.filter(([, , operation]) => operation["x-nortfox"].writes).map(([label]) => label)).toEqual([...writeLabels("/v1/auth/logout"), ...writeLabels("/v1/test-vouchers")]);
+    expect(CASES.filter(([, , operation]) => operation["x-nortfox"].writes).map(([label]) => label)).toEqual([
+      ...writeLabels("/v1/auth/logout"),
+      ...writeLabels("/v1/companies"),
+      ...writeLabels("/v1/session/company"),
+      ...writeLabels("/v1/me/companies/{companyId}", "PATCH"),
+      ...writeLabels("/v1/test-vouchers"),
+    ]);
   });
 
   it.each(CASES)("%s answers 401 with the challenge of the session cookie, which it takes, and asks no database", async (_label, sent) => {
@@ -196,7 +214,16 @@ async function callAs(database: ReturnType<typeof untouchedDatabase>, token: str
 
 describe("no actor by MCP", () => {
   it("covers every operation that needs an actor but those of the browser's session, by both eras", () => {
-    expect(TOOL_OPERATIONS.map((operation) => operation.operationId)).toEqual(["getCompany", "getMe", "testBookVoucher", "testListAccounts"]);
+    expect(TOOL_OPERATIONS.map((operation) => operation.operationId)).toEqual([
+      "getCompany",
+      "getMe",
+      "createCompany",
+      "listCompanies",
+      "listRecentCompanies",
+      "updateMyMembership",
+      "testBookVoucher",
+      "testListAccounts",
+    ]);
     expect(TOOL_CASES).toHaveLength(MCP_ERAS.length * TOOL_OPERATIONS.length * ARGUMENTS.length);
   });
 

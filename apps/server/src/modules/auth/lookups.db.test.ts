@@ -26,6 +26,7 @@ import {
   expectError,
   expectRefusal,
   freshDatabase,
+  untilWaitingForLock,
   type TestDatabase,
 } from "../../../test/database.ts";
 import {
@@ -283,9 +284,11 @@ describe("the lookup functions", () => {
       await expectError(app.query(`INSERT INTO ${table} DEFAULT VALUES`), INSUFFICIENT_PRIVILEGE, /permission denied for table/);
       await expectError(app.query(`DELETE FROM ${table}`), INSUFFICIENT_PRIVILEGE, /permission denied for table/);
     }
+    // A reader may use the schema access, for its company tables there, and still runs no lookup function and reads no identity.
     const reader = await db.connect("readerA");
-    await expectError(reader.query("SELECT * FROM access.find_login('x')"), INSUFFICIENT_PRIVILEGE, /permission denied for schema access/);
-    await expectError(reader.query("SELECT * FROM access.identities"), INSUFFICIENT_PRIVILEGE, /permission denied for schema access/);
+    await expectError(reader.query("SELECT * FROM access.find_login('x')"), INSUFFICIENT_PRIVILEGE, /permission denied for function find_login/);
+    await expectError(reader.query("SELECT * FROM access.active_membership()"), INSUFFICIENT_PRIVILEGE, /permission denied for function active_membership/);
+    await expectError(reader.query("SELECT * FROM access.identities"), INSUFFICIENT_PRIVILEGE, /permission denied for table identities/);
   });
 
   describe("signing in", () => {
@@ -592,8 +595,9 @@ describe("the lookup functions", () => {
     });
 
     function openSession(hash: Buffer, person: string, device: string | null, at = T0, method = "password-email"): Promise<string | null | undefined> {
+      const secondStep = method.startsWith("password-") ? "totp" : null;
       return first(
-        anonymously<{ id: string | null }>(app, "SELECT access.open_session($1, $2, $3, $4, $5) AS id", [hash, person, method, device, at]),
+        anonymously<{ id: string | null }>(app, "SELECT access.open_session($1, $2, $3, $4, $5, $6) AS id", [hash, person, method, secondStep, device, at]),
       ).then((row) => row?.id);
     }
 
@@ -605,16 +609,70 @@ describe("the lookup functions", () => {
       return client.query<{ ended: boolean }>("SELECT access.end_session($1, $2, $3) AS ended", [session, reason, at]).then((found) => found.rows[0]?.ended);
     }
 
-    function touch(session: string, at: Date): Promise<boolean | undefined> {
-      return first(anonymously<{ touched: boolean }>(app, "SELECT access.touch_session($1, $2) AS touched", [session, at])).then((row) => row?.touched);
+    function touch(session: string, at: Date, idle = 120, membership: string | null = null): Promise<boolean | undefined> {
+      return first(anonymously<{ touched: boolean }>(app, "SELECT access.touch_session($1, $2, $3, $4) AS touched", [session, at, idle, membership])).then(
+        (row) => row?.touched,
+      );
     }
+
+    it("notes the idle time a session is seen under, only while the session works with the membership the caller names", async () => {
+      const person = await addIdentity(owner);
+      const hash = tokenHash();
+      const id = (await openSession(hash, person, null)) ?? "";
+      expect(await sessionOf(hash)).toEqual([expect.objectContaining({ last_seen_at: T0, idle_timeout_minutes: 120 })]);
+      // A sight at the same time with another idle time notes it; an older one changes nothing.
+      expect(await touch(id, T0, 15)).toBe(true);
+      expect(await touch(id, T0, 15)).toBe(false);
+      expect(await touch(id, later(T0, -1), 480)).toBe(false);
+      expect(await sessionOf(hash)).toEqual([expect.objectContaining({ last_seen_at: T0, idle_timeout_minutes: 15 })]);
+      await expectError(touch(id, T0, 45), CHECK_VIOLATION, /sessions_idle_timeout_known/);
+      // The session works in no company: a sight under a membership changes nothing.
+      expect(await touch(id, later(T0, 10), 480, randomUUID())).toBe(false);
+      expect(await sessionOf(hash)).toEqual([expect.objectContaining({ last_seen_at: T0, idle_timeout_minutes: 15 })]);
+      expect(await touch(id, later(T0, 10), 30)).toBe(true);
+      expect(await sessionOf(hash)).toEqual([expect.objectContaining({ last_seen_at: later(T0, 10), idle_timeout_minutes: 30 })]);
+    });
+
+    it("locks a live session for the transaction that reads it so, and gives nothing to one that waited while it ended", async () => {
+      const person = await addIdentity(owner);
+      const hash = tokenHash();
+      const id = (await openSession(hash, person, null)) ?? "";
+      const lock = "SELECT * FROM access.lock_session($1)";
+      expect(await anonymously(app, lock, [hash])).toEqual(await sessionOf(hash));
+      expect(await anonymously(app, lock, [tokenHash()])).toEqual([]);
+      // The first holds the lock and ends the session; the second waits, and then finds it ended.
+      const [holder, waiter] = parallel as [Client, Client];
+      await begin(holder, { channel: "rest" });
+      expect(await holder.query(lock, [hash])).toMatchObject({ rowCount: 1 });
+      await begin(waiter, { channel: "rest" });
+      const waiterPid = await backendPid(waiter);
+      const waited = waiter.query(lock, [hash]);
+      await untilWaitingForLock(app, waiterPid);
+      await end(holder, id, later(T0, 16), "idle");
+      await holder.query("COMMIT");
+      expect((await waited).rows).toEqual([]);
+      await waiter.query("COMMIT");
+    });
 
     it("opens a session for an active identity, finds it by its hash with the identity's status, touches it and ends it once", async () => {
       const person = await addIdentity(owner);
       const device = (await remember(person, tokenHash(), T0)) ?? null;
       const hash = tokenHash();
       const id = (await openSession(hash, person, device)) ?? "";
-      const live = { session_id: id, identity_id: person, status: "active", method: "password-email", device_id: device, started_at: T0, last_seen_at: T0 };
+      const live = {
+        session_id: id,
+        identity_id: person,
+        status: "active",
+        method: "password-email",
+        second_step: "totp",
+        device_id: device,
+        started_at: T0,
+        last_seen_at: T0,
+        idle_timeout_minutes: 120,
+        current_company_id: null,
+        current_membership_id: null,
+        permissions: null,
+      };
       expect(await sessionOf(hash)).toEqual([live]);
       expect(await sessionOf(tokenHash())).toEqual([]);
       expect(await touch(id, later(T0, 2))).toBe(true);
@@ -694,7 +752,7 @@ describe("the lookup functions", () => {
       const person = await addIdentity(owner);
       const short = randomBytes(31);
       const at = later(T0, 20);
-      await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3)", [short, person, T0]), CHECK_VIOLATION, /sessions_token_hash_form/);
+      await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', 'totp', NULL, $3)", [short, person, T0]), CHECK_VIOLATION, /sessions_token_hash_form/);
       await expectError(anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', NULL, $3, $4)", [short, person, T0, at]), CHECK_VIOLATION, /login_challenges_token_hash_form/);
       await expectError(
         anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', $3, $4, $5)", [tokenHash(), person, short, T0, at]),
@@ -708,8 +766,8 @@ describe("the lookup functions", () => {
         /setup_tokens_token_hash_form/,
       );
       const hash = tokenHash();
-      await anonymously(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3)", [hash, person, T0]);
-      await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3)", [hash, person, T0]), UNIQUE_VIOLATION, /sessions_token_hash_key/);
+      await anonymously(app, "SELECT access.open_session($1, $2, 'password-email', 'totp', NULL, $3)", [hash, person, T0]);
+      await expectError(anonymously(app, "SELECT access.open_session($1, $2, 'password-email', 'totp', NULL, $3)", [hash, person, T0]), UNIQUE_VIOLATION, /sessions_token_hash_key/);
       const challenge = tokenHash();
       await anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', NULL, $3, $4)", [challenge, person, T0, at]);
       await expectError(
@@ -751,14 +809,14 @@ describe("the lookup functions", () => {
         CHECK_VIOLATION,
         /attempt_counters_failures_positive/,
       );
-      const session = await first(anonymously<{ id: string }>(app, "SELECT access.open_session($1, $2, 'password-email', NULL, $3) AS id", [tokenHash(), person, T0]));
+      const session = await first(anonymously<{ id: string }>(app, "SELECT access.open_session($1, $2, 'password-email', 'totp', NULL, $3) AS id", [tokenHash(), person, T0]));
       await expectError(anonymously(app, "SELECT access.end_session($1, NULL, $2)", [session?.id, T0]), CHECK_VIOLATION, /sessions_ended_with_reason/);
       for (const [ended, reason] of [
         [T0, null],
         [null, "logout"],
       ] as const) {
         await expectError(
-          owner.query("INSERT INTO access.sessions (token_hash, identity_id, method, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', $3, $3, $4, $5)", [
+          owner.query("INSERT INTO access.sessions (token_hash, identity_id, method, second_step, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', 'totp', $3, $3, $4, $5)", [
             tokenHash(),
             person,
             T0,
@@ -823,7 +881,7 @@ describe("the lookup functions", () => {
       "access.sessions": async (person) =>
         (
           await owner.query<{ id: string }>(
-            "INSERT INTO access.sessions (token_hash, identity_id, method, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', $3, $3, $3, 'logout') RETURNING id",
+            "INSERT INTO access.sessions (token_hash, identity_id, method, second_step, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', 'totp', $3, $3, $3, 'logout') RETURNING id",
             [tokenHash(), person, T0],
           )
         ).rows[0]?.id ?? "",

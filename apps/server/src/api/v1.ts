@@ -50,6 +50,7 @@
 // quoted form or bare. The surface passes it to the runner for every write,
 // so a write without one is 400 (idempotency.ts).
 
+import { isIPv4 } from "node:net";
 import { IDEMPOTENCY_KEY_HEADER, PUBLIC, bodySchema, jsonPointer, jsonSchemaOf, paramsSchema, querySchema, type FieldIssue, type Operation } from "@nortfox/contract";
 import type { Context, Hono, Handler as RouteHandler, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -185,10 +186,21 @@ function successResponse(outcome: Extract<Outcome, { readonly ok: true }>): Resp
   return new Response(JSON.stringify(output), { status, headers });
 }
 
-/** The address a request came from, when the server runs on Node; none through app.request, as in most tests. */
+/** The prefix of an IPv4 address in the IPv4-mapped IPv6 form (RFC 4291, 2.5.5.2), in any letter case. */
+const IPV4_MAPPED = /^::ffff:/i;
+
+/**
+ * The address a request came from, when the server runs on Node; none
+ * through app.request, as in most tests. The server listens on IPv6 and
+ * IPv4 at once, so the socket gives an IPv4 client's address in the
+ * IPv4-mapped form, ::ffff:a.b.c.d. That address is given as IPv4, a.b.c.d,
+ * as the client has it. Any other address is given as the socket gives it.
+ */
 function ipAddressOf(env: unknown): string | undefined {
   const bindings = env as { readonly incoming?: { readonly socket: { readonly remoteAddress?: string } } } | undefined;
-  return bindings?.incoming?.socket.remoteAddress;
+  const address = bindings?.incoming?.socket.remoteAddress;
+  const mapped = address?.replace(IPV4_MAPPED, "");
+  return mapped !== undefined && mapped !== address && isIPv4(mapped) ? mapped : address;
 }
 
 /** What /v1 knows of a request besides its input: its Origin, its address and its device cookie. */
@@ -270,28 +282,53 @@ const METHOD_ORDER = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
 /** The chain's step between authorize and serve for an operation that takes a body: 413 for a body over the limit. */
 const limitBody = bodyLimit({ maxSize: BODY_LIMIT, onError: () => problemResponse(payloadTooLarge()) });
 
-/** Mounts each handler's operation at its method and path, then the 405 answer at each of their paths. */
+/**
+ * A path's place among the paths: each segment a 0 when it is fixed and a 1
+ * when it is a parameter. At the first segment where two paths that could
+ * match one request differ, the fixed one sorts first, so it answers that
+ * request, as OpenAPI matches a concrete path before a templated one.
+ */
+function pathOrder(path: string): string {
+  return path
+    .split("/")
+    .map((segment) => (segment.startsWith(":") ? "1" : "0"))
+    .join("");
+}
+
+/**
+ * Mounts the handlers path by path, the most concrete first: at each path
+ * its operations' methods, then its 405 answer. Hono answers a request with
+ * the first route that matches it, so a method that a concrete path does not
+ * take gets that path's 405, never an operation of a path with a parameter
+ * in its place: PATCH /v1/me/companies/recent is not updateMyMembership.
+ */
 export function mountV1(app: Hono<V1Env>, handlers: readonly Handler[], deps: V1Deps): void {
-  const allowed = new Map<string, Set<string>>();
+  const byPath = new Map<string, Handler[]>();
   for (const handler of handlers) {
-    const { operation } = handler;
-    const method = operation.method.toUpperCase();
-    const path = operation.getRoutingPath();
-    const first = authorizeRequest(operation, deps);
-    const last = serve(handler, queryFields(operation), deps);
-    if (bodySchema(operation) === undefined) {
-      app.on(method, path, first, last);
-    } else {
-      app.on(method, path, first, limitBody, last);
-    }
-    const methods = allowed.get(path) ?? new Set<string>();
-    methods.add(method);
-    if (method === "GET") {
-      methods.add("HEAD");
-    }
-    allowed.set(path, methods);
+    const path = handler.operation.getRoutingPath();
+    byPath.set(path, [...(byPath.get(path) ?? []), handler]);
   }
-  for (const [path, methods] of allowed) {
+  const paths = [...byPath].sort(([a], [b]) => {
+    const [first, second] = [pathOrder(a), pathOrder(b)];
+    return first < second ? -1 : first > second ? 1 : 0;
+  });
+  for (const [path, served] of paths) {
+    const methods = new Set<string>();
+    for (const handler of served) {
+      const { operation } = handler;
+      const method = operation.method.toUpperCase();
+      const first = authorizeRequest(operation, deps);
+      const last = serve(handler, queryFields(operation), deps);
+      if (bodySchema(operation) === undefined) {
+        app.on(method, path, first, last);
+      } else {
+        app.on(method, path, first, limitBody, last);
+      }
+      methods.add(method);
+      if (method === "GET") {
+        methods.add("HEAD");
+      }
+    }
     const allow = METHOD_ORDER.filter((method) => methods.has(method));
     app.all(path, () => problemResponse(methodNotAllowed(allow)));
   }

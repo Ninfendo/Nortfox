@@ -13,6 +13,7 @@
 
 import { createRoute, type RouteConfig } from "@hono/zod-openapi";
 import { z } from "zod";
+import { personalPointers } from "./fields.ts";
 import { IDEMPOTENCY_KEY_DESCRIPTION, IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
 import { Cursor, Limit, pageOf } from "./paging.ts";
 import { Problem } from "./problem.ts";
@@ -52,10 +53,33 @@ export const OPEN_PERMISSIONS = [PUBLIC, NONE, SIGNED_IN] as const;
  */
 export type SessionMark = "flow" | null;
 
-/** Where a request's company comes from: nowhere, or the request's credential. */
-export const COMPANY_SOURCES = ["none", "credential"] as const;
+/**
+ * Where a request's company comes from, by name:
+ *
+ * - none: nowhere. The request works in no company.
+ * - credential: the session or the token. Every operation with a permission.
+ * - current: the credential's company when it names one, and none otherwise.
+ *   A signed-in operation that reads the person's current company too.
+ * - new: the company the request makes. The runner picks its id.
+ *
+ * A signed-in operation may also take its company from a field of its input,
+ * {"input": "<field>"}: the runner asks the one membership function whether
+ * the person is an active member there.
+ */
+export const COMPANY_SOURCES = ["none", "credential", "current", "new"] as const;
 
-export type CompanySource = (typeof COMPANY_SOURCES)[number];
+/** A company that a field of the input names. */
+export interface CompanyInput {
+  /** The field of the flat input, a required string, that names the company's id. */
+  readonly input: string;
+}
+
+export type CompanySource = (typeof COMPANY_SOURCES)[number] | CompanyInput;
+
+/** Whether a company source takes the company from a field of the input. */
+export function isCompanyInput(source: CompanySource): source is CompanyInput {
+  return typeof source === "object";
+}
 
 /** The methods an operation may use. */
 export const METHODS = ["get", "post", "put", "patch", "delete"] as const;
@@ -78,6 +102,12 @@ export interface OperationMeta {
   readonly session: SessionMark;
   /** Where the request's company comes from. */
   readonly company: CompanySource;
+  /**
+   * The JSON Pointers of the output's personal fields: a person's contact
+   * data, which personal() marks (fields.ts). The registry derives the list
+   * from the output schema.
+   */
+  readonly personalOutput: readonly string[];
 }
 
 /** An object schema, for the path parameters, a query or a body. */
@@ -277,13 +307,16 @@ export function takesIdempotencyKey(operation: Pick<Operation, "x-nortfox">): bo
 
 /**
  * The refusals an operation can give. They depend on who may call it, whether
- * it writes and takes a key, whether it takes a body, and, for a 403, its
- * method (forbiddenCauses). An operation that
+ * it writes and takes a key, whether it takes a body, where its company comes
+ * from, and, for a 403, its method (forbiddenCauses). An operation that
  * runs before sign-in can be refused by a rule even when it only reads, such
  * as a link that has ended. It can also be refused for too many attempts, or
- * because the server checks as many passwords as it can at once.
+ * because the server checks as many passwords as it can at once. An
+ * operation whose input names its company is refused by a rule when the
+ * person is no active member there.
  */
-function refusals(permission: string, writes: boolean, hasBody: boolean, forbidden: readonly string[]): RefusalStatus[] {
+function refusals(meta: OperationMeta, hasBody: boolean, forbidden: readonly string[]): RefusalStatus[] {
+  const { permission, writes } = meta;
   const anyone = permission === PUBLIC || permission === NONE;
   const key = writes && permission !== NONE;
   return [
@@ -291,7 +324,7 @@ function refusals(permission: string, writes: boolean, hasBody: boolean, forbidd
     ...(anyone ? [] : ([401] as const)),
     ...(forbidden.length > 0 ? ([403] as const) : []),
     ...(key ? ([409] as const) : []),
-    ...(writes || permission === NONE ? ([422] as const) : []),
+    ...(writes || permission === NONE || isCompanyInput(meta.company) ? ([422] as const) : []),
     ...(hasBody ? ([413, 415] as const) : []),
     ...(permission === NONE ? ([429] as const) : []),
     500,
@@ -372,13 +405,14 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
     list,
     session: definition.session ?? null,
     company: definition.company ?? ((OPEN_PERMISSIONS as readonly string[]).includes(permission) ? "none" : "credential"),
+    personalOutput: answersNoBody(status) ? [] : personalPointers(output),
   };
   if (takesIdempotencyKey({ "x-nortfox": meta })) {
     request.headers = IdempotencyKeyHeaders;
   }
   const responses: Record<string, ResponseConfig> = { [status]: successResponse(definition.id, status, output) };
   const texts: RefusalTexts = { forbidden: forbiddenCauses(permission, definition.method), challenge: () => challengeOf({ "x-nortfox": meta }) };
-  for (const code of refusals(permission, writes, body !== undefined, texts.forbidden)) {
+  for (const code of refusals(meta, body !== undefined, texts.forbidden)) {
     responses[code] = refusal(code, texts);
   }
   const security = securityOf(permission);

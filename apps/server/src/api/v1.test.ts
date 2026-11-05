@@ -18,7 +18,7 @@ import { errorReport } from "./report.ts";
 import { handleData, ok } from "./operation.ts";
 
 const COMPANY = randomUUID();
-const TOKENS = { reader: principalOf(COMPANY) };
+const TOKENS = { reader: await principalOf(COMPANY) };
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -108,7 +108,7 @@ describe("the query", () => {
 });
 
 describe("the paths and the methods", () => {
-  it.each(["/v1/Company", "/v1/company/", "/V1/company", "/v1/companies", "/v1", "/"])("answers %s with 404 not-found", async (path) => {
+  it.each(["/v1/Company", "/v1/company/", "/V1/company", "/v1/compan", "/v1", "/"])("answers %s with 404 not-found", async (path) => {
     const response = await app().request(path, { headers: bearer("reader") });
     expect(response.status).toBe(404);
     expect(await problemIn(response)).toEqual({
@@ -125,6 +125,9 @@ describe("the paths and the methods", () => {
     ["PUT", "/v1/health", "GET, HEAD"],
     ["DELETE", "/v1/test-accounts", "GET, HEAD"],
     ["OPTIONS", "/v1/company", "GET, HEAD"],
+    ["PATCH", "/v1/me/companies/recent", "GET, HEAD"],
+    ["DELETE", "/v1/me/companies/recent", "GET, HEAD"],
+    ["GET", `/v1/me/companies/${COMPANY}`, "PATCH"],
   ])("answers %s %s with 405 method-not-allowed and Allow: %s", async (method, path, allow) => {
     const database = untouchedDatabase();
     const response = await app(database).request(path, { method });
@@ -166,6 +169,29 @@ describe("the paths and the methods", () => {
     expect(response.headers.get("allow")).toBe("GET, HEAD, POST");
   });
 
+  it("answers a path before a path with a parameter in its place, whatever the registry's order", async () => {
+    for (const registry of [TEST_REGISTRY, [...TEST_REGISTRY].reverse()]) {
+      const { hono } = buildTestApp({ database: untouchedDatabase(), resolve: testResolver(TOKENS), registry });
+      const answers = [];
+      for (const [method, path] of [
+        ["PATCH", "/v1/me/companies/recent"],
+        ["DELETE", "/v1/me/companies/recent"],
+        ["GET", `/v1/me/companies/${COMPANY}`],
+      ] as const) {
+        const response = await hono.request(path, { method });
+        answers.push([method, path, response.status, response.headers.get("allow")]);
+      }
+      expect(answers).toEqual([
+        ["PATCH", "/v1/me/companies/recent", 405, "GET, HEAD"],
+        ["DELETE", "/v1/me/companies/recent", 405, "GET, HEAD"],
+        ["GET", `/v1/me/companies/${COMPANY}`, 405, "PATCH"],
+      ]);
+      // The path's own operation still answers it.
+      expect((await hono.request("/v1/me/companies/recent")).status).toBe(401);
+      expect((await hono.request(`/v1/me/companies/${COMPANY}`, { method: "PATCH" })).status).toBe(401);
+    }
+  });
+
   it("answers HEAD as GET, with no body", async () => {
     const response = await app().request("/v1/health", { method: "HEAD" });
     expect(response.status).toBe(200);
@@ -184,7 +210,7 @@ describe("an error the server did not expect", () => {
   const SECRET = "the secret detail of the failure";
 
   function failing(error: Error): Database {
-    return { read: () => Promise.reject(error), write: () => Promise.reject(error), lookup: () => Promise.reject(error), end: () => Promise.resolve() };
+    return { read: () => Promise.reject(error), write: () => Promise.reject(error), person: () => Promise.reject(error), lookup: () => Promise.reject(error), end: () => Promise.resolve() };
   }
 
   const INTERNAL = {
@@ -241,10 +267,13 @@ describe("an error the server did not expect", () => {
   });
 });
 
+/** The shapes app's reader, in the company. */
+const SHAPE_READER = await principalOf(COMPANY);
+
 describe("the shapes of slice 2c on /v1", () => {
   const THING = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b";
   const PERSON = personOf();
-  const SHAPE_TOKENS = { reader: principalOf(COMPANY), person: PERSON };
+  const SHAPE_TOKENS = { reader: SHAPE_READER, person: PERSON };
 
   interface ShapeApp {
     readonly app: ReturnType<typeof buildTestApp>;
@@ -402,9 +431,27 @@ describe("the shapes of slice 2c on /v1", () => {
           sent.end(JSON.stringify({ email: "anna@example.com" }));
         });
         expect(status).toBe(200);
-        expect(shapes.log.calls[0]?.request).toEqual({ ipAddress: expect.stringMatching(/^(::ffff:)?127\.0\.0\.1$/) as unknown });
+        // The server listens on both IPv4 and IPv6, and gives an IPv4 client's address as IPv4, not as ::ffff:127.0.0.1.
+        expect(shapes.log.calls[0]?.request).toEqual({ ipAddress: "127.0.0.1" });
       } finally {
         await server.close();
+      }
+    });
+
+    it("gives an IPv4 client's address in the IPv4-mapped IPv6 form as IPv4, and any other address as the socket gives it", async () => {
+      const addresses: readonly (readonly [string, string])[] = [
+        ["::ffff:192.0.2.1", "192.0.2.1"],
+        ["::FFFF:192.0.2.2", "192.0.2.2"],
+        ["192.0.2.3", "192.0.2.3"],
+        ["2001:db8::1", "2001:db8::1"],
+        ["::ffff:2001:db8", "::ffff:2001:db8"],
+        ["::ffff:192.0.2", "::ffff:192.0.2"],
+      ];
+      for (const [remoteAddress, given] of addresses) {
+        const shapes = shapeApp();
+        const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "anna@example.com" }) };
+        expect((await shapes.app.hono.request("/v1/test-sign-ins", init, { incoming: { socket: { remoteAddress } } })).status).toBe(200);
+        expect(shapes.log.calls[0]?.request, remoteAddress).toEqual({ ipAddress: given });
       }
     });
   });
@@ -442,6 +489,7 @@ describe("the shapes of slice 2c on /v1", () => {
     const failing = buildTestApp({ database: {
         read: () => Promise.reject(new Error("down")),
         write: () => Promise.reject(new Error("down")),
+        person: () => Promise.reject(new Error("down")),
         lookup: () => Promise.reject(new Error("down")),
         end: () => Promise.resolve(),
       }, resolve: testResolver(TOKENS), report: () => undefined }).hono;

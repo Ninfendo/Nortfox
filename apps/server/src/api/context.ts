@@ -4,7 +4,9 @@
 // with which permissions, and through which channel. An operation that needs
 // a permission acts as one person in one company (decision 8). The company
 // comes from the request's credential, never from its path or its body. An
-// operation that needs only a signed-in person works in no company.
+// operation that needs only a signed-in person works in the company that its
+// company source says: none, the credential's, one its input names where the
+// person is an active member, or one it makes (api/operation.ts).
 //
 // A resolver reads the credential from the request's headers and gives the
 // principal: the person, the actor's kind, the credential, and the company
@@ -15,8 +17,14 @@
 // cookie on /v1, and knows no credential on /mcp yet, so a tool that needs an
 // actor answers 401 there. The tests pass their own resolver. No setting
 // turns on a fixed actor.
+//
+// The company in a principal comes only from the one membership function
+// (modules/memberships/resolve.ts): a CompanyAccess is made from a membership
+// that it gave, and authorize refuses a principal whose company is anything
+// else.
 
 import type { ActorKind, Channel } from "../db/database.ts";
+import type { CompanyAccess } from "../modules/memberships/resolve.ts";
 
 /** The kinds of actor a credential can name. A session acts as its user (decision 2); the system user is never a request's actor. */
 export type PrincipalKind = Exclude<ActorKind, "system">;
@@ -24,21 +32,30 @@ export type PrincipalKind = Exclude<ActorKind, "system">;
 /** How a session signed in: the login methods of slice 2c. */
 export type SignInMethod = "password-email" | "password-personnummer" | "bankid" | "oidc";
 
+/** The second step of a password sign-in: a TOTP code, or a device the person knows inside its 90 days. */
+export type SecondStep = "totp" | "known-device";
+
 /** A browser session, from the session cookie. API tokens and MCP tokens come later in slice 2c. */
 export interface SessionCredential {
   readonly kind: "session";
   readonly sessionId: string;
   readonly method: SignInMethod;
+  /** The second step of its sign-in, for a sign-in with a password. */
+  readonly secondStep?: SecondStep;
+  /** When the person identified: the session began once the sign-in's last step passed. */
+  readonly identifiedAt: Date;
 }
 
 /** What the request's credential is. */
 export type Credential = SessionCredential;
 
-/** The company a request works in, and the permissions the person holds there. */
-export interface CompanyAccess {
-  readonly companyId: string;
-  readonly permissions: ReadonlySet<string>;
-}
+/**
+ * The company a request works in: the membership, its admin level and the
+ * permissions the person holds there. It is made only from a membership that
+ * the one membership function gave (modules/memberships/resolve.ts), and
+ * authorize refuses any other.
+ */
+export type { CompanyAccess } from "../modules/memberships/resolve.ts";
 
 /** Who acts, as the request's credential says. */
 export interface Principal {

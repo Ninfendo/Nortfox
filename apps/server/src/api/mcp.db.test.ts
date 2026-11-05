@@ -45,7 +45,7 @@ describe("/mcp on the database", () => {
       return found.rows.map((row) => row.id);
     });
     pool = appPool(db, 2);
-    server = buildTestApp({ database: pool.database, resolve: testResolver({ writer: principalOf(books.company) }) });
+    server = buildTestApp({ database: pool.database, resolve: testResolver({ writer: await principalOf(books.company) }) });
   });
 
   afterAll(async () => {

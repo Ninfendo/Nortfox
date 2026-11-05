@@ -66,12 +66,12 @@ describe("one transaction per request, on a pool of one connection", () => {
     server = buildTestApp({
       database: pool.database,
       resolve: testResolver({
-        reader: principalOf(company, { kind: "integration" }),
+        reader: await principalOf(company, { kind: "integration" }),
         // A company the database does not hold: its read finds no row, and fails.
-        stranger: principalOf(randomUUID(), { kind: "user" }),
-        writer: principalOf(books.company, { kind: "user" }),
+        stranger: await principalOf(randomUUID(), { kind: "user" }),
+        writer: await principalOf(books.company, { kind: "user" }),
         // An integration in a company whose period is locked for integrations.
-        lockedOut: principalOf(locked.company, { kind: "integration" }),
+        lockedOut: await principalOf(locked.company, { kind: "integration" }),
       }),
       handlers: testHandlers(controls),
       report: (error) => reported.push(error),

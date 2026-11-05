@@ -9,30 +9,36 @@
 // the key while it runs, looks it up, and stores it with the checked answer
 // before it commits; a refusal of the ledger is a rule's refusal or a fault.
 
-import { CHALLENGES, NoBody, defineListOperation, defineOperation, getCompany, getHealth, type FieldIssue } from "@nortfox/contract";
+import { CHALLENGES, NoBody, defineListOperation, defineOperation, getCompany, getHealth, personal, type FieldIssue } from "@nortfox/contract";
 import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { CURSOR_KEY, FINGERPRINT_KEY, TEST_NOW, personOf, principalOf, runnerDeps, testListAccounts, testListAccountsHandler } from "../../test/api.ts";
+import { randomUUID } from "node:crypto";
+import { CURSOR_KEY, FINGERPRINT_KEY, TEST_NOW, personOf, principalOf, runnerDeps, testListAccounts, testListAccountsHandler, testMembership } from "../../test/api.ts";
 import { testEndSession, testGetPerson, testGetThing, testSignIn } from "../../test/shapes.ts";
 import type { CookieEffect } from "../auth/cookies.ts";
 import { ServerBusy } from "../auth/password.ts";
-import type { Ending, Queryable, TransactionSettings, Work } from "../db/database.ts";
+import type { Ending, PersonSettings, PersonWork, Queryable, TransactionSettings, Work } from "../db/database.ts";
 import { codeOf } from "../db/refusals.ts";
 import { getCompanyHandler } from "../modules/companies/get-company.ts";
 import { healthHandler } from "../modules/status/health.ts";
 import type { AfterAnswerTask } from "./after-answer.ts";
-import type { RequestContext } from "./context.ts";
+import type { Principal, RequestContext } from "./context.ts";
 import { readCursor, signCursor } from "./cursor.ts";
 import { requestHash } from "./idempotency.ts";
 import {
   authorize,
+  companyNotAvailable,
+  credentialEnded,
   handleData,
   handleList,
   handleNone,
   handlePerson,
+  handlePersonList,
   handlePublic,
+  inputMembership,
   invalidInput,
+  newCompanyId,
   ok,
   refused,
   runOperation,
@@ -50,7 +56,7 @@ import {
 const SESSION_CHALLENGE = CHALLENGES.sessionCookie;
 
 const COMPANY = "5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a";
-const CONTEXT: RequestContext = { ...principalOf(COMPANY, { kind: "user" }), channel: "mcp" };
+const CONTEXT: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "mcp" };
 const COMPANY_ROW = { id: COMPANY, name: "Testbolaget Alfa AB", organizationNumber: "556000-0167", databaseNumber: 7 };
 
 /** How the fake transaction answers a query: with rows, or by refusing it. */
@@ -90,12 +96,32 @@ function recordingDatabase(answering: Answering = answersNothing) {
       transaction.ended = ending.commit ? "commit" : "rollback";
       return ending.value;
     };
+  /** The companies that a person's transaction entered or made, in order. */
+  const companies: string[] = [];
+  const person = <T>(mode: "read" | "write", settings: PersonSettings, work: PersonWork<T>): Promise<T> =>
+    run(mode)(settings, (tx) =>
+      work({
+        query: (text, values) => tx.query(text, values),
+        enter: (membership) => {
+          companies.push(`entered ${membership.companyId}`);
+          return Promise.resolve();
+        },
+        inNewCompany: (made) => {
+          companies.push(`made ${NEW_COMPANY}`);
+          return made(NEW_COMPANY);
+        },
+      }),
+    );
   return {
     transactions,
     queries,
-    database: { read: run("read"), write: run("write"), lookup: () => Promise.reject(new Error("The runner runs no lookup.")), end: () => Promise.resolve() },
+    companies,
+    database: { read: run("read"), write: run("write"), person, lookup: () => Promise.reject(new Error("The runner runs no lookup.")), end: () => Promise.resolve() },
   };
 }
+
+/** The id the fake database gives a company that a person's transaction makes. */
+const NEW_COMPANY = "0c9b8a7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d";
 
 function call(context: RequestContext | undefined, query: Record<string, unknown> = {}, problems?: readonly FieldIssue[]): OperationCall {
   return { context, input: problems === undefined ? { query, body: undefined } : { query, body: undefined, problems }, idempotency: "none" };
@@ -123,23 +149,53 @@ describe("authorize", () => {
     expect(authorize(testSignIn, personOf())).toBeUndefined();
   });
 
-  it("lets a signed-in person call a signed-in operation, with a company or without, and refuses no actor", () => {
+  it("lets a signed-in person call a signed-in operation, with a company or without, and refuses no actor", async () => {
     expect(authorize(testGetPerson, undefined)).toEqual({ kind: "authentication-required", challenge: SESSION_CHALLENGE });
     expect(authorize(testGetPerson, personOf())).toBeUndefined();
-    expect(authorize(testGetPerson, principalOf(COMPANY, { permissions: [] }))).toBeUndefined();
+    expect(authorize(testGetPerson, await principalOf(COMPANY, { permissions: [] }))).toBeUndefined();
   });
 
   it("refuses a person whose credential names no company an operation in the credential's company, before its permission", () => {
     expect(authorize(getCompany, personOf())).toEqual({ kind: "company-required" });
   });
 
-  it("refuses no actor, then an actor without the permission", () => {
+  it("refuses no actor, then an actor without the permission", async () => {
     expect(authorize(getCompany, undefined)).toEqual({ kind: "authentication-required", challenge: SESSION_CHALLENGE });
-    expect(authorize(getCompany, principalOf(COMPANY, { permissions: ["test:read"] }))).toEqual({
+    expect(authorize(getCompany, await principalOf(COMPANY, { permissions: ["test:read"] }))).toEqual({
       kind: "permission-missing",
       permission: "company:read",
     });
-    expect(authorize(getCompany, principalOf(COMPANY, { permissions: ["company:read"] }))).toBeUndefined();
+    expect(authorize(getCompany, await principalOf(COMPANY, { permissions: ["company:read"] }))).toBeUndefined();
+  });
+
+  // Issue 12, "Companies and members": every access check goes through the
+  // one membership function. A principal's company access is made only from
+  // a membership that it gave (modules/memberships/resolve.ts). A principal
+  // whose access is anything else is a fault of the server, for every kind
+  // of operation, before any refusal.
+  it("refuses a principal whose company access is a plain object, also a copy of a real one, for every kind of operation", async () => {
+    const real = await principalOf(COMPANY, { kind: "user", permissions: ["company:read"] });
+    const plain = {
+      ...personOf(),
+      company: { companyId: COMPANY, membershipId: "3f2e1d0c-9b8a-4c7d-8e6f-5a4b3c2d1e0f", adminLevel: "owner", permissions: new Set(["company:read"]) },
+    } as unknown as Principal;
+    const copied = { ...real, company: Object.fromEntries(Object.entries(real.company)) } as unknown as Principal;
+    const madeElsewhere = new Error("The principal's company access was not made from the one membership function's answer (modules/memberships/resolve.ts).");
+    for (const principal of [plain, copied]) {
+      for (const operation of [getHealth, testSignIn, testGetPerson, getCompany]) {
+        expect(() => authorize(operation, principal)).toThrow(madeElsewhere);
+      }
+    }
+    expect(authorize(getCompany, real)).toBeUndefined();
+  });
+
+  it("runs nothing for a principal whose company access is a plain object, and asks no database", async () => {
+    const { database, transactions } = recordingDatabase();
+    const plain = { ...CONTEXT, company: { companyId: COMPANY, permissions: new Set(["company:read"]) } } as unknown as RequestContext;
+    await expect(runOperation(getCompanyHandler, call(plain), runnerDeps(database))).rejects.toThrow(
+      "The principal's company access was not made from the one membership function's answer",
+    );
+    expect(transactions).toEqual([]);
   });
 });
 
@@ -155,25 +211,38 @@ describe("the handlers' kinds", () => {
     expect(() => handlePerson(getHealth, answer)).toThrow("getHealth is public, so it takes a public handler.");
     expect(() => handleData(testSignIn, answer)).toThrow("testSignIn runs before sign-in, so it takes a none handler.");
     expect(() => handlePublic(testSignIn, answer)).toThrow("testSignIn runs before sign-in, so it takes a none handler.");
-    expect(() => handleList(testGetPerson, answer)).toThrow("testGetPerson needs a signed-in person and no company, so it takes a person handler.");
-    expect(() => handleNone(testGetPerson, answer)).toThrow("testGetPerson needs a signed-in person and no company, so it takes a person handler.");
+    expect(() => handleList(testGetPerson, answer)).toThrow("testGetPerson needs a signed-in person, so it takes a person handler.");
+    expect(() => handleNone(testGetPerson, answer)).toThrow("testGetPerson needs a signed-in person, so it takes a person handler.");
+    expect(() => handlePersonList(testGetPerson, answer)).toThrow("testGetPerson needs a signed-in person, so it takes a person handler.");
   });
 
-  it("refuses a list of a signed-in person, which no handler serves yet", () => {
-    const listMine = defineListOperation({
-      id: "testListMine",
-      method: "get",
-      path: "/v1/test-mine",
-      tags: ["test"],
-      summary: "List mine",
-      description: "Lists mine.",
-      item: z.strictObject({ id: z.uuid() }),
-      permission: "signed-in",
-      tool: "Lists mine.",
-    });
+  it("takes a person-list handler for a list of a signed-in person, which works in no company", () => {
+    const listMine = (company: "none" | "current") =>
+      defineListOperation({
+        id: "testListMine",
+        method: "get",
+        path: "/v1/test-mine",
+        tags: ["test"],
+        summary: "List mine",
+        description: "Lists mine.",
+        item: z.strictObject({ id: z.uuid() }),
+        permission: "signed-in",
+        company,
+        tool: "Lists mine.",
+      });
     const answer = () => Promise.resolve(refused({ code: "x", detail: "x" }));
-    expect(() => handlePerson(listMine, answer)).toThrow("testListMine is a list of a signed-in person, which no handler serves yet.");
-    expect(() => handleList(listMine, answer)).toThrow("testListMine is a list of a signed-in person, which no handler serves yet.");
+    expect(handlePersonList(listMine("none"), answer).kind).toBe("person-list");
+    expect(() => handlePerson(listMine("none"), answer)).toThrow("testListMine is a list of a signed-in person, so it takes a person-list handler.");
+    expect(() => handleList(listMine("none"), answer)).toThrow("testListMine is a list of a signed-in person, so it takes a person-list handler.");
+    expect(() => handlePersonList(listMine("current"), answer)).toThrow('testListMine is a list of a signed-in person, which works in no company: its company source is "none".');
+  });
+
+  it("gives a handler the company of its source, and refuses to give another", async () => {
+    const membership = await testMembership(COMPANY, randomUUID());
+    expect(inputMembership({ kind: "input", membership })).toBe(membership);
+    expect(newCompanyId({ kind: "new", companyId: COMPANY })).toBe(COMPANY);
+    expect(() => inputMembership({ kind: "none" })).toThrow("The operation takes its company from its input, and the runner gave the company none.");
+    expect(() => newCompanyId({ kind: "input", membership })).toThrow("The operation makes its company, and the runner gave the company input.");
   });
 });
 
@@ -219,7 +288,7 @@ describe("runOperation", () => {
 
   it("refuses an actor without the permission with 403 before it reads any input, and asks no database", async () => {
     const { database, transactions } = recordingDatabase();
-    const context = { ...CONTEXT, company: { companyId: COMPANY, permissions: new Set(["test:read"]) } };
+    const context: RequestContext = { ...(await principalOf(COMPANY, { kind: "user", permissions: ["test:read"] })), channel: "mcp" };
     const outcome = await runOperation(getCompanyHandler, call(context, { limit: "abc" }, [UNKNOWN]), runnerDeps(database));
     expect(outcome).toEqual({ ok: false, refusal: { kind: "permission-missing", permission: "company:read" } });
     expect(transactions).toEqual([]);
@@ -317,7 +386,7 @@ describe("runOperation", () => {
     expect(transactions).toEqual([
       {
         mode: "read",
-        settings: { companyId: COMPANY, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" },
+        settings: { company: CONTEXT.company, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" },
         ended: "commit",
       },
     ]);
@@ -385,7 +454,11 @@ describe("runOperation", () => {
       return { context: CONTEXT, input: { query, body, problems: [] }, idempotency };
     }
 
-    const SETTINGS: TransactionSettings = { companyId: COMPANY, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" };
+    const ACCESS = CONTEXT.company;
+    if (ACCESS === undefined) {
+      throw new Error("The context works in a company.");
+    }
+    const SETTINGS: TransactionSettings = { company: ACCESS, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" };
     const HASH = requestHash(FINGERPRINT_KEY, "testWrite", {}, { name: "Kassa" });
     const OTHER_HASH = requestHash(FINGERPRINT_KEY, "testWrite", {}, { name: "Bank" });
     const KEY_ID = "f0e1d2c3-b4a5-4697-8879-6a5b4c3d2e1f";
@@ -837,7 +910,7 @@ describe("runOperation for a signed-in person's operation", () => {
       seen.push(personCall);
       return Promise.resolve(ok({ personId: personCall.context.personId }));
     });
-    const inCompany: RequestContext = { ...principalOf(COMPANY, { kind: "user" }), channel: "mcp" };
+    const inCompany: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "mcp" };
     for (const context of [PERSON, inCompany]) {
       expect(await runOperation(handler, { ...call(context), later: () => undefined }, runnerDeps(database))).toEqual({
         ok: true,
@@ -1006,6 +1079,299 @@ describe("runOperation and the company sources", () => {
     expect(transactions.map((transaction) => transaction.ended)).toEqual(["throw", "throw", "throw"]);
   });
 });
+
+// The company sources of a signed-in person's operation (plan 2.1 and 2.2):
+// the credential's company (current), the one the input names (input), and
+// the one the call makes (new), each with its key store. The fake database
+// answers the one membership function as the test says; the database tests
+// run the same on PostgreSQL (modules/companies, modules/idempotency).
+describe("runOperation and a signed-in person's company", () => {
+  const PERSON: RequestContext = { ...personOf(), channel: "rest" };
+  const PERSON_SETTINGS: TransactionSettings = { actorId: PERSON.personId, actorKind: "user", channel: "rest" };
+  const OTHER = "6f1e2d3c-4b5a-4968-8776-5a4b3c2d1e0f";
+
+  const chooseThing = defineOperation({
+    id: "testChooseThing",
+    method: "post",
+    path: "/v1/test-choices",
+    tags: ["test"],
+    summary: "Choose",
+    description: "Chooses the company that the body names.",
+    body: z.strictObject({ companyId: z.string() }),
+    output: z.strictObject({ companyId: z.uuid(), name: personal(z.string()) }),
+    permission: "signed-in",
+    company: { input: "companyId" },
+    tool: "Chooses.",
+    writes: true,
+  });
+
+  const touchThing = defineOperation({
+    id: "testTouchThing",
+    method: "post",
+    path: "/v1/test-companies/{companyId}/touches",
+    tags: ["test"],
+    summary: "Touch",
+    description: "Touches the company that the path names.",
+    params: z.strictObject({ companyId: z.uuid() }),
+    output: z.strictObject({ companyId: z.uuid() }),
+    permission: "signed-in",
+    company: { input: "companyId" },
+    tool: "Touches.",
+    writes: true,
+  });
+
+  const makeThing = defineOperation({
+    id: "testMakeThing",
+    method: "post",
+    path: "/v1/test-made",
+    tags: ["test"],
+    summary: "Make",
+    description: "Makes a company.",
+    output: z.strictObject({ companyId: z.uuid() }),
+    status: 201,
+    permission: "signed-in",
+    company: "new",
+    tool: "Makes.",
+    writes: true,
+  });
+
+  const readCurrent = defineOperation({
+    id: "testReadCurrent",
+    method: "get",
+    path: "/v1/test-current",
+    tags: ["test"],
+    summary: "Read",
+    description: "Reads the current company.",
+    output: z.strictObject({ kind: z.string() }),
+    permission: "signed-in",
+    company: "current",
+    tool: "Reads.",
+    writes: false,
+  });
+
+  /** A row of the one membership function, as the fake transaction gives it. */
+  function membershipRow(companyId: string): QueryResultRow {
+    return {
+      membership_id: "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
+      company_id: companyId,
+      status: "active",
+      admin_level: null,
+      idle_timeout_minutes: 120,
+      company_name: "Testbolaget Alfa AB",
+      organization_number: "556000-0167",
+      database_number: 7,
+      person_id: PERSON.personId,
+    };
+  }
+
+  /**
+   * Answers the one function with `member`'s company, a key's lookups with
+   * the next of `lookups`, and a key's insert with `stored` rows. As
+   * PostgreSQL does, the function's uuid parameter refuses a value that is
+   * not a uuid.
+   */
+  function answers(member: string | undefined, lookups: readonly (readonly QueryResultRow[])[] = [], stored = true): Answering {
+    let lookup = 0;
+    return (text, values) => {
+      if (text.includes("access.active_membership")) {
+        if (text.includes("access.active_membership($1)") && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(values[0]))) {
+          throw new Error(`invalid input syntax for type uuid: "${String(values[0])}"`);
+        }
+        return member !== undefined && values[0] === member ? [membershipRow(member)] : [];
+      }
+      if (/^SELECT\b[\s\S]*\.idempotency_keys\b/.test(text)) {
+        lookup += 1;
+        return lookups[lookup - 1] ?? [];
+      }
+      if (/^INSERT INTO \w+\.idempotency_keys\b/.test(text)) {
+        return stored ? [{ id: "f0e1d2c3-b4a5-4697-8879-6a5b4c3d2e1f" }] : [];
+      }
+      throw new Error(`The fake transaction does not know the query ${text}`);
+    };
+  }
+
+  /** A write of the person, with the key, or with the key policy none when the key is "none". */
+  function write(context: RequestContext, body: unknown, key = "k-1", params?: Record<string, unknown>): OperationCall {
+    return { context, input: { ...(params === undefined ? {} : { params }), query: {}, body }, idempotency: key === "none" ? "none" : { key }, later: () => undefined };
+  }
+
+  const NOT_AVAILABLE = {
+    ok: false,
+    refusal: {
+      kind: "rule",
+      refusal: {
+        code: "company-not-available",
+        detail: "The person is no active member of the company that companyId names, or it does not exist.",
+        pointer: "/companyId",
+      },
+    },
+  };
+
+  it("refuses a company the input names where the person has no active membership, also one of another form, before its key and its handler", async () => {
+    let runs = 0;
+    const handler = handlePerson(chooseThing, () => {
+      runs += 1;
+      return Promise.resolve(ok({ companyId: COMPANY, name: "Alva Berg" }));
+    });
+    for (const companyId of [OTHER, "Testbolaget Alfa AB"]) {
+      const { database, transactions, queries, companies } = recordingDatabase(answers(COMPANY));
+      expect(await runOperation(handler, write(PERSON, { companyId }), runnerDeps(database))).toEqual(NOT_AVAILABLE);
+      expect(transactions).toEqual([{ mode: "write", settings: PERSON_SETTINGS, ended: "rollback" }]);
+      expect(queries.filter((query) => query.text.includes("idempotency_keys"))).toEqual([]);
+      expect(companies).toEqual([]);
+    }
+    expect(runs).toBe(0);
+  });
+
+  it("enters the company the input names with the membership the one function gave, and keeps a personal answer's key outside the company's tables", async () => {
+    const seen: PersonCall[] = [];
+    const handler = handlePerson(chooseThing, (personCall) => {
+      seen.push(personCall);
+      return Promise.resolve(ok({ companyId: COMPANY, name: "Alva Berg" }));
+    });
+    const { database, transactions, queries, companies } = recordingDatabase(answers(COMPANY, [[]]));
+    expect(await runOperation(handler, write(PERSON, { companyId: COMPANY }), runnerDeps(database))).toEqual({ ok: true, status: 200, output: { companyId: COMPANY, name: "Alva Berg" } });
+    expect(transactions).toEqual([{ mode: "write", settings: PERSON_SETTINGS, ended: "commit" }]);
+    expect(companies).toEqual([`entered ${COMPANY}`]);
+    const company = seen[0]?.company;
+    expect(company?.kind === "input" ? company.membership.companyId : undefined).toBe(COMPANY);
+    expect(queries.filter((query) => query.text.includes("idempotency_keys")).map((query) => query.values)).toEqual([
+      [PERSON.personId, COMPANY, "k-1"],
+      ["k-1", "testChooseThing", requestHash(FINGERPRINT_KEY, "testChooseThing", {}, { companyId: COMPANY }), 200, JSON.stringify({ companyId: COMPANY, name: "Alva Berg" })],
+    ]);
+    expect(queries.find((query) => query.text.includes("idempotency_keys"))?.text).toContain("FROM access.idempotency_keys WHERE actor_id = $1 AND key_company_id = $2");
+  });
+
+  it("keeps the key of an answer with no personal data in the company's keys, and takes the company from a path parameter", async () => {
+    const handler = handlePerson(touchThing, () => Promise.resolve(ok({ companyId: COMPANY })));
+    const { database, queries } = recordingDatabase(answers(COMPANY, [[]]));
+    expect(await runOperation(handler, write(PERSON, undefined, "k-2", { companyId: COMPANY }), runnerDeps(database))).toMatchObject({ ok: true, status: 200 });
+    expect(queries.filter((query) => query.text.includes("idempotency_keys")).map((query) => query.text.split(/\s+/).slice(0, 6).join(" "))).toEqual([
+      "SELECT request_hash, response_status, response_body FROM ledger.idempotency_keys",
+      "INSERT INTO ledger.idempotency_keys (company_id, idempotency_key, operation_id,",
+    ]);
+  });
+
+  it("replays a key that another process stored first, in a read that enters the company again", async () => {
+    const stored = { request_hash: requestHash(FINGERPRINT_KEY, "testChooseThing", {}, { companyId: COMPANY }), response_status: 200, response_body: { companyId: COMPANY, name: "Alva Berg" } };
+    const handler = handlePerson(chooseThing, () => Promise.resolve(ok({ companyId: COMPANY, name: "Alva Berg" })));
+    const { database, transactions, companies } = recordingDatabase(answers(COMPANY, [[], [stored]], false));
+    expect(await runOperation(handler, write(PERSON, { companyId: COMPANY }), runnerDeps(database))).toEqual({ ok: true, status: 200, output: stored.response_body });
+    expect(transactions.map((transaction) => [transaction.mode, transaction.ended])).toEqual([
+      ["write", "rollback"],
+      ["read", "commit"],
+    ]);
+    expect(companies).toEqual([`entered ${COMPANY}`, `entered ${COMPANY}`]);
+  });
+
+  it("runs the handler in the company it makes, and keeps its key per person in no company", async () => {
+    const seen: PersonCall[] = [];
+    const handler = handlePerson(makeThing, (personCall) => {
+      seen.push(personCall);
+      return Promise.resolve(ok({ companyId: newCompanyId(personCall.company) }));
+    });
+    const { database, transactions, queries, companies } = recordingDatabase(answers(undefined, [[]]));
+    expect(await runOperation(handler, write(PERSON, undefined), runnerDeps(database))).toEqual({ ok: true, status: 201, output: { companyId: NEW_COMPANY } });
+    expect(transactions).toEqual([{ mode: "write", settings: PERSON_SETTINGS, ended: "commit" }]);
+    expect(companies).toEqual([`made ${NEW_COMPANY}`]);
+    expect(queries.find((query) => query.text.includes("idempotency_keys"))?.text).toContain("key_company_id IS NULL");
+    // Without a key, it runs on every call.
+    const again = recordingDatabase(answers(undefined));
+    expect(await runOperation(handler, write(PERSON, undefined, "none"), runnerDeps(again.database))).toMatchObject({ ok: true, status: 201 });
+    expect(again.companies).toEqual([`made ${NEW_COMPANY}`]);
+  });
+
+  it("works in the credential's company when it names one, and in none when it does not", async () => {
+    const handler = handlePerson(readCurrent, ({ company }) => Promise.resolve(ok({ kind: company.kind })));
+    const { database, transactions } = recordingDatabase();
+    const inCompany: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "rest" };
+    expect(await runOperation(handler, call(inCompany), runnerDeps(database))).toEqual({ ok: true, status: 200, output: { kind: "current" } });
+    expect(await runOperation(handler, call(PERSON), runnerDeps(database))).toEqual({ ok: true, status: 200, output: { kind: "none" } });
+    expect(transactions.map((transaction) => transaction.settings)).toEqual([
+      { company: inCompany.company, actorId: inCompany.personId, actorKind: "user", channel: "rest" },
+      PERSON_SETTINGS,
+    ]);
+  });
+
+  it("gives a handler the runner's refusal of a company that the input names, and throws for an operation whose input names none", () => {
+    expect(companyNotAvailable(chooseThing)).toEqual({ ok: false, refusal: NOT_AVAILABLE.refusal });
+    expect(() => companyNotAvailable(readCurrent)).toThrow("testReadCurrent takes no company from its input.");
+  });
+
+  it("answers a handler's ended credential as a call with no actor, with the operation's challenge, and rolls back", async () => {
+    const handler = handlePerson(readCurrent, () => Promise.resolve(credentialEnded()));
+    const { database, transactions } = recordingDatabase();
+    expect(await runOperation(handler, call(PERSON), runnerDeps(database))).toEqual({
+      ok: false,
+      refusal: { kind: "authentication-required", challenge: CHALLENGES.sessionCookie },
+    });
+    expect(transactions).toEqual([{ mode: "read", settings: PERSON_SETTINGS, ended: "rollback" }]);
+  });
+
+  it("keeps a write in the credential's company per company, or per person and company for a personal answer", async () => {
+    const writeCurrent = defineOperation({
+      id: "testWriteCurrent",
+      method: "post",
+      path: "/v1/test-current-writes",
+      tags: ["test"],
+      summary: "Write",
+      description: "Writes in the current company.",
+      output: z.strictObject({ email: personal(z.string()) }),
+      permission: "signed-in",
+      company: "current",
+      tool: "Writes.",
+      writes: true,
+    });
+    const handler = handlePerson(writeCurrent, () => Promise.resolve(ok({ email: "alva.berg@example.com" })));
+    const inCompany: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "rest" };
+    const { database, queries } = recordingDatabase(answers(undefined, [[]]));
+    expect(await runOperation(handler, write(inCompany, undefined), runnerDeps(database))).toMatchObject({ ok: true, status: 200 });
+    expect(queries.find((query) => query.text.includes("idempotency_keys"))?.values).toEqual([inCompany.personId, COMPANY, "k-1"]);
+  });
+});
+
+/** A list of a signed-in person's own: one page in a read as the person, in no company, with cursors of the person's own. */
+describe("runOperation for a signed-in person's list", () => {
+  const listMine = defineListOperation({
+    id: "testListMine",
+    method: "get",
+    path: "/v1/test-mine",
+    tags: ["test"],
+    summary: "List mine",
+    description: "Lists mine.",
+    item: z.strictObject({ id: z.uuid() }),
+    permission: "signed-in",
+    tool: "Lists mine.",
+  });
+
+  it("reads a page as the person, signs its cursor for the person, and refuses another person's", async () => {
+    const PERSON: RequestContext = { ...personOf(), channel: "rest" };
+    const handler = handlePersonList(listMine, ({ page }) =>
+      Promise.resolve(page.after === undefined ? ok({ items: [{ id: COMPANY }], total: 2, next: [COMPANY] }) : ok({ items: [{ id: OTHER_ITEM }], total: 2 })),
+    );
+    const { database, transactions } = recordingDatabase();
+    const first = await runOperation(handler, call(PERSON), runnerDeps(database));
+    expect(first).toMatchObject({ ok: true, status: 200, output: { items: [{ id: COMPANY }], total: 2 } });
+    const cursor = (first as { readonly output: { readonly nextCursor: string } }).output.nextCursor;
+    expect(readCursor(CURSOR_KEY, { operationId: "testListMine", companyId: "", personId: PERSON.personId }, cursor)).toEqual([COMPANY]);
+    expect(await runOperation(handler, call(PERSON, { cursor }), runnerDeps(database))).toEqual({ ok: true, status: 200, output: { items: [{ id: OTHER_ITEM }], total: 2 } });
+    const someone: RequestContext = { ...personOf(), channel: "rest" };
+    expect(await runOperation(handler, call(someone, { cursor }), runnerDeps(database))).toMatchObject({ ok: false, refusal: { kind: "invalid", problems: [{ code: "cursor-invalid" }] } });
+    expect(transactions.map((transaction) => [transaction.mode, transaction.settings])).toEqual([
+      ["read", { actorId: PERSON.personId, actorKind: "user", channel: "rest" }],
+      ["read", { actorId: PERSON.personId, actorKind: "user", channel: "rest" }],
+    ]);
+  });
+
+  it("rolls back its handler's refusal", async () => {
+    const handler = handlePersonList(listMine, () => Promise.resolve(refused({ code: "x", detail: "No." })));
+    const { database, transactions } = recordingDatabase();
+    expect(await runOperation(handler, call({ ...personOf(), channel: "rest" }), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "rule", refusal: { code: "x", detail: "No." } } });
+    expect(transactions.map((transaction) => transaction.ended)).toEqual(["rollback"]);
+  });
+});
+
+const OTHER_ITEM = "8b7a6c5d-4e3f-4a2b-9c1d-0e9f8a7b6c5d";
 
 describe("runOperation with path parameters", () => {
   const THING = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b";

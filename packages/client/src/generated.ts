@@ -6,7 +6,7 @@
 import type { CallOptions, Send, WriteOptions } from "./runtime.ts";
 
 /**
- * The company the request works in. Every data request works in exactly one company.
+ * A company: its id, name, organisation number and tenant id.
  */
 export interface Company {
   /**
@@ -25,6 +25,14 @@ export interface Company {
    * The company's number for programs, its tenant id. It never changes.
    */
   readonly databaseNumber: number;
+}
+
+/**
+ * A company where the person is an active member, with the person's system administrator's level there when they have one.
+ */
+export interface CompanyChoice {
+  readonly company: Company;
+  readonly adminLevel?: SysAdmin;
 }
 
 /**
@@ -64,7 +72,7 @@ export interface Health {
 }
 
 /**
- * The signed-in person, with their own login data.
+ * The signed-in person, with their own login data, and the company the request works in with the person's membership and permissions there.
  */
 export interface Me {
   readonly user: User;
@@ -80,6 +88,43 @@ export interface Me {
    * How often a password sign-in asks for a TOTP code: new_device_90_days on each new device and every 90 days on a known one, or every_login.
    */
   readonly twoStep: "new_device_90_days" | "every_login";
+  readonly company?: Company;
+  readonly membership?: Membership;
+  /**
+   * The permissions the person holds in that company, in alphabetical order. Empty when the request works in no company.
+   */
+  readonly permissions: readonly string[];
+}
+
+/**
+ * Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts.
+ */
+export interface Membership {
+  /**
+   * The company's id.
+   */
+  readonly companyId: string;
+  /**
+   * The person's id. Absent while the membership is invited.
+   */
+  readonly userId?: string;
+  /**
+   * invited, active, inactive, removed or left.
+   */
+  readonly status: "invited" | "active" | "inactive" | "removed" | "left";
+  readonly adminLevel?: SysAdmin;
+  /**
+   * Utloggning efter inaktivitet, in whole minutes: 15, 30, 60, 120 (2 hours, the default) or 480 (8 hours).
+   */
+  readonly idleTimeout: 15 | 30 | 60 | 120 | 480;
+  /**
+   * The person's work e-mail address in this company, where its notices go. Absent when none is set.
+   */
+  readonly workEmail?: string;
+  /**
+   * The person's work phone number in this company. Absent when none is set.
+   */
+  readonly workPhone?: string;
 }
 
 /**
@@ -139,10 +184,21 @@ export interface Problem {
 }
 
 /**
- * The browser's session: the person it signed in. A session works in no company until one is chosen.
+ * The three companies the person chose last, where the person is still an active member.
+ */
+export interface RecentCompanies {
+  /**
+   * The companies, the latest chosen first.
+   */
+  readonly companies: readonly CompanyChoice[];
+}
+
+/**
+ * The browser's session: the person it signed in, and the company it works in once one is chosen.
  */
 export interface Session {
   readonly user: User;
+  readonly company?: Company;
 }
 
 /**
@@ -152,6 +208,11 @@ export interface SetupResult {
   readonly user: User;
   readonly totpEnrolment: TotpEnrolment;
 }
+
+/**
+ * Systemadministratör: owner, the person who made the company, or admin, a member made system administrator later. Both hold the same rights, and neither gives work rights by itself.
+ */
+export type SysAdmin = "owner" | "admin";
 
 /**
  * A new TOTP secret, which the person adds to an authenticator app.
@@ -252,6 +313,73 @@ export interface Operations {
   ): Promise<void>;
 
   /**
+   * List your companies
+   *
+   * Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.
+   *
+   * `GET /v1/companies`
+   *
+   * Needs a signed-in person, and works in no company.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  listCompanies(
+    input?: {
+      /**
+       * A part of the company's name, in any letter case, or of its organisation number, with or without the hyphen.
+       */
+      readonly query?: string;
+      /**
+       * How many items a page holds: from 1 to 500. Any other whole number gives 100.
+       */
+      readonly limit?: number;
+      /**
+       * Where the page starts: the nextCursor of the page before. Leave it out for the first page.
+       */
+      readonly cursor?: string;
+    },
+    options?: CallOptions,
+  ): Promise<{
+  /**
+   * The items of this page, in the list's order.
+   */
+  readonly items: readonly CompanyChoice[];
+  /**
+   * Where the next page starts. It is absent on the last page.
+   */
+  readonly nextCursor?: string;
+  /**
+   * How many items the whole list holds.
+   */
+  readonly total: number;
+}>;
+
+  /**
+   * Create a company
+   *
+   * Makes a company with its name and organisation number, and makes the signed-in person its owner, a system administrator, in the same transaction. The company gets its tenant id, a number that is never given out again. The organisation number never changes.
+   *
+   * `POST /v1/companies`
+   *
+   * Needs a signed-in person, and works in the company it makes.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  createCompany(
+    input: {
+      /**
+       * The company's name.
+       */
+      readonly name: string;
+      /**
+       * The organisation number: ten digits with a hyphen after the sixth.
+       */
+      readonly organizationNumber: string;
+    },
+    options: WriteOptions,
+  ): Promise<Company>;
+
+  /**
    * Read the company
    *
    * Gives the company the request works in: its id, name, organisation number and tenant id. The company comes from the request's credential.
@@ -278,30 +406,108 @@ export interface Operations {
   /**
    * Read yourself
    *
-   * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice.
+   * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership and permissions there.
    *
    * `GET /v1/me`
    *
-   * Needs a signed-in person, and works in no company.
+   * Needs a signed-in person, and works in the company that the credential names, or in none.
    *
    * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * The answer holds personal data: `/user/name`, `/user/email`, `/personalIdentityNumber`, `/mobile`, `/membership/workEmail`, `/membership/workPhone`.
    */
   getMe(options?: CallOptions): Promise<Me>;
 
   /**
-   * Read the session
+   * List your recent companies
    *
-   * Gives the browser's session: the person it signed in.
+   * Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member.
    *
-   * `GET /v1/session`
+   * `GET /v1/me/companies/recent`
    *
    * Needs a signed-in person, and works in no company.
    *
    * Credential: the cookie `__Host-nortfox-session`.
+   */
+  listRecentCompanies(options?: CallOptions): Promise<RecentCompanies>;
+
+  /**
+   * Change your membership
+   *
+   * Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is, and null takes a work contact away.
+   *
+   * `PATCH /v1/me/companies/{companyId}`
+   *
+   * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * The answer holds personal data: `/workEmail`, `/workPhone`.
+   */
+  updateMyMembership(
+    input: {
+      /**
+       * The company's id.
+       */
+      readonly companyId: string;
+    } & {
+      /**
+       * The work e-mail address in this company, or null for none.
+       */
+      readonly workEmail?: string | null;
+      /**
+       * The work phone number in this company, or null for none.
+       */
+      readonly workPhone?: string | null;
+      /**
+       * Utloggning efter inaktivitet, in whole minutes: 15, 30, 60, 120 (2 hours, the default) or 480 (8 hours).
+       */
+      readonly idleTimeout?: 15 | 30 | 60 | 120 | 480;
+    },
+    options: WriteOptions,
+  ): Promise<Membership>;
+
+  /**
+   * Read the session
+   *
+   * Gives the browser's session: the person it signed in, and the company it works in once one is chosen.
+   *
+   * `GET /v1/session`
+   *
+   * Needs a signed-in person, and works in the company that the credential names, or in none.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
    *
    * Serves the browser's session: its MCP tool refuses every call.
+   *
+   * The answer holds personal data: `/user/name`, `/user/email`.
    */
   getSession(options?: CallOptions): Promise<Session>;
+
+  /**
+   * Choose the company
+   *
+   * Makes the browser's session work in the company that companyId names, where the person must be an active member, without a new sign-in. Any other company, also one that does not exist, gets the same refusal. The session takes the person's permissions there as they are now, and the company's behandlingshistorik gets the sign-in.
+   *
+   * `POST /v1/session/company`
+   *
+   * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * Serves the browser's session: its MCP tool refuses every call.
+   *
+   * The answer holds personal data: `/user/name`, `/user/email`.
+   */
+  selectCompany(
+    input: {
+      /**
+       * The id of the company to work in.
+       */
+      readonly companyId: string;
+    },
+    options: WriteOptions,
+  ): Promise<Session>;
 
   /**
    * Make the first identity
@@ -313,6 +519,8 @@ export interface Operations {
    * Needs no actor: anyone may call it, before signing in.
    *
    * Serves the browser's session: its MCP tool refuses every call.
+   *
+   * The answer holds personal data: `/user/name`, `/user/email`.
    */
   completeSetup(
     input: {
@@ -343,10 +551,28 @@ export function createOperations(send: Send): Operations {
     logout: async (options) => { await send({ method: "POST", path: "/v1/auth/logout", key: true, answer: "none" }, undefined, options); },
     loginWithPassword: async (input, options) => (await send({ method: "POST", path: "/v1/auth/password", body: true }, input, options)) as PasswordSignIn,
     verifyTotp: async (input, options) => { await send({ method: "POST", path: "/v1/auth/totp", body: true, answer: "none" }, input, options); },
+    listCompanies: async (input, options) => (await send({ method: "GET", path: "/v1/companies", query: ["query", "limit", "cursor"] }, input, options)) as {
+  /**
+   * The items of this page, in the list's order.
+   */
+  readonly items: readonly CompanyChoice[];
+  /**
+   * Where the next page starts. It is absent on the last page.
+   */
+  readonly nextCursor?: string;
+  /**
+   * How many items the whole list holds.
+   */
+  readonly total: number;
+},
+    createCompany: async (input, options) => (await send({ method: "POST", path: "/v1/companies", body: true, key: true }, input, options)) as Company,
     getCompany: async (options) => (await send({ method: "GET", path: "/v1/company" }, undefined, options)) as Company,
     getHealth: async (options) => (await send({ method: "GET", path: "/v1/health" }, undefined, options)) as Health,
     getMe: async (options) => (await send({ method: "GET", path: "/v1/me" }, undefined, options)) as Me,
+    listRecentCompanies: async (options) => (await send({ method: "GET", path: "/v1/me/companies/recent" }, undefined, options)) as RecentCompanies,
+    updateMyMembership: async (input, options) => (await send({ method: "PATCH", path: "/v1/me/companies/{companyId}", params: ["companyId"], body: true, key: true }, input, options)) as Membership,
     getSession: async (options) => (await send({ method: "GET", path: "/v1/session" }, undefined, options)) as Session,
+    selectCompany: async (input, options) => (await send({ method: "POST", path: "/v1/session/company", body: true, key: true }, input, options)) as Session,
     completeSetup: async (input, options) => (await send({ method: "POST", path: "/v1/setup/{token}", params: ["token"], body: true }, input, options)) as SetupResult,
   };
 }

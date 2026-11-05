@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Kontoaktivitet (access.account_events): the person's own events across
-// companies, the 100 latest of which the person can read (a later part). A
+// companies, the 100 latest of which the person can read (a later part). The
+// purge keeps the failed sign-ins of the last hour past those 100, since a
+// failed sign-in's entry in the behandlingshistorik counts them. A
 // person table: the app adds an event only in a transaction whose actor is
 // that person. A failed sign-in's actor is the identity whose identifier was
 // tried (choice 7), so its entry is found under that person.
@@ -16,17 +18,21 @@
 // - sign-in-locked: step (password or totp) and until, when the step opens
 //   again. The first lock of a window writes it once.
 // - logout.
+// - company-created: companyId and name, when the person makes a company.
 //
 // The entries of a failure are written after the answer (after-answer.ts),
 // so the time of the answer tells nothing of whether the identifier named an
-// identity. A crash between the two loses the entry, which records a failure,
-// not a change.
+// identity. A failed sign-in goes to the behandlingshistorik of each company
+// where the person is an active member too (modules/audit/entries.ts). A
+// crash between the answer and the entries loses them: they record a
+// failure, not a change.
 
 import type { Later, RequestFacts } from "../../api/operation.ts";
 import type { SignInMethod } from "../../api/context.ts";
 import { commit, type Channel, type Database, type Queryable } from "../../db/database.ts";
+import { addFailedSignInEntries } from "../audit/entries.ts";
 
-export type AccountEventKind = "sign-in" | "sign-in-locked" | "logout";
+export type AccountEventKind = "sign-in" | "sign-in-locked" | "logout" | "company-created";
 
 export type AccountEventDetails = Readonly<Record<string, string>>;
 
@@ -57,14 +63,21 @@ export function asPerson(identityId: string, channel: Channel): { readonly actor
   return { actorId: identityId, actorKind: "user", channel };
 }
 
-/** Writes events to a person's Kontoaktivitet after the answer, in a transaction of their own as that person. */
-export function addAfterAnswer(later: Later, database: Database, channel: Channel, identityId: string, events: readonly AccountEvent[]): void {
-  later(() =>
-    database.write(asPerson(identityId, channel), async (tx) => {
-      for (const event of events) {
-        await addAccountEvent(tx, identityId, event);
+/**
+ * Writes a failed sign-in after the answer: to the person's Kontoaktivitet,
+ * with the lock when the failure locked the step, in a transaction of its own
+ * as that person; then to the behandlingshistorik of each company where the
+ * person is an active member (modules/audit/entries.ts).
+ */
+export function addFailedSignIn(later: Later, database: Database, channel: Channel, identityId: string, failed: AccountEventDetails, lock: AccountEvent | undefined, at: Date): void {
+  later(async () => {
+    await database.write(asPerson(identityId, channel), async (tx) => {
+      await addAccountEvent(tx, identityId, { kind: "sign-in", details: failed });
+      if (lock !== undefined) {
+        await addAccountEvent(tx, identityId, lock);
       }
       return commit(undefined);
-    }),
-  );
+    });
+    await addFailedSignInEntries(database, channel, identityId, failed, at);
+  });
 }

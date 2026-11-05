@@ -24,8 +24,8 @@ import type { ContextResolver, Principal } from "./context.ts";
 const SITE = "https://nortfox.example";
 const OTHER_SITE = "https://other.example";
 const COMPANY = randomUUID();
-const BROWSER: Principal = principalOf(COMPANY, { kind: "user" });
-const PROGRAM: Principal = principalOf(COMPANY);
+const BROWSER: Principal = await principalOf(COMPANY, { kind: "user" });
+const PROGRAM: Principal = await principalOf(COMPANY);
 const SESSION = "__Host-nortfox-session=nfs_test-session";
 
 /** A resolver that knows a session cookie and a bearer token, and records each request it is asked about. */

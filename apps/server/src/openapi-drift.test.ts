@@ -69,6 +69,7 @@ describe("the shapes of slice 2c in the API description", () => {
       list: false,
       session: "flow",
       company: "none",
+      personalOutput: [],
     });
     expect(signIn?.parameters).toBeUndefined();
     expect(pathOf("/v1/test-person", "get")?.["x-nortfox"]).toMatchObject({ permission: "signed-in", session: null, company: "none" });
@@ -106,6 +107,11 @@ describe("the credentials in the API description", () => {
       logout: [{ sessionCookie: [] }],
       getSession: [{ sessionCookie: [] }],
       getMe: [{ sessionCookie: [] }],
+      createCompany: [{ sessionCookie: [] }],
+      listCompanies: [{ sessionCookie: [] }],
+      listRecentCompanies: [{ sessionCookie: [] }],
+      selectCompany: [{ sessionCookie: [] }],
+      updateMyMembership: [{ sessionCookie: [] }],
     });
   });
 

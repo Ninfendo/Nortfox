@@ -22,9 +22,20 @@ export interface ArgumentsFixture {
   readonly person: () => Promise<TestIdentity>;
   /** A live login challenge of a person, and that person's code at the server's time. */
   readonly challenge: () => Promise<{ readonly challenge: string; readonly code: string }>;
+  /** A company that `person` owns, made as the app does. */
+  readonly companyOf: (person: TestIdentity) => Promise<string>;
 }
 
-export type ArgumentsOf = (fixture: ArgumentsFixture) => Promise<Readonly<Record<string, unknown>>>;
+/** The arguments of an operation, from the fixture and, for a signed-in operation, the person whose session calls it. */
+export type ArgumentsOf = (fixture: ArgumentsFixture, actor?: TestIdentity) => Promise<Readonly<Record<string, unknown>>>;
+
+/** The person whose session calls a signed-in operation. */
+function actorOf(actor: TestIdentity | undefined): TestIdentity {
+  if (actor === undefined) {
+    throw new Error("A signed-in operation's arguments need the person whose session calls it.");
+  }
+  return actor;
+}
 
 const none: ArgumentsOf = () => Promise.resolve({});
 
@@ -41,6 +52,11 @@ export const OPERATION_ARGUMENTS: Readonly<Record<string, ArgumentsOf>> = {
   logout: () => Promise.resolve({ idempotencyKey: "logout-of-the-test" }),
   getSession: none,
   getMe: none,
+  createCompany: () => Promise.resolve({ name: "Testbolaget Lambda AB", organizationNumber: "556000-0167", idempotencyKey: "make-lambda" }),
+  listCompanies: none,
+  listRecentCompanies: none,
+  selectCompany: async (fixture, actor) => ({ companyId: await fixture.companyOf(actorOf(actor)), idempotencyKey: "choose-the-company" }),
+  updateMyMembership: async (fixture, actor) => ({ companyId: await fixture.companyOf(actorOf(actor)), idleTimeout: 60, idempotencyKey: "change-my-membership" }),
 };
 
 /** A REST request of `operation` from its flat input: the path parameters in the path, the query, the body and the key. */

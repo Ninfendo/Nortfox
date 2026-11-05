@@ -73,7 +73,7 @@ export const Problem = z
 export type Problem = z.infer<typeof Problem>;
 
 /** The ledger's rules a request can break: each a refusal by the database, answered with 422. */
-const LEDGER_RULES = [
+export const LEDGER_RULES = [
   "unbalanced",
   "too-few-rows",
   "account-missing",
@@ -95,6 +95,7 @@ const LEDGER_RULES = [
   "series-code-changed",
   "immutable-field",
   "install-not-empty",
+  "last-system-administrator",
   "period-outside-fiscal-year",
   "fiscal-year-strands-rows",
 ] as const;
@@ -116,6 +117,7 @@ export const PROBLEM_CODES = {
   "idempotency-key-reused": 422,
   "sign-in-failed": 422,
   "setup-link-invalid": 422,
+  "company-not-available": 422,
   "too-many-attempts": 429,
   "internal-error": 500,
   "server-busy": 503,

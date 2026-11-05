@@ -19,10 +19,18 @@ import {
   type TestDatabase,
 } from "../../../test/database.ts";
 import { ROW_INSERTS, TRIGGER_ONLY_INSERTS, companyTables, fillEveryTable, type Scenario } from "../../../test/every-table.ts";
-import { addCompany, addFiscalYear, addPeriod, setLock } from "../../../test/ledger.ts";
+import { addCompany, addCompanyWithOwner, addFiscalYear, addPeriod, setLock } from "../../../test/ledger.ts";
+import { GUARD_EXCEPTIONS } from "../../db/table-guard.ts";
 
 /** PostgreSQL's SQLSTATE for a foreign key that refused a row. */
 const FOREIGN_KEY_VIOLATION = "23503";
+
+/** The company tables where the owner also reads the rows of the transaction's person, by a policy for SELECT of its own. */
+const OWNER_BY_PERSON: ReadonlySet<string> = new Set(
+  [...GUARD_EXCEPTIONS]
+    .filter(([, exception]) => exception.kind === "own policies" && exception.policies.some((policy) => policy.role === "nortfox_owner" && policy.command === "SELECT"))
+    .map(([table]) => table),
+);
 
 describe("company isolation", () => {
   let db: TestDatabase;
@@ -148,8 +156,22 @@ describe("company isolation", () => {
       `UPDATE ${table} SET company_id = $2::uuid WHERE company_id = $1 AND pg_catalog.set_config('nortfox.company_id', $2::text, true) IS NOT NULL`;
     for (const table of tables) {
       for (const role of ["owner", "app"] as const) {
-        const error = await failureOf(write(role, from, move(table), [from, to]));
-        expect(error, `${role} moved rows of ${table} to another company`).toBeDefined();
+        const written: { count?: number | null } = {};
+        const error = await failureOf(
+          write(role, from, move(table), [from, to]).then((count) => {
+            written.count = count;
+          }),
+        );
+        // The owner also reads the memberships and the companies of the
+        // transaction's person, by a policy for SELECT of its own. PostgreSQL
+        // reads that policy after the statement's own condition, which has
+        // switched the company by then, so the owner's update finds no row.
+        // A row that it found would be refused like any other.
+        if (role === "owner" && OWNER_BY_PERSON.has(table)) {
+          expect(error !== undefined || written.count === 0, `${role} moved rows of ${table} to another company`).toBe(true);
+        } else {
+          expect(error, `${role} moved rows of ${table} to another company`).toBeDefined();
+        }
       }
     }
     expect(await rowCounts([from, to])).toEqual(before);
@@ -183,6 +205,27 @@ describe("company isolation", () => {
       app.query<{ through: string | null }>("SELECT ledger.locked_through($1, 'user', $2, ledger.today_in_sweden())::text AS through", [from, actor]),
     );
     expect(lockedThrough.rows[0]?.through).toBe("2090-06-30");
+  });
+
+  it("refuses the owner's move of a row that its policy by person finds, with immutable_field", async () => {
+    const owner = as("owner");
+    const made = await addCompanyWithOwner(as("app"));
+    const [from, to] = [made.row.company_id, await addCompany(as("app"))];
+    const before = await rowCounts([from, to]);
+    for (const table of OWNER_BY_PERSON) {
+      await expectRefusal(
+        inTransaction(owner, { company: from, actor: made.owner, kind: "user" }, () =>
+          owner.query(
+            `UPDATE ${table} SET company_id = $2::uuid WHERE company_id = $1 AND pg_catalog.set_config('nortfox.company_id', $2::text, true) IS NOT NULL`,
+            [from, to],
+          ),
+        ),
+        "immutable_field",
+        { field: "company_id", operation: "update" },
+      );
+    }
+    expect([...OWNER_BY_PERSON].sort()).toEqual(["access.memberships", "ledger.companies"]);
+    expect(await rowCounts([from, to])).toEqual(before);
   });
 
   it("tells a company nothing about another company's periods: a period that names that company's year gets one error, period or not", async () => {

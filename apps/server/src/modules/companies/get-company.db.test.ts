@@ -66,8 +66,8 @@ describe("getCompany", () => {
     server = buildTestApp({
       database: pool.database,
       resolve: testResolver({
-        reader: principalOf(company, { ...reader, permissions: ["company:read"] }),
-        outsider: principalOf(company, { ...reader, permissions: ["test:read"] }),
+        reader: await principalOf(company, { ...reader, permissions: ["company:read"] }),
+        outsider: await principalOf(company, { ...reader, permissions: ["test:read"] }),
       }),
     });
   });
@@ -95,7 +95,7 @@ describe("getCompany", () => {
       await mcp.close();
     }
 
-    const context: RequestContext = { ...principalOf(company, { ...reader, permissions: ["company:read"] }), channel: "rest" };
+    const context: RequestContext = { ...(await principalOf(company, { ...reader, permissions: ["company:read"] })), channel: "rest" };
     const outcome = await runOperation(
       getCompanyHandler,
       { context, input: { query: {}, body: undefined }, idempotency: "none" },
@@ -105,7 +105,7 @@ describe("getCompany", () => {
   });
 
   it("refuses its handler for an actor without the permission, with the stable code permission-missing and the permission", async () => {
-    const context: RequestContext = { ...principalOf(company, { ...reader, permissions: ["test:read"] }), channel: "rest" };
+    const context: RequestContext = { ...(await principalOf(company, { ...reader, permissions: ["test:read"] })), channel: "rest" };
     const outcome = await runOperation(
       getCompanyHandler,
       { context, input: { query: {}, body: undefined }, idempotency: "none" },

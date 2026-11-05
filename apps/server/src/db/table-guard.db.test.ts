@@ -63,12 +63,16 @@ describe("the table guard", () => {
     expect(await guardedRelations(owner)).toEqual([
       "access.account_events",
       "access.attempt_counters",
+      "access.events",
       "access.idempotency_keys",
       "access.identities",
       "access.install_keys",
       "access.known_devices",
       "access.login_challenges",
+      "access.membership_contacts",
+      "access.memberships",
       "access.password_credentials",
+      "access.recent_companies",
       "access.sessions",
       "access.setup_tokens",
       "access.totp_secrets",
@@ -92,7 +96,9 @@ describe("the table guard", () => {
       "meta.schema_migrations",
     ]);
     expect(Object.fromEntries([...GUARD_EXCEPTIONS].map(([table, exception]) => [table, exception.kind]))).toEqual({
+      "access.memberships": "own policies",
       "audit.history": "no history trigger",
+      "ledger.companies": "own policies",
       "ledger.reader_roles": "own policies",
       "ledger.transaction_actors": "not a company table",
       "meta.schema_migrations": "not a company table",
@@ -440,6 +446,51 @@ describe("the table guard", () => {
     ]);
   });
 
+  // The memberships and the companies have the company policies, and one
+  // policy of the owner's own, for SELECT, by the transaction's person: only
+  // the one membership function reads through it (db/README.md, the schema
+  // access). The guard pins it, so it never widens, and the app never gets it.
+  it("pins the owner's policy by person on the memberships and the companies, and the company policies beside it", async () => {
+    const BY_PERSON = "(live_user_id = access.current_person_id())";
+    const LIVE_COMPANY =
+      "(EXISTS ( SELECT\n   FROM access.memberships m\n  WHERE ((m.company_id = companies.company_id) AND (m.live_user_id = access.current_person_id()))))";
+    for (const [table, using] of [
+      ["access.memberships", BY_PERSON],
+      ["ledger.companies", LIVE_COMPANY],
+    ] as const) {
+      const missing = `${table}: has no permissive policy for nortfox_owner on SELECT with USING ${using}.`;
+      expect(await problemsAfter(`ALTER POLICY person_owner ON ${table} USING (true)`), table).toEqual([
+        missing,
+        `${table}: has the permissive policy person_owner, which the guard does not expect.`,
+      ]);
+      expect(await problemsAfter(`DROP POLICY person_owner ON ${table}`), table).toEqual([missing]);
+      expect(await problemsAfter(`ALTER POLICY person_owner ON ${table} TO nortfox_owner, nortfox_app`), table).toEqual([
+        missing,
+        `${table}: has the permissive policy person_owner, which the guard does not expect.`,
+      ]);
+      expect(await problemsAfter(`DROP POLICY company_app ON ${table}`), table).toEqual([
+        `${table}: has no permissive policy for nortfox_app on ALL with USING ${COMPANY} and WITH CHECK ${COMPANY}.`,
+      ]);
+    }
+    // A wider person: every live membership of anyone, or any membership of the person's.
+    expect(await problemsAfter("ALTER POLICY person_owner ON access.memberships USING (user_id = access.current_person_id())")).toEqual([
+      `access.memberships: has no permissive policy for nortfox_owner on SELECT with USING ${BY_PERSON}.`,
+      "access.memberships: has the permissive policy person_owner, which the guard does not expect.",
+    ]);
+  });
+
+  // The guard runs after each migration. Before 0007 made the memberships,
+  // the companies had the company policies alone, and a fresh install still
+  // applies those migrations one by one.
+  it("holds the companies to the company policies alone until the memberships exist, and to the policy by person after", async () => {
+    expect(await problemsAfter("DROP TABLE access.membership_contacts, access.memberships CASCADE")).toEqual([]);
+    expect(
+      await problemsAfter(`
+        DROP TABLE access.membership_contacts, access.memberships CASCADE;
+        CREATE POLICY person_owner ON ledger.companies FOR SELECT TO nortfox_owner USING (true);`),
+    ).toEqual(["ledger.companies: has the permissive policy person_owner, which the guard does not expect."]);
+  });
+
   // The install-wide tables hold what belongs to no company (db/README.md,
   // the schema access). Each is on the pinned list with its class, and the
   // guard holds it to that class's policies. The probes below are tables of
@@ -507,7 +558,9 @@ describe("the table guard", () => {
         "access.install_keys",
         "access.known_devices",
         "access.login_challenges",
+        "access.membership_contacts",
         "access.password_credentials",
+        "access.recent_companies",
         "access.sessions",
         "access.setup_tokens",
         "access.totp_secrets",
@@ -518,6 +571,12 @@ describe("the table guard", () => {
       expect(INSTALL_TABLES.get("access.identities")).toMatchObject({ class: "person", column: "id", commands: ["SELECT", "UPDATE"] });
       expect(INSTALL_TABLES.get("access.account_events")).toMatchObject({ class: "person", column: "identity_id", commands: ["SELECT", "INSERT"] });
       expect(INSTALL_TABLES.get("access.idempotency_keys")).toMatchObject({ class: "person", column: "actor_id", commands: ["SELECT", "INSERT"] });
+      expect(INSTALL_TABLES.get("access.recent_companies")).toMatchObject({ class: "person", column: "identity_id", commands: ["SELECT", "INSERT", "UPDATE"] });
+      expect(INSTALL_TABLES.get("access.membership_contacts")).toMatchObject({
+        class: "company",
+        column: "contact_company_id",
+        commands: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+      });
     });
 
     it("passes an install-wide table of each class that has everything, and the migrated tables only with their list", async () => {

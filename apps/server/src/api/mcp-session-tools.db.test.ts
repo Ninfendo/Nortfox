@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// T10's half for slice 2c's first part, generated from the registry: through
-// /mcp, every operation that serves the browser's session (session "flow")
-// keeps its tool, which refuses every call with 403 browser-only before it
+// T10's halves for slice 2c's first and second parts, generated from the
+// registry: through
+// /mcp, every operation that serves the browser's session (session "flow"),
+// selectCompany among them, keeps its tool, which refuses every call with 403 browser-only before it
 // reads an argument (open point 18). Each tool is called with arguments that
 // succeed by REST, from test/operation-arguments.ts, and with the browser's
 // session cookie too: the call changes nothing, and the same arguments then
@@ -15,6 +16,7 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, callTool, mcpClient, type AppPool } from "../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../test/database.ts";
+import { addCompanyWithOwner } from "../../test/ledger.ts";
 import { OPERATION_ARGUMENTS, restRequestOf, type ArgumentsFixture } from "../../test/operation-arguments.ts";
 import { expectNoTokens } from "../../test/secrets.ts";
 import {
@@ -44,7 +46,7 @@ const BROWSER_ONLY = {
   code: "browser-only",
 };
 
-/** What the database holds of sign-ins: a call that changes nothing leaves it as it was. */
+/** What the database holds of sign-ins and company choices: a call that changes nothing leaves it as it was. */
 async function signInRows(owner: Client): Promise<string> {
   const found = await owner.query<{ rows: string }>(
     `SELECT pg_catalog.jsonb_build_array(
@@ -54,7 +56,9 @@ async function signInRows(owner: Client): Promise<string> {
        (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.sessions AS t),
        (SELECT pg_catalog.jsonb_agg(t ORDER BY t.subject, t.kind) FROM access.attempt_counters AS t),
        (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.account_events AS t),
-       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.idempotency_keys AS t)
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.idempotency_keys AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.identity_id, t.chosen_company_id) FROM access.recent_companies AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.events AS t)
      )::text AS rows`,
   );
   return found.rows[0]?.rows ?? "";
@@ -63,6 +67,9 @@ async function signInRows(owner: Client): Promise<string> {
 describe("the session operations on /mcp", () => {
   let db: TestDatabase;
   let owner: Client;
+  let app: Client;
+  /** Reads every row past row level security, the company tables' too, for the checks. */
+  let superuser: Client;
   let pool: AppPool;
   let server: SignInApp;
   const results: unknown[] = [];
@@ -71,6 +78,8 @@ describe("the session operations on /mcp", () => {
   beforeAll(async () => {
     db = await freshDatabase();
     owner = await db.connect("owner");
+    app = await db.connect("app");
+    superuser = await db.admin();
     pool = appPool(db, 4);
     server = signInApp(pool.database, { clock: testClock() });
   });
@@ -95,10 +104,11 @@ describe("the session operations on /mcp", () => {
       const challenge = await challengeOf(await passwordStep(server, person.email, person.password));
       return { challenge, code: codeOf(person, server.clock.now()) };
     },
+    companyOf: async (person) => (await addCompanyWithOwner(app, { actor: person.id, kind: "user" }, { name: "Testbolaget My AB" })).row.company_id,
   };
 
   it("covers every session operation, and every operation of the registry has its arguments", () => {
-    expect(SESSION_OPERATIONS.map((operation) => operation.operationId)).toEqual(["completeSetup", "loginWithPassword", "verifyTotp", "logout", "getSession"]);
+    expect(SESSION_OPERATIONS.map((operation) => operation.operationId)).toEqual(["completeSetup", "loginWithPassword", "verifyTotp", "logout", "getSession", "selectCompany"]);
     expect(Object.keys(OPERATION_ARGUMENTS).sort()).toEqual(REGISTRY.map((operation) => operation.operationId).sort());
   });
 
@@ -109,11 +119,12 @@ describe("the session operations on /mcp", () => {
       if (argumentsOf === undefined) {
         throw new Error(`${operation.operationId} has no arguments in test/operation-arguments.ts.`);
       }
-      const args = await argumentsOf(fixture);
       // The browser's session rides along in the cookie: /mcp never reads it.
-      const signedIn = operation["x-nortfox"].permission === "signed-in" ? await signIn(server, await fixture.person()) : undefined;
+      const actor = operation["x-nortfox"].permission === "signed-in" ? await fixture.person() : undefined;
+      const signedIn = actor === undefined ? undefined : await signIn(server, actor);
+      const args = await argumentsOf(fixture, actor);
       const cookie = signedIn === undefined ? {} : cookieHeader({ session: signedIn.session });
-      const before = await signInRows(owner);
+      const before = await signInRows(superuser);
       for (const era of ["2025", "2026-07-28"] as const) {
         const client = await mcpClient(server.app, { era, ...(cookie["cookie"] === undefined ? {} : { cookie: cookie["cookie"] }) });
         const answer = await callTool(client, operation.operationId, args);
@@ -121,7 +132,7 @@ describe("the session operations on /mcp", () => {
         expect(answer).toEqual({ isError: true, structured: BROWSER_ONLY });
         await client.close();
       }
-      expect(await signInRows(owner)).toBe(before);
+      expect(await signInRows(superuser)).toBe(before);
       // The same arguments succeed by REST.
       const { path, init } = restRequestOf(operation, args);
       const response = await server.send(path, { ...init, headers: { ...(init.headers as Record<string, string>), ...cookie, origin: TEST_ORIGIN } });

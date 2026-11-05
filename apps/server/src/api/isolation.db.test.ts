@@ -16,6 +16,7 @@ import {
   buildTestApp,
   principalOf,
   testListAccountsHandler,
+  testMembership,
   testResolver,
   type AppPool,
 } from "../../test/api.ts";
@@ -71,7 +72,7 @@ describe("two companies through the API", () => {
     pool = appPool(db, 1);
     server = buildTestApp({
       database: pool.database,
-      resolve: testResolver({ a: principalOf(companyA, { kind: "user" }), b: principalOf(companyB, { kind: "integration" }) }),
+      resolve: testResolver({ a: await principalOf(companyA, { kind: "user" }), b: await principalOf(companyB, { kind: "integration" }) }),
     });
   });
 
@@ -123,8 +124,9 @@ describe("two companies through the API", () => {
   });
 
   it("adds no company condition in the read handlers: the transaction's company alone decides", async () => {
-    const contextA: CompanyContext = { ...principalOf(companyA, { kind: "user" }), channel: "rest" };
-    const inB: TransactionSettings = { companyId: companyB, actorId: contextA.personId, actorKind: "user", channel: "rest" };
+    const contextA: CompanyContext = { ...(await principalOf(companyA, { kind: "user" })), channel: "rest" };
+    // A transaction set to company B as A's person, as no request makes one, to show that the company alone decides.
+    const inB: TransactionSettings = { company: (await testMembership(companyB, contextA.personId)).access([]), actorId: contextA.personId, actorKind: "user", channel: "rest" };
     const company = await pool.database.read(inB, async (tx) =>
       commit(await getCompanyHandler.run({ context: contextA, tx }, { params: {}, query: {}, body: undefined })),
     );

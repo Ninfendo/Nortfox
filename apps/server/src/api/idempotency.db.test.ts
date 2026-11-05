@@ -92,9 +92,9 @@ describe("idempotency", () => {
     books = await addBooks(app);
     other = await addBooks(app);
     tokens = {
-      writer: principalOf(books.company, { personId: writer }),
-      colleague: principalOf(books.company),
-      elsewhere: principalOf(other.company, { personId: writer }),
+      writer: await principalOf(books.company, { personId: writer }),
+      colleague: await principalOf(books.company),
+      elsewhere: await principalOf(other.company, { personId: writer }),
     };
     pool = appPool(db, 3);
     controls = bookingControls();
