@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Pool, type Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { testMembership } from "../../test/api.ts";
 import { urlOf } from "../../test/cluster.ts";
 import { UNIQUE_VIOLATION, failureOf, freshDatabase, inTransaction, type TestDatabase } from "../../test/database.ts";
 import { INSERT_ROW, INSERT_VOUCHER, addBooks, type Books } from "../../test/ledger.ts";
@@ -90,12 +91,14 @@ describe("one transaction per request", () => {
     return { pool, database: databaseOver(pool, (error) => errors.push(error)), errors };
   }
 
-  function settingsOf(kind: ActorKind = "integration", channel: Channel = "rest"): TransactionSettings {
-    return { companyId: books.company, actorId: randomUUID(), actorKind: kind, channel };
+  /** The settings of a transaction in the books' company, as a made-up person: a company access is the only way into a company. */
+  async function settingsOf(kind: ActorKind = "integration", channel: Channel = "rest"): Promise<TransactionSettings> {
+    const actorId = randomUUID();
+    return { company: (await testMembership(books.company, actorId)).access([]), actorId, actorKind: kind, channel };
   }
 
   function seenAs(settings: TransactionSettings): Omit<Seen, "pid"> {
-    return { company: settings.companyId ?? "", actor: settings.actorId ?? "", kind: settings.actorKind ?? "", channel: settings.channel };
+    return { company: settings.company?.companyId ?? "", actor: settings.actorId ?? "", kind: settings.actorKind ?? "", channel: settings.channel };
   }
 
   /** The transaction's level and whether it is read only. */
@@ -135,13 +138,13 @@ describe("one transaction per request", () => {
     const { database } = poolOf(2);
     for (const kind of ["user", "system", "integration"] as const) {
       for (const channel of ["rest", "mcp"] as const) {
-        const settings = settingsOf(kind, channel);
+        const settings = await settingsOf(kind, channel);
         expect(await database.read(settings, async (tx) => commit(await seenBy(tx)))).toMatchObject(seenAs(settings));
         expect(await database.write(settings, async (tx) => commit(await seenBy(tx)))).toMatchObject(seenAs(settings));
       }
     }
     // The company's rows, and only through row level security: no condition of the work's own.
-    const companies = await database.read(settingsOf(), async (tx) => commit((await tx.query("SELECT company_id FROM ledger.companies")).rows));
+    const companies = await database.read(await settingsOf(), async (tx) => commit((await tx.query("SELECT company_id FROM ledger.companies")).rows));
     expect(companies).toEqual([{ company_id: books.company }]);
   });
 
@@ -208,11 +211,11 @@ describe("one transaction per request", () => {
       for (const sql of defaults) {
         await pool.query(sql);
       }
-      expect(await database.read(settingsOf(), async (tx) => commit(await modeOf(tx)))).toEqual({ level: "repeatable read", readOnly: "on" });
-      expect(await database.write(settingsOf(), async (tx) => commit(await modeOf(tx)))).toEqual({ level: "read committed", readOnly: "off" });
+      expect(await database.read(await settingsOf(), async (tx) => commit(await modeOf(tx)))).toEqual({ level: "repeatable read", readOnly: "on" });
+      expect(await database.write(await settingsOf(), async (tx) => commit(await modeOf(tx)))).toEqual({ level: "read committed", readOnly: "off" });
     }
     const account = anAccount();
-    const error = await failureOf(database.read(settingsOf(), async (tx) => commit(await tx.query(INSERT_ACCOUNT, [books.company, books.year.id, account]))));
+    const error = await failureOf(database.read(await settingsOf(), async (tx) => commit(await tx.query(INSERT_ACCOUNT, [books.company, books.year.id, account]))));
     expect((error as { code?: unknown }).code, String(error)).toBe(READ_ONLY_SQL_TRANSACTION);
     expect(await holds(account)).toBe(false);
   });
@@ -221,7 +224,7 @@ describe("one transaction per request", () => {
     const { pool, database } = poolOf(1);
     const first = await seenBy(pool);
     expect(first).toMatchObject(UNSET);
-    const settings = settingsOf();
+    const settings = await settingsOf();
     /** After each request: the one connection, with no setting, and no company's rows to see. */
     const expectEmpty = async (): Promise<void> => {
       expect(await seenBy(pool)).toEqual({ ...UNSET, pid: first.pid });
@@ -296,19 +299,19 @@ describe("one transaction per request", () => {
   it("refuses a query on the transaction after the transaction ended, so it never runs in the next request's", async () => {
     const { pool, database } = poolOf(1);
     let kept: Queryable | undefined;
-    await database.write(settingsOf(), (tx) => {
+    await database.write(await settingsOf(), (tx) => {
       kept = tx;
       return Promise.resolve(commit(undefined));
     });
     let thrownBy: Queryable | undefined;
     await failureOf(
-      database.write(settingsOf(), (tx) => {
+      database.write(await settingsOf(), (tx) => {
         thrownBy = tx;
         return Promise.reject(new Error("a made-up fault of the handler"));
       }),
     );
     // The next request holds the one connection while the stale queries come.
-    const next = settingsOf();
+    const next = await settingsOf();
     const stale = await database.write(next, async (tx) => {
       const account = anAccount();
       const refused = [
@@ -325,7 +328,7 @@ describe("one transaction per request", () => {
 
   it("lets a connection that breaks between the work's queries leave the pool, tells of it, and gives the next request a new one", async () => {
     const { pool, database, errors } = poolOf(1);
-    const settings = settingsOf();
+    const settings = await settingsOf();
     let pid = 0;
     const failure = await failureOf(
       database.write(settings, async (tx) => {
@@ -345,7 +348,7 @@ describe("one transaction per request", () => {
 
   it("lets a connection that breaks during a query leave the pool, throws the query's error, and gives the next request a new one", async () => {
     const { pool, database } = poolOf(1);
-    const settings = settingsOf();
+    const settings = await settingsOf();
     let pid = 0;
     const running = failureOf(
       database.write(settings, async (tx) => {
@@ -372,7 +375,7 @@ describe("one transaction per request", () => {
 
   it("lets an idle connection that breaks leave the pool, tells of it, and gives the next request a new one", async () => {
     const { pool, database, errors } = poolOf(1);
-    const settings = settingsOf();
+    const settings = await settingsOf();
     const { pid } = await database.read(settings, async (tx) => commit(await seenBy(tx)));
     await admin.query("SELECT pg_catalog.pg_terminate_backend($1, 5000)", [pid]);
     await until(() => errors.length > 0, "the error of the idle connection");
@@ -386,13 +389,13 @@ describe("one transaction per request", () => {
   it("makes its pool from a connection's config, connects only when a request comes, as the app, and ends", async () => {
     const errors: Error[] = [];
     const nowhere = createDatabase(connectionConfig("postgres://nortfox_app@127.0.0.1:1/nowhere"), { max: 1, onConnectionError: (error) => errors.push(error) });
-    expect(await failureOf(nowhere.read(settingsOf(), () => Promise.resolve(commit(undefined))))).toBeInstanceOf(Error);
+    expect(await failureOf(nowhere.read(await settingsOf(), () => Promise.resolve(commit(undefined))))).toBeInstanceOf(Error);
     await nowhere.end();
     const database = createDatabase(connectionConfig(urlOf("nortfox_app", db.name)), { max: 1, onConnectionError: (error) => errors.push(error) });
-    const who = await database.read(settingsOf(), async (tx) => commit((await tx.query<{ role: string; balance: bigint }>("SELECT current_user AS role, 1::bigint AS balance")).rows));
+    const who = await database.read(await settingsOf(), async (tx) => commit((await tx.query<{ role: string; balance: bigint }>("SELECT current_user AS role, 1::bigint AS balance")).rows));
     expect(who).toEqual([{ role: "nortfox_app", balance: 1n }]);
     await database.end();
-    expect(await failureOf(database.read(settingsOf(), () => Promise.resolve(commit(undefined))))).toBeInstanceOf(Error);
+    expect(await failureOf(database.read(await settingsOf(), () => Promise.resolve(commit(undefined))))).toBeInstanceOf(Error);
     expect(errors).toEqual([]);
   });
 });

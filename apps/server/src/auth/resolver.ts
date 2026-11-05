@@ -19,18 +19,24 @@
 // with the membership it chose it with: the lookup acts as the person and
 // asks the one membership function (modules/memberships/resolve.ts). When
 // the function gives no active membership there, or another one than the
-// session's, the session ends with the reason membership, so a deactivated,
-// removed or departed member's session is refused on its next request. The
-// idle time is the membership's, "Utloggning efter inaktivitet", and 120
-// minutes while the session works in no company: past it the session ends
-// with the reason idle. An ended session gives nothing from then on. The
-// permissions are the session's snapshot of when it chose the company, less
-// a permission whose grant has ended. A request moves the session's last
-// sight on when it is a minute old or more, so a session is not written on
-// every request. A session runs as its user (decision 2).
+// session's, the session ends with the reason membership. The database
+// already ends it when the membership stops being active, so a deactivated,
+// removed or departed member's session stays ended. The idle time is the
+// membership's, "Utloggning efter inaktivitet", and 120 minutes while the
+// session works in no company. The session holds the idle time it was last
+// seen under, and the lower of that and the idle time in force now counts:
+// a lower one holds at once, a higher one from the session's next request,
+// so a session past its idle time never comes back when the idle time is
+// raised. Past it the session ends with the reason idle, in a statement that
+// reads the session's last sight again, so a request of the session that
+// moved it on meanwhile keeps it. An ended session gives nothing from then
+// on. The permissions are the session's snapshot of when it chose the
+// company, less a permission whose grant has ended. A request moves the
+// session's last sight on when it is a minute old or more, so a session is
+// not written on every request. A session runs as its user (decision 2).
 
 import type { ContextResolver, Principal, SecondStep, SignInMethod } from "../api/context.ts";
-import { commit, type Database, type Ending, type LookupQueryable } from "../db/database.ts";
+import { commit, type Database, type Ending, type LookupQueryable, type Queryable } from "../db/database.ts";
 import { resolveActive, type CompanyAccess } from "../modules/memberships/resolve.ts";
 import { SESSION_COOKIE, readCookie } from "./cookies.ts";
 import { carriesBearer } from "./origin.ts";
@@ -39,8 +45,10 @@ import { tokenHash, tokenKind } from "./tokens.ts";
 /** A session ends this long after it began (ASVS 4.0.3 3.3.2; choice 12). */
 export const SESSION_LIFETIME_MS = 12 * 60 * 60 * 1000;
 
-/** A session with no company ends after this long without a request (choice 2). */
-export const NO_COMPANY_IDLE_MS = 120 * 60 * 1000;
+/** A session with no company ends after this many minutes without a request (choice 2). */
+export const NO_COMPANY_IDLE_MINUTES = 120;
+
+const MINUTE_MS = 60 * 1000;
 
 /** A request moves the session's last sight on once it is this old. */
 export const TOUCH_AFTER_MS = 60 * 1000;
@@ -63,6 +71,8 @@ type SessionRow = {
   readonly second_step: SecondStep | null;
   readonly started_at: Date;
   readonly last_seen_at: Date;
+  /** The idle time the session was last seen under. */
+  readonly idle_timeout_minutes: number;
 } & (
   | { readonly current_company_id: null; readonly current_membership_id: null; readonly permissions: null }
   | { readonly current_company_id: string; readonly current_membership_id: string; readonly permissions: PermissionSnapshot }
@@ -84,8 +94,18 @@ export function livePermissions(snapshot: PermissionSnapshot, at: Date): string[
     .map(([permission]) => permission);
 }
 
-/** What the company of a session gives: the company access and its idle time, or the end of the session. */
-type SessionCompany = { readonly company: CompanyAccess | undefined; readonly idleMs: number } | { readonly end: "membership" };
+/**
+ * Notes a request of the session at `at`, under the idle time in force,
+ * `idleMinutes`: its last sight moves on, never back. A request of the
+ * session that changes the idle time of the membership the session works
+ * with notes itself again, so the new idle time holds from its next request.
+ */
+export async function seeSession(tx: Queryable, sessionId: string, at: Date, idleMinutes: number): Promise<void> {
+  await tx.query("SELECT access.touch_session($1, $2, $3)", [sessionId, at, idleMinutes]);
+}
+
+/** What the company of a session gives: the company access and the idle time in force, or the end of the session. */
+type SessionCompany = { readonly company: CompanyAccess | undefined; readonly idleMinutes: number } | { readonly end: "membership" };
 
 /**
  * The company the session works in, from the one membership function in
@@ -93,7 +113,7 @@ type SessionCompany = { readonly company: CompanyAccess | undefined; readonly id
  */
 async function sessionCompany(tx: LookupQueryable, session: SessionRow, at: Date): Promise<SessionCompany> {
   if (session.current_company_id === null) {
-    return { company: undefined, idleMs: NO_COMPANY_IDLE_MS };
+    return { company: undefined, idleMinutes: NO_COMPANY_IDLE_MINUTES };
   }
   // The function reads the person from the lookup's actor: it gives only the session's person's membership.
   await tx.actAs(session.identity_id, "user");
@@ -101,7 +121,7 @@ async function sessionCompany(tx: LookupQueryable, session: SessionRow, at: Date
   if (membership?.membershipId !== session.current_membership_id) {
     return { end: "membership" };
   }
-  return { company: membership.access(livePermissions(session.permissions, at)), idleMs: membership.idleTimeoutMinutes * 60 * 1000 };
+  return { company: membership.access(livePermissions(session.permissions, at)), idleMinutes: membership.idleTimeoutMinutes };
 }
 
 /** The resolver of the browser's sessions on /v1. */
@@ -115,7 +135,8 @@ export function sessionResolver(options: SessionResolverOptions): ContextResolve
     const at = now();
     return database.lookup("rest", async (tx) => {
       const found = await tx.query<SessionRow>(
-        `SELECT session_id, identity_id, status, method, second_step, started_at, last_seen_at, current_company_id, current_membership_id, permissions
+        `SELECT session_id, identity_id, status, method, second_step, started_at, last_seen_at, idle_timeout_minutes, current_company_id,
+           current_membership_id, permissions
          FROM access.session_by_token($1)`,
         [tokenHash(token)],
       );
@@ -124,7 +145,7 @@ export function sessionResolver(options: SessionResolverOptions): ContextResolve
         return commit(undefined);
       }
       // Ends the session with its reason: it names no actor from now on.
-      const ended = async (reason: "absolute" | "idle" | "membership"): Promise<Ending<undefined>> => {
+      const ended = async (reason: "absolute" | "membership"): Promise<Ending<undefined>> => {
         await tx.query("SELECT access.end_session($1, $2, $3)", [session.session_id, reason, at]);
         return commit(undefined);
       };
@@ -135,11 +156,18 @@ export function sessionResolver(options: SessionResolverOptions): ContextResolve
       if ("end" in chosen) {
         return ended(chosen.end);
       }
-      if (at.getTime() >= session.last_seen_at.getTime() + chosen.idleMs) {
-        return ended("idle");
+      // The lower of the idle time the session was last seen under and the one in force now.
+      const idleMinutes = Math.min(session.idle_timeout_minutes, chosen.idleMinutes);
+      if (at.getTime() >= session.last_seen_at.getTime() + idleMinutes * MINUTE_MS) {
+        // The row's last sight is read again in the statement that ends it: another request of the session may have moved it on since.
+        const idle = await tx.query<{ ended: boolean }>("SELECT access.end_idle_session($1, $2, $3) AS ended", [session.session_id, at, chosen.idleMinutes]);
+        // A SELECT of one function call gives one row.
+        if ((idle.rows as [{ readonly ended: boolean }])[0].ended) {
+          return commit(undefined);
+        }
       }
       if (at.getTime() - session.last_seen_at.getTime() >= TOUCH_AFTER_MS) {
-        await tx.query("SELECT access.touch_session($1, $2)", [session.session_id, at]);
+        await seeSession(tx, session.session_id, at, chosen.idleMinutes);
       }
       const principal: Principal = {
         personId: session.identity_id,
@@ -149,6 +177,7 @@ export function sessionResolver(options: SessionResolverOptions): ContextResolve
           sessionId: session.session_id,
           method: session.method,
           ...(session.second_step === null ? {} : { secondStep: session.second_step }),
+          identifiedAt: session.started_at,
         },
         ...(chosen.company === undefined ? {} : { company: chosen.company }),
       };

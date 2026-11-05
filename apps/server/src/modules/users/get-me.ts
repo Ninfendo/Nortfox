@@ -18,5 +18,5 @@ export const getMeHandler = handlePerson(getMe, async ({ context, tx, company })
     return ok({ ...me, permissions: [] });
   }
   const { access } = company;
-  return ok({ ...me, company: await readCompany(tx), membership: await readMembership(tx, access.membershipId), permissions: [...access.permissions].sort() });
+  return ok({ ...me, company: await readCompany(tx), membership: await readMembership(tx, access.membershipId), permissions: [...access.permissions] });
 });

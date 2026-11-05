@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Kontoaktivitet (access.account_events): the person's own events across
-// companies, the 100 latest of which the person can read (a later part). A
+// companies, the 100 latest of which the person can read (a later part). The
+// purge keeps the failed sign-ins of the last hour past those 100, since a
+// failed sign-in's entry in the behandlingshistorik counts them. A
 // person table: the app adds an event only in a transaction whose actor is
 // that person. A failed sign-in's actor is the identity whose identifier was
 // tried (choice 7), so its entry is found under that person.

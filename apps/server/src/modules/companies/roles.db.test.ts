@@ -112,6 +112,7 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
     "access.count_failure",
     "access.create_setup_token",
     "access.current_person_id",
+    "access.end_idle_session",
     "access.end_other_sessions",
     "access.end_session",
     "access.find_login",

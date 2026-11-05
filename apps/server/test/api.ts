@@ -266,7 +266,7 @@ export function personOf(options: Omit<PrincipalOptions, "permissions"> = {}): P
   return {
     personId: options.personId ?? randomUUID(),
     actorKind: options.kind ?? "user",
-    credential: { kind: "session", sessionId: randomUUID(), method: "password-email" },
+    credential: { kind: "session", sessionId: randomUUID(), method: "password-email", identifiedAt: new Date("2090-03-15T09:00:00.000Z") },
   };
 }
 

@@ -16,19 +16,36 @@
 //   Principal or to a request's context.
 // - Only modules/users/delete-me.ts calls liveForDeletion, the deletion's
 //   form of the function, which gives inactive memberships too.
+// - Only db/database.ts sets the transaction's company, actor, actor's kind
+//   or channel: no other file names them (nortfox.company_id and the rest,
+//   quoted or not, in any case, with any space around the dot) or set_config,
+//   by any spelling. The migration runner pins its own search path with
+//   set_config, for its reason. A transaction in a company takes its company
+//   only as a company access (db/database.ts), which only resolve.ts makes.
 //
 // The text cannot see everything, so two more halves hold the rest:
 // modules/memberships/one-function.db.test.ts reads the catalog (no other
-// function the app may run reads the memberships across companies), and
-// authorize and tx.enter refuse at run time an object that resolve.ts did
-// not make. A test file is not read: the tests read and write the table to
-// prove the database's rules, and build their principals through resolve.ts.
+// function the app may run reads the memberships across companies, by any
+// spelling, or runs dynamic SQL), and authorize, tx.enter and a transaction
+// in a company refuse at run time an object that resolve.ts did not make. A
+// test file is not read: the tests read and write the table and set the
+// settings by hand to prove the database's rules, and build their
+// principals through resolve.ts.
 
 /** The one file that calls the one function and makes its objects. */
 export const RESOLVE = "apps/server/src/modules/memberships/resolve.ts";
 
 /** The files that may read the memberships. */
 export const MEMBERSHIPS_MODULE = "apps/server/src/modules/memberships/";
+
+/** The one file that sets the transaction's settings. */
+export const DATABASE = "apps/server/src/db/database.ts";
+
+/** The files beside db/database.ts that may call set_config, each with its reason. None may name the transaction's settings. */
+export const SETTING_EXCEPTIONS: Readonly<Record<string, string>> = {
+  "apps/server/src/db/migrate.ts":
+    "The migration runner pins the search path of its own connection as the owner, for each migration it runs. It sets no company, actor or channel, and the app's requests never run there.",
+};
 
 /** The one file that may call the deletion's form. */
 export const DELETE_ME = "apps/server/src/modules/users/delete-me.ts";
@@ -91,6 +108,12 @@ const BY_HAND: readonly RegExp[] = [
   new RegExp(`(?:^|[=(,:?!&|{[;]|\\breturn|\\byield)\\s*<\\s*(${CAST_TARGETS})\\s*>`),
 ];
 
+/** set_config by its bare name, in any case: a schema in front, or quotes, do not hide it. */
+const SET_CONFIG = new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}set_config${NOT_AN_IDENTIFIER_AFTER}`, "i");
+
+/** The transaction's settings, quoted or not, in any case, with any space around the dot. */
+const SETTINGS = new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}"?nortfox"?\\s*\\.\\s*"?(company_id|actor_id|actor_kind|channel)"?${NOT_AN_IDENTIFIER_AFTER}`, "i");
+
 const TOKEN = /\bMEMBERSHIP_TOKEN\b/;
 const DELETION = /\bliveForDeletion\b/;
 
@@ -127,6 +150,11 @@ function lineProblems(path: string, line: string): string[] {
     if (TOKEN.test(line)) {
       problems.push(`names MEMBERSHIP_TOKEN, which never leaves ${RESOLVE}.`);
     }
+  }
+  if (path !== DATABASE && (SETTINGS.test(line) || (SET_CONFIG.test(line) && !Object.hasOwn(SETTING_EXCEPTIONS, path)))) {
+    problems.push(
+      `sets the transaction's company, actor or channel itself (set_config, or nortfox.company_id, nortfox.actor_id, nortfox.actor_kind or nortfox.channel). Only ${DATABASE} sets them: a company comes from the one function's answer, as a company access or through tx.enter.`,
+    );
   }
   if (path !== RESOLVE && path !== DELETE_ME && DELETION.test(line)) {
     problems.push(`calls liveForDeletion, which only ${DELETE_ME} calls.`);

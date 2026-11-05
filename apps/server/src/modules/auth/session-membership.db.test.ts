@@ -6,19 +6,21 @@
 // longer the person's active membership there, because it was deactivated,
 // removed, left, or given another person, or the person holds another
 // membership there now, the request is refused as one with no actor, and the
-// session ends with the reason membership. It stays ended when the
-// membership comes back. access.choose_company, the lookup function that
+// session ends with the reason membership. The database ends it already
+// when the membership stops being active, so it stays ended when the
+// membership comes back, also with no request between. access.choose_company, the lookup function that
 // stores the session's choice, chooses only for the transaction's person's
 // own live session.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { appPool, type AppPool } from "../../../test/api.ts";
+import { appPool, gate, type AppPool } from "../../../test/api.ts";
 import { CHECK_VIOLATION, expectError, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { addIdentity, anonymously, deleteIdentity, tokenHash as someTokenHash } from "../../../test/identities.ts";
 import { aCompany, addMembership, changeMembership, membershipOf, type Company } from "../../../test/memberships.ts";
 import {
+  MINUTE,
   addSignInIdentity,
   chooseCompany,
   expectNoSecretsAtRestFromSignInApps,
@@ -31,6 +33,7 @@ import {
   type TestIdentity,
 } from "../../../test/sign-in.ts";
 import { newToken, tokenHash } from "../../auth/tokens.ts";
+import type { Database } from "../../db/database.ts";
 
 describe("a session's membership", () => {
   let db: TestDatabase;
@@ -83,6 +86,65 @@ describe("a session's membership", () => {
     expect((await getAs(server, session, "/v1/company")).status).toBe(401);
   });
 
+  it("ends when its membership is deactivated, and stays ended when it is active again before its next request", async () => {
+    const { session, membership } = await memberInCompany();
+    await changeMembership(app, company, membership, "status = 'inactive'");
+    expect(await endOf(session)).toBe("membership");
+    await changeMembership(app, company, membership, "status = 'active'");
+    expect((await getAs(server, session, "/v1/company")).status).toBe(401);
+    expect(await endOf(session)).toBe("membership");
+  });
+
+  it("ends when its membership is disconnected, and stays ended when the same person accepts it again before its next request", async () => {
+    const { person, session, membership } = await memberInCompany();
+    await changeMembership(app, company, membership, "status = 'invited', user_id = NULL");
+    await changeMembership(app, company, membership, "status = 'active', user_id = $2", [person.id]);
+    expect((await getAs(server, session, "/v1/company")).status).toBe(401);
+    expect(await endOf(session)).toBe("membership");
+  });
+
+  it("ends only the sessions of the membership that stops being active, and not one that never chose its company", async () => {
+    const { person, session, membership } = await memberInCompany();
+    const { session: another } = await memberInCompany();
+    // A new TOTP code comes with the next 30 seconds.
+    server.clock.advance(MINUTE);
+    const { session: elsewhere } = await signIn(server, person);
+    await changeMembership(app, company, membership, "status = 'removed'");
+    expect(await endOf(session)).toBe("membership");
+    expect([await endOf(another), await endOf(elsewhere)]).toEqual([null, null]);
+    expect((await getAs(server, another, "/v1/company")).status).toBe(200);
+    expect((await getAs(server, elsewhere, "/v1/session")).status).toBe(200);
+  });
+
+  it("refuses a request whose lookup read the session just before the membership was removed", async () => {
+    const { session, membership } = await memberInCompany();
+    // The lookup reads the session, and waits before it asks for the membership.
+    const held = gate();
+    let armed = true;
+    const holding: Database = {
+      ...pool.database,
+      lookup: (channel, work) =>
+        pool.database.lookup(channel, (tx) => {
+          if (armed) {
+            armed = false;
+            const actAs = tx.actAs.bind(tx);
+            tx.actAs = async (personId, kind) => {
+              await held.pass();
+              await actAs(personId, kind);
+            };
+          }
+          return work(tx);
+        }),
+    };
+    const reader = signInApp(holding, { clock: server.clock });
+    const request = getAs(reader, session, "/v1/company");
+    await held.reached;
+    await changeMembership(app, company, membership, "status = 'removed'");
+    held.open();
+    expect((await request).status).toBe(401);
+    expect(await endOf(session)).toBe("membership");
+  });
+
   it("is refused and ends once its membership is removed", async () => {
     const { session, membership } = await memberInCompany();
     await changeMembership(app, company, membership, "status = 'removed'");
@@ -130,7 +192,7 @@ describe("a session's membership", () => {
   describe("access.choose_company", () => {
     async function choose(app: Client, actor: string, session: string, company: string, membership: string): Promise<boolean> {
       return inTransaction(app, { actor, kind: "user", channel: "rest" }, async () => {
-        const found = await app.query<{ chosen: boolean }>("SELECT access.choose_company($1, $2, $3, '{}'::jsonb) AS chosen", [session, company, membership]);
+        const found = await app.query<{ chosen: boolean }>("SELECT access.choose_company($1, $2, $3, '{}'::jsonb, 120, pg_catalog.now()) AS chosen", [session, company, membership]);
         return found.rows[0]?.chosen ?? false;
       });
     }
@@ -201,7 +263,7 @@ describe("a session's membership", () => {
       // The sign-in's entry names no second step: the method had none.
       const superuser = await db.admin();
       const details = await superuser.query<{ details: unknown }>("SELECT details FROM access.events WHERE subject_id = $1", [person.id]);
-      expect(details.rows).toEqual([{ details: { method: "bankid", application: "web", outcome: "succeeded" } }]);
+      expect(details.rows).toEqual([{ details: { method: "bankid", identifiedAt: server.clock.now().toISOString(), application: "web", outcome: "succeeded" } }]);
     });
 
     it("cannot be read past by the app: the app reads no session", async () => {

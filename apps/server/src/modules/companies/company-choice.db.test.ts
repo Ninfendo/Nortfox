@@ -225,7 +225,7 @@ describe("the company choice", () => {
     expect(await jsonOf(await getAs(server, (await signIn(server, other)).session, "/v1/me/companies/recent"))).toEqual({ companies: [] });
   });
 
-  it("answers 500 and chooses nothing when the session ends while it chooses", async () => {
+  it("answers 401 as for no actor, reports nothing and chooses nothing when the session ends while it chooses", async () => {
     const someone = await addSignInIdentity(owner);
     const company = (await addCompanyWithOwner(app, { actor: someone.id, kind: "user" }, { name: "Testbolaget Omega AB" })).row.company_id;
     // A logout at once ends the session after the resolver read it, before the choice is stored.
@@ -243,8 +243,11 @@ describe("the company choice", () => {
     };
     const racer = signInApp(racing, { clock: testClock() });
     const racingSession = (await signIn(racer, someone)).session;
-    expect((await chooseCompany(racer, racingSession, company)).status).toBe(500);
-    expect(racer.reports).toEqual([new Error("The session ended while it chose its company.")]);
+    const answer = await chooseCompany(racer, racingSession, company);
+    expect(answer.headers.get("www-authenticate")).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`);
+    expect(await jsonOf<ProblemBody>(answer, 401)).toMatchObject({ status: 401, code: "authentication-required" });
+    // The session's own end is no fault of the server.
+    expect(racer.reports).toEqual([]);
     expect((await owner.query("SELECT 1 FROM access.recent_companies WHERE identity_id = $1", [someone.id])).rows).toEqual([]);
     expect((await superuser.query("SELECT 1 FROM access.events WHERE company_id = $1", [company])).rows).toEqual([]);
     expect((await owner.query("SELECT current_company_id FROM access.sessions WHERE identity_id = $1", [someone.id])).rows).toEqual([{ current_company_id: null }]);

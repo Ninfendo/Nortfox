@@ -63,11 +63,22 @@ export interface OwnChange {
 
 /**
  * Changes the person's own membership in the transaction's company, and
- * gives it. The idle time is the membership's own column, so its change is
- * in the behandlingshistorik. The work contacts are kept beside it, in a row
- * that holds no history, and that goes when neither is left.
+ * gives it, or gives nothing when the membership is no longer active. The
+ * idle time is the membership's own column, so its change is in the
+ * behandlingshistorik. The work contacts are kept beside it, in a row that
+ * holds no history, and that goes when neither is left.
+ *
+ * It locks the membership's row first, FOR NO KEY UPDATE, and reads its
+ * status after the lock, at READ COMMITTED. So two changes of one membership
+ * at once take turns: the second reads the first's work contacts, and keeps
+ * the field it leaves out. A change that waited for a removal, a leave or a
+ * deactivation finds the membership no longer active, and changes nothing.
  */
-export async function changeOwnMembership(tx: Queryable, membershipId: string, change: OwnChange): Promise<Membership> {
+export async function changeOwnMembership(tx: Queryable, membershipId: string, change: OwnChange): Promise<Membership | undefined> {
+  const locked = await tx.query("SELECT 1 FROM access.memberships WHERE id = $1 AND status = 'active' FOR NO KEY UPDATE", [membershipId]);
+  if (locked.rows.length === 0) {
+    return undefined;
+  }
   if (change.idleTimeout !== undefined) {
     await tx.query("UPDATE access.memberships SET idle_timeout_minutes = $2 WHERE id = $1 AND idle_timeout_minutes <> $2", [membershipId, change.idleTimeout]);
   }

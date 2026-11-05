@@ -16,10 +16,12 @@
 // principal's company access (CompanyAccess) is made only from one, and
 // authorize refuses a company access that this module did not make. A
 // lookup enters a company only with a membership that the function gave in
-// that same transaction (tx.enter, db/database.ts). Neither object changes
-// once made. scripts/guards/membership.ts keeps every other file of the
-// server from naming the function, the memberships or the token, and from
-// building either object by hand.
+// that same transaction (tx.enter, db/database.ts), and a read or a write in
+// a company takes its company only as a company access, for its person.
+// Neither object, nor an access's list of permissions, changes once made.
+// scripts/guards/membership.ts keeps every other file of the server from
+// naming the function, the memberships, the token or the transaction's
+// settings, and from building either object by hand.
 
 import { ADMIN_LEVELS, type AdminLevel } from "@nortfox/contract";
 import type { Queryable } from "../../db/database.ts";
@@ -56,14 +58,18 @@ export interface MembershipCompany {
 
 /**
  * The company a request works in, as a principal holds it: the membership
- * that gives it, its admin level, and the permissions the person holds
- * there. Made only from a ResolvedMembership.
+ * that gives it, its person, its admin level, and the permissions the person
+ * holds there, each once and in order, in a list that never changes. Made
+ * only from a ResolvedMembership. A transaction in a company takes its
+ * company only as one of these, for its person (db/database.ts).
  */
 export class CompanyAccess {
   readonly companyId: string;
   readonly membershipId: string;
+  /** The person the one membership function gave the membership to. */
+  readonly personId: string;
   readonly adminLevel: AdminLevel | null;
-  readonly permissions: ReadonlySet<string>;
+  readonly permissions: readonly string[];
 
   constructor(token: symbol, membership: ResolvedMembership, permissions: Iterable<string>) {
     if (token !== MEMBERSHIP_TOKEN) {
@@ -71,8 +77,9 @@ export class CompanyAccess {
     }
     this.companyId = membership.companyId;
     this.membershipId = membership.membershipId;
+    this.personId = membership.personId;
     this.adminLevel = membership.adminLevel;
-    this.permissions = new Set(permissions);
+    this.permissions = Object.freeze([...new Set(permissions)].sort());
     Object.freeze(this);
   }
 }

@@ -392,6 +392,28 @@ ALTER TABLE access.sessions
   ADD CONSTRAINT sessions_current_membership_fkey FOREIGN KEY (current_company_id, current_membership_id) REFERENCES access.memberships (company_id, id),
   ADD CONSTRAINT sessions_company_whole CHECK (num_nulls(current_company_id, current_membership_id, permissions) IN (0, 3)),
   ADD CONSTRAINT sessions_permissions_object CHECK (jsonb_typeof(permissions) = 'object');
+-- The live sessions of a membership, which end when it stops being active.
+CREATE INDEX sessions_current_membership ON access.sessions (current_company_id, current_membership_id) WHERE ended_at IS NULL;
+
+-- A session ends at once when the membership it chose its company with stops
+-- being active: deactivated, disconnected, removed or left (issue 12,
+-- Sessions 2 and Users 4). So it stays ended when the membership is active
+-- again, also when it made no request between. The server checks the
+-- membership on every request too. Each such session ends with the reason
+-- membership, at the database's clock.
+CREATE FUNCTION access.end_membership_sessions() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $end$
+BEGIN
+  UPDATE access.sessions AS s SET ended_at = clock_timestamp(), end_reason = 'membership'
+  WHERE s.current_company_id = OLD.company_id AND s.current_membership_id = OLD.id AND s.ended_at IS NULL;
+  RETURN NULL;
+END
+$end$;
+
+CREATE TRIGGER memberships_end_sessions AFTER UPDATE ON access.memberships
+  FOR EACH ROW WHEN (OLD.status = 'active' AND NEW.status IS DISTINCT FROM 'active') EXECUTE FUNCTION access.end_membership_sessions();
 
 -- A session's second step: the TOTP step, or a known device inside its 90
 -- days, for a sign-in with a password; none for the methods that need no
@@ -402,6 +424,80 @@ DELETE FROM access.sessions;
 ALTER TABLE access.sessions
   ADD COLUMN second_step text CONSTRAINT sessions_second_step_known CHECK (second_step IN ('totp', 'known-device')),
   ADD CONSTRAINT sessions_second_step_by_method CHECK ((method IN ('password-email', 'password-personnummer')) = (second_step IS NOT NULL));
+
+-- The idle time a session was last seen under: the membership's "Utloggning
+-- efter inaktivitet" while it works in a company, and 120 minutes while it
+-- works in none. The server ends a session whose last sight is further back
+-- than the lower of this and the idle time in force now. So a lower idle
+-- time holds at once, and a higher one from the session's next request: a
+-- session past its idle time never comes back when the idle time is raised.
+ALTER TABLE access.sessions
+  ADD COLUMN idle_timeout_minutes integer NOT NULL DEFAULT 120 CONSTRAINT sessions_idle_timeout_known CHECK (idle_timeout_minutes IN (15, 30, 60, 120, 480));
+
+-- Moves a live session's last sight on, never back, with the idle time it is
+-- seen under: a request at the same time or later than the last sight moves
+-- it. It takes the place of 0006's, which had no idle time.
+DROP FUNCTION access.touch_session(uuid, timestamptz);
+CREATE FUNCTION access.touch_session(session uuid, at timestamptz, idle_minutes integer) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $touch$
+BEGIN
+  UPDATE access.sessions AS s SET last_seen_at = touch_session.at, idle_timeout_minutes = touch_session.idle_minutes
+  WHERE s.id = touch_session.session AND s.ended_at IS NULL AND s.last_seen_at <= touch_session.at
+    AND (s.last_seen_at, s.idle_timeout_minutes) IS DISTINCT FROM (touch_session.at, touch_session.idle_minutes);
+  RETURN FOUND;
+END
+$touch$;
+
+-- Ends a live session for its idle time, once: when its last sight, as the
+-- row holds it now, is further back than the lower of its own idle time and
+-- `idle_minutes`, the idle time in force now. The row's last sight is read
+-- in the same statement, so a request of the session that moved it on since
+-- the caller read it keeps the session. It gives false then, and for a
+-- session that has ended.
+CREATE FUNCTION access.end_idle_session(session uuid, at timestamptz, idle_minutes integer) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $idle$
+BEGIN
+  UPDATE access.sessions AS s SET ended_at = end_idle_session.at, end_reason = 'idle'
+  WHERE s.id = end_idle_session.session AND s.ended_at IS NULL
+    AND s.last_seen_at + make_interval(mins => LEAST(s.idle_timeout_minutes, end_idle_session.idle_minutes)) <= end_idle_session.at;
+  RETURN FOUND;
+END
+$idle$;
+
+-- The purge, as 0006 made it, but for one thing: an identity's failed
+-- sign-ins of the last hour stay past the 100 latest events, by the
+-- database's clock, since the behandlingshistorik counts them (a failed
+-- sign-in's entry holds the count of the identity's failed sign-ins in the
+-- last hour, read from these events by the same clock). Kontoaktivitet
+-- shows the 100 latest. It deletes no identity.
+CREATE OR REPLACE FUNCTION access.purge_expired(at timestamptz) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $purge$
+BEGIN
+  DELETE FROM access.login_challenges AS c WHERE c.expires_at <= purge_expired.at;
+  DELETE FROM access.setup_tokens AS t WHERE t.expires_at <= purge_expired.at;
+  DELETE FROM access.sessions AS s
+  WHERE s.ended_at <= purge_expired.at - interval '30 days'
+    OR (s.ended_at IS NULL AND s.started_at <= purge_expired.at - interval '30 days 12 hours');
+  DELETE FROM access.attempt_counters AS a
+  WHERE a.window_started_at <= purge_expired.at - interval '1 hour' AND (a.locked_until IS NULL OR a.locked_until <= purge_expired.at);
+  DELETE FROM access.idempotency_keys AS k WHERE k.created_at <= purge_expired.at - interval '24 hours';
+  DELETE FROM access.account_events AS e
+  WHERE e.id IN (
+    SELECT r.id FROM (
+      SELECT x.id, x.kind, x.details, x.at, row_number() OVER (PARTITION BY x.identity_id ORDER BY x.at DESC, x.id DESC) AS place
+      FROM access.account_events AS x
+    ) AS r
+    WHERE r.place > 100
+      AND NOT (r.kind = 'sign-in' AND r.details ->> 'outcome' IS NOT DISTINCT FROM 'failed' AND r.at > clock_timestamp() - interval '1 hour')
+  );
+END
+$purge$;
 
 -- Opens a session, with its second step, and gives its id. The device, if
 -- any, is the person's. It takes the place of 0006's, which had no second
@@ -422,20 +518,21 @@ BEGIN ATOMIC
 END;
 
 -- A session that has not ended, by its hash, with the identity's status, its
--- second step, and its company, membership and permissions when it chose a
--- company. The server ends one that is past its time, or whose membership is
--- no longer the person's active one. It takes the place of 0006's.
+-- second step, the idle time it was last seen under, and its company,
+-- membership and permissions when it chose a company. The server ends one
+-- that is past its time, or whose membership is no longer the person's
+-- active one. It takes the place of 0006's.
 DROP FUNCTION access.session_by_token(bytea);
 CREATE FUNCTION access.session_by_token(token_hash bytea)
 RETURNS TABLE (
   session_id uuid, identity_id uuid, status text, method text, second_step text, device_id uuid, started_at timestamptz, last_seen_at timestamptz,
-  current_company_id uuid, current_membership_id uuid, permissions jsonb
+  idle_timeout_minutes integer, current_company_id uuid, current_membership_id uuid, permissions jsonb
 )
 LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 BEGIN ATOMIC
   SELECT s.id, s.identity_id, i.status, s.method, s.second_step, s.device_id, s.started_at, s.last_seen_at,
-    s.current_company_id, s.current_membership_id, s.permissions
+    s.idle_timeout_minutes, s.current_company_id, s.current_membership_id, s.permissions
   FROM access.sessions AS s JOIN access.identities AS i ON i.id = s.identity_id
   WHERE s.token_hash = session_by_token.token_hash AND s.ended_at IS NULL;
 END;
@@ -443,18 +540,21 @@ END;
 -- Byt företag: a live session of the transaction's person works in a company
 -- from now on, with the membership it chose it with and the person's
 -- permissions there as an object of each permission and the end of the grant
--- that gives it, or null. It gives false when the session is not the
--- person's, or has ended. The server calls it only with a membership that
--- the one membership function gave in the same transaction, and the resolver
--- checks on every request that it is still the person's active one. The
--- paired key holds the membership to its company.
-CREATE FUNCTION access.choose_company(session uuid, company uuid, membership uuid, permissions jsonb) RETURNS boolean
+-- that gives it, or null. The request that chooses is the session's last
+-- sight, at `at`, under the membership's idle time, `idle_minutes`. It gives
+-- false when the session is not the person's, or has ended. The server calls
+-- it only with a membership that the one membership function gave in the
+-- same transaction, and the resolver checks on every request that it is
+-- still the person's active one. The paired key holds the membership to its
+-- company.
+CREATE FUNCTION access.choose_company(session uuid, company uuid, membership uuid, permissions jsonb, idle_minutes integer, at timestamptz) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $choose$
 BEGIN
   UPDATE access.sessions AS s
-  SET current_company_id = choose_company.company, current_membership_id = choose_company.membership, permissions = choose_company.permissions
+  SET current_company_id = choose_company.company, current_membership_id = choose_company.membership, permissions = choose_company.permissions,
+    idle_timeout_minutes = choose_company.idle_minutes, last_seen_at = GREATEST(s.last_seen_at, choose_company.at)
   WHERE s.id = choose_company.session AND s.identity_id = access.current_person_id() AND s.ended_at IS NULL;
   RETURN FOUND;
 END
@@ -463,7 +563,9 @@ $choose$;
 GRANT EXECUTE ON FUNCTION
   access.open_session(bytea, uuid, text, text, uuid, timestamptz),
   access.session_by_token(bytea),
-  access.choose_company(uuid, uuid, uuid, jsonb)
+  access.touch_session(uuid, timestamptz, integer),
+  access.end_idle_session(uuid, timestamptz, integer),
+  access.choose_company(uuid, uuid, uuid, jsonb, integer, timestamptz)
 TO nortfox_app;
 
 -- The one membership function --------------------------------------------------------

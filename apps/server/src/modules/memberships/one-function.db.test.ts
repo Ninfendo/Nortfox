@@ -40,31 +40,49 @@ interface ActiveMembership {
   readonly database_number: number;
 }
 
+/** The start of a name in a function's body: nothing of an identifier just before it. */
+const NAME_START = "(^|[^[:alnum:]_$])";
+
+/**
+ * A pattern that finds `schema`.`name` in a function's body as PostgreSQL
+ * would read it there, with `~*`: in any case, each part quoted or not, with
+ * any space around the dot.
+ */
+function namePattern(schema: string, name: string): string {
+  return `${NAME_START}"?${schema}"?[[:space:]]*\\.[[:space:]]*"?${name}"?($|[^[:alnum:]_$])`;
+}
+
 /**
  * What the catalog shows against the one function, as plain lines; empty when
  * nothing does. A function that the app may run and that runs as the owner
  * reads every company's memberships and companies that the owner's policies
  * by person show: it must be the one function. A function counts when it
- * names one of the two tables, or calls a function that does, at any depth.
- * And the app's only policy on either table is the company policy.
+ * names one of the two tables, in any case, quoted or not, with any space
+ * around the dot, or calls a function that does, by any such spelling, at
+ * any depth. One that runs dynamic SQL (EXECUTE) counts too, since no text
+ * match can see what it reads. And the app's only policy on either table is
+ * the company policy.
  */
 async function oneFunctionProblems(client: Client): Promise<string[]> {
-  const readers = await client.query<{ name: string }>(`
+  const readers = await client.query<{ name: string; why: "reads" | "dynamic" }>(
+    `
     WITH RECURSIVE functions AS (
-      SELECT p.oid, n.nspname || '.' || p.proname AS name, pg_catalog.pg_get_functiondef(p.oid) AS body
+      SELECT p.oid, n.nspname AS schema, p.proname, n.nspname || '.' || p.proname AS name, pg_catalog.pg_get_functiondef(p.oid) AS body
       FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
       WHERE p.prokind = 'f' AND n.nspname NOT IN ('pg_catalog', 'information_schema')
         AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend AS d WHERE d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid = p.oid AND d.deptype = 'e')
     ), reading AS (
-      SELECT f.oid, f.name FROM functions AS f
-      WHERE f.body ~ '\\maccess\\.memberships\\M' OR f.body ~ '\\mledger\\.companies\\M'
+      SELECT f.oid, f.schema, f.proname, f.name, 'reads' AS why FROM functions AS f WHERE f.body ~* $2 OR f.body ~* $3
       UNION
-      SELECT f.oid, f.name FROM functions AS f JOIN reading AS r ON f.oid <> r.oid AND strpos(f.body, r.name || '(') > 0
+      SELECT f.oid, f.schema, f.proname, f.name, 'dynamic' AS why FROM functions AS f WHERE f.body ~* '${NAME_START}execute($|[^[:alnum:]_$])'
+      UNION
+      SELECT f.oid, f.schema, f.proname, f.name, r.why FROM functions AS f JOIN reading AS r ON f.oid <> r.oid
+        AND f.body ~* ('${NAME_START}"?' || r.schema || '"?[[:space:]]*\\.[[:space:]]*"?' || r.proname || '"?[[:space:]]*\\(')
     )
-    SELECT DISTINCT r.name FROM reading AS r JOIN pg_catalog.pg_proc AS p ON p.oid = r.oid
+    SELECT DISTINCT r.name, r.why FROM reading AS r JOIN pg_catalog.pg_proc AS p ON p.oid = r.oid
     WHERE p.prosecdef AND pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE') AND r.name <> $1
-    ORDER BY 1`,
-    [THE_FUNCTION],
+    ORDER BY 1, 2`,
+    [THE_FUNCTION, namePattern("access", "memberships"), namePattern("ledger", "companies")],
   );
   const policies = await client.query<{ relation: string; name: string; command: string; using: string | null; check: string | null }>(
     `SELECT c.oid::pg_catalog.regclass::text AS relation, p.polname AS name, p.polcmd::text AS command,
@@ -74,8 +92,10 @@ async function oneFunctionProblems(client: Client): Promise<string[]> {
      ORDER BY 1, 2`,
     [GUARDED_TABLES],
   );
-  const problems = readers.rows.map(
-    (row) => `${row.name}: the app may run it, it runs as the owner, and it reads ${GUARDED_TABLES.join(" or ")}, which only ${THE_FUNCTION} may.`,
+  const problems = readers.rows.map((row) =>
+    row.why === "reads"
+      ? `${row.name}: the app may run it, it runs as the owner, and it reads ${GUARDED_TABLES.join(" or ")}, which only ${THE_FUNCTION} may.`
+      : `${row.name}: the app may run it, it runs as the owner, and it runs dynamic SQL, whose reads no check can see.`,
   );
   for (const table of GUARDED_TABLES) {
     const own = policies.rows.filter((row) => row.relation === table);
@@ -259,6 +279,45 @@ describe("the one membership function", () => {
           CREATE FUNCTION access.owners_own() RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
             RETURN (SELECT count(*) FROM access.memberships);`),
       ).toEqual([]);
+    });
+
+    it("finds such a function whatever the spelling of the table: quoted, in capitals, or with space around the dot", async () => {
+      const reads = `the app may run it, it runs as the owner, and it reads access.memberships or ledger.companies, which only ${THE_FUNCTION} may.`;
+      const spellings = ['"access"."memberships"', "ACCESS.MEMBERSHIPS", "access . memberships", 'Access."memberships"', '"ledger".companies', "LEDGER .COMPANIES"];
+      for (const spelling of spellings) {
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION access.peek_spelled() RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              AS $peek$ BEGIN RETURN (SELECT count(*) FROM ${spelling}); END $peek$;
+            GRANT EXECUTE ON FUNCTION access.peek_spelled() TO nortfox_app;`),
+          spelling,
+        ).toEqual([`access.peek_spelled: ${reads}`]);
+      }
+      // And through another function, called by another spelling, with space before its arguments.
+      expect(
+        await problemsAfter(`
+          CREATE FUNCTION access.count_members() RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+            RETURN (SELECT count(*) FROM access.memberships);
+          CREATE FUNCTION access.members_through() RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+            AS $through$ BEGIN RETURN "access".COUNT_MEMBERS (); END $through$;
+          GRANT EXECUTE ON FUNCTION access.members_through() TO nortfox_app;`),
+      ).toEqual([`access.members_through: ${reads}`]);
+      // A longer name is another table.
+      expect(
+        await problemsAfter(`
+          CREATE FUNCTION access.peek_other() RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+            AS $peek$ BEGIN RETURN (SELECT count(*) FROM access.memberships_archive) + (SELECT count(*) FROM access.membership_contacts); END $peek$;
+          GRANT EXECUTE ON FUNCTION access.peek_other() TO nortfox_app;`),
+      ).toEqual([]);
+    });
+
+    it("finds such a function that runs dynamic SQL, whose reads no text match can see", async () => {
+      expect(
+        await problemsAfter(`
+          CREATE FUNCTION access.peek_dynamic() RETURNS bigint LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+            AS $peek$ DECLARE n bigint; BEGIN EXECUTE 'SELECT count(*) FROM access.' || 'member' || 'ships' INTO n; RETURN n; END $peek$;
+          GRANT EXECUTE ON FUNCTION access.peek_dynamic() TO nortfox_app;`),
+      ).toEqual(["access.peek_dynamic: the app may run it, it runs as the owner, and it runs dynamic SQL, whose reads no check can see."]);
     });
 
     it("finds an app policy by person, or any policy of the app beside the company policy, on either table", async () => {

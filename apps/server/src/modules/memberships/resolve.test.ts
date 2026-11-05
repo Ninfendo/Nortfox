@@ -4,7 +4,7 @@
 // transaction that answers its query (resolve.db.test.ts asks PostgreSQL).
 // Only this module makes a membership or a company access: their
 // constructors refuse every caller without its token. A company access holds
-// its own copy of the permissions, and neither object changes. An answer
+// its own copy of the permissions, and neither object nor that copy changes. An answer
 // that breaks the function's promise is a fault of the server.
 
 import type { QueryResult, QueryResultRow } from "pg";
@@ -120,9 +120,11 @@ describe("a company access", () => {
     const given = new Set(["company:read"]);
     const access = membership.access(given);
     expect(access).toBeInstanceOf(CompanyAccess);
-    expect(fieldsOf(access)).toEqual({ companyId: COMPANY, membershipId: ROW.membership_id, adminLevel: "admin", permissions: new Set(["company:read"]) });
+    expect(fieldsOf(access)).toEqual({ companyId: COMPANY, membershipId: ROW.membership_id, personId: PERSON, adminLevel: "admin", permissions: ["company:read"] });
     given.add("test:write");
-    expect([...access.permissions]).toEqual(["company:read"]);
+    expect(access.permissions).toEqual(["company:read"]);
+    // Each permission once, in order.
+    expect(membership.access(["test:write", "company:read", "test:write"]).permissions).toEqual(["company:read", "test:write"]);
   });
 
   it("and the membership never change", async () => {
@@ -134,6 +136,12 @@ describe("a company access", () => {
     expect(() => {
       (access as { companyId: string }).companyId = "another company";
     }).toThrow(TypeError);
+    // Its permissions neither: no cast adds one, so authorize never grants what the session did not get.
+    expect(Object.isFrozen(access.permissions)).toBe(true);
+    expect(() => {
+      (access.permissions as string[]).push("test:write");
+    }).toThrow(TypeError);
+    expect(access.permissions).toEqual(["company:read"]);
   });
 });
 

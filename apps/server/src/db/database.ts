@@ -9,11 +9,17 @@
 //   set_config(name, value, true), which does what SET LOCAL does and takes
 //   bind parameters. A person's transaction sets no company, and an
 //   anonymous one only the channel: what a form leaves out is set to '',
-//   which the database reads as unset. They are set once, at the start, and
-//   never changed: the database keeps the transaction's first actor and
-//   channel, and refuses another. They end with the transaction, so a pooled
-//   connection never carries them on: after it, PostgreSQL gives '', which
-//   the database reads as unset.
+//   which the database reads as unset. A read or a write in a company takes
+//   its company only as a company access that the one membership function
+//   gave (modules/memberships/resolve.ts), for its actor: a company id by
+//   itself, any other object, and another person's access throw before any
+//   statement. The actor, its kind and the channel are set once and never
+//   changed: the database keeps the transaction's first actor and channel,
+//   and refuses another (a lookup sets its person once, later, with actAs).
+//   The company is set at the start, or once later, from the one function's
+//   answer or for a company the work makes (enter and inNewCompany, below).
+//   They end with the transaction, so a pooled connection never carries them
+//   on: after it, PostgreSQL gives '', which the database reads as unset.
 // - A read runs at REPEATABLE READ READ ONLY, so a page and its total come
 //   from one snapshot, and a read cannot write. A write runs at READ
 //   COMMITTED, as the ledger asks of every write. Both are named in BEGIN, so
@@ -48,7 +54,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Pool, type ClientConfig, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
-import { ResolvedMembership } from "../modules/memberships/resolve.ts";
+import { CompanyAccess, ResolvedMembership } from "../modules/memberships/resolve.ts";
 
 /** The kinds of actor the database knows. */
 export type ActorKind = "user" | "system" | "integration";
@@ -61,7 +67,7 @@ export interface AnonymousSettings {
   readonly channel: Channel;
   readonly actorId?: never;
   readonly actorKind?: never;
-  readonly companyId?: never;
+  readonly company?: never;
 }
 
 /** A person's transaction in no company: the actor, its kind and the channel. */
@@ -69,12 +75,16 @@ export interface PersonSettings {
   readonly actorId: string;
   readonly actorKind: ActorKind;
   readonly channel: Channel;
-  readonly companyId?: never;
+  readonly company?: never;
 }
 
-/** A transaction in a company: the company, the actor, its kind and the channel. */
+/**
+ * A transaction in a company: the company, as a company access that the one
+ * membership function gave, its person as the actor, the actor's kind and
+ * the channel.
+ */
 export interface CompanySettings {
-  readonly companyId: string;
+  readonly company: CompanyAccess;
   readonly actorId: string;
   readonly actorKind: ActorKind;
   readonly channel: Channel;
@@ -222,6 +232,30 @@ function lookupOver(tx: Queryable): LookupQueryable {
   return lookup;
 }
 
+const NOT_AN_ACCESS = "A transaction in a company takes a company access that the one membership function gave (modules/memberships/resolve.ts).";
+
+const ACCESS_ELSEWHERE = "A transaction in a company acts as the person of its company access.";
+
+/**
+ * The company that `settings` set, as the setting holds it: '' for none, and
+ * otherwise the company of a company access that the one membership function
+ * gave, for the settings' actor. Anything else throws.
+ */
+function companyOf(settings: TransactionSettings): string {
+  const { company } = settings;
+  if (company === undefined) {
+    return "";
+  }
+  // The type allows only an access, and a caller past the type gets a throw.
+  if (!((company as unknown) instanceof CompanyAccess)) {
+    throw new Error(NOT_AN_ACCESS);
+  }
+  if (company.personId !== settings.actorId) {
+    throw new Error(ACCESS_ELSEWHERE);
+  }
+  return company.companyId;
+}
+
 const PERSON_ELSEWHERE = "tx.enter takes a membership of the person the transaction acts as.";
 
 const COMPANY_SET = "The transaction works in a company already. It sets its company once.";
@@ -277,6 +311,8 @@ async function runInTransaction<T, Q extends Queryable>(
   work: (tx: Q) => Promise<Ending<T>>,
   onConnectionError: (error: Error) => void,
 ): Promise<T> {
+  // Before a connection is asked for, so a company that the one function did not give sends no statement.
+  const company = companyOf(settings);
   const client: PoolClient = await pool.connect();
   let broken = false;
   const noteBreak = (error: Error): void => {
@@ -293,7 +329,7 @@ async function runInTransaction<T, Q extends Queryable>(
     let ending: Ending<T>;
     try {
       await client.query(begin);
-      await client.query(SETTINGS, [settings.companyId ?? "", settings.actorId ?? "", settings.actorKind ?? "", settings.channel]);
+      await client.query(SETTINGS, [company, settings.actorId ?? "", settings.actorKind ?? "", settings.channel]);
       ending = await work(over(tx));
       open = false;
       await client.query(ending.commit ? "COMMIT" : "ROLLBACK");

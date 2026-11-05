@@ -125,7 +125,7 @@ describe("a company's system administrator", () => {
 
   describe("whatever company the transaction set last", () => {
     it("checks each company it made, and sets the transaction's company back after the check", async () => {
-      const [first, second] = [randomUUID(), randomUUID()];
+      const [first, second, third] = [randomUUID(), randomUUID(), randomUUID()];
       const maker = await addIdentity(owner, { name: "Rut Wall" });
       const kept = await inTransaction(app, { company: first, actor: maker, kind: "user" }, async () => {
         await insertCompany(app, { id: first });
@@ -133,10 +133,12 @@ describe("a company's system administrator", () => {
         await app.query("SELECT pg_catalog.set_config('nortfox.company_id', $1, true)", [second]);
         await insertCompany(app, { id: second, name: "Testbolaget Beta AB" });
         await insertOwner(app, second, maker);
+        // The transaction's company is now one that neither check names, so only a check that sets it back leaves it.
+        await app.query("SELECT pg_catalog.set_config('nortfox.company_id', $1, true)", [third]);
         await app.query("SET CONSTRAINTS ALL IMMEDIATE");
         return (await app.query<{ company: string }>("SELECT pg_catalog.current_setting('nortfox.company_id') AS company")).rows[0]?.company;
       });
-      expect(kept).toBe(second);
+      expect(kept).toBe(third);
       expect([await exists(first), await exists(second)]).toEqual([true, true]);
     });
 

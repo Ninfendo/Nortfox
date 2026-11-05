@@ -4,8 +4,10 @@
 // in the company it signs in to, when the web app chooses the company
 // (selectCompany, at each choice, also when switching: choice 8): Program
 // "Användare", Rubrik "Inloggning", and in Händelse the method, the second
-// step, the personnummer when the method gives one, the application "Webb"
-// and the IP address. The entry is one row of access.events, written by the
+// step and the time of the identification (when the session began, after
+// its last step), the personnummer when the method gives one, the
+// application "Webb" and the IP address. The time of the identification
+// tells a switch of company from a new sign-in. The entry is one row of access.events, written by the
 // person, and its history row is the behandlingshistorik's entry. The
 // server's table of screen words gives the program's and the heading's
 // words. The MCP login's half comes with OAuth, in a later part.
@@ -87,6 +89,7 @@ describe("the behandlingshistorik of a sign-in", () => {
     const person = await addSignInIdentity(owner);
     const company = await companyOf(person);
     const { session } = await signIn(server, person, { ipAddress: SIGN_IN_ADDRESS });
+    const signedInAt = server.clock.now().toISOString();
     expect((await chooseCompany(server, session, company, { ipAddress: CHOICE_ADDRESS })).status).toBe(200);
     expect(await entriesIn(company, person)).toEqual([
       {
@@ -94,7 +97,7 @@ describe("the behandlingshistorik of a sign-in", () => {
         program: "users",
         heading: "sign-in",
         subject_id: person.id,
-        details: { method: "password-email", secondStep: "totp", application: "web", ipAddress: CHOICE_ADDRESS, outcome: "succeeded" },
+        details: { method: "password-email", secondStep: "totp", identifiedAt: signedInAt, application: "web", ipAddress: CHOICE_ADDRESS, outcome: "succeeded" },
         at: server.clock.now(),
       },
     ]);
@@ -108,14 +111,16 @@ describe("the behandlingshistorik of a sign-in", () => {
         operation: "INSERT",
         actor_id: person.id,
         actor_kind: "user",
-        details: { method: "password-email", secondStep: "totp", application: "web", ipAddress: CHOICE_ADDRESS, outcome: "succeeded" },
+        details: { method: "password-email", secondStep: "totp", identifiedAt: signedInAt, application: "web", ipAddress: CHOICE_ADDRESS, outcome: "succeeded" },
       },
     ]);
     // The server's screen words of the entry.
     expect(ENTRY_WORDS.programs.users).toBe("Användare");
     expect(ENTRY_WORDS.headings["sign-in"]).toBe("Inloggning");
+    // The method and the time of the identification share the line Identifiering, as in "Identifiering: BankID, 2026-11-02 12:21:50".
     expect(ENTRY_WORDS.details).toEqual({
       method: "Identifiering",
+      identifiedAt: "Identifiering",
       personalIdentityNumber: "Personnummer",
       application: "Applikation",
       ipAddress: "IP-adress",
@@ -132,13 +137,28 @@ describe("the behandlingshistorik of a sign-in", () => {
     const session = setCookiesOf(signedIn)["__Host-nortfox-session"]?.value ?? "";
     expect((await chooseCompany(server, session, company, { ipAddress: CHOICE_ADDRESS })).status).toBe(200);
     expect((await entriesIn(company, person)).map((entry) => entry.details)).toEqual([
-      { method: "password-personnummer", secondStep: "totp", personalIdentityNumber: number, application: "web", ipAddress: CHOICE_ADDRESS, outcome: "succeeded" },
+      {
+        method: "password-personnummer",
+        secondStep: "totp",
+        identifiedAt: server.clock.now().toISOString(),
+        personalIdentityNumber: number,
+        application: "web",
+        ipAddress: CHOICE_ADDRESS,
+        outcome: "succeeded",
+      },
     ]);
     // A sign-in with the e-mail of the same person writes no personnummer.
     server.clock.advance(MINUTE);
     const byEmail = (await signIn(server, person)).session;
     expect((await chooseCompany(server, byEmail, company, { ipAddress: CHOICE_ADDRESS })).status).toBe(200);
-    expect((await entriesIn(company, person)).at(-1)?.details).toEqual({ method: "password-email", secondStep: "totp", application: "web", ipAddress: CHOICE_ADDRESS, outcome: "succeeded" });
+    expect((await entriesIn(company, person)).at(-1)?.details).toEqual({
+      method: "password-email",
+      secondStep: "totp",
+      identifiedAt: server.clock.now().toISOString(),
+      application: "web",
+      ipAddress: CHOICE_ADDRESS,
+      outcome: "succeeded",
+    });
   });
 
   it("writes the known device as the second step of a sign-in on it", async () => {
@@ -149,7 +169,9 @@ describe("the behandlingshistorik of a sign-in", () => {
     const known = setCookiesOf(await passwordStep(server, person.email, person.password, { cookies: { device } }));
     const session = known["__Host-nortfox-session"]?.value ?? "";
     expect((await chooseCompany(server, session, company)).status).toBe(200);
-    expect((await entriesIn(company, person)).map((entry) => entry.details)).toEqual([{ method: "password-email", secondStep: "known-device", application: "web", outcome: "succeeded" }]);
+    expect((await entriesIn(company, person)).map((entry) => entry.details)).toEqual([
+      { method: "password-email", secondStep: "known-device", identifiedAt: server.clock.now().toISOString(), application: "web", outcome: "succeeded" },
+    ]);
   });
 
   it("writes one at each choice, also when switching, in the company chosen", async () => {
@@ -158,12 +180,20 @@ describe("the behandlingshistorik of a sign-in", () => {
     const beta = await aCompany(app, "Testbolaget Beta AB");
     await addMembership(app, owner, beta, { user: person.id });
     const { session } = await signIn(server, person);
+    const signedInAt = server.clock.now();
     for (const company of [alfa, beta.id, alfa]) {
       server.clock.advance(MINUTE);
       expect((await chooseCompany(server, session, company)).status).toBe(200);
     }
     expect(await entriesIn(alfa, person)).toHaveLength(2);
     expect(await entriesIn(beta.id, person)).toHaveLength(1);
+    // Each names when the person identified, apart from when it was written: a switch is told from a new sign-in.
+    const entries = [...(await entriesIn(alfa, person)), ...(await entriesIn(beta.id, person))].sort((a, b) => a.at.getTime() - b.at.getTime());
+    expect(entries.map((entry) => [entry.details["identifiedAt"], entry.at.getTime() - signedInAt.getTime()])).toEqual([
+      [signedInAt.toISOString(), MINUTE],
+      [signedInAt.toISOString(), 2 * MINUTE],
+      [signedInAt.toISOString(), 3 * MINUTE],
+    ]);
     // A refused choice writes nothing.
     const gamma = await aCompany(app, "Testbolaget Gamma AB");
     expect((await chooseCompany(server, session, gamma.id)).status).toBe(422);

@@ -75,7 +75,10 @@
 //    A replay gives the stored answer and no cookie effects.
 // 9. A handler's refusal rolls back: a rule's refusal (422), fields that the
 //    handler's own check refused (400, such as a new password that is too
-//    short), or too many attempts (429, with the seconds to wait). A refusal
+//    short), too many attempts (429, with the seconds to wait), or a
+//    credential that stopped naming an actor while the call ran, such as a
+//    session that a logout ended at once (401 with the operation's
+//    challenge, as for no actor). A refusal
 //    of the ledger that is a rule a request can break, from a statement or
 //    from the commit, is a rule's refusal too, with its facts
 //    (ledger-refusals.ts). A password wrapper whose queue is full gives 503
@@ -136,13 +139,17 @@ export interface RuleRefusal {
 
 /**
  * How a handler refuses: by a rule (422); for a field that its own check
- * refused, such as a new password that is too short (400); or for too many
- * attempts, with the whole seconds to wait (429).
+ * refused, such as a new password that is too short (400); for too many
+ * attempts, with the whole seconds to wait (429); or for a credential that
+ * stopped naming an actor while the call ran, such as a session that a
+ * logout ended at once, which the runner answers as a call with no actor
+ * (401, with the operation's challenge).
  */
 export type HandlerRefusal =
   | { readonly kind: "rule"; readonly refusal: RuleRefusal }
   | { readonly kind: "invalid"; readonly problems: readonly FieldIssue[] }
-  | { readonly kind: "too-many-attempts"; readonly retryAfterSeconds: number };
+  | { readonly kind: "too-many-attempts"; readonly retryAfterSeconds: number }
+  | { readonly kind: "credential-ended" };
 
 /** What a handler gives: its output and, for an operation that serves the browser's session, its cookie effects; or its refusal. */
 export type Answer<Output> =
@@ -170,6 +177,15 @@ export function tooManyAttempts(retryAfterSeconds: number): Answer<never> {
     throw new Error("The seconds to wait are a whole number of at least 1.");
   }
   return { ok: false, refusal: { kind: "too-many-attempts", retryAfterSeconds } };
+}
+
+/**
+ * A handler's refusal of a call whose credential stopped naming an actor
+ * while it ran, such as a session that ended after the resolver read it. It
+ * is no fault of the server: the runner answers it as a call with no actor.
+ */
+export function credentialEnded(): Answer<never> {
+  return { ok: false, refusal: { kind: "credential-ended" } };
 }
 
 type ParamsOf<Op> =
@@ -540,7 +556,7 @@ export function authorize(operation: Operation, principal: Principal | undefined
   if (company === undefined) {
     return { kind: "company-required" };
   }
-  return company.permissions.has(permission) ? undefined : { kind: "permission-missing", permission };
+  return company.permissions.includes(permission) ? undefined : { kind: "permission-missing", permission };
 }
 
 function refuse(refusal: Refusal): Outcome {
@@ -643,9 +659,14 @@ function ruleOf(refusal: RuleRefusal): Outcome {
   return refuse({ kind: "rule", refusal });
 }
 
+/** A handler's refusal as the runner's: a credential that ended is a call with no actor, with the operation's challenge. */
+function refusedBy(operation: Operation, refusal: HandlerRefusal): Outcome {
+  return refuse(refusal.kind === "credential-ended" ? { kind: "authentication-required", challenge: challengeOf(operation) } : refusal);
+}
+
 /** How a handler's answer ends its transaction: a refusal rolls back; an output is checked, then commits. */
 function ending(operation: Operation, answer: Answer<unknown>): Ending<Outcome> {
-  return answer.ok ? commit(success(operation, answer)) : rollBack(refuse(answer.refusal));
+  return answer.ok ? commit(success(operation, answer)) : rollBack(refusedBy(operation, answer.refusal));
 }
 
 /** A handler's page as the wire holds it: the next page's sort key becomes a signed cursor. */
@@ -736,7 +757,7 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
         }
         const answer = await run();
         if (!answer.ok) {
-          return rollBack(refuse(answer.refusal));
+          return rollBack(refusedBy(operation, answer.refusal));
         }
         const outcome = success(operation, answer) as Extract<Outcome, { readonly ok: true }>;
         const kept = await store.store(tx, { key, operationId: operation.operationId, hash, status: outcome.status, body: outcome.output });
@@ -812,7 +833,7 @@ async function runNone(handler: NoneHandler, call: OperationCall, input: AnyInpu
   };
   return answered(async () => {
     const answer = await handler.run(noneCall, input);
-    return answer.ok ? success(handler.operation, answer) : refuse(answer.refusal);
+    return answer.ok ? success(handler.operation, answer) : refusedBy(handler.operation, answer.refusal);
   });
 }
 
@@ -825,13 +846,27 @@ function inputValue(input: AnyInput, field: string): unknown {
   return input.params[field] ?? input.query[field] ?? body[field];
 }
 
-/** The refusal of a company that the input names, where the person is no active member: the same for one that does not exist. */
-function companyNotAvailable(field: string): Outcome {
-  return ruleOf({
+/** The refusal of a company that the input's `field` names, where the person is no active member: the same for one that does not exist. */
+function notAvailable(field: string): RuleRefusal {
+  return {
     code: "company-not-available",
     detail: `The person is no active member of the company that ${field} names, or it does not exist.`,
     pointer: jsonPointer([field]),
-  });
+  };
+}
+
+/**
+ * The runner's refusal of a company that the input names, as a handler of
+ * the operation gives it: for a membership that stopped being active while
+ * the call ran, such as one removed by a change that committed first. An
+ * operation whose input names no company is a fault of the server.
+ */
+export function companyNotAvailable(operation: Operation): Answer<never> {
+  const source = operation["x-nortfox"].company;
+  if (!isCompanyInput(source)) {
+    throw new Error(`${operation.operationId} takes no company from its input.`);
+  }
+  return refused(notAvailable(source.input));
 }
 
 /**
@@ -846,7 +881,7 @@ function inputFrame(settings: PersonSettings, field: string, companyId: unknown,
     deps.database.person(mode, settings, async (tx): Promise<Ending<T | Outcome>> => {
       const membership = typeof companyId === "string" && UUID.test(companyId) ? await resolveActive(tx, companyId) : undefined;
       if (membership === undefined) {
-        return rollBack(companyNotAvailable(field));
+        return rollBack(ruleOf(notAvailable(field)));
       }
       await tx.enter(membership);
       return work(tx, () => run(tx, membership));
@@ -883,7 +918,7 @@ function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCa
   }
   const access = source === "current" ? context.company : undefined;
   if (access !== undefined) {
-    const settings: CompanySettings = { ...person, companyId: access.companyId };
+    const settings: CompanySettings = { ...person, company: access };
     return runFramed(operation, settingsFrame(settings, (tx) => runIn(tx, { kind: "current", access }), deps), keyed(keysFor(operation, access.companyId)), deps);
   }
   return runFramed(operation, settingsFrame(person, (tx) => runIn(tx, { kind: "none" }), deps), keyed(personKeys), deps);
@@ -913,7 +948,7 @@ function runData(handler: DataHandler | ListHandler, context: CompanyContext, re
   const { operation } = handler;
   const { input, key } = read;
   const settings: TransactionSettings = {
-    companyId: context.company.companyId,
+    company: context.company,
     actorId: context.personId,
     actorKind: context.actorKind,
     channel: context.channel,

@@ -42,6 +42,8 @@ export interface SessionCredential {
   readonly method: SignInMethod;
   /** The second step of its sign-in, for a sign-in with a password. */
   readonly secondStep?: SecondStep;
+  /** When the person identified: the session began once the sign-in's last step passed. */
+  readonly identifiedAt: Date;
 }
 
 /** What the request's credential is. */

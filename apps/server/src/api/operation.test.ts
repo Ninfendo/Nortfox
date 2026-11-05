@@ -28,6 +28,8 @@ import { readCursor, signCursor } from "./cursor.ts";
 import { requestHash } from "./idempotency.ts";
 import {
   authorize,
+  companyNotAvailable,
+  credentialEnded,
   handleData,
   handleList,
   handleNone,
@@ -384,7 +386,7 @@ describe("runOperation", () => {
     expect(transactions).toEqual([
       {
         mode: "read",
-        settings: { companyId: COMPANY, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" },
+        settings: { company: CONTEXT.company, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" },
         ended: "commit",
       },
     ]);
@@ -452,7 +454,11 @@ describe("runOperation", () => {
       return { context: CONTEXT, input: { query, body, problems: [] }, idempotency };
     }
 
-    const SETTINGS: TransactionSettings = { companyId: COMPANY, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" };
+    const ACCESS = CONTEXT.company;
+    if (ACCESS === undefined) {
+      throw new Error("The context works in a company.");
+    }
+    const SETTINGS: TransactionSettings = { company: ACCESS, actorId: CONTEXT.personId, actorKind: "user", channel: "mcp" };
     const HASH = requestHash(FINGERPRINT_KEY, "testWrite", {}, { name: "Kassa" });
     const OTHER_HASH = requestHash(FINGERPRINT_KEY, "testWrite", {}, { name: "Bank" });
     const KEY_ID = "f0e1d2c3-b4a5-4697-8879-6a5b4c3d2e1f";
@@ -1158,11 +1164,19 @@ describe("runOperation and a signed-in person's company", () => {
     };
   }
 
-  /** Answers the one function with `member`'s company, a key's lookups with the next of `lookups`, and a key's insert with `stored` rows. */
+  /**
+   * Answers the one function with `member`'s company, a key's lookups with
+   * the next of `lookups`, and a key's insert with `stored` rows. As
+   * PostgreSQL does, the function's uuid parameter refuses a value that is
+   * not a uuid.
+   */
   function answers(member: string | undefined, lookups: readonly (readonly QueryResultRow[])[] = [], stored = true): Answering {
     let lookup = 0;
     return (text, values) => {
       if (text.includes("access.active_membership")) {
+        if (text.includes("access.active_membership($1)") && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(values[0]))) {
+          throw new Error(`invalid input syntax for type uuid: "${String(values[0])}"`);
+        }
         return member !== undefined && values[0] === member ? [membershipRow(member)] : [];
       }
       if (/^SELECT\b[\s\S]*\.idempotency_keys\b/.test(text)) {
@@ -1274,9 +1288,24 @@ describe("runOperation and a signed-in person's company", () => {
     expect(await runOperation(handler, call(inCompany), runnerDeps(database))).toEqual({ ok: true, status: 200, output: { kind: "current" } });
     expect(await runOperation(handler, call(PERSON), runnerDeps(database))).toEqual({ ok: true, status: 200, output: { kind: "none" } });
     expect(transactions.map((transaction) => transaction.settings)).toEqual([
-      { companyId: COMPANY, actorId: inCompany.personId, actorKind: "user", channel: "rest" },
+      { company: inCompany.company, actorId: inCompany.personId, actorKind: "user", channel: "rest" },
       PERSON_SETTINGS,
     ]);
+  });
+
+  it("gives a handler the runner's refusal of a company that the input names, and throws for an operation whose input names none", () => {
+    expect(companyNotAvailable(chooseThing)).toEqual({ ok: false, refusal: NOT_AVAILABLE.refusal });
+    expect(() => companyNotAvailable(readCurrent)).toThrow("testReadCurrent takes no company from its input.");
+  });
+
+  it("answers a handler's ended credential as a call with no actor, with the operation's challenge, and rolls back", async () => {
+    const handler = handlePerson(readCurrent, () => Promise.resolve(credentialEnded()));
+    const { database, transactions } = recordingDatabase();
+    expect(await runOperation(handler, call(PERSON), runnerDeps(database))).toEqual({
+      ok: false,
+      refusal: { kind: "authentication-required", challenge: CHALLENGES.sessionCookie },
+    });
+    expect(transactions).toEqual([{ mode: "read", settings: PERSON_SETTINGS, ended: "rollback" }]);
   });
 
   it("keeps a write in the credential's company per company, or per person and company for a personal answer", async () => {

@@ -22,6 +22,7 @@ import {
   SECOND,
   addSignInIdentity,
   challengeOf,
+  chooseCompany,
   expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
   passwordStep,
@@ -141,19 +142,58 @@ describe("the behandlingshistorik of a failed sign-in", () => {
         [beta, 1],
       ].sort(),
     );
-    server.clock.advance(61 * SECOND);
+    // Inside the minute, still none.
+    server.clock.advance(59 * SECOND);
     expect((await passwordStep(server, person.email, "fel-fyra", { ipAddress: ADDRESS })).status).toBe(422);
+    expect(await entriesOf(person)).toHaveLength(2);
+    // Past the minute, one more in each.
+    server.clock.advance(2 * SECOND);
+    expect((await passwordStep(server, person.email, "fel-fem", { ipAddress: ADDRESS })).status).toBe(422);
     const entries = await entriesOf(person);
     expect(entries).toHaveLength(4);
     expect(entries.slice(2).map((entry) => [entry.company_id, entry.details["failuresInLastHour"]]).sort()).toEqual(
       [
-        [alfa, 4],
-        [beta, 4],
+        [alfa, 5],
+        [beta, 5],
       ].sort(),
     );
-    // Kontoaktivitet got each of the four.
+    // Kontoaktivitet got each of the five.
     const account = await owner.query("SELECT 1 FROM access.account_events WHERE identity_id = $1 AND kind = 'sign-in' AND details ->> 'outcome' = 'failed'", [person.id]);
-    expect(account.rows).toHaveLength(4);
+    expect(account.rows).toHaveLength(5);
+  });
+
+  it("counts the failed sign-ins of the last hour only, by the database's clock", async () => {
+    const { person, alfa, beta } = await memberOfTwo();
+    // A failure 61 minutes ago and one 59 minutes ago, stamped as the database would have; the trigger that stamps the time is off for the insert.
+    await superuser.query("BEGIN");
+    try {
+      await superuser.query("SET LOCAL session_replication_role = replica");
+      await superuser.query(
+        `INSERT INTO access.account_events (identity_id, kind, details, at) VALUES
+           ($1, 'sign-in', '{"outcome": "failed"}', pg_catalog.clock_timestamp() - interval '61 minutes'),
+           ($1, 'sign-in', '{"outcome": "failed"}', pg_catalog.clock_timestamp() - interval '59 minutes')`,
+        [person.id],
+      );
+      await superuser.query("COMMIT");
+    } catch (error) {
+      await superuser.query("ROLLBACK");
+      throw error;
+    }
+    expect((await passwordStep(server, person.email, "fel-nu", { ipAddress: ADDRESS })).status).toBe(422);
+    expect((await entriesOf(person)).map((entry) => [entry.company_id, entry.details["failuresInLastHour"]]).sort()).toEqual(
+      [
+        [alfa, 2],
+        [beta, 2],
+      ].sort(),
+    );
+  });
+
+  it("writes a failed sign-in in a company that got the person's sign-in inside the same minute", async () => {
+    const { person, alfa, beta } = await memberOfTwo();
+    const { session } = await signIn(server, person, { ipAddress: ADDRESS });
+    expect((await chooseCompany(server, session, alfa)).status).toBe(200);
+    expect((await passwordStep(server, person.email, "fel-direkt", { ipAddress: ADDRESS })).status).toBe(422);
+    expect((await entriesOf(person)).map((entry) => entry.company_id).sort()).toEqual([alfa, beta].sort());
   });
 
   it("writes nothing in a company that the person stops being an active member of before its entry is written", async () => {

@@ -9,8 +9,12 @@
 // - A sign-in: Program "Användare" (users), Rubrik "Inloggning" (sign-in),
 //   written in the company that the web app chooses, at each choice, by the
 //   person (selectCompany). Its details: the method, the second step, the
-//   personnummer when the method gives one, the application (web, "Webb"),
-//   the IP address and the outcome.
+//   time of the identification (when the session began, once the sign-in's
+//   last step passed), the personnummer when the method gives one, the
+//   application (web, "Webb"), the IP address and the outcome. The method
+//   and the time share the line Identifiering, as the established entry
+//   shows them: "Identifiering: BankID, 2026-11-02 12:21:50". So an entry
+//   of a switch of company is told from one of a new sign-in.
 // - A failed sign-in: the same, with the outcome failed, in each company
 //   where the tried identity is an active member, by that identity (choice
 //   7), after the answer. At most one entry per identity, company and minute
@@ -24,12 +28,17 @@ import type { SecondStep, SignInMethod } from "../../api/context.ts";
 import { commit, type Channel, type Database, type Queryable } from "../../db/database.ts";
 import { activeMemberships, resolveActive } from "../memberships/resolve.ts";
 
-/** The screen's words of the entries' codes. "Inloggning via NortFox ID" heads a sign-in's Händelse. */
+/**
+ * The screen's words of the entries' codes. "Inloggning via NortFox ID"
+ * heads a sign-in's Händelse, and each fact has the line of its label: the
+ * method and the time of the identification share the line Identifiering,
+ * the method first.
+ */
 export const ENTRY_WORDS = {
   programs: { users: "Användare" },
   headings: { "sign-in": "Inloggning" },
   events: { "sign-in": "Inloggning via NortFox ID" },
-  details: { method: "Identifiering", personalIdentityNumber: "Personnummer", application: "Applikation", ipAddress: "IP-adress" },
+  details: { method: "Identifiering", identifiedAt: "Identifiering", personalIdentityNumber: "Personnummer", application: "Applikation", ipAddress: "IP-adress" },
   applications: { web: "Webb" },
 } as const;
 
@@ -62,6 +71,8 @@ export async function addEntry(tx: Queryable, entry: AuditEntry): Promise<void> 
 export interface SignIn {
   readonly method: SignInMethod;
   readonly secondStep?: SecondStep | undefined;
+  /** When the person identified, for a sign-in that succeeded. */
+  readonly identifiedAt?: Date | undefined;
   /** The personnummer, for a method that gives one. */
   readonly personalIdentityNumber?: string | undefined;
   readonly request: RequestFacts;
@@ -73,6 +84,7 @@ export function signInEntryDetails(signIn: SignIn): EntryDetails {
   return {
     method: signIn.method,
     ...(signIn.secondStep === undefined ? {} : { secondStep: signIn.secondStep }),
+    ...(signIn.identifiedAt === undefined ? {} : { identifiedAt: signIn.identifiedAt.toISOString() }),
     ...(signIn.personalIdentityNumber === undefined ? {} : { personalIdentityNumber: signIn.personalIdentityNumber }),
     application: "web",
     ...(signIn.request.ipAddress === undefined ? {} : { ipAddress: signIn.request.ipAddress }),

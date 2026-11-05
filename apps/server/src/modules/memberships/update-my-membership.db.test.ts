@@ -12,8 +12,8 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { appPool, type AppPool, type ProblemBody } from "../../../test/api.ts";
-import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
+import { appPool, gate, type AppPool, type Gate, type ProblemBody } from "../../../test/api.ts";
+import { begin, freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { aCompany, addMembership, changeMembership, type Company } from "../../../test/memberships.ts";
 import {
   addSignInIdentity,
@@ -24,10 +24,12 @@ import {
   signIn,
   signInApp,
   testClock,
+  untilSomeoneWaitsForLock,
   writeAs,
   type SignInApp,
   type TestIdentity,
 } from "../../../test/sign-in.ts";
+import type { Database } from "../../db/database.ts";
 
 interface MembershipJson {
   readonly companyId: string;
@@ -146,6 +148,75 @@ describe("updateMyMembership", () => {
     expect(idle.rows).toEqual([]);
     // A company id of another form is a field problem.
     expect((await jsonOf<ProblemBody>(await change("Testbolaget-Alfa", { idleTimeout: 15 }), 400)).errors?.[0]).toMatchObject({ code: "bad-format", pointer: "/companyId" });
+  });
+
+  describe("at the same time as another change", () => {
+    /** A server whose next person's write, once armed, waits at a gate before its commit, with its row locks held. */
+    function holdingServer(): { readonly racer: SignInApp; readonly held: Gate; readonly arm: () => void } {
+      const held = gate();
+      let armed = false;
+      const holding: Database = {
+        ...pool.database,
+        person: (mode, settings, work) =>
+          pool.database.person(mode, settings, async (tx) => {
+            const picked = armed && mode === "write";
+            armed &&= !picked;
+            const ending = await work(tx);
+            if (picked) {
+              await held.pass();
+            }
+            return ending;
+          }),
+      };
+      return {
+        racer: signInApp(holding, { clock: testClock() }),
+        held,
+        arm: () => {
+          armed = true;
+        },
+      };
+    }
+
+    it("keeps both work contacts when two changes of one membership come at once, one for each field", async () => {
+      const someone = await addSignInIdentity(owner);
+      const epsilon = await aCompany(app, "Testbolaget Epsilon AB");
+      await addMembership(app, owner, epsilon, { user: someone.id });
+      const { racer, held, arm } = holdingServer();
+      const racing = (await signIn(racer, someone)).session;
+      arm();
+      const first = writeAs(racer, racing, "PATCH", `/v1/me/companies/${epsilon.id}`, { workEmail: "alva.berg@example.com" });
+      await held.reached;
+      // The second change starts while the first holds its locks, before the first commits.
+      const second = writeAs(racer, racing, "PATCH", `/v1/me/companies/${epsilon.id}`, { workPhone: "070-174 06 08" });
+      await untilSomeoneWaitsForLock(app);
+      held.open();
+      expect([(await first).status, (await second).status]).toEqual([200, 200]);
+      expect(await contactsOf(epsilon.id)).toEqual([{ work_email: "alva.berg@example.com", work_phone: "070-174 06 08" }]);
+    });
+
+    it("refuses with company-not-available a change that waited for the membership's removal or deactivation, and writes nothing", async () => {
+      for (const [set, body] of [
+        ["status = 'removed'", { idleTimeout: 15 }],
+        ["status = 'inactive'", { workEmail: "alva.zeta@example.com" }],
+      ] as const) {
+        const zeta = await aCompany(app, "Testbolaget Zeta AB");
+        const membership = await addMembership(app, owner, zeta, { user: person.id });
+        const remover = await db.connect("app");
+        try {
+          await begin(remover, { company: zeta.id, ...zeta.asOwner, channel: "rest" });
+          await remover.query(`UPDATE access.memberships SET ${set} WHERE id = $1`, [membership]);
+          const changing = change(zeta.id, body);
+          await untilSomeoneWaitsForLock(app);
+          await remover.query("COMMIT");
+          expect(await jsonOf<ProblemBody>(await changing, 422), set).toMatchObject({ code: "company-not-available", pointer: "/companyId" });
+        } finally {
+          await remover.end();
+        }
+        expect(await contactsOf(zeta.id)).toEqual([]);
+        const idle = await superuser.query("SELECT 1 FROM access.memberships WHERE id = $1 AND idle_timeout_minutes = 15", [membership]);
+        expect(idle.rows).toEqual([]);
+      }
+    });
   });
 
   it("refuses a work e-mail of another form and a work phone that is empty or too long", async () => {

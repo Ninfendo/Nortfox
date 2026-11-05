@@ -5,14 +5,15 @@
 // reads the server's source. The probes show that it fails on each way
 // around the function: a file that calls the function elsewhere, a handler
 // that reads the memberships, a principal or a company access built by hand,
-// the token that only resolve.ts holds, and a second caller of the deletion's
-// form. The catalog's half is apps/server/src/modules/memberships/one-function.db.test.ts.
+// the token that only resolve.ts holds, a file that sets the transaction's
+// company or actor itself, and a second caller of the deletion's form. The
+// catalog's half is apps/server/src/modules/memberships/one-function.db.test.ts.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { gitText, nulList } from "../names/git.ts";
-import { DELETE_ME, MEMBERSHIPS_MODULE, RESOLVE, TABLE_EXCEPTIONS, membershipProblems, scansFile, type SourceFile } from "./membership.ts";
+import { DATABASE, DELETE_ME, MEMBERSHIPS_MODULE, RESOLVE, SETTING_EXCEPTIONS, TABLE_EXCEPTIONS, membershipProblems, scansFile, type SourceFile } from "./membership.ts";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -56,6 +57,8 @@ function builtByHand(name: string): string {
 }
 
 const TOKEN_ELSEWHERE = `names MEMBERSHIP_TOKEN, which never leaves ${RESOLVE}.`;
+
+const SETS_SETTINGS = `sets the transaction's company, actor or channel itself (set_config, or nortfox.company_id, nortfox.actor_id, nortfox.actor_kind or nortfox.channel). Only ${DATABASE} sets them: a company comes from the one function's answer, as a company access or through tx.enter.`;
 
 const SECOND_DELETION_CALLER = `calls liveForDeletion, which only ${DELETE_ME} calls.`;
 
@@ -230,6 +233,53 @@ describe("the membership guard", () => {
 
     it("reads a file with Windows line ends by the same lines", () => {
       expect(problemsWith(HANDLER, "const a = 1;\r", "x as CompanyAccess\r")).toEqual([`${HANDLER}:2: ${builtByHand("CompanyAccess")}`]);
+    });
+  });
+
+  describe("a file that sets the transaction's company or actor itself", () => {
+    it.each([
+      ["the company by set_config", `await tx.query("SELECT pg_catalog.set_config('nortfox.company_id', $1, true)", [beta]);`],
+      ["the actor by set_config", "SELECT set_config('nortfox.actor_id', $1, true)"],
+      ["the actor's kind", "SELECT set_config('nortfox.actor_kind', 'user', true)"],
+      ["the channel", "SELECT set_config('nortfox.channel', 'mcp', true)"],
+      ["with SET LOCAL", "SET LOCAL nortfox.company_id = '5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a'"],
+      ["quoted, in capitals, with space around the dot", `SET LOCAL "NORTFOX" . "COMPANY_ID" TO DEFAULT`],
+      ["by set_config with the name as a parameter", "await tx.query('SELECT set_config($1, $2, true)', [name, company]);"],
+      ["by set_config in capitals and quoted", `SELECT pg_catalog."SET_CONFIG"($1, $2, true)`],
+      ["in a comment", "// The handler sets nortfox.company_id for the company it reads."],
+    ])("fails it %s", (_case, line) => {
+      expect(problemsWith(HANDLER, "const ok = 1;", line)).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
+    });
+
+    it("fails it in the memberships module and in resolve.ts too", () => {
+      expect(problemsWith(`${MEMBERSHIPS_MODULE}list.ts`, "SELECT set_config('nortfox.company_id', $1, true)")).toEqual([`${MEMBERSHIPS_MODULE}list.ts:1: ${SETS_SETTINGS}`]);
+      expect(membershipProblems([{ path: RESOLVE, text: `${RESOLVE_FILE.text}\nawait tx.query("SELECT set_config('nortfox.company_id', $1, true)");` }])).toEqual([
+        `${RESOLVE}:9: ${SETS_SETTINGS}`,
+      ]);
+    });
+
+    it("lets db/database.ts set them, and the migration runner pin its search path with set_config, for its reason", () => {
+      expect(problemsWith(DATABASE, "const SET_COMPANY = \"SELECT pg_catalog.set_config('nortfox.company_id', $1, true)\";")).toEqual([]);
+      expect(problemsWith("apps/server/src/db/migrate.ts", "await client.query(\"SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)\");")).toEqual([]);
+      expect(problemsWith("apps/server/src/db/migrate.ts", "SELECT set_config('nortfox.actor_id', $1, true)")).toEqual([`apps/server/src/db/migrate.ts:1: ${SETS_SETTINGS}`]);
+      expect(Object.keys(SETTING_EXCEPTIONS)).toEqual(["apps/server/src/db/migrate.ts"]);
+      for (const [path, why] of Object.entries(SETTING_EXCEPTIONS)) {
+        expect(tracked).toContain(path);
+        expect(why.length).toBeGreaterThan(40);
+      }
+    });
+
+    it("does not take another name for them", () => {
+      expect(
+        problemsWith(
+          HANDLER,
+          "SELECT ledger.current_company_id()",
+          "const company_id = context.company.companyId;",
+          "SELECT config_set FROM nortfox.companies_settings",
+          "const nortfox = 1; const channel = 'rest';",
+          "SELECT reset_config_value()",
+        ),
+      ).toEqual([]);
     });
   });
 
