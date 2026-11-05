@@ -428,45 +428,55 @@ ALTER TABLE access.sessions
 -- The idle time a session was last seen under: the membership's "Utloggning
 -- efter inaktivitet" while it works in a company, and 120 minutes while it
 -- works in none. The server ends a session whose last sight is further back
--- than the lower of this and the idle time in force now. So a lower idle
--- time holds at once, and a higher one from the session's next request: a
--- session past its idle time never comes back when the idle time is raised.
+-- than the lower of this and the idle time in force now. A lower idle time
+-- of the membership lowers this at once, in the same transaction (the
+-- trigger below), so it holds at once for every session of the membership,
+-- also once the idle time is raised again. A higher one holds for a session
+-- from its next request. So a session past its idle time never comes back
+-- when the idle time is raised.
 ALTER TABLE access.sessions
   ADD COLUMN idle_timeout_minutes integer NOT NULL DEFAULT 120 CONSTRAINT sessions_idle_timeout_known CHECK (idle_timeout_minutes IN (15, 30, 60, 120, 480));
 
 -- Moves a live session's last sight on, never back, with the idle time it is
--- seen under: a request at the same time or later than the last sight moves
--- it. It takes the place of 0006's, which had no idle time.
+-- seen under, while the session works with `membership`, or in no company
+-- when it is NULL: a request at the same time or later than the last sight
+-- moves it. So a request that read the session before it chose another
+-- company never gives it the old membership's idle time. It takes the place
+-- of 0006's, which had no idle time.
 DROP FUNCTION access.touch_session(uuid, timestamptz);
-CREATE FUNCTION access.touch_session(session uuid, at timestamptz, idle_minutes integer) RETURNS boolean
+CREATE FUNCTION access.touch_session(session uuid, at timestamptz, idle_minutes integer, membership uuid) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $touch$
 BEGIN
   UPDATE access.sessions AS s SET last_seen_at = touch_session.at, idle_timeout_minutes = touch_session.idle_minutes
   WHERE s.id = touch_session.session AND s.ended_at IS NULL AND s.last_seen_at <= touch_session.at
+    AND s.current_membership_id IS NOT DISTINCT FROM touch_session.membership
     AND (s.last_seen_at, s.idle_timeout_minutes) IS DISTINCT FROM (touch_session.at, touch_session.idle_minutes);
   RETURN FOUND;
 END
 $touch$;
 
--- Ends a live session for its idle time, once: when its last sight, as the
--- row holds it now, is further back than the lower of its own idle time and
--- `idle_minutes`, the idle time in force now. The row's last sight is read
--- in the same statement, so a request of the session that moved it on since
--- the caller read it keeps the session. It gives false then, and for a
--- session that has ended.
-CREATE FUNCTION access.end_idle_session(session uuid, at timestamptz, idle_minutes integer) RETURNS boolean
+-- A lower idle time of a membership lowers the idle time of each of its live
+-- sessions at once, at the membership's update, so it holds for a session
+-- that makes no request too. A request of the session that writes the
+-- session locks its row first (access.lock_session), and reads the
+-- membership after the lock: so it either comes first, and this lowers what
+-- it wrote, or waits for this transaction and reads the lower idle time.
+CREATE FUNCTION access.lower_session_idle() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
-AS $idle$
+AS $lower$
 BEGIN
-  UPDATE access.sessions AS s SET ended_at = end_idle_session.at, end_reason = 'idle'
-  WHERE s.id = end_idle_session.session AND s.ended_at IS NULL
-    AND s.last_seen_at + make_interval(mins => LEAST(s.idle_timeout_minutes, end_idle_session.idle_minutes)) <= end_idle_session.at;
-  RETURN FOUND;
+  UPDATE access.sessions AS s SET idle_timeout_minutes = NEW.idle_timeout_minutes
+  WHERE s.current_company_id = NEW.company_id AND s.current_membership_id = NEW.id AND s.ended_at IS NULL
+    AND s.idle_timeout_minutes > NEW.idle_timeout_minutes;
+  RETURN NULL;
 END
-$idle$;
+$lower$;
+
+CREATE TRIGGER memberships_lower_session_idle AFTER UPDATE OF idle_timeout_minutes ON access.memberships
+  FOR EACH ROW WHEN (NEW.idle_timeout_minutes < OLD.idle_timeout_minutes) EXECUTE FUNCTION access.lower_session_idle();
 
 -- The purge, as 0006 made it, but for one thing: an identity's failed
 -- sign-ins of the last hour stay past the 100 latest events, by the
@@ -537,6 +547,28 @@ BEGIN ATOMIC
   WHERE s.token_hash = session_by_token.token_hash AND s.ended_at IS NULL;
 END;
 
+-- The same session as access.session_by_token gives, with its row locked
+-- FOR NO KEY UPDATE until the transaction ends, read after the lock: a
+-- session that ended while the caller waited is not given. The server reads
+-- a session so before each write of its lookup, ends or notes it, and judges
+-- it again on that row. So the requests of one session that write take
+-- turns, and none writes from what it read before another one's write: a
+-- burst past the idle time ends the session once and is refused whole.
+CREATE FUNCTION access.lock_session(token_hash bytea)
+RETURNS TABLE (
+  session_id uuid, identity_id uuid, status text, method text, second_step text, device_id uuid, started_at timestamptz, last_seen_at timestamptz,
+  idle_timeout_minutes integer, current_company_id uuid, current_membership_id uuid, permissions jsonb
+)
+LANGUAGE sql VOLATILE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+BEGIN ATOMIC
+  SELECT s.id, s.identity_id, i.status, s.method, s.second_step, s.device_id, s.started_at, s.last_seen_at,
+    s.idle_timeout_minutes, s.current_company_id, s.current_membership_id, s.permissions
+  FROM access.sessions AS s JOIN access.identities AS i ON i.id = s.identity_id
+  WHERE s.token_hash = lock_session.token_hash AND s.ended_at IS NULL
+  FOR NO KEY UPDATE OF s;
+END;
+
 -- Byt företag: a live session of the transaction's person works in a company
 -- from now on, with the membership it chose it with and the person's
 -- permissions there as an object of each permission and the end of the grant
@@ -566,8 +598,8 @@ $choose$;
 GRANT EXECUTE ON FUNCTION
   access.open_session(bytea, uuid, text, text, uuid, timestamptz),
   access.session_by_token(bytea),
-  access.touch_session(uuid, timestamptz, integer),
-  access.end_idle_session(uuid, timestamptz, integer),
+  access.lock_session(bytea),
+  access.touch_session(uuid, timestamptz, integer, uuid),
   access.choose_company(uuid, uuid, uuid, jsonb, integer, timestamptz)
 TO nortfox_app;
 

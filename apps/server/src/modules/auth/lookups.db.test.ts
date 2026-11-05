@@ -26,6 +26,7 @@ import {
   expectError,
   expectRefusal,
   freshDatabase,
+  untilWaitingForLock,
   type TestDatabase,
 } from "../../../test/database.ts";
 import {
@@ -608,15 +609,13 @@ describe("the lookup functions", () => {
       return client.query<{ ended: boolean }>("SELECT access.end_session($1, $2, $3) AS ended", [session, reason, at]).then((found) => found.rows[0]?.ended);
     }
 
-    function touch(session: string, at: Date, idle = 120): Promise<boolean | undefined> {
-      return first(anonymously<{ touched: boolean }>(app, "SELECT access.touch_session($1, $2, $3) AS touched", [session, at, idle])).then((row) => row?.touched);
+    function touch(session: string, at: Date, idle = 120, membership: string | null = null): Promise<boolean | undefined> {
+      return first(anonymously<{ touched: boolean }>(app, "SELECT access.touch_session($1, $2, $3, $4) AS touched", [session, at, idle, membership])).then(
+        (row) => row?.touched,
+      );
     }
 
-    function endIdle(session: string, at: Date, idle: number): Promise<boolean | undefined> {
-      return first(anonymously<{ ended: boolean }>(app, "SELECT access.end_idle_session($1, $2, $3) AS ended", [session, at, idle])).then((row) => row?.ended);
-    }
-
-    it("notes the idle time a session is seen under, and ends it for its idle time only when the row's own last sight is past the lower idle time", async () => {
+    it("notes the idle time a session is seen under, only while the session works with the membership the caller names", async () => {
       const person = await addIdentity(owner);
       const hash = tokenHash();
       const id = (await openSession(hash, person, null)) ?? "";
@@ -627,16 +626,32 @@ describe("the lookup functions", () => {
       expect(await touch(id, later(T0, -1), 480)).toBe(false);
       expect(await sessionOf(hash)).toEqual([expect.objectContaining({ last_seen_at: T0, idle_timeout_minutes: 15 })]);
       await expectError(touch(id, T0, 45), CHECK_VIOLATION, /sessions_idle_timeout_known/);
-      // The lower of the session's 15 minutes and the idle time in force now counts: 480 does not keep it longer, 15 or 30 end it at 15.
-      expect(await endIdle(id, new Date(later(T0, 15).getTime() - 1), 480)).toBe(false);
-      // The row's last sight is read in the statement: a sight that moved on keeps the session.
+      // The session works in no company: a sight under a membership changes nothing.
+      expect(await touch(id, later(T0, 10), 480, randomUUID())).toBe(false);
+      expect(await sessionOf(hash)).toEqual([expect.objectContaining({ last_seen_at: T0, idle_timeout_minutes: 15 })]);
       expect(await touch(id, later(T0, 10), 30)).toBe(true);
-      expect(await endIdle(id, later(T0, 20), 15)).toBe(false);
-      expect(await endIdle(id, later(T0, 25), 15)).toBe(true);
-      expect(await endIdle(id, later(T0, 26), 15)).toBe(false);
-      const row = await owner.query("SELECT ended_at, end_reason FROM access.sessions WHERE id = $1", [id]);
-      expect(row.rows).toEqual([{ ended_at: later(T0, 25), end_reason: "idle" }]);
-      expect(await touch(id, later(T0, 30))).toBe(false);
+      expect(await sessionOf(hash)).toEqual([expect.objectContaining({ last_seen_at: later(T0, 10), idle_timeout_minutes: 30 })]);
+    });
+
+    it("locks a live session for the transaction that reads it so, and gives nothing to one that waited while it ended", async () => {
+      const person = await addIdentity(owner);
+      const hash = tokenHash();
+      const id = (await openSession(hash, person, null)) ?? "";
+      const lock = "SELECT * FROM access.lock_session($1)";
+      expect(await anonymously(app, lock, [hash])).toEqual(await sessionOf(hash));
+      expect(await anonymously(app, lock, [tokenHash()])).toEqual([]);
+      // The first holds the lock and ends the session; the second waits, and then finds it ended.
+      const [holder, waiter] = parallel as [Client, Client];
+      await begin(holder, { channel: "rest" });
+      expect(await holder.query(lock, [hash])).toMatchObject({ rowCount: 1 });
+      await begin(waiter, { channel: "rest" });
+      const waiterPid = await backendPid(waiter);
+      const waited = waiter.query(lock, [hash]);
+      await untilWaitingForLock(app, waiterPid);
+      await end(holder, id, later(T0, 16), "idle");
+      await holder.query("COMMIT");
+      expect((await waited).rows).toEqual([]);
+      await waiter.query("COMMIT");
     });
 
     it("opens a session for an active identity, finds it by its hash with the identity's status, touches it and ends it once", async () => {

@@ -2,12 +2,14 @@
 
 // Every access check goes through the one membership function (issue 12,
 // "Companies and members": a guard shows it). This is the guard's half that
-// reads the server's source. The probes show that it fails on each way
-// around the function: a file that calls the function elsewhere, a handler
-// that reads the memberships, a principal or a company access built by hand,
-// the token that only resolve.ts holds, a file that sets the transaction's
-// company or actor itself, and a second caller of the deletion's form. The
-// catalog's half is apps/server/src/modules/memberships/one-function.db.test.ts.
+// reads the code the server runs: its source and the workspace packages it
+// may import. The probes show that it fails on each way around the
+// function: a file that calls the function elsewhere, a handler that reads
+// the memberships, a principal or a company access built by hand, the token
+// that only resolve.ts holds, a file that sets the transaction's company or
+// actor itself, also with a name over several lines, a second caller of the
+// deletion's form, and code that imports a test. The catalog's half is
+// apps/server/src/modules/memberships/one-function.db.test.ts.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -58,9 +60,13 @@ function builtByHand(name: string): string {
 
 const TOKEN_ELSEWHERE = `names MEMBERSHIP_TOKEN, which never leaves ${RESOLVE}.`;
 
-const SETS_SETTINGS = `sets the transaction's company, actor or channel itself (set_config, or nortfox.company_id, nortfox.actor_id, nortfox.actor_kind or nortfox.channel). Only ${DATABASE} sets them: a company comes from the one function's answer, as a company access or through tx.enter.`;
+const SETS_SETTINGS = `sets the transaction's company, actor or channel itself (set_config, SET LOCAL, SET SESSION, pg_settings, or nortfox.company_id, nortfox.actor_id, nortfox.actor_kind or nortfox.channel). Only ${DATABASE} sets them: a company comes from the one function's answer, as a company access or through tx.enter.`;
 
 const SECOND_DELETION_CALLER = `calls liveForDeletion, which only ${DELETE_ME} calls.`;
+
+function importsTest(specifier: string): string {
+  return `imports a test or a test helper (${specifier}). The guard does not read the tests, so code that the server runs never imports one.`;
+}
 
 describe("the server's source", () => {
   it("lets every access check go through the one membership function", () => {
@@ -85,22 +91,39 @@ describe("the files the guard reads", () => {
     ["apps/server/src/db/migrate-main.ts", true],
     ["apps/server/src/later/thing.mts", true],
     ["apps/server/src/later/thing.js", true],
+    ["apps/server/src/later/page.tsx", true],
+    ["apps/server/src/later/page.jsx", true],
+    ["packages/contract/src/operation.ts", true],
+    ["packages/contract/src/operations/companies.ts", true],
+    ["packages/engine/src/money.ts", true],
     ["apps/server/src/api/operation.test.ts", false],
+    ["apps/server/src/later/page.test.tsx", false],
     ["apps/server/src/modules/memberships/resolve.db.test.ts", false],
+    ["packages/contract/src/operation.test.ts", false],
+    ["packages/engine/src/money.property.test.ts", false],
+    ["packages/client/src/generated.ts", false],
     ["apps/server/test/memberships.ts", false],
     ["apps/server/scripts/x.ts", false],
     ["db/migrations/0007_companies_memberships.sql", false],
     ["db/README.md", false],
-    ["packages/contract/src/operation.ts", false],
     ["apps/server/src/README.md", false],
   ])("reads %s: %s", (path, read) => {
     expect(scansFile(path)).toBe(read);
   });
 
-  it("finds nothing in a test file or outside the server's source, whatever it names", () => {
-    for (const path of ["apps/server/src/api/operation.test.ts", "apps/server/test/memberships.ts", "db/README.md"]) {
+  it("finds nothing in a test file or outside the code the server runs, whatever it names", () => {
+    for (const path of ["apps/server/src/api/operation.test.ts", "apps/server/test/memberships.ts", "db/README.md", "packages/contract/src/operation.test.ts"]) {
       expect(problemsWith(path, "SELECT * FROM access.active_membership($1)", "SELECT * FROM access.memberships", "x as CompanyAccess")).toEqual([]);
     }
+  });
+
+  it("reads the workspace packages that the server may import, and a .tsx file of the server", () => {
+    const helper = "packages/contract/src/work-in.ts";
+    expect(problemsWith(helper, "export async function workIn(tx, companyId) {", `  await tx.query("SELECT pg_catalog.set_config('nortfox.company_id', $1, true)", [companyId]);`, "}")).toEqual([
+      `${helper}:2: ${SETS_SETTINGS}`,
+    ]);
+    expect(problemsWith("packages/engine/src/members.ts", "SELECT * FROM access.memberships")).toEqual([`packages/engine/src/members.ts:1: ${readsTable("access.memberships")}`]);
+    expect(problemsWith("apps/server/src/later/page.tsx", "const access = <CompanyAccess>plain;")).toEqual([`apps/server/src/later/page.tsx:1: ${builtByHand("CompanyAccess")}`]);
   });
 });
 
@@ -154,6 +177,13 @@ describe("the membership guard", () => {
       ["through the people of the company, by its bare name", "SELECT * FROM company_people($1)", "access.company_people"],
     ])("fails it %s", (_case, line, name) => {
       expect(problemsWith(HANDLER, line)).toEqual([`${HANDLER}:1: ${readsTable(name)}`]);
+    });
+
+    it("fails it with the table's name over two lines, at the line where the name starts", () => {
+      expect(problemsWith(HANDLER, "const ok = 1;", "await tx.query(`SELECT * FROM access.", "  memberships WHERE id = $1`, [id]);")).toEqual([
+        `${HANDLER}:2: ${readsTable("access.memberships")}`,
+      ]);
+      expect(problemsWith(HANDLER, 'await tx.query(`UPDATE "access"', '  . "memberships" SET status = $2`);')).toEqual([`${HANDLER}:1: ${readsTable("access.memberships")}`]);
     });
 
     it("does not take another table or word for it", () => {
@@ -247,8 +277,19 @@ describe("the membership guard", () => {
       ["by set_config with the name as a parameter", "await tx.query('SELECT set_config($1, $2, true)', [name, company]);"],
       ["by set_config in capitals and quoted", `SELECT pg_catalog."SET_CONFIG"($1, $2, true)`],
       ["in a comment", "// The handler sets nortfox.company_id for the company it reads."],
+      ["with SET LOCAL and the name from elsewhere", "await tx.query(`SET LOCAL ${setting} = '${companyId}'`);"],
+      ["with SET SESSION, in small letters", "await tx.query(`set session ${setting} to '${companyId}'`);"],
+      ["through pg_settings", "await tx.query('UPDATE pg_catalog.pg_settings SET setting = $2 WHERE name = $1', [setting, companyId]);"],
     ])("fails it %s", (_case, line) => {
       expect(problemsWith(HANDLER, "const ok = 1;", line)).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
+    });
+
+    it.each([
+      ["SET LOCAL with a line break after the dot", ["await tx.query(`SET LOCAL nortfox.", "    company_id = '${companyId}'`);"]],
+      ["a line break before the dot", ["await tx.query(`SELECT set_value FROM x WHERE n = 'nortfox", "  .company_id'`);"]],
+      ["quoted, with line breaks on both sides of the dot", ['const name = `"nortfox"', "  .", '  "actor_id"`;']],
+    ])("fails it with the name over several lines: %s", (_case, lines) => {
+      expect(problemsWith(HANDLER, "const ok = 1;", ...lines)).toEqual([`${HANDLER}:2: ${SETS_SETTINGS}`]);
     });
 
     it("fails it in the memberships module and in resolve.ts too", () => {
@@ -278,6 +319,38 @@ describe("the membership guard", () => {
           "SELECT config_set FROM nortfox.companies_settings",
           "const nortfox = 1; const channel = 'rest';",
           "SELECT reset_config_value()",
+        ),
+      ).toEqual([]);
+    });
+  });
+
+  describe("code that imports a test", () => {
+    it.each([
+      ["a test file", 'import { workIn } from "./work-in.test.ts";', "./work-in.test.ts"],
+      ["a database test, by a path with no extension", 'export { workIn } from "../companies/peek.db.test";', "../companies/peek.db.test"],
+      ["a .tsx test", "import { page } from './page.test.tsx';", "./page.test.tsx"],
+      ["a test helper", 'import { asMember } from "../../../test/memberships.ts";', "../../../test/memberships.ts"],
+      ["by a dynamic import", 'const helper = await import("../../test/database.ts");', "../../test/database.ts"],
+      ["for its side effects", 'import "./setup.test.js";', "./setup.test.js"],
+      ["with the import over two lines", 'import { asMember } from\n  "../../../test/memberships.ts";', "../../../test/memberships.ts"],
+    ])("fails %s", (_case, line, specifier) => {
+      expect(problemsWith(HANDLER, line)).toEqual([`${HANDLER}:1: ${importsTest(specifier)}`]);
+    });
+
+    it("fails it in a workspace package too", () => {
+      expect(problemsWith("packages/contract/src/work-in.ts", 'export * from "./work-in.test.ts";')).toEqual([`packages/contract/src/work-in.ts:1: ${importsTest("./work-in.test.ts")}`]);
+    });
+
+    it("does not take another module for a test", () => {
+      expect(
+        problemsWith(
+          HANDLER,
+          'import { test } from "node:test";',
+          'import { latest } from "./latest/index.ts";',
+          'import { contest } from "../contest/rules.ts";',
+          'import { attest } from "./attest.ts";',
+          'import { testing } from "./testing.ts";',
+          "// The test of this file is apps/server/test/memberships.ts.",
         ),
       ).toEqual([]);
     });

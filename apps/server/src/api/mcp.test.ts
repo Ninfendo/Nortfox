@@ -101,7 +101,7 @@ const IDEMPOTENCY_KEY = {
 
 const COMPANY_SCHEMA = {
   type: "object",
-  description: "The company the request works in. Every data request works in exactly one company.",
+  description: "A company: its id, name, organisation number and tenant id.",
   properties: {
     id: { ...UUID, description: "The company's id." },
     name: { type: "string", description: "The company's name." },
@@ -441,7 +441,7 @@ const TOOLS = [
     inputSchema: NO_INPUT,
     outputSchema: {
       type: "object",
-      description: "The company the request works in. Every data request works in exactly one company.",
+      description: "A company: its id, name, organisation number and tenant id.",
       properties: {
         id: { ...UUID, description: "The company's id." },
         name: { type: "string", description: "The company's name." },

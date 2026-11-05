@@ -161,7 +161,7 @@
           "databaseNumber"
         ],
         "additionalProperties": false,
-        "description": "The company the request works in. Every data request works in exactly one company."
+        "description": "A company: its id, name, organisation number and tenant id."
       },
       "SetupResult": {
         "type": "object",
@@ -490,7 +490,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The company the request works in. Every data request works in exactly one company.",
+            "description": "A company: its id, name, organisation number and tenant id.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1369,7 +1369,7 @@
         },
         "responses": {
           "201": {
-            "description": "The company the request works in. Every data request works in exactly one company.",
+            "description": "A company: its id, name, organisation number and tenant id.",
             "content": {
               "application/json": {
                 "schema": {

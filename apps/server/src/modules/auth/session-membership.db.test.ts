@@ -11,7 +11,8 @@
 // membership comes back, also with no request between. A choice of the
 // company that runs while the membership is deactivated either is refused,
 // or comes first and its session ends with the deactivation, so it never
-// keeps the membership. access.choose_company, the lookup function that
+// keeps the membership; one that runs while the membership is disconnected
+// and given another person is refused too. access.choose_company, the lookup function that
 // stores the session's choice, chooses only for the transaction's person's
 // own live session.
 
@@ -268,6 +269,24 @@ describe("a session's membership", () => {
       expect((await superuser.query("SELECT 1 FROM access.events WHERE company_id = $1 AND subject_id = $2", [company.id, person.id])).rows).toEqual([]);
       // When the membership is active again, the session still works in no company.
       await changeMembership(app, company, membership, "status = 'active'");
+      expect((await jsonOf<ProblemBody>(await getAs(server, session, "/v1/company"), 403)).code).toBe("company-required");
+    });
+
+    it("refuses the choice when the membership is disconnected and another person accepts it after the runner found it active", async () => {
+      const { person, session, membership } = await memberInNoCompany();
+      // Both changes commit after the runner entered the company, before the choice locks the membership: it is active, and someone else's.
+      const other = await addIdentity(owner, { name: "Rut Norén" });
+      const racer = enteringWith(async () => {
+        await changeMembership(app, company, membership, "status = 'invited', user_id = NULL");
+        await changeMembership(app, company, membership, "status = 'active', user_id = $2", [other]);
+      });
+      const refused = await jsonOf<ProblemBody>(await chooseCompany(racer, session, company.id), 422);
+      expect(refused).toMatchObject({ code: "company-not-available", pointer: "/companyId" });
+      // Nothing of the choice is kept for the person.
+      expect(await choiceOf(session)).toEqual({ current_membership_id: null, idle_timeout_minutes: 120, end_reason: null });
+      expect((await owner.query("SELECT 1 FROM access.recent_companies WHERE identity_id = $1", [person.id])).rows).toEqual([]);
+      const superuser = await db.admin();
+      expect((await superuser.query("SELECT 1 FROM access.events WHERE company_id = $1 AND subject_id = $2", [company.id, person.id])).rows).toEqual([]);
       expect((await jsonOf<ProblemBody>(await getAs(server, session, "/v1/company"), 403)).code).toBe("company-required");
     });
 

@@ -35,7 +35,7 @@ export const Company = z
   })
   .meta({
     id: "Company",
-    description: "The company the request works in. Every data request works in exactly one company.",
+    description: "A company: its id, name, organisation number and tenant id.",
   });
 
 export type Company = z.infer<typeof Company>;

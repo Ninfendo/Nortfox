@@ -180,7 +180,7 @@ describe("toolOutputSchema", () => {
   it("is the company for getCompany", () => {
     expect(toolOutputSchema(getCompany)).toEqual({
       type: "object",
-      description: "The company the request works in. Every data request works in exactly one company.",
+      description: "A company: its id, name, organisation number and tenant id.",
       properties: {
         id: { ...UUID, description: "The company's id." },
         name: { type: "string", description: "The company's name." },

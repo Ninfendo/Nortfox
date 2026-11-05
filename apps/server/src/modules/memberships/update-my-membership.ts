@@ -11,12 +11,14 @@
 // The answer holds the work contacts, which are personal data, so its
 // idempotency key is kept outside every company table.
 //
-// A new idle time holds from the next request of each session that works
-// with the membership: a lower one at once, a higher one once the session is
-// seen under it. The request's own session, when it works with this
-// membership, is seen now under the new idle time. Another session keeps the
-// idle time of its own last request until its next one, so a session that
-// went past its idle time does not come back.
+// A lower idle time holds at once for each session that works with the
+// membership: the database lowers their idle times in the same transaction,
+// so a session that went past it does not come back when the idle time is
+// raised later. A higher one holds for a session once it is seen under it.
+// The request's own session is seen now under the new idle time, when it
+// still works with this membership at the write: the database checks that,
+// so a session that chose another company meanwhile keeps that company's
+// idle time.
 
 import { updateMyMembership } from "@nortfox/contract";
 import { companyNotAvailable, handlePerson, inputMembership, ok } from "../../api/operation.ts";
@@ -29,8 +31,8 @@ export const updateMyMembershipHandler = handlePerson(updateMyMembership, async 
   if (changed === undefined) {
     return companyNotAvailable(updateMyMembership);
   }
-  if (body.idleTimeout !== undefined && context.company?.membershipId === membership.membershipId) {
-    await seeSession(tx, context.credential.sessionId, now(), changed.idleTimeout);
+  if (body.idleTimeout !== undefined) {
+    await seeSession(tx, context.credential.sessionId, now(), changed.idleTimeout, membership.membershipId);
   }
   return ok(changed);
 });

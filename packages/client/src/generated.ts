@@ -6,7 +6,7 @@
 import type { CallOptions, Send, WriteOptions } from "./runtime.ts";
 
 /**
- * The company the request works in. Every data request works in exactly one company.
+ * A company: its id, name, organisation number and tenant id.
  */
 export interface Company {
   /**
