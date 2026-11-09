@@ -6,8 +6,12 @@
 // its link is "Acceptera inbjudan". The page it opens (slice 2d) offers
 // "Skapa ett nytt NortFox ID" and "Koppla ihop med befintligt NortFox ID".
 // A mail is plain text, so each link stands on a line of its own after its
-// words.
+// words. Each name it holds stands on one line too: the API takes no name
+// with a line break or another control character, and the text puts a space
+// for any that comes, so no name adds a line to the mail or turns its text
+// around.
 
+import { NOT_IN_A_NAME } from "@nortfox/contract";
 import type { MailMessage } from "./mailer.ts";
 
 /** The path of the web app's page of an invitation, which slice 2d serves: the link's token after it. */
@@ -34,15 +38,26 @@ export function invitationLink(publicOrigin: string, token: string): string {
   return `${publicOrigin}${INVITATION_PAGE}${token}`;
 }
 
+/** Every character that a name never holds. */
+const NOT_IN_A_NAME_ANYWHERE = new RegExp(NOT_IN_A_NAME.source, "gu");
+
+/** A name on one line: a space for each character that a name never holds. */
+function oneLine(name: string): string {
+  return name.replace(NOT_IN_A_NAME_ANYWHERE, " ");
+}
+
 /** The mail of an invitation. */
 export function invitationMail(mail: InvitationMail): MailMessage {
+  const name = oneLine(mail.name);
+  const companyName = oneLine(mail.companyName);
+  const inviterName = oneLine(mail.inviterName);
   return {
     to: mail.to,
-    subject: `Inbjudan till ${mail.companyName} i NortFox`,
+    subject: `Inbjudan till ${companyName} i NortFox`,
     text: [
-      `Hej ${mail.name}!`,
+      `Hej ${name}!`,
       "",
-      `${mail.inviterName} har bjudit in dig som användare i ${mail.companyName} i NortFox.`,
+      `${inviterName} har bjudit in dig som användare i ${companyName} i NortFox.`,
       "",
       `${ACCEPT_INVITATION}:`,
       mail.link,

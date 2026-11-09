@@ -227,6 +227,8 @@ describe("completeSetup's password", () => {
     expect(nul.status).toBe(400);
     expect((await problemIn(nul)).errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
       ["invalid-value", "/name", "The field /name holds the character U+0000, which no text may hold."],
+      // A control character is not in an address's form either.
+      ["bad-format", "/email", "The field /email does not have the format email."],
       ["invalid-value", "/email", "The field /email holds the character U+0000, which no text may hold."],
     ]);
     // JSON carries a lone surrogate as an escape.

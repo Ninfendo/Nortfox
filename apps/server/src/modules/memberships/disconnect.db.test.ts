@@ -10,10 +10,13 @@
 // keeps its admin level and programs, which the identity that accepts the
 // new invitation gets: a new identity or an existing one. The old person's
 // work contacts are erased, and the new invitation goes to the work e-mail.
+// A change of their own membership that the old person sent before the
+// disconnect, and that runs on after the next person has accepted, reaches
+// nothing of the next person's.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { appPool, type AppPool, type ProblemBody } from "../../../test/api.ts";
+import { appPool, appPoolHolding, type AppPool, type ProblemBody } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import {
   MINUTE,
@@ -26,6 +29,7 @@ import {
   signIn,
   signInApp,
   testClock,
+  writeAs,
   type SignInApp,
 } from "../../../test/sign-in.ts";
 import { apiCompany, calls, joinWith, newMember, sessionIn, type ApiCompany, type TestMember } from "../../../test/users.ts";
@@ -133,6 +137,33 @@ describe("disconnecting a member's identity", () => {
     // The next identity works in the company.
     const nextSession = await sessionIn(server, next, company.id);
     expect((await getAs(server, nextSession, "/v1/company")).status).toBe(200);
+  });
+
+  it("a change of the old person's own membership that runs on after the next person has accepted changes nothing of the next person's", async () => {
+    const { member, session } = await aMember("gun.arbete@example.com");
+    // The old person's change has found their active membership, and waits before it locks the row.
+    const held = appPoolHolding(db, 2, /^SELECT company_id FROM access\.memberships WHERE id = \$1 AND status = 'active'/);
+    try {
+      const racer = signInApp(held.database, { clock: server.clock });
+      const changing = writeAs(racer, session, "PATCH", `/v1/me/companies/${company.id}`, { workPhone: "070-999 88 77", idleTimeout: 15 });
+      await held.gate.reached;
+      expect((await calls.disconnectUserIdentity(server, company.session, member.id)).status).toBe(200);
+      const token = server.mail.invitationTokenTo("gun.arbete@example.com");
+      const accepted = await jsonOf<{ user: { id: string } }>(await calls.acceptInvitation(server, token, { newIdentity: { name: "Gun Ny", password: "guns-lösenord!" } }));
+      held.gate.open();
+      expect(await jsonOf<ProblemBody>(await changing, 422)).toMatchObject({ code: "company-not-available", pointer: "/companyId" });
+      // The next person's membership is as the acceptance made it.
+      expect(await rowOf(member.id)).toEqual({ status: "active", user_id: accepted.user.id, live_user_id: accepted.user.id, admin_level: "admin" });
+      const kept = await superuser.query<{ idle: number; work_email: string; work_phone: string | null }>(
+        `SELECT m.idle_timeout_minutes AS idle, c.work_email, c.work_phone FROM access.memberships AS m
+         JOIN access.membership_contacts AS c ON c.contact_company_id = m.company_id AND c.membership_id = m.id WHERE m.id = $1`,
+        [member.id],
+      );
+      expect(kept.rows).toEqual([{ idle: 120, work_email: "gun.arbete@example.com", work_phone: null }]);
+    } finally {
+      held.gate.open();
+      await held.pool.end();
+    }
   });
 
   it("disconnects an inactive member", async () => {

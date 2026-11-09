@@ -40,7 +40,7 @@ export const Me = z
     membership: Membership.optional(),
     permissions: z.array(z.string()).meta({
       description:
-        "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, and the rights of the member's program grants. " +
+        "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. " +
         "A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.",
     }),
   })

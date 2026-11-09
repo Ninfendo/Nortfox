@@ -18,7 +18,8 @@
 import { z } from "zod";
 import { personal } from "../fields.ts";
 import { NoBody, defineListOperation, defineOperation } from "../operation.ts";
-import { noNul, wellFormed } from "../text.ts";
+import { emailAddress } from "../address.ts";
+import { noNul, singleLine, wellFormed } from "../text.ts";
 import { IdleTimeout, Membership, ProgramAdmin, ProgramGrant, WorkEmail, WorkPhone } from "./companies.ts";
 import { PermissionKey } from "./permissions.ts";
 import { PROGRAMS } from "../access/catalogue.ts";
@@ -113,8 +114,9 @@ export const updateUser = defineOperation({
   params: MemberPath,
   body: z.strictObject({
     active: z.boolean().optional().meta({ description: "Aktiv användare: true lets the member work in the company, false stops it, and keeps their rights. An invited member has not accepted yet, and takes neither." }),
+    // An enum, not a literal, so the API description takes null too.
     adminLevel: z
-      .literal("admin")
+      .enum(["admin"])
       .nullable()
       .optional()
       .meta({ description: "admin makes the member a system administrator, or keeps the level of one; null makes them no longer one. Only creating a company gives the owner's level." }),
@@ -239,12 +241,11 @@ export const inviteUser = defineOperation({
     "Lägg till användare: makes an invited member of the company, with a name and an e-mail address, and sends the invitation to that address. " +
     `${SENDS} An address that a member of the company has, or that an open invitation of the company goes to, gets 422 already-member.`,
   body: z.strictObject({
-    name: z.string().min(1).max(200).check(noNul(), wellFormed()).meta({ description: "Namn: the invited person's name." }),
-    email: z
-      .email({ pattern: z.regexes.unicodeEmail })
-      .max(254)
-      .check(noNul(), wellFormed())
-      .meta({ description: "E-postadress: where the invitation goes. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address." }),
+    name: z.string().min(1).max(200).check(noNul(), wellFormed(), singleLine()).meta({ description: "Namn: the invited person's name, on one line." }),
+    email: emailAddress().meta({
+      description:
+        "E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.",
+    }),
   }),
   output: Member,
   status: 201,

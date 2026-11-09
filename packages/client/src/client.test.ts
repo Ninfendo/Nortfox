@@ -190,6 +190,7 @@ describe("createClient", () => {
       Response.json({ items: [member], total: 1 }),
       Response.json(member),
       Response.json(member),
+      Response.json(member),
       new Response(null, { status: 204 }),
       Response.json(grant),
       new Response(null, { status: 204 }),
@@ -209,6 +210,8 @@ describe("createClient", () => {
     await expect(client.listUsers({ limit: 5 })).resolves.toEqual({ items: [member], total: 1 });
     await expect(client.getUser({ memberId: member.id })).resolves.toEqual(member);
     await expect(client.updateUser({ memberId: member.id, adminLevel: "admin", programsAdministered: [{ program: "read" }] }, { idempotencyKey: "user-1" })).resolves.toEqual(member);
+    // null makes the member no longer a system administrator.
+    await expect(client.updateUser({ memberId: member.id, adminLevel: null }, { idempotencyKey: "user-2" })).resolves.toEqual(member);
     await expect(client.removeUser({ memberId: member.id }, { idempotencyKey: "remove-1" })).resolves.toBeUndefined();
     await expect(client.assignProgram({ memberId: member.id, program: "read", permissions: ["vouchers.view"] }, { idempotencyKey: "grant-1" })).resolves.toEqual(grant);
     await expect(client.removeProgram({ memberId: member.id, program: "read" }, { idempotencyKey: "take-1" })).resolves.toBeUndefined();
@@ -226,6 +229,7 @@ describe("createClient", () => {
       ["https://nortfox.example/v1/users?limit=5", read],
       [users, read],
       [users, { method: "PATCH", headers: { ...json, "idempotency-key": "user-1" }, body: '{"adminLevel":"admin","programsAdministered":[{"program":"read"}]}' }],
+      [users, { method: "PATCH", headers: { ...json, "idempotency-key": "user-2" }, body: '{"adminLevel":null}' }],
       [users, { method: "DELETE", headers: { accept: "application/json", "idempotency-key": "remove-1" } }],
       [`${users}/programs/read`, { method: "PUT", headers: { ...json, "idempotency-key": "grant-1" }, body: '{"permissions":["vouchers.view"]}' }],
       [`${users}/programs/read`, { method: "DELETE", headers: { accept: "application/json", "idempotency-key": "take-1" } }],

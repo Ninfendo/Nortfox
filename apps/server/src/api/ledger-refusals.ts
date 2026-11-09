@@ -24,15 +24,19 @@
 // The table says which for every reason, so a new reason does not compile
 // until someone decides.
 //
-// A unique violation (23505) is a rule's refusal on the three keys that a
-// request can meet where only a race gets past the server's own checks
-// (plan 2.21): the identities' e-mail address in any letter case
-// (email-taken) and personnummer (personal-identity-number-taken), and a
-// person's one live membership in a company (already-member). Each is found
-// by the constraint's name, and the answer holds the field's pointer when
-// the operation has the field, and never the database's detail, which holds
-// the value. A unique violation on any other key is a fault, as are a plain
-// 42501 and every other SQLSTATE: ledgerRule gives nothing for them.
+// A unique violation (23505) is a rule's refusal on three keys (plan 2.21):
+// the identities' e-mail address in any letter case (email-taken) and
+// personnummer (personal-identity-number-taken), and a person's one live
+// membership in a company (already-member). The e-mail key is the only check
+// of a new identity's address in acceptInvitation, since the app reads no
+// other identity. Elsewhere a check of the server's comes first, and only a
+// race gets past it: completeSetup's of the install, for the e-mail key, and
+// the acceptance's of the person's memberships, for the membership key. Each
+// is found by the constraint's name, and the answer holds the field's
+// pointer when the operation has the field, and never the database's detail,
+// which holds the value. A unique violation on any other key is a fault, as
+// are a plain 42501 and every other SQLSTATE: ledgerRule gives nothing for
+// them.
 
 import { oreToMoney, type JsonValue } from "@nortfox/contract";
 import { readRefusal, type RefusalReason } from "../db/refusals.ts";

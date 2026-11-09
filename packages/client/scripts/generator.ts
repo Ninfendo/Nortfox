@@ -146,6 +146,18 @@ function literal(value: unknown, where: string): string {
   throw new GeneratorError(`${where} may only hold strings, numbers or booleans.`);
 }
 
+/** A value of an enum: a literal, or null, which a nullable enum holds. */
+function enumValue(value: unknown, where: string): string {
+  if (value === null) {
+    return "null";
+  }
+  try {
+    return literal(value, where);
+  } catch {
+    throw new GeneratorError(`${where} may only hold strings, numbers, booleans or null.`);
+  }
+}
+
 function union(parts: readonly string[]): string {
   return parts.join(" | ");
 }
@@ -187,7 +199,7 @@ function typeOf(value: unknown, where: string, indent: string): string {
     if (!Array.isArray(values) || values.length === 0) {
       throw new GeneratorError(`${where}.enum must be a list with at least one value.`);
     }
-    return union(values.map((item, index) => literal(item, `${where}.enum[${String(index)}]`)));
+    return union(values.map((item, index) => enumValue(item, `${where}.enum[${String(index)}]`)));
   }
   const type = schema["type"];
   const types: unknown[] = Array.isArray(type) ? type : [type];

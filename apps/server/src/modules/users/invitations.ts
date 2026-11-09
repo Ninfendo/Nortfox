@@ -8,6 +8,9 @@
 // - inviteUser, "Lägg till användare": an invited member with the name, and
 //   an invitation to the address. An address that a member of the company
 //   has, or that an open invitation of it goes to, is refused (already-member).
+//   It locks the company's row first, FOR NO KEY UPDATE, so two invitations
+//   of one company take turns, and the second of two to one address at once
+//   finds the first's and is refused too.
 // - resendInvitation, "Skicka en ny inbjudan": a new invitation of an
 //   invited member, to their latest one's name and address. The database
 //   stops the old one and its link.
@@ -64,6 +67,8 @@ export const inviteUserHandler = handleData(inviteUser, async ({ context, tx, no
     return refused(MAIL_NOT_CONFIGURED);
   }
   const email = body.email.normalize("NFC");
+  // The company's invitations take turns: a second one to the same address waits, and then finds the first.
+  await tx.query("SELECT 1 FROM ledger.companies FOR NO KEY UPDATE");
   if (await addressInCompany(tx, email)) {
     return refused(ALREADY_MEMBER);
   }

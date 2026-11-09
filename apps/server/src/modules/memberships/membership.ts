@@ -146,13 +146,19 @@ export interface OwnChange extends WorkContactsChange {
  * it, in a row that holds no history.
  *
  * It locks the membership's row first, FOR NO KEY UPDATE, and reads its
- * status after the lock, at READ COMMITTED. So two changes of one membership
- * at once take turns: the second sees the first's work contacts, and keeps
- * the field it leaves out. A change that waited for a removal, a leave or a
- * deactivation finds the membership no longer active, and changes nothing.
+ * status and its person after the lock, at READ COMMITTED. So two changes of
+ * one membership at once take turns: the second sees the first's work
+ * contacts, and keeps the field it leaves out. A change that waited for a
+ * removal, a leave or a deactivation finds the membership no longer active,
+ * and changes nothing. So does a change that found the membership while it
+ * was the person's, when a disconnect and another person's acceptance
+ * committed before its lock: the membership is no longer `person`'s.
  */
-export async function changeOwnMembership(tx: Queryable, membershipId: string, change: OwnChange, at: Date): Promise<Membership | undefined> {
-  const locked = await tx.query<{ company_id: string }>("SELECT company_id FROM access.memberships WHERE id = $1 AND status = 'active' FOR NO KEY UPDATE", [membershipId]);
+export async function changeOwnMembership(tx: Queryable, membershipId: string, person: string, change: OwnChange, at: Date): Promise<Membership | undefined> {
+  const locked = await tx.query<{ company_id: string }>(
+    "SELECT company_id FROM access.memberships WHERE id = $1 AND status = 'active' AND live_user_id = $2 FOR NO KEY UPDATE",
+    [membershipId, person],
+  );
   const [row] = locked.rows;
   if (row === undefined) {
     return undefined;

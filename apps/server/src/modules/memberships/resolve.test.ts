@@ -9,6 +9,7 @@
 
 import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
+import type { Program } from "@nortfox/contract";
 import type { Queryable } from "../../db/database.ts";
 import { CompanyAccess, InvitationEntry, ResolvedMembership, activeMemberships, invitationEntry, resolveActive, type MembershipRow } from "./resolve.ts";
 
@@ -115,16 +116,28 @@ describe("activeMemberships", () => {
 });
 
 describe("a company access", () => {
-  it("is made from a membership, with the membership's company and admin level and its own copy of the permissions", async () => {
+  it("is made from a membership, with the membership's company and admin level and its own copy of the permissions and the programs administered", async () => {
     const membership = await membershipOf({ ...ROW, admin_level: "admin" });
     const given = new Set(["company:read"]);
-    const access = membership.access(given);
+    const programs = new Set<Program>(["read"]);
+    const access = membership.access(given, programs);
     expect(access).toBeInstanceOf(CompanyAccess);
-    expect(fieldsOf(access)).toEqual({ companyId: COMPANY, membershipId: ROW.membership_id, personId: PERSON, adminLevel: "admin", permissions: ["company:read"] });
+    expect(fieldsOf(access)).toEqual({
+      companyId: COMPANY,
+      membershipId: ROW.membership_id,
+      personId: PERSON,
+      adminLevel: "admin",
+      permissions: ["company:read"],
+      programsAdministered: ["read"],
+    });
     given.add("test:write");
+    programs.add("auditor");
     expect(access.permissions).toEqual(["company:read"]);
-    // Each permission once, in order.
+    expect(access.programsAdministered).toEqual(["read"]);
+    // Each permission once, in order, and each program once, in the catalogue's order; none by default.
     expect(membership.access(["test:write", "company:read", "test:write"]).permissions).toEqual(["company:read", "test:write"]);
+    expect(membership.access([], ["auditor", "bookkeeping", "auditor"]).programsAdministered).toEqual(["bookkeeping", "auditor"]);
+    expect(membership.access([]).programsAdministered).toEqual([]);
   });
 
   it("and the membership never change", async () => {
@@ -142,6 +155,7 @@ describe("a company access", () => {
       (access.permissions as string[]).push("test:write");
     }).toThrow(TypeError);
     expect(access.permissions).toEqual(["company:read"]);
+    expect(Object.isFrozen(access.programsAdministered)).toBe(true);
   });
 });
 
@@ -151,7 +165,7 @@ describe("the constructors", () => {
     expect(() => new ResolvedMembership(Symbol("made by resolve.ts"), ROW, answering([]))).toThrow(
       new Error("Only modules/memberships/resolve.ts makes a ResolvedMembership, from the one membership function's answer."),
     );
-    expect(() => new CompanyAccess(Symbol("made by resolve.ts"), membership, ["company:read"])).toThrow(
+    expect(() => new CompanyAccess(Symbol("made by resolve.ts"), membership, ["company:read"], [])).toThrow(
       new Error("Only modules/memberships/resolve.ts makes a CompanyAccess, from a membership that the one membership function gave."),
     );
     expect(() => {

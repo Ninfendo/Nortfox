@@ -10,23 +10,31 @@
 //   when it is given; it refuses an acceptance or a stop given with a new
 //   invitation. Nothing changes but the acceptance and the stop, each once,
 //   and never both.
-// - A new invitation of a member stops the member's open one, and an invited
-//   member's removal stops theirs; a stopped invitation stops its link.
+// - A new invitation of a member stops the member's open one, also when two
+//   come at once, and an invited member's removal stops theirs; a stopped
+//   invitation stops its link.
+// - A name stands on one line: an invitation's, a link's company and sender,
+//   and a new identity's.
 // - A link is a secret: the app reads none, and reaches them only through
 //   the four functions. A link is made for an open invitation of the
 //   transaction's company only, holds the invitation's name, address and
 //   end, and is found by its hash only while it is live. It is used once,
-//   also by two parallel calls, only in its company, and only by an active
-//   identity; its use with a new identity makes the identity with the link's
-//   address, its password and a pending TOTP secret. The purge deletes a
-//   link at its end.
+//   also by two parallel calls, only in its company, only while it is
+//   neither stopped nor past its end, and only by an active identity; its use
+//   with a new identity, under the same conditions, makes the identity with
+//   the link's address, its password and a pending TOTP secret. The purge
+//   deletes a link at its end.
 
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  CHECK_VIOLATION,
   INSUFFICIENT_PRIVILEGE,
   UNIQUE_VIOLATION,
+  backendPid,
+  begin,
   expectError,
   expectRefusal,
   freshDatabase,
@@ -128,6 +136,39 @@ describe("the invitations and their links in the database", () => {
     return inTransaction(app, { channel: "rest" }, async () => (await app.query<Record<string, unknown>>("SELECT * FROM access.invitation_by_token($1, $2)", [hash, at])).rows);
   }
 
+  /** Uses the link of `hash` with a new identity, `person`, named `name`, in `company`, at `at`: whether the function made it. */
+  function asNewIn(company: Company, person: string | undefined, hash: Buffer, at: Date = new Date(), client: Client = app, name = "Nils Ny"): Promise<boolean> {
+    const settings = person === undefined ? { company: company.id, channel: "rest" } : { company: company.id, actor: person, kind: "user" as const, channel: "rest" };
+    return inTransaction(client, settings, async () => {
+      const made = await client.query<{ made: boolean }>("SELECT access.accept_invitation_as_new($1, $2, $3, $4, $5, $6) AS made", [
+        hash,
+        at,
+        name,
+        phcString(),
+        randomUUID(),
+        sealedSecret(),
+      ]);
+      return made.rows[0]?.made === true;
+    });
+  }
+
+  /** Whether an identity has the id. */
+  async function identityExists(id: string): Promise<boolean> {
+    return (await superuser.query("SELECT 1 FROM access.identities WHERE id = $1", [id])).rows.length > 0;
+  }
+
+  /** The member's invitations that are open, and their links that are live. */
+  async function openOf(member: string): Promise<{ invitations: number; links: number }> {
+    const found = await superuser.query<{ invitations: number; links: number }>(
+      `SELECT count(*)::integer AS invitations,
+         (SELECT count(*)::integer FROM access.invitation_links AS l JOIN access.invitations AS j ON j.id = l.invitation_id
+          WHERE j.membership_id = $1 AND l.used_at IS NULL AND l.superseded_at IS NULL) AS links
+       FROM access.invitations AS i WHERE i.membership_id = $1 AND i.accepted_at IS NULL AND i.superseded_at IS NULL`,
+      [member],
+    );
+    return found.rows[0] ?? { invitations: -1, links: -1 };
+  }
+
   /** Uses the link of `hash` as `person`, in `company`: whether it was used. */
   async function use(company: Company, person: string, hash: Buffer, at = new Date(), client: Client = app): Promise<boolean> {
     const result = await inTransaction(client, { company: company.id, actor: person, kind: "user", channel: "rest" }, async () =>
@@ -215,6 +256,60 @@ describe("the invitations and their links in the database", () => {
       expect(await rowOf(accepted.id)).toMatchObject({ superseded_at: null });
     });
 
+    it("leaves the member one open invitation and one live link when two new invitations come at once", async () => {
+      const first = await db.connect("app");
+      const second = await db.connect("app");
+      try {
+        const member = await addMembership(app, owner, alfa, { status: "invited" });
+        const insert = "INSERT INTO access.invitations (company_id, membership_id, name, email) VALUES ($1, $2, 'Karin Lund', 'karin.lund@example.com') RETURNING id";
+        const link = "SELECT access.issue_invitation_link($1, $2, 'Testbolaget Alfa AB', 'Alva Berg', pg_catalog.clock_timestamp()) AS made";
+        const settings = { company: alfa.id, ...alfa.asOwner, channel: "rest" };
+        // The first invitation and its link, not committed yet.
+        await begin(first, settings);
+        const [made] = (await first.query<{ id: string }>(insert, [alfa.id, member])).rows;
+        expect((await first.query<{ made: boolean }>(link, [tokenHash(), made?.id])).rows).toEqual([{ made: true }]);
+        // The second one waits for the member's row, which the first holds.
+        await begin(second, settings);
+        const pid = await backendPid(second);
+        const state = { done: false };
+        const later = (async () => {
+          const [next] = (await second.query<{ id: string }>(insert, [alfa.id, member])).rows;
+          const issued = (await second.query<{ made: boolean }>(link, [tokenHash(), next?.id])).rows;
+          await second.query("COMMIT");
+          return issued;
+        })().finally(() => {
+          state.done = true;
+        });
+        for (let attempt = 0; attempt < 1000 && !state.done; attempt += 1) {
+          const waiting = await superuser.query<{ waiting: boolean }>("SELECT wait_event_type IS NOT DISTINCT FROM 'Lock' AS waiting FROM pg_catalog.pg_stat_activity WHERE pid = $1", [pid]);
+          if (waiting.rows[0]?.waiting === true) {
+            break;
+          }
+          await delay(10);
+        }
+        await first.query("COMMIT");
+        expect(await later).toEqual([{ made: true }]);
+        expect(await openOf(member)).toEqual({ invitations: 1, links: 1 });
+      } finally {
+        await first.end();
+        await second.end();
+      }
+    });
+
+    it("stands its name on one line, for the app and for the owner", async () => {
+      const member = await addMembership(app, owner, alfa, { status: "invited" });
+      const insert = "INSERT INTO access.invitations (company_id, membership_id, name, email) VALUES ($1, $2, $3, 'karin.lund@example.com')";
+      for (const name of ["Karin\nLund", "Karin\r\nLund", "Karin\tLund", "Karin\u0085Lund", "Karin\u2028Lund", "Karin\u202ELund"]) {
+        await expectError(asMember(app, alfa.id, alfa.asOwner, insert, [alfa.id, member, name]), CHECK_VIOLATION, /invitations_name_one_line/);
+        await expectError(
+          inTransaction(owner, { company: alfa.id, ...alfa.asOwner, channel: "rest" }, () => owner.query(insert, [alfa.id, member, name])),
+          CHECK_VIOLATION,
+          /invitations_name_one_line/,
+        );
+      }
+      await asMember(app, alfa.id, alfa.asOwner, insert, [alfa.id, member, "Åsa Öberg-Ängström"]);
+    });
+
     it("stops when its invited member is removed, and its link with it", async () => {
       const link = await liveLink();
       await changeMembership(app, alfa, link.member, "status = 'removed'");
@@ -286,6 +381,62 @@ describe("the invitations and their links in the database", () => {
       const end = (await found(link.hash))[0]?.["expires_at"] as Date;
       expect(await found(link.hash, new Date(end.getTime() - 1))).toHaveLength(1);
       expect(await found(link.hash, end)).toEqual([]);
+    });
+
+    it("holds the company's and the sender's names on one line", async () => {
+      const { id } = await invited();
+      for (const [company, inviter, constraint] of [
+        ["Testbolaget\nAlfa AB", "Alva Berg", /invitation_links_company_name_one_line/],
+        ["Testbolaget Alfa AB", "Alva\r\nBerg", /invitation_links_inviter_name_one_line/],
+        ["Testbolaget\u2029Alfa AB", "Alva Berg", /invitation_links_company_name_one_line/],
+        ["Testbolaget Alfa AB", "Alva\u2066Berg", /invitation_links_inviter_name_one_line/],
+      ] as const) {
+        await expectError(
+          asMember(app, alfa.id, alfa.asOwner, "SELECT access.issue_invitation_link($1, $2, $3, $4, pg_catalog.clock_timestamp())", [tokenHash(), id, company, inviter]),
+          CHECK_VIOLATION,
+          constraint,
+        );
+      }
+      expect(await issue(alfa, id, tokenHash())).toBe(true);
+    });
+
+    it("is not used once a newer invitation has stopped it", async () => {
+      const link = await liveLink();
+      await invitationOf(alfa, link.member);
+      expect(await use(alfa, await addIdentity(owner), link.hash)).toBe(false);
+      expect(await linkOf(link.hash)).toMatchObject({ used: false, superseded: true });
+    });
+
+    it("makes no new identity in another company, at its end, or once a newer invitation has stopped it", async () => {
+      const link = await liveLink(alfa, "nina.ny@example.com");
+      const end = (await found(link.hash))[0]?.["expires_at"] as Date;
+      const [inBeta, atEnd, stopped] = [randomUUID(), randomUUID(), randomUUID()];
+      expect(await asNewIn(beta, inBeta, link.hash)).toBe(false);
+      expect(await asNewIn(alfa, atEnd, link.hash, end)).toBe(false);
+      await invitationOf(alfa, link.member);
+      expect(await asNewIn(alfa, stopped, link.hash)).toBe(false);
+      for (const person of [inBeta, atEnd, stopped]) {
+        expect(await identityExists(person)).toBe(false);
+      }
+      expect(await linkOf(link.hash)).toMatchObject({ used: false, superseded: true });
+      expect((await superuser.query("SELECT 1 FROM access.identities WHERE email = 'nina.ny@example.com'")).rows).toEqual([]);
+    });
+
+    it("makes no new identity whose name holds a line break or another control character", async () => {
+      const link = await liveLink(alfa, "nore.ny@example.com");
+      for (const name of ["Nore\nNy", "Nore\u2028Ny", "Nore\u009FNy"]) {
+        const person = randomUUID();
+        await expectError(asNewIn(alfa, person, link.hash, new Date(), app, name), CHECK_VIOLATION, /identities_name_one_line/);
+        expect(await identityExists(person)).toBe(false);
+      }
+      expect(await linkOf(link.hash)).toMatchObject({ used: false });
+      // The owner's insert is held too.
+      await expectError(
+        owner.query("INSERT INTO access.identities (name, email) VALUES ($1, 'nore.annan@example.com')", ["Nore\r\nAnnan"]),
+        CHECK_VIOLATION,
+        /identities_name_one_line/,
+      );
+      expect(await asNewIn(alfa, randomUUID(), link.hash)).toBe(true);
     });
 
     it("is used once, also by two parallel calls, only in its company, and only by an active identity", async () => {

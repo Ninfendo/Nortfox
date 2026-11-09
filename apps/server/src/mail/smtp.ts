@@ -6,12 +6,12 @@
 //
 // - NORTFOX_SMTP_URL: the server, as smtp://host:port, or smtps://host:port
 //   for TLS from the start, with the user name before the host when the
-//   server asks for one, as smtp://nortfox@mail.example:587. It never holds
-//   the password, as the database's URL does not. Port 587 is the default of
-//   smtp, and 465 of smtps.
-// - NORTFOX_SMTP_PASSWORD_FILE: the file that holds the user's password, when
-//   the URL names a user. With a password, smtp needs STARTTLS: the password
-//   never goes over a connection in clear.
+//   server asks for a sign-in, as smtp://nortfox@mail.example:587. It never
+//   holds the password, as the database's URL does not. Port 587 is the
+//   default of smtp, and 465 of smtps.
+// - NORTFOX_SMTP_PASSWORD_FILE: the file that holds the user's password. It
+//   is set when the URL names a user, and only then. With a password, smtp
+//   needs STARTTLS: the password never goes over a connection in clear.
 // - NORTFOX_MAIL_FROM: the sender, as nortfox@mail.example or as
 //   NortFox <nortfox@mail.example>.
 //
@@ -120,6 +120,12 @@ export function smtpSettingsOf(env: Environment, readFile: (path: string) => str
   if (passwordFile !== undefined && server.user === undefined) {
     throw new Error("NORTFOX_SMTP_PASSWORD_FILE is set, but NORTFOX_SMTP_URL names no user. Put the user name before the host, as smtp://nortfox@mail.example:587.");
   }
+  // nodemailer signs in with a user and a password, or not at all: a user alone would fail every mail to a server that asks for a sign-in.
+  if (passwordFile === undefined && server.user !== undefined) {
+    throw new Error(
+      "NORTFOX_SMTP_URL names a user, but NORTFOX_SMTP_PASSWORD_FILE is not set. Set it to the file that holds the user's password, or take the user name out of the URL.",
+    );
+  }
   return { ...server, ...(passwordFile === undefined ? {} : { password: passwordIn(passwordFile, readFile) }), from };
 }
 
@@ -135,7 +141,7 @@ export function smtpTransportOptions(settings: SmtpSettings): SMTPTransportOptio
     secure,
     requireTLS: !secure && settings.password !== undefined,
     ...TIMEOUTS,
-    ...(settings.user === undefined ? {} : { auth: { user: settings.user, ...(settings.password === undefined ? {} : { pass: settings.password }) } }),
+    ...(settings.user === undefined || settings.password === undefined ? {} : { auth: { user: settings.user, pass: settings.password } }),
   };
 }
 
@@ -150,7 +156,8 @@ export class SmtpMailer implements Mailer {
   }
 
   async send(message: MailMessage): Promise<void> {
-    await this.#transport.sendMail({ from: this.#from, to: message.to, subject: message.subject, text: message.text });
+    // An address as an object, which nodemailer never reads as a list of addresses or as a name and an address.
+    await this.#transport.sendMail({ from: this.#from, to: { name: "", address: message.to }, subject: message.subject, text: message.text });
   }
 }
 

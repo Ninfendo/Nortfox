@@ -155,6 +155,21 @@ describe("invitations", () => {
       expect(server.mail.messages).toHaveLength(mails);
     });
 
+    it("needs a name on one line and an address that is one mailbox, so the mail goes there and holds the lines it should", async () => {
+      const members = await superuser.query("SELECT id FROM access.memberships");
+      const mails = server.mail.messages.length;
+      for (const name of ["Karin\r\n\r\nAcceptera inbjudan:\nhttps://evil.example/x", "Karin\u2028Lund", "Karin\u202ELund"]) {
+        const problem = await jsonOf<ProblemBody>(await calls.inviteUser(server, company.session, { name, email: "karin.lund@example.com" }), 400);
+        expect(problem.errors?.map((error) => [error.code, error.pointer])).toEqual([["invalid-value", "/name"]]);
+      }
+      for (const email of ["victim<x@evil.example>", "a,b@evil.example", "anna@example.org,", "(c)x@example.org", "g:x@example.org;", "x@example.org\u0085"]) {
+        const problem = await jsonOf<ProblemBody>(await calls.inviteUser(server, company.session, { name: "Karin Lund", email }), 400);
+        expect(problem.errors?.map((error) => [error.code, error.pointer])).toEqual([["bad-format", "/email"]]);
+      }
+      expect((await superuser.query("SELECT id FROM access.memberships")).rows).toEqual(members.rows);
+      expect(server.mail.messages).toHaveLength(mails);
+    });
+
     it("makes an invited member and sends the invitation to its address", async () => {
       const response = await calls.inviteUser(server, company.session, { name: "Karin Lund", email: "karin.lund@example.com" });
       const member = await jsonOf<{ id: string }>(response, 201);
@@ -204,6 +219,38 @@ describe("invitations", () => {
       expect(await jsonOf<ProblemBody>(await calls.inviteUser(server, company.session, { name: "Lisa Öppen", email: "Lisa.Open@example.com" }), 422)).toMatchObject(already);
       expect(server.mail.messages).toHaveLength(mailsAfterOne);
       expect(mailsAfterOne).toBe(mails + 1);
+    });
+
+    it("refuses an address that a member has only as the work e-mail, in any letter case", async () => {
+      const member = await newMember(server, { app, owner }, company);
+      expect((await calls.updateUser(server, company.session, member.id, { workEmail: "berit.arbete@example.com" })).status).toBe(200);
+      const mails = server.mail.messages.length;
+      expect(await jsonOf<ProblemBody>(await calls.inviteUser(server, company.session, { name: "Berit Arbete", email: "Berit.Arbete@Example.com" }), 422)).toMatchObject({
+        code: "already-member",
+        pointer: "/email",
+      });
+      expect(server.mail.messages).toHaveLength(mails);
+    });
+
+    it("refuses the second of two invitations to one address at once", async () => {
+      const members = (await superuser.query("SELECT id FROM access.memberships WHERE company_id = $1", [company.id])).rows.length;
+      // The first holds the company's row, and has sent its mail, when it waits before its commit.
+      const holding = holdingWrites(pool.database, () => true, "commit");
+      const racer = signInApp(holding.database, { clock: server.clock });
+      const first = calls.inviteUser(racer, company.session, { name: "Cecilia Samtidig", email: "cecilia.samtidig@example.com" });
+      await holding.gate.reached;
+      // The second waits for the company's row, and then reads the first's invitation.
+      const second = calls.inviteUser(server, company.session, { name: "Cecilia Samtidig", email: "Cecilia.Samtidig@example.com" });
+      try {
+        await untilSomeoneWaitsForLock(superuser);
+      } finally {
+        holding.gate.open();
+      }
+      expect((await first).status).toBe(201);
+      expect(await jsonOf<ProblemBody>(await second, 422)).toMatchObject({ code: "already-member", pointer: "/email" });
+      expect((await superuser.query("SELECT id FROM access.memberships WHERE company_id = $1", [company.id])).rows).toHaveLength(members + 1);
+      expect(server.mail.to("Cecilia.Samtidig@example.com")).toEqual([]);
+      expect(racer.mail.to("cecilia.samtidig@example.com")).toHaveLength(1);
     });
 
     it("keeps its answer for a repeat with its key, and sends no second mail", async () => {
@@ -336,6 +383,25 @@ describe("invitations", () => {
       expect(await jsonOf<ProblemBody>(await accepting, 422)).toEqual(LINK_INVALID);
       expect((await membershipOf(id))?.status).toBe("invited");
       expect((await superuser.query("SELECT 1 FROM access.identities WHERE email = 'astrid.vantar@example.com'")).rows).toEqual([]);
+    });
+
+    it("stops the link of a signed-in person's acceptance that waits for the member while the resend runs", async () => {
+      const { id, token } = await invite(server, company.session, "dagny.vantar@example.com", "Dagny Väntar");
+      const person = await addSignInIdentity(owner);
+      server.clock.advance(MINUTE);
+      const { session } = await signIn(server, person);
+      const holding = holdingWrites(pool.database, () => true, "commit");
+      const racer = signInApp(holding.database, { clock: server.clock });
+      const resending = calls.resendInvitation(racer, company.session, id);
+      await holding.gate.reached;
+      // The acceptance reads the old link as live, enters the company, and waits for the member's row.
+      const accepting = calls.acceptInvitation(server, token, {}, session);
+      await untilSomeoneWaitsForLock(superuser);
+      holding.gate.open();
+      expect((await resending).status).toBe(204);
+      expect(await jsonOf<ProblemBody>(await accepting, 422)).toEqual(LINK_INVALID);
+      expect(await membershipOf(id)).toEqual({ status: "invited", user_id: null });
+      expect(await linkOf(token)).toEqual({ used: false, superseded: true });
     });
 
     it("refuses a member who is not invited, and one the company does not have", async () => {

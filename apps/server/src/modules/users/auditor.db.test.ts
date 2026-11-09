@@ -6,7 +6,9 @@
 // before its end: the session keeps each permission with the end of the
 // grant that gives it, and a request after the end no longer holds it.
 // Exportera filer and Sie-export are off in the grant until they are
-// switched on.
+// switched on. A grant that has ended counts as none: "Flytta program" gives
+// its member another member's grant of the program, and "Anpassa Rapporter"
+// and "Anpassa Register/Övrigt" neither count nor change it.
 //
 // The database stamps the grant with its own clock, so each test starts the
 // server's clock where the grant's end is near. No operation of slice 2c
@@ -16,6 +18,7 @@
 // on with updateUserRights. The member is invited with inviteUser and
 // accepts with acceptInvitation.
 
+import { setTimeout as delay } from "node:timers/promises";
 import { fullPermissions, type Me } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -183,6 +186,47 @@ describe("a Revisor grant", () => {
     // It is still the auditor's Revisor with "Full behörighet".
     expect(on.membership?.roles).toEqual(["auditor"]);
     expect(on.membership?.programs[0]).toMatchObject({ program: "auditor", full: true });
+  });
+
+  it("counts as none when a grant of the program moves to its member, and as no grant to move", async () => {
+    const ended = await auditor();
+    // The grant to move is made later, so it still holds when the first has ended.
+    await delay(50);
+    const live = await auditor();
+    expect(live.end.getTime()).toBeGreaterThan(ended.end.getTime());
+    const other = await newMember(admin, { app, owner }, company);
+    const server = serverAt(new Date(ended.end.getTime() - HOUR));
+    const session = await sessionInCompany(server, company.creator);
+    server.clock.advance(HOUR);
+    // The ended grant is no grant to move.
+    expect(await jsonOf(await calls.moveProgram(server, session, ended.membership, "auditor", { targetMemberId: other.id }), 422)).toMatchObject({ code: "program-not-granted" });
+    // The live grant goes to the member whose grant has ended, with its time and its end.
+    const moved = await jsonOf<{ program: string; grantedAt: string; expiresAt: string }>(
+      await calls.moveProgram(server, session, live.membership, "auditor", { targetMemberId: ended.membership }),
+    );
+    expect(moved).toMatchObject({ program: "auditor", grantedAt: live.grantedAt.toISOString(), expiresAt: live.end.toISOString() });
+    const grants = await asMember<{ id: string; membership_id: string }>(app, company.id, company.asOwner, "SELECT id, membership_id FROM access.program_grants WHERE program = 'auditor' AND membership_id = ANY ($1)", [
+      [ended.membership, live.membership],
+    ]);
+    expect(grants).toEqual([{ id: live.grant, membership_id: ended.membership }]);
+  });
+
+  it("is neither counted nor changed by Anpassa Rapporter and Register/Övrigt", async () => {
+    const only = await auditor();
+    const both = await auditor();
+    expect((await calls.assignProgram(admin, company.session, both.membership, "read", { full: true })).status).toBe(200);
+    const rowOf = async (grant: string): Promise<unknown[]> => asMember(app, company.id, company.asOwner, "SELECT * FROM access.program_grants WHERE id = $1", [grant]);
+    const [onlyBefore, bothBefore] = [await rowOf(only.grant), await rowOf(both.grant)];
+    // After both ends, and after the owner's sign-in of the test before, so the owner's next TOTP code is a new one.
+    const server = serverAt(new Date(both.end.getTime() + HOUR));
+    const session = await sessionInCompany(server, company.creator);
+    // No grant that holds covers the right.
+    expect(await jsonOf(await calls.updateUserRights(server, session, only.membership, ["reports.vat"]), 422)).toMatchObject({ code: "right-not-covered", pointer: "/permissions/0" });
+    // The Läs grant takes it, and the ended grant stays as it was; the answer holds the rights of the grants that hold.
+    const rights = await jsonOf<{ permissions: string[] }>(await calls.updateUserRights(server, session, both.membership, ["reports.vat"]));
+    expect(rights.permissions).toEqual(["reports.vat"]);
+    expect(await rowOf(only.grant)).toEqual(onlyBefore);
+    expect(await rowOf(both.grant)).toEqual(bothBefore);
   });
 
   it("leaves no token in an answer and no secret at rest", async () => {

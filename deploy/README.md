@@ -144,12 +144,12 @@ The server purges the login rows that have passed every 10 minutes ([db/README.m
 
 ### The mail
 
-The server sends the invitations by mail, through the install's SMTP server. Set `NORTFOX_SMTP_URL` and `NORTFOX_MAIL_FROM` together, with `NORTFOX_SMTP_PASSWORD_FILE` when the mail server asks for a password, or set none of them. Any other mix stops the server at start, and it says which setting is wrong:
+The server sends the invitations by mail, through the install's SMTP server. Set `NORTFOX_SMTP_URL` and `NORTFOX_MAIL_FROM` together, with a user name in the URL and `NORTFOX_SMTP_PASSWORD_FILE` when the mail server asks for a sign-in, or set none of them. A user name goes with a password's file, and a password's file with a user name. Any other mix stops the server at start, and it says which setting is wrong:
 
 | Setting | What it holds |
 | --- | --- |
-| `NORTFOX_SMTP_URL` | The mail server, as `smtp://host:port`, or `smtps://host:port` for TLS from the start, with the user name before the host when the server asks for one, such as `smtp://nortfox@mail.example:587`. Port 587 is the default of `smtp` and 465 of `smtps`. It holds no password, a path or a query, or the server does not start. |
-| `NORTFOX_SMTP_PASSWORD_FILE` | The file that holds the user's password, on one line, such as `secrets/smtp-password`, when the URL names a user. With a password, `smtp` needs STARTTLS, so the password never goes over a connection in clear. |
+| `NORTFOX_SMTP_URL` | The mail server, as `smtp://host:port`, or `smtps://host:port` for TLS from the start, with the user name before the host when the server asks for a sign-in, such as `smtp://nortfox@mail.example:587`. Port 587 is the default of `smtp` and 465 of `smtps`. It holds no password, a path or a query, or the server does not start. |
+| `NORTFOX_SMTP_PASSWORD_FILE` | The file that holds the user's password, on one line, such as `secrets/smtp-password`. It is set when the URL names a user, and only then. With a password, `smtp` needs STARTTLS, so the password never goes over a connection in clear. |
 | `NORTFOX_MAIL_FROM` | The sender of every mail, as `nortfox@mail.example` or as `NortFox <nortfox@mail.example>`. |
 
 With none of them set, the install has no mail: `inviteUser`, `resendInvitation` and `disconnectUserIdentity` then refuse with 422 `mail-not-configured`, and change nothing ([docs/api.md](../docs/api.md), The invitations). The server sends a mail inside the request, and waits at most 10 seconds to connect and for the mail server's greeting, and 30 seconds for each answer. A mail that the mail server refuses makes the request fail, and it changes nothing. A mail's link starts with `NORTFOX_PUBLIC_ORIGIN`: the invitation's page, `/invitations/<token>`, which the web app serves. Keep the password's file as you keep the other secrets.

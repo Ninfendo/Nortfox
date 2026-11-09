@@ -4,7 +4,7 @@
 // this test, and the build job's `pnpm openapi` with `git diff --exit-code`.
 // The client's own test does the same for src/generated.ts.
 
-import { REGISTRY, getHealth } from "@nortfox/contract";
+import { IDEMPOTENCY_KEY_ARGUMENT, REGISTRY, getHealth, toolInputSchema } from "@nortfox/contract";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { testListAccounts } from "../test/api.ts";
@@ -133,6 +133,124 @@ describe("the credentials in the API description", () => {
 
   it("names no credential for the whole description, so an operation without one needs none", () => {
     expect("security" in document).toBe(false);
+  });
+});
+
+describe("the inputs in the API description and in the tools' schemas", () => {
+  type Schema = Readonly<Record<string, unknown>>;
+  interface Described {
+    readonly components: { readonly schemas?: Record<string, Schema> };
+    readonly paths: Record<
+      string,
+      Record<
+        string,
+        {
+          readonly operationId: string;
+          readonly parameters?: readonly { readonly name: string; readonly schema: Schema }[];
+          readonly requestBody?: { readonly content: { readonly "application/json": { readonly schema: Schema } } };
+        }
+      >
+    >;
+  }
+  const document = openApiDocument(REGISTRY, "0.0.0") as Described;
+
+  /** The schema itself, or the component that it names. */
+  function resolved(schema: Schema): Schema {
+    const ref = schema["$ref"];
+    return typeof ref === "string" ? (document.components.schemas?.[ref.replace("#/components/schemas/", "")] ?? {}) : schema;
+  }
+
+  /** The schemas that a value may meet: each branch of anyOf or oneOf, or the schema. */
+  function branches(schema: Schema): Schema[] {
+    const own = resolved(schema);
+    const union = own["anyOf"] ?? own["oneOf"];
+    return Array.isArray(union) ? (union as Schema[]).flatMap(branches) : [own];
+  }
+
+  /** Whether the schema takes null: a branch whose enum holds it, whose const is it, or whose type names it with no enum. */
+  function takesNull(schema: Schema): boolean {
+    return branches(schema).some((branch) => {
+      const { enum: values, type } = branch;
+      if (Array.isArray(values)) {
+        return values.includes(null);
+      }
+      return branch["const"] === null || type === "null" || (Array.isArray(type) && type.includes("null"));
+    });
+  }
+
+  /** The values that the schema takes when they are few: each enum, const and null; undefined when it takes others too. */
+  function valuesOf(schema: Schema): unknown[] | undefined {
+    const values: unknown[] = [];
+    for (const branch of branches(schema)) {
+      if (Array.isArray(branch["enum"])) {
+        values.push(...(branch["enum"] as unknown[]));
+      } else if ("const" in branch) {
+        values.push(branch["const"]);
+      } else if (branch["type"] === "null") {
+        values.push(null);
+      } else {
+        return undefined;
+      }
+    }
+    return values.sort((one, other) => JSON.stringify(one).localeCompare(JSON.stringify(other)));
+  }
+
+  /** The fields of the object branch of a schema, and the items of its array branch. */
+  function partsOf(schema: Schema): { properties: Record<string, Schema>; items: Schema | undefined } {
+    const object = branches(schema).find((branch) => typeof branch["properties"] === "object");
+    const array = branches(schema).find((branch) => typeof branch["items"] === "object");
+    return { properties: (object?.["properties"] ?? {}) as Record<string, Schema>, items: array?.["items"] as Schema | undefined };
+  }
+
+  /** Where the tool's schema and the description differ in null or in the values they take, by the field's pointer, down every field and item. */
+  function differences(tool: Schema, described: Schema, pointer: string): string[] {
+    const own = [
+      ...(takesNull(tool) === takesNull(described) ? [] : [`${pointer}: null ${takesNull(tool) ? "taken by the tool, refused by" : "refused by the tool, taken by"} the description`]),
+      ...(JSON.stringify(valuesOf(tool)) === JSON.stringify(valuesOf(described)) ? [] : [`${pointer}: the values ${JSON.stringify(valuesOf(tool))} and ${JSON.stringify(valuesOf(described))}`]),
+    ];
+    const toolParts = partsOf(tool);
+    const describedParts = partsOf(described);
+    const fields = Object.entries(toolParts.properties).flatMap(([name, field]) => {
+      const other = describedParts.properties[name];
+      return other === undefined ? [`${pointer}/${name}: not in the description`] : differences(field, other, `${pointer}/${name}`);
+    });
+    const items = toolParts.items !== undefined && describedParts.items !== undefined ? differences(toolParts.items, describedParts.items, `${pointer}/*`) : [];
+    return [...own, ...fields, ...items];
+  }
+
+  /** Every input field of the operation as the description gives it: the path's and the query's parameters, and the body's fields. */
+  function describedInput(operationId: string): Record<string, Schema> {
+    const operation = Object.values(document.paths)
+      .flatMap((item) => Object.values(item))
+      .find((each) => each.operationId === operationId);
+    const parameters = Object.fromEntries((operation?.parameters ?? []).map((parameter) => [parameter.name, parameter.schema]));
+    const body = operation?.requestBody?.content["application/json"].schema;
+    return { ...parameters, ...(body === undefined ? {} : partsOf(body).properties) };
+  }
+
+  it.each(REGISTRY.map((operation) => [operation.operationId, operation] as const))("%s takes null and the same few values in both, in every field", (operationId, operation) => {
+    const described = describedInput(operationId);
+    const tool = toolInputSchema(operation);
+    const problems = Object.entries(partsOf(tool).properties)
+      .filter(([name]) => name !== IDEMPOTENCY_KEY_ARGUMENT)
+      .flatMap(([name, field]) => {
+        const other = described[name];
+        return other === undefined ? [`/${name}: not in the description`] : differences(field, other, `/${name}`);
+      });
+    expect(problems).toEqual([]);
+  });
+
+  it("sees a nullable field of a few values whose null the description leaves out", () => {
+    const tool = { anyOf: [{ type: "string", const: "admin" }, { type: "null" }] };
+    expect(differences(tool, { type: ["string", "null"], enum: ["admin"] }, "/adminLevel")).toEqual([
+      "/adminLevel: null taken by the tool, refused by the description",
+      '/adminLevel: the values ["admin",null] and ["admin"]',
+    ]);
+    expect(differences(tool, { type: ["string", "null"], enum: ["admin", null] }, "/adminLevel")).toEqual([]);
+    expect(differences({ type: "object", properties: { level: tool } }, { type: "object", properties: { level: { type: "string", enum: ["admin"] } } }, "")).toEqual([
+      "/level: null taken by the tool, refused by the description",
+      '/level: the values ["admin",null] and ["admin"]',
+    ]);
   });
 });
 

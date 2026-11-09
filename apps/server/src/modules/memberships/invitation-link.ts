@@ -25,10 +25,12 @@
 //   So of two acceptances of one link at once, the second waits for the
 //   first's lock and finds the member accepted. A link that is unknown, used, stopped or past its end
 //   gets one answer, 422 invitation-link-invalid, and a refusal changes
-//   nothing. An address that another identity has (email-taken) and a
-//   person's second live membership in the company (already-member), which
-//   only a race can get past the server's check, are the database's unique
-//   keys, which the runner answers as rules.
+//   nothing. An address that another identity has (email-taken) is the
+//   identities' unique key, the only check of a new identity's address,
+//   since the app reads no other identity. A person's second live
+//   membership in the company (already-member), which only a race can get
+//   past the server's check, is the memberships' unique key. The runner
+//   answers both as rules.
 //
 // The answer gives the person and the membership, and for a new identity
 // its TOTP secret, which no answer gives again. It sets no session: a new

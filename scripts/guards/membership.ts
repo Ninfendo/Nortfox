@@ -20,6 +20,9 @@
 //   one of them, to a Principal or to a request's context.
 // - Only modules/users/delete-me.ts calls liveForDeletion, the deletion's
 //   form of the function, which gives inactive memberships too.
+// - Only modules/memberships/invitation-link.ts calls invitationEntry, the
+//   one way into a company beside the function: the live link of an
+//   invitation, to accept it and for nothing else.
 // - Only db/database.ts sets the transaction's company, actor, actor's kind
 //   or channel: no other file names them (nortfox.company_id and the rest),
 //   or names a way to set a setting whose name comes from elsewhere:
@@ -85,6 +88,9 @@ export const SETTING_EXCEPTIONS: Readonly<Record<string, string>> = {
 
 /** The one file that may call the deletion's form. */
 export const DELETE_ME = "apps/server/src/modules/users/delete-me.ts";
+
+/** The one file that may call the invitation's entry: the acceptance. */
+export const INVITATION_LINK = "apps/server/src/modules/memberships/invitation-link.ts";
 
 /** The code the server runs: its own source, and the workspace packages it may import. */
 export const SCANNED = ["apps/server/src/", "packages/contract/src/", "packages/engine/src/"] as const;
@@ -277,6 +283,7 @@ const UNICODE_ESCAPES = new RegExp(`${NOT_AN_IDENTIFIER_BEFORE}u&\\\\?["']`, "gi
 
 const TOKEN = /\bMEMBERSHIP_TOKEN\b/g;
 const DELETION = /\bliveForDeletion\b/g;
+const INVITATION_ENTRY = /\binvitationEntry\b/g;
 
 /**
  * A path, in any string, of a *.test.* file or of a file in a test/ folder,
@@ -332,6 +339,10 @@ const RULES: readonly Rule[] = [
   {
     patterns: (path) => (path === RESOLVE || path === DELETE_ME ? [] : [DELETION]),
     problem: () => `calls liveForDeletion, which only ${DELETE_ME} calls.`,
+  },
+  {
+    patterns: (path) => (path === RESOLVE || path === INVITATION_LINK ? [] : [INVITATION_ENTRY]),
+    problem: () => `calls invitationEntry, which only ${INVITATION_LINK} calls, to accept an invitation.`,
   },
   {
     patterns: () => [TEST_PATH],

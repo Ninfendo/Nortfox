@@ -362,6 +362,32 @@ export function appPool(db: TestDatabase, max: number): AppPool {
   return { pool, database: databaseOver(pool, (error) => errors.push(error)), errors };
 }
 
+/**
+ * A pool of the app's connections whose first statement that `statement`
+ * matches waits at the gate before it is sent, in the middle of its
+ * transaction: so a test runs other requests to their commit between two
+ * statements of one request.
+ */
+export function appPoolHolding(db: TestDatabase, max: number, statement: RegExp): AppPool & { readonly gate: Gate } {
+  const pool = new Pool({ ...connectionConfig(urlOf("nortfox_app", db.name)), max });
+  const held = gate();
+  let armed = true;
+  pool.on("connect", (client) => {
+    const query = client.query.bind(client) as (text: unknown, values?: unknown) => Promise<unknown>;
+    Object.assign(client, {
+      query: async (text: unknown, values?: unknown): Promise<unknown> => {
+        if (armed && typeof text === "string" && statement.test(text)) {
+          armed = false;
+          await held.pass();
+        }
+        return query(text, values);
+      },
+    });
+  });
+  const errors: Error[] = [];
+  return { pool, database: databaseOver(pool, (error) => errors.push(error)), errors, gate: held };
+}
+
 /** The test app: the test registry and handlers, the passwords at the tests' small cost, and the routes checked as startServer checks them. */
 export function buildTestApp(options: Pick<AppOptions, "database" | "resolve"> & Partial<AppOptions>): ServerApp {
   const app = createApp({

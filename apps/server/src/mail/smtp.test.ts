@@ -67,11 +67,14 @@ describe("the SMTP settings", () => {
       port: 587,
       from: "nortfox@mail.example",
     });
-    expect(smtpSettingsOf({ NORTFOX_SMTP_URL: "smtps://n%40x@mail.example/", NORTFOX_MAIL_FROM: "nortfox@mail.example" }, files())).toEqual({
+    expect(
+      smtpSettingsOf({ NORTFOX_SMTP_URL: "smtps://n%40x@mail.example/", NORTFOX_SMTP_PASSWORD_FILE: "/run/secrets/smtp-password", NORTFOX_MAIL_FROM: "nortfox@mail.example" }, files()),
+    ).toEqual({
       protocol: "smtps:",
       host: "mail.example",
       port: 465,
       user: "n@x",
+      password: PASSWORD,
       from: "nortfox@mail.example",
     });
   });
@@ -91,6 +94,11 @@ describe("the SMTP settings", () => {
     ["a query", { ...ALL, NORTFOX_SMTP_URL: "smtp://nortfox@mail.example?tls=no" }, "NORTFOX_SMTP_URL must hold only the protocol"],
     ["a fragment", { ...ALL, NORTFOX_SMTP_URL: "smtp://nortfox@mail.example#x" }, "NORTFOX_SMTP_URL must hold only the protocol"],
     ["a password's file with no user", { ...ALL, NORTFOX_SMTP_URL: "smtp://mail.example" }, "NORTFOX_SMTP_PASSWORD_FILE is set, but NORTFOX_SMTP_URL names no user."],
+    [
+      "a user with no password's file",
+      { NORTFOX_SMTP_URL: "smtp://nortfox@mail.example:587", NORTFOX_MAIL_FROM: "nortfox@mail.example" },
+      "NORTFOX_SMTP_URL names a user, but NORTFOX_SMTP_PASSWORD_FILE is not set.",
+    ],
   ])("refuse %s", (_case, env, message) => {
     expect(refusal(env)).toContain(message);
   });
@@ -128,10 +136,6 @@ describe("the SMTP transport", () => {
       requireTLS: false,
       ...timeouts,
     });
-    expect(smtpTransportOptions({ protocol: "smtp:", host: "mail.example", port: 25, user: "nortfox", from: "nortfox@mail.example" })).toMatchObject({
-      requireTLS: false,
-      auth: { user: "nortfox" },
-    });
   });
 
   it("makes a mailer of the settings, which connects only when a mail goes", () => {
@@ -161,6 +165,28 @@ describe("the SMTP mailer", () => {
         subject: "Inbjudan till Testbolaget Alfa AB i NortFox",
         text: "Hej Karin Lund!",
       }),
+    ]);
+  });
+
+  it("gives nodemailer the address as one mailbox, never as a list or with a name that it would read in it", async () => {
+    const sent: { to: unknown; envelope: unknown }[] = [];
+    const json = nodemailer.createTransport({ jsonTransport: true });
+    const mailer = new SmtpMailer(
+      {
+        sendMail: async (mail) => {
+          const info = await json.sendMail(mail);
+          sent.push({ to: (JSON.parse(info.message) as { to: unknown }).to, envelope: info.envelope });
+          return info;
+        },
+      },
+      "nortfox@mail.example",
+    );
+    // The API takes no such address (address.ts); the mailer never reads one as two, or as a name and another address.
+    await mailer.send({ to: "a,b@evil.example", subject: "s", text: "t" });
+    await mailer.send({ to: "victim<x@evil.example>", subject: "s", text: "t" });
+    expect(sent).toEqual([
+      { to: [{ address: '"a,b"@evil.example', name: "" }], envelope: { from: "nortfox@mail.example", to: ['"a,b"@evil.example'] } },
+      { to: [{ address: '"victim x"@evil.example', name: "" }], envelope: { from: "nortfox@mail.example", to: ['"victim x"@evil.example'] } },
     ]);
   });
 

@@ -12,9 +12,15 @@
 // - moveProgram, "Flytta program": the grant goes to another member, who
 //   must not hold the program, narrowed first when a list says so. It keeps
 //   its time and its end, so a move never restarts a Revisor grant's days.
+//   The target's grant of the program that has ended is taken away first.
 // - updateUserRights, "Anpassa Rapporter" and "Anpassa Register/Övrigt":
 //   the member's Rapporter and Register/Övrigt rights, set in each grant in
 //   reach whose program covers them; each grant keeps its program's own.
+//
+// A grant that has ended, a Revisor grant after its days by the server's
+// clock, gives nothing, so it counts as none: no move takes it, a move or a
+// new grant replaces it, and Anpassa neither counts it nor changes it.
+// removeProgram still takes it away.
 //
 // The database holds every grant to its program's set and to the view rule
 // (NF024, NF023). The server checks the same of a list first, so the
@@ -78,7 +84,7 @@ function listProblem(program: Program, permissions: readonly CataloguePermission
 
 export const assignProgramHandler = handleData(assignProgram, async ({ context, tx, now }, { params, body }) => {
   const { program } = params;
-  if (!reaches(await reachOf(tx, context.company), program)) {
+  if (!reaches(reachOf(context.company), program)) {
     return notAdministered(program);
   }
   const member = await holdMember(tx, params.memberId);
@@ -103,7 +109,7 @@ export const assignProgramHandler = handleData(assignProgram, async ({ context, 
 
 export const removeProgramHandler = handleData(removeProgram, async ({ context, tx }, { params }) => {
   const { program } = params;
-  if (!reaches(await reachOf(tx, context.company), program)) {
+  if (!reaches(reachOf(context.company), program)) {
     return notAdministered(program);
   }
   const member = await holdMember(tx, params.memberId);
@@ -118,9 +124,9 @@ export const removeProgramHandler = handleData(removeProgram, async ({ context, 
   return ok({});
 });
 
-export const moveProgramHandler = handleData(moveProgram, async ({ context, tx }, { params, body }) => {
+export const moveProgramHandler = handleData(moveProgram, async ({ context, tx, now }, { params, body }) => {
   const { program } = params;
-  if (!reaches(await reachOf(tx, context.company), program)) {
+  if (!reaches(reachOf(context.company), program)) {
     return notAdministered(program);
   }
   const held = await holdMembers(tx, [params.memberId, body.targetMemberId]);
@@ -132,11 +138,13 @@ export const moveProgramHandler = handleData(moveProgram, async ({ context, tx }
   if (target === undefined) {
     return userNotFound("targetMemberId");
   }
-  const grant: HeldGrant | undefined = (await grantsOf(tx, source.id)).find((each) => each.program === program);
+  const at = now();
+  const grant: HeldGrant | undefined = (await grantsOf(tx, source.id)).find((each) => each.program === program && grantHolds(each, at));
   if (grant === undefined) {
     return notGranted();
   }
-  if ((await grantsOf(tx, target.id)).some((each) => each.program === program)) {
+  const targetGrant = (await grantsOf(tx, target.id)).find((each) => each.program === program);
+  if (targetGrant !== undefined && grantHolds(targetGrant, at)) {
     return refused({ code: "program-already-granted", detail: "The member that targetMemberId names holds the program already.", pointer: "/targetMemberId" });
   }
   const permissions = (body.permissions ?? grant.permissions) as readonly CataloguePermissionKey[];
@@ -153,6 +161,9 @@ export const moveProgramHandler = handleData(moveProgram, async ({ context, tx }
   const problem = listProblem(program, permissions);
   if (problem !== undefined) {
     return refused(problem);
+  }
+  if (targetGrant !== undefined) {
+    await deleteGrant(tx, targetGrant);
   }
   return ok(grantOutput(await moveGrant(tx, grant, target.id, permissions)));
 });
@@ -173,7 +184,7 @@ function inOrder(wanted: ReadonlySet<string>): string[] {
   return CATALOGUE_PERMISSIONS.map((permission) => permission.key).filter((key) => wanted.has(key));
 }
 
-export const updateUserRightsHandler = handleData(updateUserRights, async ({ context, tx }, { params, body }) => {
+export const updateUserRightsHandler = handleData(updateUserRights, async ({ context, tx, now }, { params, body }) => {
   const { permissions } = body;
   const own = permissions.flatMap((permission, index) =>
     reportOrRegister(permission)
@@ -187,8 +198,9 @@ export const updateUserRightsHandler = handleData(updateUserRights, async ({ con
   if (member === undefined) {
     return userNotFound();
   }
-  const reach = await reachOf(tx, context.company);
-  const grants = (await grantsOf(tx, member.id)).filter((grant) => reaches(reach, grant.program));
+  const reach = reachOf(context.company);
+  const at = now();
+  const grants = (await grantsOf(tx, member.id)).filter((grant) => reaches(reach, grant.program) && grantHolds(grant, at));
   for (const [index, permission] of permissions.entries()) {
     if (!grants.some((grant) => programPermissions(grant.program).includes(permission))) {
       return refused({ code: "right-not-covered", detail: "No program that the member holds covers the right.", pointer: `/permissions/${String(index)}`, data: { permission } });
@@ -203,7 +215,7 @@ export const updateUserRightsHandler = handleData(updateUserRights, async ({ con
   }
   const programs = (await readPrograms(tx, member.id)).grants.filter((grant) => reaches(reach, grant.program));
   return ok({
-    permissions: inOrder(new Set(programs.flatMap((grant) => grant.permissions.filter(reportOrRegister)))),
+    permissions: inOrder(new Set(programs.filter((grant) => grantHolds(grant, at)).flatMap((grant) => grant.permissions.filter(reportOrRegister)))),
     programs: programs.map(grantOutput),
   });
 });

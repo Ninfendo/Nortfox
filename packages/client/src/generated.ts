@@ -166,7 +166,7 @@ export interface Me {
   readonly company?: Company;
   readonly membership?: Membership;
   /**
-   * The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.
+   * The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.
    */
   readonly permissions: readonly string[];
 }
@@ -201,7 +201,7 @@ export interface Member {
    */
   readonly idleTimeout: 15 | 30 | 60 | 120 | 480;
   /**
-   * The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed.
+   * The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. An invited member has one only when updateUser gave it, and accepting the invitation sets it to the invitation's address. A removed, a left or a disconnected member has none.
    */
   readonly workEmail?: string;
   /**
@@ -248,7 +248,7 @@ export interface Membership {
    */
   readonly idleTimeout: 15 | 30 | 60 | 120 | 480;
   /**
-   * The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed.
+   * The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. An invited member has one only when updateUser gave it, and accepting the invitation sets it to the invitation's address. A removed, a left or a disconnected member has none.
    */
   readonly workEmail?: string;
   /**
@@ -669,7 +669,7 @@ export interface Operations {
   createCompany(
     input: {
       /**
-       * The company's name.
+       * The company's name, on one line.
        */
       readonly name: string;
       /**
@@ -707,7 +707,7 @@ export interface Operations {
   updateCompany(
     input: {
       /**
-       * The company's name.
+       * The company's name, on one line.
        */
       readonly name?: string;
       /**
@@ -813,7 +813,7 @@ export interface Operations {
        */
       readonly newIdentity?: {
         /**
-         * The person's name.
+         * The person's name, on one line.
          */
         readonly name: string;
         /**
@@ -986,11 +986,11 @@ export interface Operations {
       readonly token: string;
     } & {
       /**
-       * The person's name.
+       * The person's name, on one line.
        */
       readonly name: string;
       /**
-       * The person's personal e-mail address.
+       * The person's personal e-mail address, one mailbox.
        */
       readonly email: string;
       /**
@@ -1057,11 +1057,11 @@ export interface Operations {
   inviteUser(
     input: {
       /**
-       * Namn: the invited person's name.
+       * Namn: the invited person's name, on one line.
        */
       readonly name: string;
       /**
-       * E-postadress: where the invitation goes. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.
+       * E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.
        */
       readonly email: string;
     },
@@ -1139,7 +1139,7 @@ export interface Operations {
       /**
        * admin makes the member a system administrator, or keeps the level of one; null makes them no longer one. Only creating a company gives the owner's level.
        */
-      readonly adminLevel?: "admin";
+      readonly adminLevel?: "admin" | null;
       /**
        * Every program the member administers, Programadministratör: the list replaces the one there was.
        */

@@ -17,7 +17,8 @@
 //   changed: the database keeps the transaction's first actor and channel,
 //   and refuses another (a lookup sets its person once, later, with actAs).
 //   The company is set at the start, or once later, from the one function's
-//   answer or for a company the work makes (enter and inNewCompany, below).
+//   answer, from a live invitation link to accept it, or for a company the
+//   work makes (enter and inNewCompany, below).
 //   They end with the transaction, so a pooled connection never carries them
 //   on: after it, PostgreSQL gives '', which the database reads as unset.
 // - A read runs at REPEATABLE READ READ ONLY, so a page and its total come
@@ -266,7 +267,8 @@ const COMPANY_SET = "The transaction works in a company already. It sets its com
 /**
  * A person's transaction over `tx`, which starts in no company: its queries,
  * and one company, entered from a membership that the one function gave in
- * it, or made by the work.
+ * it, or from a live invitation link that the database gave in it, to accept
+ * the invitation, or made by the work.
  */
 function personOver(tx: Queryable, settings: PersonSettings): PersonQueryable {
   let companySet = false;

@@ -25,7 +25,7 @@
 // naming the function, the memberships, the token or the transaction's
 // settings, and from building either object by hand.
 
-import { ADMIN_LEVELS, type AdminLevel } from "@nortfox/contract";
+import { ADMIN_LEVELS, PROGRAMS, type AdminLevel, type Program } from "@nortfox/contract";
 import type { Queryable } from "../../db/database.ts";
 
 /** The token that only this module holds. A constructor refuses every caller without it. */
@@ -60,8 +60,9 @@ export interface MembershipCompany {
 
 /**
  * The company a request works in, as a principal holds it: the membership
- * that gives it, its person, its admin level, and the permissions the person
- * holds there, each once and in order, in a list that never changes. Made
+ * that gives it, its person, its admin level, the permissions the person
+ * holds there, each once and in order, and the programs they administer
+ * there, in the catalogue's order, in lists that never change. Made
  * only from a ResolvedMembership. A transaction in a company takes its
  * company only as one of these, for its person (db/database.ts).
  */
@@ -72,8 +73,10 @@ export class CompanyAccess {
   readonly personId: string;
   readonly adminLevel: AdminLevel | null;
   readonly permissions: readonly string[];
+  /** The programs the person administers there, as the credential took them: a session when it chose the company. */
+  readonly programsAdministered: readonly Program[];
 
-  constructor(token: symbol, membership: ResolvedMembership, permissions: Iterable<string>) {
+  constructor(token: symbol, membership: ResolvedMembership, permissions: Iterable<string>, programsAdministered: Iterable<Program>) {
     if (token !== MEMBERSHIP_TOKEN) {
       throw new Error("Only modules/memberships/resolve.ts makes a CompanyAccess, from a membership that the one membership function gave.");
     }
@@ -82,6 +85,8 @@ export class CompanyAccess {
     this.personId = membership.personId;
     this.adminLevel = membership.adminLevel;
     this.permissions = Object.freeze([...new Set(permissions)].sort());
+    const administered = new Set(programsAdministered);
+    this.programsAdministered = Object.freeze(PROGRAMS.filter((program) => administered.has(program)));
     Object.freeze(this);
   }
 }
@@ -132,9 +137,9 @@ export class ResolvedMembership {
     Object.freeze(this);
   }
 
-  /** The company access this membership gives, with the permissions the person holds there. */
-  access(permissions: Iterable<string>): CompanyAccess {
-    return new CompanyAccess(MEMBERSHIP_TOKEN, this, permissions);
+  /** The company access this membership gives, with the permissions the person holds there and the programs they administer. */
+  access(permissions: Iterable<string>, programsAdministered: Iterable<Program> = []): CompanyAccess {
+    return new CompanyAccess(MEMBERSHIP_TOKEN, this, permissions, programsAdministered);
   }
 
   /** Whether the function gave this membership in `transaction`. */

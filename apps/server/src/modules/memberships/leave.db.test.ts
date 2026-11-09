@@ -130,6 +130,28 @@ describe("leaving a company", () => {
     expect(await rowOf(member.id)).toMatchObject({ status: "removed" });
   });
 
+  it.each([
+    ["deactivation", "inactive"],
+    ["disconnect", "invited"],
+  ] as const)("a leave that waits for the membership's %s finds the company no longer available, and leaves the member as the change made it", async (change, status) => {
+    const member = await newMember(server, { app, owner }, company);
+    const session = await sessionIn(server, member.person, company.id);
+    // The change holds the membership's row when it waits before its commit.
+    const holding = holdingWrites(pool.database, () => true, "commit");
+    const racer = signInApp(holding.database, { clock: server.clock });
+    const changing = change === "deactivation" ? calls.updateUser(racer, company.session, member.id, { active: false }) : calls.disconnectUserIdentity(racer, company.session, member.id);
+    await holding.gate.reached;
+    // The leave finds the membership active, and waits for its row.
+    const leaving = calls.leaveCompany(server, session, company.id);
+    await untilSomeoneWaitsForLock(superuser);
+    holding.gate.open();
+    expect((await changing).status).toBe(200);
+    expect(await jsonOf<ProblemBody>(await leaving, 422)).toMatchObject({ code: "company-not-available", pointer: "/companyId" });
+    expect(await rowOf(member.id)).toEqual(
+      change === "deactivation" ? { status, user_id: member.person.id, live_user_id: member.person.id } : { status, user_id: null, live_user_id: null },
+    );
+  });
+
   it("the last system administrator cannot leave", async () => {
     const alone = await apiCompany(server, { app, owner }, "Testbolaget Ensam AB");
     expect(await jsonOf<ProblemBody>(await calls.leaveCompany(server, alone.session, alone.id), 422)).toEqual({

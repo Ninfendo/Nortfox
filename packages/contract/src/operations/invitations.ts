@@ -15,7 +15,7 @@ import { z } from "zod";
 import { personal } from "../fields.ts";
 import { defineOperation } from "../operation.ts";
 import { newPassword } from "../password.ts";
-import { noNul, wellFormed } from "../text.ts";
+import { noNul, singleLine, wellFormed } from "../text.ts";
 import { TotpEnrolment, token } from "./auth.ts";
 import { Membership } from "./companies.ts";
 import { User } from "./me.ts";
@@ -89,7 +89,7 @@ export const acceptInvitation = defineOperation({
   body: z.strictObject({
     newIdentity: z
       .strictObject({
-        name: z.string().min(1).max(200).check(noNul(), wellFormed()).meta({ description: "The person's name." }),
+        name: z.string().min(1).max(200).check(noNul(), wellFormed(), singleLine()).meta({ description: "The person's name, on one line." }),
         password: z.string().check(newPassword()).meta({ description: "The password: 12 to 1024 characters." }),
       })
       .optional()

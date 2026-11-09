@@ -17,7 +17,7 @@ import {
   PROTOCOL_VERSION_META_KEY,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import { CATALOGUE_PERMISSIONS } from "@nortfox/contract";
+import { CATALOGUE_PERMISSIONS, MAILBOX } from "@nortfox/contract";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -106,8 +106,8 @@ const COUNTRY_DETAIL = (description: string) => ({ ...DETAIL(description), patte
 const DETAIL_INPUT = (description: string, maxLength: number) => ({ description: `${description} null takes it away.`, anyOf: [{ type: "string", minLength: 1, maxLength }, { type: "null" }] });
 const COUNTRY_INPUT = (description: string) => ({ description: `${description} null takes it away.`, anyOf: [{ type: "string", pattern: "^[A-Z]{2}$" }, { type: "null" }] });
 
-/** What a work e-mail address must look like, as z.email() with the Unicode pattern writes it. */
-const EMAIL = { type: "string", maxLength: 254, format: "email", pattern: '^[^\\s@"]{1,64}@[^\\s@]{1,255}$' };
+/** What an e-mail address must look like, as z.email() with the pattern of one mailbox writes it (packages/contract/src/address.ts). */
+const EMAIL = { type: "string", maxLength: 254, format: "email", pattern: MAILBOX.source };
 
 const COMPANY_SCHEMA = {
   type: "object",
@@ -203,7 +203,7 @@ const MEMBERSHIP_FIELDS = {
   workEmail: {
     type: "string",
     description:
-      "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed.",
+      "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. An invited member has one only when updateUser gave it, and accepting the invitation sets it to the invitation's address. A removed, a left or a disconnected member has none.",
   },
   workPhone: { type: "string", description: "The person's work phone number in this company. Absent when none is set." },
   roles: {
@@ -270,7 +270,7 @@ const COMPANY_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", minLength: 1, maxLength: 200, description: "The company's name." },
+        name: { type: "string", minLength: 1, maxLength: 200, description: "The company's name, on one line." },
         organizationNumber: { type: "string", pattern: "^[0-9]{6}-[0-9]{4}$", description: "The organisation number: ten digits with a hyphen after the sixth." },
         idempotencyKey: IDEMPOTENCY_KEY,
       },
@@ -359,7 +359,7 @@ const COMPANY_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        name: { description: "The company's name.", type: "string", minLength: 1, maxLength: 200 },
+        name: { description: "The company's name, on one line.", type: "string", minLength: 1, maxLength: 200 },
         address: DETAIL_INPUT("Adress: the postal address's street or box line.", 200),
         zipCode: DETAIL_INPUT("Postnummer: the postal address's postal code.", 20),
         city: DETAIL_INPUT("Ort: the postal address's town.", 100),
@@ -552,7 +552,7 @@ const USER_TOOLS = [
         },
         adminLevel: {
           description: "admin makes the member a system administrator, or keeps the level of one; null makes them no longer one. Only creating a company gives the owner's level.",
-          anyOf: [{ type: "string", const: "admin" }, { type: "null" }],
+          anyOf: [{ type: "string", enum: ["admin"] }, { type: "null" }],
         },
         programsAdministered: {
           description: "Every program the member administers, Programadministratör: the list replaces the one there was.",
@@ -668,10 +668,10 @@ const INVITATION_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", minLength: 1, maxLength: 200, description: "Namn: the invited person's name." },
+        name: { type: "string", minLength: 1, maxLength: 200, description: "Namn: the invited person's name, on one line." },
         email: {
           ...EMAIL,
-          description: "E-postadress: where the invitation goes. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.",
+          description: "E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.",
         },
         idempotencyKey: IDEMPOTENCY_KEY,
       },
@@ -735,7 +735,7 @@ const INVITATION_TOOLS = [
             "Skapa ett nytt NortFox ID: the new identity's name and password. It takes the invitation's e-mail address. Left out, Koppla ihop med befintligt NortFox ID: the signed-in person accepts.",
           type: "object",
           properties: {
-            name: { type: "string", minLength: 1, maxLength: 200, description: "The person's name." },
+            name: { type: "string", minLength: 1, maxLength: 200, description: "The person's name, on one line." },
             password: { type: "string", description: "The password: 12 to 1024 characters." },
           },
           required: ["name", "password"],
@@ -795,8 +795,8 @@ const SIGN_IN_TOOLS = [
       type: "object",
       properties: {
         token: { type: "string", pattern: "^nfu_[A-Za-z0-9_-]{43}$", description: "The setup link's token, which the install's setup command printed." },
-        name: { type: "string", minLength: 1, maxLength: 200, description: "The person's name." },
-        email: { type: "string", maxLength: 254, format: "email", pattern: '^[^\\s@"]{1,64}@[^\\s@]{1,255}$', description: "The person's personal e-mail address." },
+        name: { type: "string", minLength: 1, maxLength: 200, description: "The person's name, on one line." },
+        email: { ...EMAIL, description: "The person's personal e-mail address, one mailbox." },
         password: { type: "string", description: "The password: 12 to 1024 characters." },
       },
       required: ["token", "name", "email", "password"],
@@ -932,7 +932,7 @@ const SIGN_IN_TOOLS = [
           type: "array",
           items: { type: "string" },
           description:
-            "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, and the rights of the member's program grants. " +
+            "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. " +
             "A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.",
         },
       },

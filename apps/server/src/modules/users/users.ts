@@ -41,10 +41,10 @@ export function userNotFound(field = "memberId"): Answer<never> {
   });
 }
 
-export const listUsersHandler = handleList(listUsers, async ({ context, tx, now, page }) => ok(await memberPage(tx, page, now(), await reachOf(tx, context.company))));
+export const listUsersHandler = handleList(listUsers, async ({ context, tx, now, page }) => ok(await memberPage(tx, page, now(), reachOf(context.company))));
 
 export const getUserHandler = handleData(getUser, async ({ context, tx, now }, { params }) => {
-  const member = await readMember(tx, params.memberId, now(), await reachOf(tx, context.company));
+  const member = await readMember(tx, params.memberId, now(), reachOf(context.company));
   return member === undefined ? userNotFound() : ok(member);
 });
 

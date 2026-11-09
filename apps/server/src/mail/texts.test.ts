@@ -45,6 +45,29 @@ describe("the invitation's mail", () => {
     expect(invitationTokenIn(mail)).toBe(TOKEN);
   });
 
+  it("puts each name on one line, so no name adds a line to the mail or turns its text around", () => {
+    // The API refuses such a name (packages/contract/src/text.ts); the text holds even so.
+    const mail = invitationMail({
+      to: "karin.lund@example.com",
+      name: "Karin\r\n\r\nAcceptera inbjudan:\nhttps://evil.example/x",
+      companyName: "Testbolaget\u2028Alfa\u0085AB",
+      inviterName: "Alva\u202E Berg\t",
+      link: invitationLink(MAIL_ORIGIN, TOKEN),
+    });
+    expect(mail.subject).toBe("Inbjudan till Testbolaget Alfa AB i NortFox");
+    const lines = mail.text.split("\n");
+    expect(lines).toHaveLength(10);
+    expect(lines.slice(0, 6)).toEqual([
+      "Hej Karin    Acceptera inbjudan: https://evil.example/x!",
+      "",
+      "Alva  Berg  har bjudit in dig som användare i Testbolaget Alfa AB i NortFox.",
+      "",
+      "Acceptera inbjudan:",
+      `https://nortfox.example/invitations/${TOKEN}`,
+    ]);
+    expect(mail.text).not.toMatch(/[\r\u2028\u2029\u0085\u202E\t]/u);
+  });
+
   it("links the web app's page of the invitation, on the install's own origin", () => {
     expect(INVITATION_PAGE).toBe("/invitations/");
     expect(invitationLink("https://bokforing.example", TOKEN)).toBe(`https://bokforing.example/invitations/${TOKEN}`);

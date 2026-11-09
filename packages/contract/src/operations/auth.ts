@@ -8,7 +8,8 @@
 import { z } from "zod";
 import { NoBody, defineOperation } from "../operation.ts";
 import { newPassword } from "../password.ts";
-import { noNul, wellFormed } from "../text.ts";
+import { emailAddress } from "../address.ts";
+import { noNul, singleLine, wellFormed } from "../text.ts";
 import { User } from "./me.ts";
 
 /** A token's form: nf, its kind's letter, an underscore and 43 characters of base64url. */
@@ -52,12 +53,8 @@ export const completeSetup = defineOperation({
     "The answer gives the new TOTP secret, and no answer gives it again. It sets no session: the person signs in next, with the password and a code.",
   params: z.strictObject({ token: token("u", "The setup link's token, which the install's setup command printed.") }),
   body: z.strictObject({
-    name: z.string().min(1).max(200).check(noNul(), wellFormed()).meta({ description: "The person's name." }),
-    email: z
-      .email({ pattern: z.regexes.unicodeEmail })
-      .max(254)
-      .check(noNul(), wellFormed())
-      .meta({ description: "The person's personal e-mail address." }),
+    name: z.string().min(1).max(200).check(noNul(), wellFormed(), singleLine()).meta({ description: "The person's name, on one line." }),
+    email: emailAddress().meta({ description: "The person's personal e-mail address, one mailbox." }),
     password: z.string().check(newPassword()).meta({ description: "The password: 12 to 1024 characters." }),
   }),
   output: SetupResult,

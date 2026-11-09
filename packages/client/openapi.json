@@ -343,7 +343,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company."
+            "description": "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company."
           }
         },
         "required": [
@@ -399,7 +399,7 @@
           },
           "workEmail": {
             "type": "string",
-            "description": "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed."
+            "description": "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. An invited member has one only when updateUser gave it, and accepting the invitation sets it to the invitation's address. A removed, a left or a disconnected member has none."
           },
           "workPhone": {
             "type": "string",
@@ -851,7 +851,7 @@
           },
           "workEmail": {
             "type": "string",
-            "description": "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed."
+            "description": "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. An invited member has one only when updateUser gave it, and accepting the invitation sets it to the invitation's address. A removed, a left or a disconnected member has none."
           },
           "workPhone": {
             "type": "string",
@@ -1157,7 +1157,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "description": "The company's name."
+                    "description": "The company's name, on one line."
                   },
                   "address": {
                     "type": [
@@ -1400,13 +1400,13 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "description": "The person's name."
+                    "description": "The person's name, on one line."
                   },
                   "email": {
                     "type": "string",
                     "maxLength": 254,
                     "format": "email",
-                    "description": "The person's personal e-mail address."
+                    "description": "The person's personal e-mail address, one mailbox."
                   },
                   "password": {
                     "type": "string",
@@ -2155,7 +2155,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "description": "The company's name."
+                    "description": "The company's name, on one line."
                   },
                   "organizationNumber": {
                     "type": "string",
@@ -3098,13 +3098,13 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "description": "Namn: the invited person's name."
+                    "description": "Namn: the invited person's name, on one line."
                   },
                   "email": {
                     "type": "string",
                     "maxLength": 254,
                     "format": "email",
-                    "description": "E-postadress: where the invitation goes. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address."
+                    "description": "E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address."
                   }
                 },
                 "required": [
@@ -3396,7 +3396,8 @@
                       "null"
                     ],
                     "enum": [
-                      "admin"
+                      "admin",
+                      null
                     ],
                     "description": "admin makes the member a system administrator, or keeps the level of one; null makes them no longer one. Only creating a company gives the owner's level."
                   },
@@ -4788,7 +4789,7 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 200,
-                        "description": "The person's name."
+                        "description": "The person's name, on one line."
                       },
                       "password": {
                         "type": "string",

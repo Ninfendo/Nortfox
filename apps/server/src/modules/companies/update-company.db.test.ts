@@ -140,6 +140,8 @@ describe("updateCompany", () => {
       [{ name: null }, "invalid-type"],
       [{ name: "" }, "too-short"],
       [{ name: "x".repeat(201) }, "too-long"],
+      [{ name: "Testbolaget\nAlfa AB" }, "invalid-value"],
+      [{ name: "Testbolaget\u2028Alfa AB" }, "invalid-value"],
       [{ address: "" }, "too-short"],
       [{ address: "x".repeat(201) }, "too-long"],
       [{ visitAddress: "x".repeat(201) }, "too-long"],
@@ -164,8 +166,12 @@ describe("updateCompany", () => {
     expect(await companyRow()).toEqual(before);
   });
 
-  it("the database refuses each detail that is empty, too long or of another form, as the app", async () => {
+  it("the database refuses each detail that is empty, too long or of another form, and a name on more than one line, as the app", async () => {
     const cases: readonly (readonly [string, string])[] = [
+      ["name", "Testbolaget\nAlfa AB"],
+      ["name", "Testbolaget\r\nAlfa AB"],
+      ["name", "Testbolaget\u0085Alfa AB"],
+      ["name", "Testbolaget\u202EAlfa AB"],
       ["address", ""],
       ["address", "x".repeat(201)],
       ["zip_code", "1".repeat(21)],

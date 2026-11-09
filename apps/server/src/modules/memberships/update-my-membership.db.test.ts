@@ -246,6 +246,8 @@ describe("updateMyMembership", () => {
       const field = Object.keys(body)[0] ?? "";
       const problem = await jsonOf<ProblemBody>(await change(beta.id, body), 400);
       expect(problem.errors?.map((error) => [error.code, error.pointer, error.detail])).toEqual([
+        // A control character is not in an address's form either.
+        ...(field === "workEmail" ? [["bad-format", "/workEmail", "The field /workEmail does not have the format email."]] : []),
         ["invalid-value", `/${field}`, `The field /${field} holds the character U+0000, which no text may hold.`],
       ]);
     }

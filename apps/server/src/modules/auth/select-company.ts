@@ -22,9 +22,11 @@
 //    right with the end of the grant that gives it, or none. The resolver
 //    checks the membership on every request, and drops a right whose grant
 //    has ended, so a Revisor grant's end holds in the session too. The rest
-//    of the permissions hold until the session chooses a company again: a
-//    change of the grants reaches the session then (issue 12, "Roles, admin
-//    levels, programs and permissions" 12). A session that has ended since
+//    of the permissions hold until the session chooses a company again, and
+//    so do the programs a program administrator administers, which the
+//    session stores beside them: a change of the grants, of the admin level
+//    or of the programs administered reaches the session then (issue 12,
+//    "Roles, admin levels, programs and permissions" 12). A session that has ended since
 //    the resolver read it, such as by a logout at once, chooses nothing, and
 //    the call is answered as one with no actor (401).
 // 3. The person's recent companies get the choice.
@@ -54,7 +56,7 @@ export const selectCompanyHandler = handlePerson(selectCompany, async ({ context
   const at = now();
   const { credential } = context;
   const programs = await readPrograms(tx, membership.membershipId);
-  const permissions = permissionSnapshot(effectivePermissions(memberAccess(held.adminLevel, programs), at));
+  const permissions = permissionSnapshot(effectivePermissions(memberAccess(held.adminLevel, programs), at), programs.administered);
   const chosen = await tx.query<{ chosen: boolean }>("SELECT access.choose_company($1, $2, $3, $4, $5, $6) AS chosen", [
     credential.sessionId,
     membership.companyId,

@@ -14,7 +14,8 @@ import { ROLE_KEYS } from "../access/effective.ts";
 import { ADMIN_LEVELS } from "../access/permissions.ts";
 import { personal } from "../fields.ts";
 import { NoBody, defineListOperation, defineOperation } from "../operation.ts";
-import { noNul, wellFormed } from "../text.ts";
+import { emailAddress } from "../address.ts";
+import { noNul, singleLine, wellFormed } from "../text.ts";
 
 /** An organisation number: ten digits with a hyphen after the sixth. */
 const ORGANIZATION_NUMBER = /^[0-9]{6}-[0-9]{4}$/;
@@ -57,13 +58,10 @@ function detailOutput(name: CompanyDetail) {
 /** A detail as updateCompany takes it: a text of 1 to its length, which the server stores; null takes it away. */
 function detailInput(name: CompanyDetail) {
   const { max, description } = COMPANY_DETAILS[name];
-  const shaped = isCountryCode(name)
-    ? z.string().regex(COUNTRY_CODE)
-    : name === "email"
-        ? z.email({ pattern: z.regexes.unicodeEmail }).max(max)
-        : z.string().min(1).max(max);
+  // An address takes its own checks and its length (address.ts).
+  const shaped =
+    name === "email" ? emailAddress() : (isCountryCode(name) ? z.string().regex(COUNTRY_CODE) : z.string().min(1).max(max)).check(noNul(), wellFormed());
   return shaped
-    .check(noNul(), wellFormed())
     .nullable()
     .optional()
     .meta({ description: `${description} null takes it away.` });
@@ -163,11 +161,7 @@ export type ProgramAdmin = z.infer<typeof ProgramAdmin>;
  * screen, so a change sets another one and never takes it away (null is
  * refused).
  */
-export const WorkEmail = z
-  .email({ pattern: z.regexes.unicodeEmail })
-  .max(254)
-  .check(noNul(), wellFormed())
-  .meta({ description: "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away." });
+export const WorkEmail = emailAddress().meta({ description: "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away." });
 
 /** A work phone number as a change takes it: null takes it away. */
 export const WorkPhone = z
@@ -189,7 +183,7 @@ export const Membership = z
     workEmail: personal(
       z.string().meta({
         description:
-          "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed.",
+          "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. An invited member has one only when updateUser gave it, and accepting the invitation sets it to the invitation's address. A removed, a left or a disconnected member has none.",
       }),
     ).optional(),
     workPhone: personal(z.string().meta({ description: "The person's work phone number in this company. Absent when none is set." })).optional(),
@@ -259,7 +253,7 @@ export const createCompany = defineOperation({
     "Makes a company with its name and organisation number, and makes the signed-in person its owner, a system administrator, in the same transaction. " +
     "The company gets its tenant id, a number that is never given out again. The organisation number never changes.",
   body: z.strictObject({
-    name: z.string().min(1).max(200).check(noNul(), wellFormed()).meta({ description: "The company's name." }),
+    name: z.string().min(1).max(200).check(noNul(), wellFormed(), singleLine()).meta({ description: "The company's name, on one line." }),
     organizationNumber: z.string().regex(ORGANIZATION_NUMBER).meta({ description: "The organisation number: ten digits with a hyphen after the sixth." }),
   }),
   output: Company,
@@ -367,7 +361,7 @@ export const updateCompany = defineOperation({
     "Changes the request's company: its name, its postal and visiting addresses, and its phone number and e-mail address. " +
     "A field left out stays as it is, and null takes an address field or a contact detail away. The organisation number never changes, so the operation does not take it.",
   body: z.strictObject({
-    name: z.string().min(1).max(200).check(noNul(), wellFormed()).optional().meta({ description: "The company's name." }),
+    name: z.string().min(1).max(200).check(noNul(), wellFormed(), singleLine()).optional().meta({ description: "The company's name, on one line." }),
     address: detailInput("address"),
     zipCode: detailInput("zipCode"),
     city: detailInput("city"),

@@ -543,6 +543,19 @@ ALTER TABLE ledger.companies
   ADD COLUMN email text CONSTRAINT companies_email_length CHECK (char_length(email) BETWEEN 1 AND 254);
 SELECT meta.hide_statistics('ledger.companies');
 
+-- Names on one line --------------------------------------------------------------------
+--
+-- A company's name and a person's stand on one line wherever they are shown,
+-- also in the invitation's mail: neither holds a control character (C0 and
+-- C1, with the tab, the line feed, the carriage return and the next line),
+-- the line or the paragraph separator, or a control of the text's
+-- direction, so none adds a line to a mail or turns its text around. The
+-- API refuses the same first (packages/contract/src/text.ts, NOT_IN_A_NAME),
+-- and U+0000 is a text that PostgreSQL never holds. The invitations and
+-- their links below hold the same of their names.
+ALTER TABLE ledger.companies ADD CONSTRAINT companies_name_one_line CHECK (name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]');
+ALTER TABLE access.identities ADD CONSTRAINT identities_name_one_line CHECK (name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]');
+
 -- The work e-mail address ------------------------------------------------------------
 --
 -- Every active and inactive membership has a work e-mail address, as the
@@ -583,7 +596,8 @@ CREATE TABLE access.invitations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES ledger.companies (company_id),
   membership_id uuid NOT NULL,
-  name text NOT NULL CONSTRAINT invitations_name_length CHECK (char_length(name) BETWEEN 1 AND 200),
+  name text NOT NULL CONSTRAINT invitations_name_length CHECK (char_length(name) BETWEEN 1 AND 200)
+    CONSTRAINT invitations_name_one_line CHECK (name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]'),
   email text NOT NULL CONSTRAINT invitations_email_length CHECK (char_length(email) BETWEEN 1 AND 254),
   invited_by uuid NOT NULL,
   created_at timestamptz NOT NULL,
@@ -602,7 +616,10 @@ CREATE TABLE access.invitations (
 --   refuses each of them, an acceptance and a stop, when they are given
 --   with a new invitation;
 -- - only accepted_at and superseded_at change, each once (the set-once
---   trigger below), and never both; nothing else ever changes.
+--   trigger below), and never both; nothing else ever changes;
+-- - a new invitation locks its member's row first, FOR NO KEY UPDATE, so two
+--   new invitations of one member take turns: the second waits for the
+--   first's commit, and then stops it (invitations_supersede, below).
 -- A refusal of a given or changed field is immutable_field, with the field.
 CREATE FUNCTION access.invitations_rules() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
@@ -628,6 +645,7 @@ BEGIN
     IF NEW.superseded_at IS NOT NULL THEN
       PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'superseded_at', 'operation', 'create'));
     END IF;
+    PERFORM FROM access.memberships AS m WHERE m.company_id = NEW.company_id AND m.id = NEW.membership_id FOR NO KEY UPDATE;
     SELECT a.actor_id INTO NEW.invited_by FROM ledger.current_actor() AS a;
     NEW.created_at := date_trunc('milliseconds', clock_timestamp());
     NEW.expires_at := NEW.created_at + make_interval(hours => 24 * 14);
@@ -671,7 +689,8 @@ GRANT INSERT, UPDATE ON access.invitations TO nortfox_app;
 
 -- A new invitation of a member stops the member's earlier ones that are
 -- still open, at the new one's time (open point 5): a member has one open
--- invitation at most.
+-- invitation at most. The new one holds the member's row (above), so it
+-- sees an invitation that another transaction made and committed first.
 CREATE FUNCTION access.supersede_invitations() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -721,8 +740,8 @@ CREATE TABLE access.invitation_links (
   invitation_id uuid NOT NULL,
   name text NOT NULL,
   email text NOT NULL,
-  company_name text NOT NULL,
-  inviter_name text NOT NULL,
+  company_name text NOT NULL CONSTRAINT invitation_links_company_name_one_line CHECK (company_name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]'),
+  inviter_name text NOT NULL CONSTRAINT invitation_links_inviter_name_one_line CHECK (inviter_name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]'),
   created_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
   used_at timestamptz,

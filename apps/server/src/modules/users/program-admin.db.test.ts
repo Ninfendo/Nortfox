@@ -7,10 +7,11 @@
 // administrator or a program administrator, and do not run the users.
 //
 // A system administrator appoints them with updateUser. A program
-// administrator holds users:read and programs:grant from their next choice
-// of the company, as every permission does (R11); which programs they reach
-// is read on every request, so a program taken from them is out of reach at
-// once.
+// administrator holds users:read and programs:grant, and reaches the
+// programs they administer, from their next choice of the company, as every
+// permission does (R11): a session keeps the programs it chose the company
+// with, also one taken from them since, and reaches one appointed since only
+// when it chooses the company again.
 
 import { fullPermissions, type ProgramGrant } from "@nortfox/contract";
 import type { Client } from "pg";
@@ -168,17 +169,30 @@ describe("a program administrator", () => {
     expect(await jsonOf<MemberJson>(await calls.getUser(server, company.session, target.id))).toEqual(before);
   });
 
-  it("reaches no program once the system administrator takes the last one away, also in the session that chose before", async () => {
+  it("reaches a program appointed since from the session's next choice of the company", async () => {
     const target = await member();
-    await calls.updateUser(server, company.session, administrator.id, { programsAdministered: [] });
-    const outside = await jsonOf<ProblemBody>(await calls.assignProgram(server, session, target.id, "bookkeeping"), 422);
-    expect(outside).toMatchObject({ code: "program-not-administered", data: { program: "bookkeeping" } });
+    expect((await calls.updateUser(server, company.session, administrator.id, { programsAdministered: [{ program: "bookkeeping" }, { program: "read" }] })).status).toBe(200);
+    expect(await jsonOf<ProblemBody>(await calls.assignProgram(server, session, target.id, "read"), 422)).toMatchObject({ code: "program-not-administered", data: { program: "read" } });
+    const listed = await jsonOf<{ items: MemberJson[] }>(await calls.listUsers(server, session));
+    expect(listed.items.find((item) => item.id === administrator.id)?.programsAdministered).toEqual([{ program: "bookkeeping" }]);
+    const next = await sessionIn(server, administrator.person, company.id);
+    expect((await calls.assignProgram(server, next, target.id, "read")).status).toBe(200);
+    expect(await programsOf(target.id)).toEqual([{ program: "read", permissions: fullPermissions("read") }]);
+    expect((await calls.updateUser(server, company.session, administrator.id, { programsAdministered: [{ program: "bookkeeping" }] })).status).toBe(200);
+  });
+
+  it("keeps a program taken away until the session chooses the company again, and then reaches none", async () => {
+    const target = await member();
+    expect((await calls.updateUser(server, company.session, administrator.id, { programsAdministered: [] })).status).toBe(200);
+    // The session that chose before keeps its permissions and its program.
+    expect((await calls.assignProgram(server, session, target.id, "bookkeeping")).status).toBe(200);
+    expect((await calls.removeProgram(server, session, target.id, "bookkeeping")).status).toBe(204);
     // The next choice of the company holds neither permission.
     const next = await sessionIn(server, administrator.person, company.id);
     expect(await jsonOf<ProblemBody>(await calls.assignProgram(server, next, target.id, "bookkeeping"), 403)).toMatchObject({ permission: "programs:grant" });
     expect(await jsonOf<ProblemBody>(await calls.listUsers(server, next), 403)).toMatchObject({ permission: "users:read" });
     expect(await programsOf(target.id)).toEqual([]);
-    await calls.updateUser(server, company.session, administrator.id, { programsAdministered: [{ program: "bookkeeping" }] });
+    expect((await calls.updateUser(server, company.session, administrator.id, { programsAdministered: [{ program: "bookkeeping" }] })).status).toBe(200);
   });
 
   it("leaves no token in an answer and no secret at rest", async () => {
