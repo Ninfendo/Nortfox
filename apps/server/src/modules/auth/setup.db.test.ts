@@ -2,7 +2,9 @@
 
 // I1: on an empty install, the setup link creates the first identity once,
 // and a second use is refused, also in parallel. No setup link is made on an
-// install that has an identity. completeSetup takes a password of 12
+// install that has an identity, once that identity confirmed its TOTP
+// secret; before that, a new link replaces it (setup-new-link.db.test.ts).
+// completeSetup takes a password of 12
 // characters and refuses 11 (I2's half for completeSetup), and it sets no
 // session cookie: the new person signs in next, with the password and the
 // first code of the TOTP secret that the answer gives.
@@ -11,7 +13,18 @@ import type { Client } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { TEST_INSTALL_KEY, appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { DAY, TEST_ORIGIN, expectNoSecretsAtRestFromSignInApps, expectNoTokensFromSignInApps, postAsBrowser, signInApp, testClock, type SignInApp, type TestClock } from "../../../test/sign-in.ts";
+import {
+  DAY,
+  TEST_ORIGIN,
+  expectNoSecretsAtRestFromSignInApps,
+  expectNoTokensFromSignInApps,
+  postAsBrowser,
+  signIn,
+  signInApp,
+  testClock,
+  type SignInApp,
+  type TestClock,
+} from "../../../test/sign-in.ts";
 import { open } from "../../auth/secret-box.ts";
 import { base32Decode } from "../../auth/totp.ts";
 import { createSetupLink } from "../../setup.ts";
@@ -142,10 +155,15 @@ describe("the setup link", () => {
     expect((await problemIn(response)).errors?.map((error) => [error.code, error.pointer])).toEqual([["bad-format", "/token"]]);
   });
 
-  it("makes no setup link on an install that has an identity, and a link made before refuses to make a second identity", async () => {
+  it("makes no setup link once the first identity confirmed its TOTP secret, and a link made before refuses to make a second identity", async () => {
     const install = await emptyInstall();
     const token = await setupToken(install);
-    expect((await complete(install, token)).status).toBe(201);
+    const made = await complete(install, token);
+    expect(made.status).toBe(201);
+    const answer = (await made.json()) as SetupAnswer;
+    const secret = base32Decode(new URL(answer.totpEnrolment.otpauthUri).searchParams.get("secret") ?? "") ?? Buffer.alloc(0);
+    // The first code confirms the secret (setup-new-link.db.test.ts: before it, a new link replaces the identity).
+    await signIn(install.server, { id: answer.user.id, email: answer.user.email, password: PASSWORD, totpSecret: secret });
     await expect(createSetupLink(install.pool.database, TEST_ORIGIN, install.clock.now())).rejects.toThrow("This install has an identity already.");
 
     // A link from before an identity came another way, as a race would leave it, makes none.

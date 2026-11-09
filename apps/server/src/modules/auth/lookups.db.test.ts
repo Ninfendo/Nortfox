@@ -10,7 +10,9 @@
 // once. The times are the server's clock, which the server passes in, so a
 // test moves it. The set-once columns never change once they are set. The
 // setup functions take the setup links' table lock, and the key check the
-// install keys', so two at once come one after the other.
+// install keys', so two at once come one after the other. A setup link made
+// while the first identity never confirmed its TOTP secret replaces that
+// identity (setup-new-link.db.test.ts has the whole flow and its races).
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -42,11 +44,15 @@ import {
   someEmail,
   tokenHash,
 } from "../../../test/identities.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 
 const [FIRST_NUMBER, SECOND_NUMBER] = PERSONAL_IDENTITY_NUMBERS;
 
 /** The server's clock in these tests. */
 const T0 = new Date("2090-03-15T10:00:00.000Z");
+
+/** PostgreSQL's SQLSTATE for a foreign key that refused a row. */
+const FOREIGN_KEY_VIOLATION = "23503";
 
 /** The tables that only the lookup functions read and write. */
 const SECRET_TABLES = [
@@ -83,8 +89,11 @@ describe("the setup link", () => {
     await db.close();
   });
 
-  function create(hash: Buffer, at = T0, end = END): Promise<string | undefined> {
-    return first(anonymously<{ id: string }>(app, "SELECT access.create_setup_token($1, $2, $3) AS id", [hash, at, end])).then((row) => row?.id);
+  /** Makes a setup link as the setup command does, and gives whether using it replaces the install's unfinished identity. */
+  function create(hash: Buffer, at = T0, end = END): Promise<boolean | undefined> {
+    return first(anonymously<{ replaces: boolean }>(app, "SELECT replaces_identity AS replaces FROM access.create_setup_token($1, $2, $3)", [hash, at, end])).then(
+      (row) => row?.replaces,
+    );
   }
 
   async function complete(client: Client, hash: Buffer, at: Date, person: string = randomUUID()): Promise<boolean | undefined> {
@@ -109,8 +118,9 @@ describe("the setup link", () => {
   it("refuses a link that is wrong, stopped by a newer link, or past its end, and makes nothing", async () => {
     const older = tokenHash();
     const newer = tokenHash();
-    await create(older);
-    await create(newer, later(T0, 1));
+    // On an empty install a link replaces no identity.
+    expect(await create(older)).toBe(false);
+    expect(await create(newer, later(T0, 1))).toBe(false);
     expect(await complete(app, tokenHash(), later(T0, 2))).toBe(false);
     expect(await complete(app, older, later(T0, 2))).toBe(false);
     expect(await complete(app, newer, END)).toBe(false);
@@ -141,8 +151,144 @@ describe("the setup link", () => {
     expect(await identityCount()).toBe(1);
   });
 
-  it("makes no setup link on an install that has an identity", async () => {
-    await expectRefusal(create(tokenHash(), later(T0, 6)), "install_not_empty", {});
+  it("makes a link that replaces the first identity while it never confirmed its TOTP secret, and none once it did", async () => {
+    const [made] = (await owner.query<{ id: string; secret: string }>("SELECT i.id, t.id AS secret FROM access.identities AS i JOIN access.totp_secrets AS t ON t.identity_id = i.id")).rows;
+    const link = tokenHash();
+    expect(await create(link, later(T0, 6))).toBe(true);
+    const stored = await owner.query("SELECT identity_id, replaces_identity_id FROM access.setup_tokens WHERE token_hash = $1", [link]);
+    expect(stored.rows).toEqual([{ identity_id: null, replaces_identity_id: made?.id }]);
+    // The first right code confirms the secret.
+    expect(await first(anonymously(app, "SELECT access.use_totp_step($1, $2, 1, $3) AS used", [made?.secret, made?.id, later(T0, 6)]))).toEqual({ used: true });
+    await expectRefusal(create(tokenHash(), later(T0, 7)), "install_not_empty", {});
+    // The link made before refuses, and changes nothing.
+    await expectRefusal(complete(app, link, later(T0, 7)), "install_not_empty", {});
+    expect(await identityCount()).toBe(1);
+  });
+});
+
+describe("a setup link that replaces the first identity", () => {
+  let db: TestDatabase;
+  let app: Client;
+  let owner: Client;
+  const END = later(T0, 28 * 24 * 60);
+
+  beforeAll(async () => {
+    db = await freshDatabase();
+    app = await db.connect("app");
+    owner = await db.connect("owner");
+  });
+
+  afterAll(async () => {
+    await db.close();
+  });
+
+  function create(hash: Buffer, at: Date): Promise<{ link_id: string; replaces_identity: boolean } | undefined> {
+    return first(anonymously<{ link_id: string; replaces_identity: boolean }>(app, "SELECT link_id, replaces_identity FROM access.create_setup_token($1, $2, $3)", [hash, at, END]));
+  }
+
+  function complete(hash: Buffer, at: Date, person: string, email: string): Promise<{ done: boolean } | undefined> {
+    return first(
+      anonymously<{ done: boolean }>(app, "SELECT access.complete_setup($1, $2, $3, 'Alva Berg', $4, $5, $6, $7) AS done", [
+        hash,
+        at,
+        person,
+        email,
+        phcString(),
+        randomUUID(),
+        sealedSecret(),
+      ]),
+    );
+  }
+
+  /** The login rows of an identity: its status and address, and how many passwords, TOTP secrets and challenges it has. */
+  async function rowsOf(person: string): Promise<{ status: string; email: string | null; passwords: number; secrets: number; challenges: number } | undefined> {
+    const found = await owner.query<{ status: string; email: string | null; passwords: number; secrets: number; challenges: number }>(
+      `SELECT i.status, i.email,
+         (SELECT count(*)::int FROM access.password_credentials AS p WHERE p.identity_id = i.id) AS passwords,
+         (SELECT count(*)::int FROM access.totp_secrets AS t WHERE t.identity_id = i.id) AS secrets,
+         (SELECT count(*)::int FROM access.login_challenges AS c WHERE c.identity_id = i.id) AS challenges
+       FROM access.identities AS i WHERE i.id = $1`,
+      [person],
+    );
+    return found.rows[0];
+  }
+
+  it("replaces it as the app: deletes it, frees its address, and removes its password, its pending TOTP secret and its open challenges", async () => {
+    const [firstLink, secondLink] = [tokenHash(), tokenHash()];
+    const [old, person] = [randomUUID(), randomUUID()];
+    expect(await create(firstLink, T0)).toMatchObject({ replaces_identity: false });
+    expect(await complete(firstLink, later(T0, 1), old, "alva.berg@example.com")).toEqual({ done: true });
+    await anonymously(app, "SELECT access.open_challenge($1, $2, 'password-email', NULL, $3, $4)", [tokenHash(), old, later(T0, 2), later(T0, 22)]);
+    expect(await rowsOf(old)).toEqual({ status: "active", email: "alva.berg@example.com", passwords: 1, secrets: 1, challenges: 1 });
+    const made = await create(secondLink, later(T0, 3));
+    expect(made).toEqual({ link_id: expect.any(String) as unknown, replaces_identity: true });
+    expect(await complete(secondLink, later(T0, 4), person, "ALVA.BERG@example.com")).toEqual({ done: true });
+    expect(await rowsOf(old)).toEqual({ status: "deleted", email: null, passwords: 0, secrets: 0, challenges: 0 });
+    expect(await rowsOf(person)).toEqual({ status: "active", email: "ALVA.BERG@example.com", passwords: 1, secrets: 1, challenges: 0 });
+    const links = await owner.query("SELECT identity_id, replaces_identity_id FROM access.setup_tokens ORDER BY created_at");
+    expect(links.rows).toEqual([
+      { identity_id: old, replaces_identity_id: null },
+      { identity_id: person, replaces_identity_id: old },
+    ]);
+    // A second use is refused, and a link to replace the new identity is made while it is unfinished too.
+    expect(await complete(secondLink, later(T0, 5), randomUUID(), someEmail())).toEqual({ done: false });
+    expect(await create(tokenHash(), later(T0, 6))).toMatchObject({ replaces_identity: true });
+    await expectNoSecretsAtRest(db);
+  });
+
+  it("refuses to make or use a link beside an identity that no setup link made or replaced, or once the identity's secret was confirmed", async () => {
+    const other = await freshDatabase();
+    try {
+      const otherApp = await other.connect("app");
+      const otherOwner = await other.connect("owner");
+      const call = <T extends object>(sql: string, params: readonly unknown[]): Promise<T | undefined> => first(anonymously<T>(otherApp, sql, params));
+      const link = tokenHash();
+      await call("SELECT link_id FROM access.create_setup_token($1, $2, $3)", [link, T0, END]);
+      const old = randomUUID();
+      await call("SELECT access.complete_setup($1, $2, $3, 'Alva Berg', $4, $5, $6, $7)", [link, later(T0, 1), old, someEmail(), phcString(), randomUUID(), sealedSecret()]);
+      const before = tokenHash();
+      await call("SELECT link_id FROM access.create_setup_token($1, $2, $3)", [before, later(T0, 2), END]);
+      // Another identity, which only the owner or a later part could add; deleted, it is still none that a setup link replaced.
+      const stranger = await addIdentity(otherOwner);
+      await expectRefusal(call("SELECT link_id FROM access.create_setup_token($1, $2, $3)", [tokenHash(), later(T0, 3), END]), "install_not_empty", {});
+      const use = [before, later(T0, 3), randomUUID(), someEmail(), phcString(), randomUUID(), sealedSecret()];
+      await expectRefusal(call("SELECT access.complete_setup($1, $2, $3, 'Alva Berg', $4, $5, $6, $7)", use), "install_not_empty", {});
+      await deleteIdentity(otherApp, stranger);
+      await expectRefusal(call("SELECT link_id FROM access.create_setup_token($1, $2, $3)", [tokenHash(), later(T0, 4), END]), "install_not_empty", {});
+      await expectRefusal(call("SELECT access.complete_setup($1, $2, $3, 'Alva Berg', $4, $5, $6, $7)", use), "install_not_empty", {});
+      const kept = await otherOwner.query("SELECT status FROM access.identities WHERE id = $1", [old]);
+      expect(kept.rows).toEqual([{ status: "active" }]);
+      await expectNoSecretsAtRest(other);
+    } finally {
+      await other.close();
+    }
+  });
+
+  it("keeps a confirmed secret's identity, by its state or its time of confirmation", async () => {
+    for (const confirmed of ["state = 'active'", "confirmed_at = $2"]) {
+      const other = await freshDatabase();
+      try {
+        const otherApp = await other.connect("app");
+        const otherOwner = await other.connect("owner");
+        const call = <T extends object>(sql: string, params: readonly unknown[]): Promise<T | undefined> => first(anonymously<T>(otherApp, sql, params));
+        const link = tokenHash();
+        await call("SELECT link_id FROM access.create_setup_token($1, $2, $3)", [link, T0, END]);
+        const old = randomUUID();
+        await call("SELECT access.complete_setup($1, $2, $3, 'Alva Berg', $4, $5, $6, $7)", [link, later(T0, 1), old, someEmail(), phcString(), randomUUID(), sealedSecret()]);
+        const before = tokenHash();
+        await call("SELECT link_id FROM access.create_setup_token($1, $2, $3)", [before, later(T0, 2), END]);
+        await otherOwner.query(`UPDATE access.totp_secrets SET ${confirmed} WHERE identity_id = $1`, confirmed.includes("$2") ? [old, T0] : [old]);
+        await expectRefusal(call("SELECT link_id FROM access.create_setup_token($1, $2, $3)", [tokenHash(), later(T0, 3), END]), "install_not_empty", {});
+        await expectRefusal(
+          call("SELECT access.complete_setup($1, $2, $3, 'Alva Berg', $4, $5, $6, $7)", [before, later(T0, 3), randomUUID(), someEmail(), phcString(), randomUUID(), sealedSecret()]),
+          "install_not_empty",
+          {},
+        );
+        await expectNoSecretsAtRest(other);
+      } finally {
+        await other.close();
+      }
+    }
   });
 });
 
@@ -784,6 +930,23 @@ describe("the lookup functions", () => {
       );
     });
 
+    it("keeps the identity a used setup link made, only on a used link, and each identity made by one link", async () => {
+      const person = await addIdentity(owner);
+      const at = later(T0, 20);
+      const insert = (used: Date | null, made: string | null): Promise<unknown> =>
+        owner.query("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, used_at, identity_id) VALUES ($1, $2, $3, $4, $5)", [tokenHash(), T0, at, used, made]);
+      await expectError(insert(T0, null), CHECK_VIOLATION, /setup_tokens_used_with_identity/);
+      await expectError(insert(null, person), CHECK_VIOLATION, /setup_tokens_used_with_identity/);
+      await insert(T0, person);
+      await expectError(insert(T0, person), UNIQUE_VIOLATION, /setup_tokens_identity_id_key/);
+      await expectError(insert(T0, randomUUID()), FOREIGN_KEY_VIOLATION, /setup_tokens_identity_id_fkey/);
+      await expectError(
+        owner.query("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, replaces_identity_id) VALUES ($1, $2, $3, $4)", [tokenHash(), T0, at, randomUUID()]),
+        FOREIGN_KEY_VIOLATION,
+        /setup_tokens_replaces_identity_id_fkey/,
+      );
+    });
+
     it("keeps a challenge's wrong attempts from 0 to 5 and its method a password's, a used TOTP step and a failure count above 0, and a session's end with its reason", async () => {
       const person = await addIdentity(owner);
       const at = later(T0, 20);
@@ -871,11 +1034,12 @@ describe("the lookup functions", () => {
             [tokenHash(), person, T0, later(T0, 20)],
           )
         ).rows[0]?.id ?? "",
-      "access.setup_tokens": async () =>
+      // A used link: the identity it made, and the one it replaced.
+      "access.setup_tokens": async (person) =>
         (
           await owner.query<{ id: string }>(
-            "INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, used_at) VALUES ($1, $2, $3, $2), ($4, $2, $3, NULL) RETURNING id",
-            [tokenHash(), T0, later(T0, 60), tokenHash()],
+            "INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, used_at, identity_id, replaces_identity_id) VALUES ($1, $2, $3, $2, $5, $6), ($4, $2, $3, NULL, NULL, NULL) RETURNING id",
+            [tokenHash(), T0, later(T0, 60), tokenHash(), person, await addIdentity(owner)],
           )
         ).rows[0]?.id ?? "",
       "access.sessions": async (person) =>
@@ -890,6 +1054,8 @@ describe("the lookup functions", () => {
     it.each([
       ["access.login_challenges", "used_at", "used_at + interval '1 second'"],
       ["access.setup_tokens", "used_at", "used_at + interval '1 second'"],
+      ["access.setup_tokens", "identity_id", "pg_catalog.gen_random_uuid()"],
+      ["access.setup_tokens", "replaces_identity_id", "pg_catalog.gen_random_uuid()"],
       ["access.sessions", "ended_at", "ended_at + interval '1 second'"],
       ["access.sessions", "end_reason", "'idle'"],
     ])("never changes %s.%s once it is set, nor clears it", async (table, column, other) => {
@@ -903,7 +1069,7 @@ describe("the lookup functions", () => {
     });
 
     it("sets a stopped setup link's mark once, and never one on a link that was used", async () => {
-      const used = await (SET["access.setup_tokens"] ?? (() => Promise.resolve("")))("");
+      const used = await (SET["access.setup_tokens"] ?? (() => Promise.resolve("")))(await addIdentity(owner));
       await expectError(owner.query("UPDATE access.setup_tokens SET superseded_at = $2 WHERE id = $1", [used, T0]), CHECK_VIOLATION, /setup_tokens_used_or_superseded/);
       const stopped = await owner.query<{ id: string }>(
         "INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, superseded_at) VALUES ($1, $2, $3, $2) RETURNING id",
