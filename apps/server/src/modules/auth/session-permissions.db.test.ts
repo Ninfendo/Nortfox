@@ -11,17 +11,16 @@
 //
 // No operation of slice 2c needs a catalogue permission yet, so the test-only
 // right checks (test/rights.ts) show whether a request holds one, beside
-// getMe's list. The grants are changed as the database holds them, as the
-// company's owner: assignProgram, removeProgram and updateUserRights come in
-// a later step of this part.
+// getMe's list. The company's owner changes the grants with assignProgram
+// and removeProgram. The members are invited and accept as the database
+// holds it, since the invitations come in the next step of this part.
 
 import { fullPermissions, type Me } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { addGrant, changeGrant } from "../../../test/grants.ts";
-import { aCompany, addMembership, asMember, type Company } from "../../../test/memberships.ts";
+import { acceptedMember } from "../../../test/memberships.ts";
 import { rightPath, withRightChecks } from "../../../test/rights.ts";
 import {
   MINUTE,
@@ -37,6 +36,7 @@ import {
   type SignInApp,
   type TestIdentity,
 } from "../../../test/sign-in.ts";
+import { apiCompany, calls, type ApiCompany } from "../../../test/users.ts";
 import { tokenHash } from "../../auth/tokens.ts";
 
 /** The rights the checks of this file read. */
@@ -48,7 +48,7 @@ describe("a session's permissions", () => {
   let owner: Client;
   let pool: AppPool;
   let server: SignInApp;
-  let company: Company;
+  let company: ApiCompany;
 
   beforeAll(async () => {
     db = await freshDatabase();
@@ -56,7 +56,7 @@ describe("a session's permissions", () => {
     owner = await db.connect("owner");
     pool = appPool(db, 4);
     server = signInApp(pool.database, { clock: testClock(), options: withRightChecks(CHECKED) });
-    company = await aCompany(app, "Testbolaget Alfa AB");
+    company = await apiCompany(server, { app, owner });
   });
 
   afterAll(async () => {
@@ -64,12 +64,17 @@ describe("a session's permissions", () => {
     await db.close();
   });
 
-  /** A member of the company with Bokföring and "Full behörighet", and the grant's id. */
-  async function bookkeeper(): Promise<{ person: TestIdentity; membership: string; grant: string }> {
+  /** The owner grants `program` to a member with "Full behörighet", or with `permissions`. */
+  async function assign(membership: string, program: "bookkeeping" | "read", permissions?: readonly string[]): Promise<void> {
+    expect((await calls.assignProgram(server, company.session, membership, program, permissions === undefined ? { full: true } : { permissions })).status).toBe(200);
+  }
+
+  /** A member of the company with Bokföring and "Full behörighet". */
+  async function bookkeeper(): Promise<{ person: TestIdentity; membership: string }> {
     const person = await addSignInIdentity(owner);
-    const membership = await addMembership(app, owner, company, { user: person.id });
-    const grant = await addGrant(app, company, membership, "bookkeeping", fullPermissions("bookkeeping"));
-    return { person, membership, grant: grant.id };
+    const membership = await acceptedMember(app, owner, company, person.id);
+    await assign(membership, "bookkeeping");
+    return { person, membership };
   }
 
   /** A new session of `person` that has chosen the company. A new TOTP code comes with the next 30 seconds. */
@@ -91,15 +96,19 @@ describe("a session's permissions", () => {
   }
 
   /** Takes Bokför off the grant, as the owner narrows it. */
-  async function withoutBook(grant: string): Promise<void> {
-    await changeGrant(app, company, grant, "permissions = $2", [fullPermissions("bookkeeping").filter((permission) => permission !== "vouchers.book")]);
+  async function withoutBook(membership: string): Promise<void> {
+    await assign(
+      membership,
+      "bookkeeping",
+      fullPermissions("bookkeeping").filter((permission) => permission !== "vouchers.book"),
+    );
   }
 
   it("a removed permission works until the session chooses the company again", async () => {
-    const { person, grant } = await bookkeeper();
+    const { person, membership } = await bookkeeper();
     const session = await sessionInCompany(person);
     expect(await statusOf(session, "vouchers.book")).toBe(200);
-    await withoutBook(grant);
+    await withoutBook(membership);
     // The session keeps what it took when it chose the company, on every request until it chooses again.
     for (let request = 0; request < 3; request += 1) {
       server.clock.advance(MINUTE);
@@ -120,9 +129,9 @@ describe("a session's permissions", () => {
   });
 
   it("and is refused in the next session", async () => {
-    const { person, grant } = await bookkeeper();
+    const { person, membership } = await bookkeeper();
     const first = await sessionInCompany(person);
-    await withoutBook(grant);
+    await withoutBook(membership);
     const next = await sessionInCompany(person);
     const refused = await getAs(server, next, rightPath("vouchers.book"));
     expect(refused.status).toBe(403);
@@ -133,9 +142,9 @@ describe("a session's permissions", () => {
   });
 
   it("a withdrawn program works until the session chooses the company again", async () => {
-    const { person, grant } = await bookkeeper();
+    const { person, membership } = await bookkeeper();
     const session = await sessionInCompany(person);
-    await asMember(app, company.id, company.asOwner, "DELETE FROM access.program_grants WHERE id = $1", [grant]);
+    expect((await calls.removeProgram(server, company.session, membership, "bookkeeping")).status).toBe(204);
     expect(await statusOf(session, "vouchers.view")).toBe(200);
     expect(await statusOf(session, "vouchers.book")).toBe(200);
     expect((await chooseCompany(server, session, company.id)).status).toBe(200);
@@ -145,12 +154,12 @@ describe("a session's permissions", () => {
 
   it("a permission given since the choice comes only when the session chooses the company again", async () => {
     const person = await addSignInIdentity(owner);
-    const membership = await addMembership(app, owner, company, { user: person.id });
-    await addGrant(app, company, membership, "read", fullPermissions("read"));
+    const membership = await acceptedMember(app, owner, company, person.id);
+    await assign(membership, "read");
     const session = await sessionInCompany(person);
     expect(await statusOf(session, "vouchers.view")).toBe(200);
     expect(await statusOf(session, "vouchers.book")).toBe(403);
-    await addGrant(app, company, membership, "bookkeeping", fullPermissions("bookkeeping"));
+    await assign(membership, "bookkeeping");
     expect(await statusOf(session, "vouchers.book")).toBe(403);
     expect((await chooseCompany(server, session, company.id)).status).toBe(200);
     expect(await statusOf(session, "vouchers.book")).toBe(200);

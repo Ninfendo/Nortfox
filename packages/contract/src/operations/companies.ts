@@ -19,6 +19,56 @@ import { noNul, wellFormed } from "../text.ts";
 /** An organisation number: ten digits with a hyphen after the sixth. */
 const ORGANIZATION_NUMBER = /^[0-9]{6}-[0-9]{4}$/;
 
+/** A country's code in ISO 3166-1 alpha-2: two capital letters. */
+const COUNTRY_CODE = /^[A-Z]{2}$/;
+
+/**
+ * The company's addresses and contact details, as the established company
+ * resource names them, each with what it holds and its longest length. The
+ * database checks the same lengths.
+ */
+const COMPANY_DETAILS = {
+  address: { max: 200, description: "Adress: the postal address's street or box line." },
+  zipCode: { max: 20, description: "Postnummer: the postal address's postal code." },
+  city: { max: 100, description: "Ort: the postal address's town." },
+  countryCode: { max: 2, description: "Land: the postal address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE." },
+  visitAddress: { max: 200, description: "Besöksadress: the visiting address's street." },
+  visitZipCode: { max: 20, description: "The visiting address's postal code." },
+  visitCity: { max: 100, description: "The visiting address's town." },
+  visitCountryCode: { max: 2, description: "The visiting address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE." },
+  phone: { max: 50, description: "Telefon: the company's phone number." },
+  email: { max: 254, description: "E-post: the company's e-mail address." },
+} as const;
+
+type CompanyDetail = keyof typeof COMPANY_DETAILS;
+
+/** Whether a detail is a country's code. */
+function isCountryCode(name: CompanyDetail): boolean {
+  return name === "countryCode" || name === "visitCountryCode";
+}
+
+/** A detail as the company gives it: absent when it is not set. */
+function detailOutput(name: CompanyDetail) {
+  const { description } = COMPANY_DETAILS[name];
+  const text = isCountryCode(name) ? z.string().regex(COUNTRY_CODE) : z.string();
+  return text.meta({ description: `${description} Absent when it is not set.` }).optional();
+}
+
+/** A detail as updateCompany takes it: a text of 1 to its length, which the server stores; null takes it away. */
+function detailInput(name: CompanyDetail) {
+  const { max, description } = COMPANY_DETAILS[name];
+  const shaped = isCountryCode(name)
+    ? z.string().regex(COUNTRY_CODE)
+    : name === "email"
+        ? z.email({ pattern: z.regexes.unicodeEmail }).max(max)
+        : z.string().min(1).max(max);
+  return shaped
+    .check(noNul(), wellFormed())
+    .nullable()
+    .optional()
+    .meta({ description: `${description} null takes it away.` });
+}
+
 export const Company = z
   .strictObject({
     id: z.uuid().meta({ description: "The company's id." }),
@@ -35,10 +85,20 @@ export const Company = z
       .min(1)
       .max(2147483647)
       .meta({ description: "The company's number for programs, its tenant id. It never changes." }),
+    address: detailOutput("address"),
+    zipCode: detailOutput("zipCode"),
+    city: detailOutput("city"),
+    countryCode: detailOutput("countryCode"),
+    visitAddress: detailOutput("visitAddress"),
+    visitZipCode: detailOutput("visitZipCode"),
+    visitCity: detailOutput("visitCity"),
+    visitCountryCode: detailOutput("visitCountryCode"),
+    phone: detailOutput("phone"),
+    email: detailOutput("email"),
   })
   .meta({
     id: "Company",
-    description: "A company: its id, name, organisation number and tenant id.",
+    description: "A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.",
   });
 
 export type Company = z.infer<typeof Company>;
@@ -98,14 +158,40 @@ export const ProgramAdmin = z
 
 export type ProgramAdmin = z.infer<typeof ProgramAdmin>;
 
+/**
+ * A work e-mail address as a change takes it: required on the established
+ * screen, so a change sets another one and never takes it away (null is
+ * refused).
+ */
+export const WorkEmail = z
+  .email({ pattern: z.regexes.unicodeEmail })
+  .max(254)
+  .check(noNul(), wellFormed())
+  .meta({ description: "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away." });
+
+/** A work phone number as a change takes it: null takes it away. */
+export const WorkPhone = z
+  .string()
+  .min(1)
+  .max(50)
+  .check(noNul(), wellFormed())
+  .nullable()
+  .meta({ description: "The work phone number in this company, or null for none." });
+
 export const Membership = z
   .strictObject({
+    id: z.uuid().meta({ description: "The membership's id: the member's id in the company, which the paths of /v1/users take as memberId." }),
     companyId: z.uuid().meta({ description: "The company's id." }),
     userId: z.uuid().optional().meta({ description: "The person's id. Absent while the membership is invited." }),
     status: z.enum(MEMBERSHIP_STATUSES).meta({ description: "invited, active, inactive, removed or left." }),
     adminLevel: SysAdmin.optional(),
     idleTimeout: IdleTimeout,
-    workEmail: personal(z.string().meta({ description: "The person's work e-mail address in this company, where its notices go. Absent when none is set." })).optional(),
+    workEmail: personal(
+      z.string().meta({
+        description:
+          "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed.",
+      }),
+    ).optional(),
     workPhone: personal(z.string().meta({ description: "The person's work phone number in this company. Absent when none is set." })).optional(),
     roles: z.array(RoleKey).meta({
       description:
@@ -231,22 +317,50 @@ export const updateMyMembership = defineOperation({
   summary: "Change your membership",
   description:
     "Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: " +
-    "the work e-mail address and phone number there, and the idle logout. A field left out stays as it is, and null takes a work contact away.",
+    "the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, " +
+    "so it can be changed but not taken away; null takes the phone number away.",
   params: z.strictObject({ companyId: z.uuid().meta({ description: "The company's id." }) }),
   body: z.strictObject({
-    workEmail: z
-      .email({ pattern: z.regexes.unicodeEmail })
-      .max(254)
-      .check(noNul(), wellFormed())
-      .nullable()
-      .optional()
-      .meta({ description: "The work e-mail address in this company, or null for none." }),
-    workPhone: z.string().min(1).max(50).check(noNul(), wellFormed()).nullable().optional().meta({ description: "The work phone number in this company, or null for none." }),
+    workEmail: WorkEmail.optional(),
+    workPhone: WorkPhone.optional(),
     idleTimeout: IdleTimeout.optional(),
   }),
   output: Membership,
   permission: "signed-in",
   company: { input: "companyId" },
   tool: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
+  writes: true,
+});
+
+/**
+ * The company's details: its name, its postal and visiting addresses and its
+ * contact details (issue 12, Companies 3). The organisation number never
+ * changes, so the operation does not take it.
+ */
+export const updateCompany = defineOperation({
+  id: "updateCompany",
+  method: "patch",
+  path: "/v1/company",
+  tags: ["companies"],
+  summary: "Change the company",
+  description:
+    "Changes the request's company: its name, its postal and visiting addresses, and its phone number and e-mail address. " +
+    "A field left out stays as it is, and null takes an address field or a contact detail away. The organisation number never changes, so the operation does not take it.",
+  body: z.strictObject({
+    name: z.string().min(1).max(200).check(noNul(), wellFormed()).optional().meta({ description: "The company's name." }),
+    address: detailInput("address"),
+    zipCode: detailInput("zipCode"),
+    city: detailInput("city"),
+    countryCode: detailInput("countryCode"),
+    visitAddress: detailInput("visitAddress"),
+    visitZipCode: detailInput("visitZipCode"),
+    visitCity: detailInput("visitCity"),
+    visitCountryCode: detailInput("visitCountryCode"),
+    phone: detailInput("phone"),
+    email: detailInput("email"),
+  }),
+  output: Company,
+  permission: "company:update",
+  tool: "Changes the company you work in: its name, its addresses, its phone number and its e-mail address. Its organisation number never changes.",
   writes: true,
 });

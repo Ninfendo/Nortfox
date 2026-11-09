@@ -25,12 +25,23 @@ interface MembershipRow {
 
 /**
  * Makes `person` the owner of the company that the transaction makes: its
- * first membership, active, at the owner's level. The database gives the
- * owner's level only to a company's first membership, and refuses the
- * company's commit without an active system administrator.
+ * first membership, active, at the owner's level, with the person's own
+ * e-mail address as the work e-mail there, which every active member has.
+ * The database gives the owner's level only to a company's first
+ * membership, and refuses the company's commit without an active system
+ * administrator.
  */
 export async function addOwner(tx: Queryable, companyId: string, person: string): Promise<void> {
-  await tx.query("INSERT INTO access.memberships (company_id, user_id, status, admin_level) VALUES ($1, $2, 'active', 'owner')", [companyId, person]);
+  const made = await tx.query<{ id: string }>("INSERT INTO access.memberships (company_id, user_id, status, admin_level) VALUES ($1, $2, 'active', 'owner') RETURNING id", [
+    companyId,
+    person,
+  ]);
+  // An insert gives its one row, and the person's own identity is the one row the person reads.
+  const [membership] = made.rows as [{ readonly id: string }];
+  await tx.query(
+    "INSERT INTO access.membership_contacts (contact_company_id, membership_id, work_email) SELECT $1, $2, email FROM access.identities WHERE id = $3",
+    [companyId, membership.id, person],
+  );
 }
 
 /**
@@ -53,6 +64,7 @@ export async function readMembership(tx: Queryable, membershipId: string, at: Da
   }
   const programs = await readPrograms(tx, membershipId);
   return {
+    id: membershipId,
     companyId: row.company_id,
     ...(row.user_id === null ? {} : { userId: row.user_id }),
     status: row.status,
@@ -94,48 +106,60 @@ export async function holdActive(tx: Queryable, membershipId: string, personId: 
   return row === undefined ? undefined : { adminLevel: row.admin_level, idleTimeoutMinutes: row.idle_timeout_minutes };
 }
 
-/** What a person changes in their own membership: each field that is given, and null takes a work contact away. */
-export interface OwnChange {
-  readonly workEmail?: string | null | undefined;
+/**
+ * A change of a member's work contacts: each field that is given. The work
+ * e-mail is required, so a change sets another one and never takes it away;
+ * null takes the phone away.
+ */
+export interface WorkContactsChange {
+  readonly workEmail?: string | undefined;
   readonly workPhone?: string | null | undefined;
+}
+
+/**
+ * Changes the work contacts of a membership of the transaction's company,
+ * in the row beside it that holds no history: a field left out stays. The
+ * caller holds the membership's row locked, so two changes take turns.
+ */
+export async function setWorkContacts(tx: Queryable, companyId: string, membershipId: string, change: WorkContactsChange): Promise<void> {
+  if (change.workEmail === undefined && change.workPhone === undefined) {
+    return;
+  }
+  await tx.query(
+    `INSERT INTO access.membership_contacts (contact_company_id, membership_id, work_email, work_phone) VALUES ($1, $2, $3, $5)
+     ON CONFLICT (contact_company_id, membership_id) DO UPDATE SET work_email = COALESCE($3, access.membership_contacts.work_email),
+       work_phone = CASE WHEN $4 THEN $5 ELSE access.membership_contacts.work_phone END`,
+    [companyId, membershipId, change.workEmail ?? null, change.workPhone !== undefined, change.workPhone ?? null],
+  );
+}
+
+/** What a person changes in their own membership: each field that is given. */
+export interface OwnChange extends WorkContactsChange {
   readonly idleTimeout?: Membership["idleTimeout"] | undefined;
 }
 
 /**
  * Changes the person's own membership in the transaction's company, and
  * gives it with its roles at `at`, or gives nothing when the membership is
- * no longer active. The
- * idle time is the membership's own column, so its change is in the
- * behandlingshistorik. The work contacts are kept beside it, in a row that
- * holds no history, and that goes when neither is left.
+ * no longer active. The idle time is the membership's own column, so its
+ * change is in the behandlingshistorik. The work contacts are kept beside
+ * it, in a row that holds no history.
  *
  * It locks the membership's row first, FOR NO KEY UPDATE, and reads its
  * status after the lock, at READ COMMITTED. So two changes of one membership
- * at once take turns: the second reads the first's work contacts, and keeps
+ * at once take turns: the second sees the first's work contacts, and keeps
  * the field it leaves out. A change that waited for a removal, a leave or a
  * deactivation finds the membership no longer active, and changes nothing.
  */
 export async function changeOwnMembership(tx: Queryable, membershipId: string, change: OwnChange, at: Date): Promise<Membership | undefined> {
-  const locked = await tx.query("SELECT 1 FROM access.memberships WHERE id = $1 AND status = 'active' FOR NO KEY UPDATE", [membershipId]);
-  if (locked.rows.length === 0) {
+  const locked = await tx.query<{ company_id: string }>("SELECT company_id FROM access.memberships WHERE id = $1 AND status = 'active' FOR NO KEY UPDATE", [membershipId]);
+  const [row] = locked.rows;
+  if (row === undefined) {
     return undefined;
   }
   if (change.idleTimeout !== undefined) {
     await tx.query("UPDATE access.memberships SET idle_timeout_minutes = $2 WHERE id = $1 AND idle_timeout_minutes <> $2", [membershipId, change.idleTimeout]);
   }
-  if (change.workEmail !== undefined || change.workPhone !== undefined) {
-    const before = await readMembership(tx, membershipId, at);
-    const workEmail = change.workEmail === undefined ? (before.workEmail ?? null) : change.workEmail;
-    const workPhone = change.workPhone === undefined ? (before.workPhone ?? null) : change.workPhone;
-    if (workEmail === null && workPhone === null) {
-      await tx.query("DELETE FROM access.membership_contacts WHERE contact_company_id = $1 AND membership_id = $2", [before.companyId, membershipId]);
-    } else {
-      await tx.query(
-        `INSERT INTO access.membership_contacts (contact_company_id, membership_id, work_email, work_phone) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (contact_company_id, membership_id) DO UPDATE SET work_email = excluded.work_email, work_phone = excluded.work_phone`,
-        [before.companyId, membershipId, workEmail, workPhone],
-      );
-    }
-  }
+  await setWorkContacts(tx, row.company_id, membershipId, change);
   return readMembership(tx, membershipId, at);
 }

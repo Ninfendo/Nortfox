@@ -12,8 +12,9 @@
 // server's clock where the grant's end is near. No operation of slice 2c
 // needs a catalogue permission yet, so the test-only right checks
 // (test/rights.ts) show whether a request holds one, beside getMe's list. The
-// grant is made and changed as the database holds it, as the company's
-// owner: assignProgram and updateUserRights come in a later step of this
+// company's owner grants Revisor with assignProgram and switches its rights
+// on with updateUserRights. The member is invited and accepts as the
+// database holds it, since the invitations come in the next step of this
 // part.
 
 import { fullPermissions, type Me } from "@nortfox/contract";
@@ -21,8 +22,8 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { addGrant, changeGrant, grantTimes } from "../../../test/grants.ts";
-import { aCompany, addMembership, asMember, type Company } from "../../../test/memberships.ts";
+import { grantTimes } from "../../../test/grants.ts";
+import { acceptedMember, asMember } from "../../../test/memberships.ts";
 import { rightPath, withRightChecks } from "../../../test/rights.ts";
 import {
   DAY,
@@ -40,6 +41,7 @@ import {
   type SignInApp,
   type TestIdentity,
 } from "../../../test/sign-in.ts";
+import { apiCompany, calls, type ApiCompany } from "../../../test/users.ts";
 import { tokenHash } from "../../auth/tokens.ts";
 
 /** The rights the checks of this file read. */
@@ -50,14 +52,17 @@ describe("a Revisor grant", () => {
   let app: Client;
   let owner: Client;
   let pool: AppPool;
-  let company: Company;
+  /** The owner's server, whose clock is the database's. */
+  let admin: SignInApp;
+  let company: ApiCompany;
 
   beforeAll(async () => {
     db = await freshDatabase();
     app = await db.connect("app");
     owner = await db.connect("owner");
     pool = appPool(db, 4);
-    company = await aCompany(app, "Testbolaget Alfa AB");
+    admin = signInApp(pool.database, { clock: testClock(new Date()) });
+    company = await apiCompany(admin, { app, owner });
   });
 
   afterAll(async () => {
@@ -68,8 +73,12 @@ describe("a Revisor grant", () => {
   /** A member of the company with Revisor and "Full behörighet", the grant's id, and when it was granted and ends. */
   async function auditor(): Promise<{ person: TestIdentity; membership: string; grant: string; grantedAt: Date; end: Date }> {
     const person = await addSignInIdentity(owner);
-    const membership = await addMembership(app, owner, company, { user: person.id });
-    const grant = await addGrant(app, company, membership, "auditor", fullPermissions("auditor"));
+    const membership = await acceptedMember(app, owner, company, person.id);
+    expect((await calls.assignProgram(admin, company.session, membership, "auditor", { full: true })).status).toBe(200);
+    const [grant] = await asMember<{ id: string }>(app, company.id, company.asOwner, "SELECT id FROM access.program_grants WHERE membership_id = $1", [membership]);
+    if (grant === undefined) {
+      throw new Error("assignProgram made no grant.");
+    }
     const { grantedAt, expiresAt } = await grantTimes(app, company, grant.id);
     if (expiresAt === null) {
       throw new Error("The Revisor grant has no end.");
@@ -155,7 +164,7 @@ describe("a Revisor grant", () => {
   });
 
   it("Exportera filer and Sie-export are off until switched on", async () => {
-    const { person, grant } = await auditor();
+    const { person, membership } = await auditor();
     const server = serverAt(new Date());
     const session = await sessionInCompany(server, person);
     const off = await meOf(server, session);
@@ -163,7 +172,9 @@ describe("a Revisor grant", () => {
     expect(off.permissions).not.toContain("register.sie-export");
     expect(await statusOf(server, session, "register.export-files")).toBe(403);
     expect(await statusOf(server, session, "register.sie-export")).toBe(403);
-    await changeGrant(app, company, grant, "permissions = $2", [[...fullPermissions("auditor"), "register.export-files", "register.sie-export"]]);
+    // Anpassa Register/Övrigt: the Rapporter stay as they were, and the two are switched on.
+    const reports = fullPermissions("auditor").filter((permission) => permission.startsWith("reports."));
+    expect((await calls.updateUserRights(admin, company.session, membership, [...reports, "register.export-files", "register.sie-export"])).status).toBe(200);
     // They come with the session's next choice of the company.
     expect((await chooseCompany(server, session, company.id)).status).toBe(200);
     expect(await statusOf(server, session, "register.export-files")).toBe(200);

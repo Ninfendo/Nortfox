@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { completeSetup, loginWithPassword, logout, verifyTotp } from "./operations/auth.ts";
-import { createCompany, getCompany, listCompanies, listRecentCompanies, updateMyMembership } from "./operations/companies.ts";
+import { createCompany, getCompany, listCompanies, listRecentCompanies, updateCompany, updateMyMembership } from "./operations/companies.ts";
 import { getMe } from "./operations/me.ts";
+import { listPermissions } from "./operations/permissions.ts";
 import { getSession, selectCompany } from "./operations/session.ts";
 import { getHealth } from "./operations/status.ts";
+import { assignProgram, getUser, listUsers, moveProgram, removeProgram, removeUser, updateUser, updateUserRights } from "./operations/users.ts";
 
 /**
  * Every operation of the API. The server mounts /v1 and /mcp from this list
@@ -24,4 +26,14 @@ export const REGISTRY = [
   listRecentCompanies,
   selectCompany,
   updateMyMembership,
+  updateCompany,
+  listPermissions,
+  listUsers,
+  getUser,
+  updateUser,
+  removeUser,
+  assignProgram,
+  removeProgram,
+  moveProgram,
+  updateUserRights,
 ] as const;

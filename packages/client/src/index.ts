@@ -9,19 +9,26 @@ export type {
   FieldProblem,
   Health,
   Me,
+  Member,
   Membership,
   PasswordSignIn,
+  Permission,
+  PermissionCatalogue,
+  PermissionGroup,
   Problem,
   ProgramAdmin,
+  ProgramDefinition,
   ProgramGrant,
   RecentCompanies,
+  RoleDefinition,
   Session,
   SetupResult,
   TotpEnrolment,
   User,
+  UserRights,
   Operations
 } from "./generated.ts";
-export type { Program, Role, SysAdmin } from "./generated.ts";
+export type { PermissionGroupKey, PermissionKey, Program, Role, SysAdmin } from "./generated.ts";
 export { ApiError } from "./runtime.ts";
 export type { CallOptions, ClientOptions, FetchFunction, WriteOptions } from "./runtime.ts";
 

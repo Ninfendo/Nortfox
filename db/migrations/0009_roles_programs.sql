@@ -520,3 +520,48 @@ BEGIN ATOMIC
 END;
 
 GRANT EXECUTE ON FUNCTION access.company_people(uuid[]) TO nortfox_app;
+
+-- The company's details --------------------------------------------------------------
+--
+-- The company's postal and visiting addresses and its contact details, the
+-- fields of the established company resource: Adress, Postnummer, Ort and
+-- Land; the visiting address's street, postal code, town and country; and
+-- Telefon and E-post. Each is a text of its own longest length, or none,
+-- never an empty text; a country is its code in ISO 3166-1 alpha-2, two
+-- capital letters. The table keeps no planner statistics of the new columns
+-- either.
+ALTER TABLE ledger.companies
+  ADD COLUMN address text CONSTRAINT companies_address_length CHECK (char_length(address) BETWEEN 1 AND 200),
+  ADD COLUMN zip_code text CONSTRAINT companies_zip_code_length CHECK (char_length(zip_code) BETWEEN 1 AND 20),
+  ADD COLUMN city text CONSTRAINT companies_city_length CHECK (char_length(city) BETWEEN 1 AND 100),
+  ADD COLUMN country_code text CONSTRAINT companies_country_code_form CHECK (country_code ~ '^[A-Z]{2}$'),
+  ADD COLUMN visit_address text CONSTRAINT companies_visit_address_length CHECK (char_length(visit_address) BETWEEN 1 AND 200),
+  ADD COLUMN visit_zip_code text CONSTRAINT companies_visit_zip_code_length CHECK (char_length(visit_zip_code) BETWEEN 1 AND 20),
+  ADD COLUMN visit_city text CONSTRAINT companies_visit_city_length CHECK (char_length(visit_city) BETWEEN 1 AND 100),
+  ADD COLUMN visit_country_code text CONSTRAINT companies_visit_country_code_form CHECK (visit_country_code ~ '^[A-Z]{2}$'),
+  ADD COLUMN phone text CONSTRAINT companies_phone_length CHECK (char_length(phone) BETWEEN 1 AND 50),
+  ADD COLUMN email text CONSTRAINT companies_email_length CHECK (char_length(email) BETWEEN 1 AND 254);
+SELECT meta.hide_statistics('ledger.companies');
+
+-- The work e-mail address ------------------------------------------------------------
+--
+-- Every active and inactive membership has a work e-mail address, as the
+-- established screen requires Epost (issue 12, "Users in a company" 9): the
+-- server fills it when it makes such a membership, and refuses to take it
+-- away. Each such membership that has none when the rule arrives gets its
+-- identity's e-mail address; a work phone that it has stays. The invited,
+-- removed and left memberships keep what they have. The memberships are a
+-- company table, whose rows even the owner reads only in the transaction's
+-- company: so row level security is not forced on them while this
+-- statement reads every company's, and forced again after it, in the same
+-- transaction, which the table guard then checks. The work contacts keep no
+-- history.
+ALTER TABLE access.memberships NO FORCE ROW LEVEL SECURITY;
+INSERT INTO access.membership_contacts (contact_company_id, membership_id, work_email)
+SELECT m.company_id, m.id, i.email
+FROM access.memberships AS m
+JOIN access.identities AS i ON i.id = m.user_id
+WHERE m.status IN ('active', 'inactive') AND i.email IS NOT NULL
+ON CONFLICT (contact_company_id, membership_id) DO UPDATE SET work_email = excluded.work_email
+  WHERE access.membership_contacts.work_email IS NULL;
+ALTER TABLE access.memberships FORCE ROW LEVEL SECURITY;

@@ -28,16 +28,16 @@ describe("the platform permissions", () => {
     expect(platformPermissions("owner")).toEqual(platformPermissions("admin"));
   });
 
-  it("gives a system administrator nothing beyond the member's own until its operations come", () => {
-    // updateCompany, the user administration and the program grants bring
-    // their permissions later in slice 2c, and this list with them.
-    expect(SYSTEM_ADMINISTRATOR_PERMISSIONS).toEqual([]);
+  it("gives a system administrator the company's details, its users and their programs, and no work right", () => {
+    expect(SYSTEM_ADMINISTRATOR_PERMISSIONS).toEqual(["company:update", "users:read", "users:admin", "programs:grant"]);
+    expect([...platformPermissions("owner")]).toEqual(["company:read", "company:update", "users:read", "users:admin", "programs:grant"]);
   });
 
-  it("gives a program administrator nothing beyond the member's own until its operations come", () => {
-    // The user list and the program grants bring their permissions later in
-    // slice 2c, and this list with them (effective.ts adds it).
-    expect(PROGRAM_ADMINISTRATOR_PERMISSIONS).toEqual([]);
+  it("gives a program administrator the users to read and the programs to grant, and never what runs the users or the company", () => {
+    // effective.ts adds it for a member who administers a program; the handlers keep them to those programs.
+    expect(PROGRAM_ADMINISTRATOR_PERMISSIONS).toEqual(["users:read", "programs:grant"]);
+    expect(PROGRAM_ADMINISTRATOR_PERMISSIONS).not.toContain("users:admin");
+    expect(PROGRAM_ADMINISTRATOR_PERMISSIONS).not.toContain("company:update");
   });
 
   it("names only permissions on the contract's list, each once, in one list only", () => {

@@ -19,19 +19,41 @@ const GLOSSARY = new URL("../../../docs/glossary.md", import.meta.url);
 
 /** The schemas that the terms name, each with its fields in their order. */
 const SCHEMAS: Readonly<Record<string, readonly string[]>> = {
-  // Slice 2b.
-  Company: ["id", "name", "organizationNumber", "databaseNumber"],
+  // Slice 2b, and the addresses and contact details of slice 2c, part 3.
+  Company: [
+    "id",
+    "name",
+    "organizationNumber",
+    "databaseNumber",
+    "address",
+    "zipCode",
+    "city",
+    "countryCode",
+    "visitAddress",
+    "visitZipCode",
+    "visitCity",
+    "visitCountryCode",
+    "phone",
+    "email",
+  ],
   // Slice 2c, part 1: the login identity.
   User: ["id", "name", "email", "language"],
   Me: ["user", "personalIdentityNumber", "mobile", "twoStep", "company", "membership", "permissions"],
   Session: ["user", "company"],
   // Slice 2c, part 2: the companies and the memberships.
-  Membership: ["companyId", "userId", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone", "roles", "programs", "programsAdministered"],
+  Membership: ["id", "companyId", "userId", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone", "roles", "programs", "programsAdministered"],
   CompanyChoice: ["company", "adminLevel"],
   RecentCompanies: ["companies"],
   // Slice 2c, part 3: the roles and the programs.
   ProgramGrant: ["program", "permissions", "full", "grantedAt", "expiresAt"],
   ProgramAdmin: ["program"],
+  Member: ["id", "companyId", "userId", "name", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone", "roles", "programs", "programsAdministered"],
+  UserRights: ["permissions", "programs"],
+  Permission: ["key", "group", "label", "view", "manualOnly"],
+  PermissionGroup: ["key", "kind", "label"],
+  ProgramDefinition: ["key", "label", "lifetimeDays", "permissions"],
+  RoleDefinition: ["key", "adminLevel", "program", "full"],
+  PermissionCatalogue: ["roles", "programs", "groups", "permissions"],
 };
 
 /**
@@ -46,6 +68,7 @@ const VALUES: Readonly<Record<string, readonly (string | number)[]>> = {
   // Slice 2c, part 3.
   Program: ["bookkeeping", "approval-read", "read", "auditor"],
   Role: ["owner", "admin", "bookkeeper", "approver", "viewer", "auditor"],
+  PermissionGroupKey: ["vouchers", "supplier-invoices", "reports", "register"],
 };
 
 /** The fields that hold a schema that a term names, as Schema.field, each with that schema. */
@@ -57,6 +80,13 @@ const REFERENCES: Readonly<Record<string, string>> = {
   // Slice 2c, part 3.
   "ProgramGrant.program": "Program",
   "ProgramAdmin.program": "Program",
+  "Member.adminLevel": "SysAdmin",
+  "Permission.group": "PermissionGroupKey",
+  "PermissionGroup.key": "PermissionGroupKey",
+  "ProgramDefinition.key": "Program",
+  "RoleDefinition.key": "Role",
+  "RoleDefinition.adminLevel": "SysAdmin",
+  "RoleDefinition.program": "Program",
 };
 
 /**
@@ -78,6 +108,7 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
       "User.email",
       "User.language",
       "Membership",
+      "Membership.id",
       "Membership.companyId",
       "Membership.userId",
       "Membership.status",
@@ -86,6 +117,9 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
       "Membership.roles",
       "Membership.programs",
       "Membership.programsAdministered",
+      "Member",
+      "Member.id",
+      "Member.name",
     ],
   ],
   ["NortFox ID / login identity", ["User", "Me"]],
@@ -100,6 +134,11 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
     ["Program", "ProgramGrant", "ProgramGrant.program", "ProgramGrant.permissions", "ProgramGrant.grantedAt", "ProgramGrant.expiresAt", "Membership.programs"],
   ],
   ["Full behörighet / full permission", ["ProgramGrant.full"]],
+  [
+    "Behörighet / permission",
+    ["Permission", "Permission.key", "Permission.group", "Permission.label", "Permission.view", "Permission.manualOnly", "PermissionGroupKey", "PermissionCatalogue"],
+  ],
+  ["Bokför (permission) / book (permission)", ["Permission.key"]],
 ];
 
 interface DescribedSchema {

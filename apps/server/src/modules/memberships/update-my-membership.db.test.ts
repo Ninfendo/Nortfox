@@ -54,6 +54,7 @@ describe("updateMyMembership", () => {
   let alfa: Company;
   let beta: Company;
   let inBeta: string;
+  let inAlfa: string;
 
   beforeAll(async () => {
     db = await freshDatabase();
@@ -64,7 +65,7 @@ describe("updateMyMembership", () => {
     server = signInApp(pool.database, { clock: testClock() });
     person = await addSignInIdentity(owner);
     alfa = await aCompany(app, "Testbolaget Alfa AB");
-    await addMembership(app, owner, alfa, { user: person.id });
+    inAlfa = await addMembership(app, owner, alfa, { user: person.id });
     beta = await aCompany(app, "Testbolaget Beta AB");
     inBeta = await addMembership(app, owner, beta, { user: person.id });
     session = (await signIn(server, person)).session;
@@ -87,15 +88,16 @@ describe("updateMyMembership", () => {
     return Number((await superuser.query<{ n: string }>("SELECT count(*) AS n FROM audit.history WHERE company_id = $1", [company])).rows[0]?.n);
   }
 
-  it("changes one work contact and keeps the other, and null takes one away", async () => {
-    const base = { companyId: alfa.id, userId: person.id, status: "active", idleTimeout: 120, roles: [], programs: [], programsAdministered: [] };
+  it("changes one work contact and keeps the other, and null takes the phone away", async () => {
+    const base = { id: inAlfa, companyId: alfa.id, userId: person.id, status: "active", idleTimeout: 120, roles: [], programs: [], programsAdministered: [] };
     expect(await jsonOf<MembershipJson>(await change(alfa.id, { workEmail: "alva.berg@example.com" }))).toEqual({ ...base, workEmail: "alva.berg@example.com" });
     expect(await jsonOf<MembershipJson>(await change(alfa.id, { workPhone: "070-174 06 07" }))).toEqual({ ...base, workEmail: "alva.berg@example.com", workPhone: "070-174 06 07" });
-    expect(await jsonOf<MembershipJson>(await change(alfa.id, { workEmail: null }))).toEqual({ ...base, workPhone: "070-174 06 07" });
-    expect(await contactsOf(alfa.id)).toEqual([{ work_email: null, work_phone: "070-174 06 07" }]);
-    expect(await jsonOf<MembershipJson>(await change(alfa.id, { workPhone: null }))).toEqual(base);
-    // With neither left, the row goes.
-    expect(await contactsOf(alfa.id)).toEqual([]);
+    expect(await jsonOf<MembershipJson>(await change(alfa.id, { workEmail: "alva.arbete@example.com" }))).toEqual({ ...base, workEmail: "alva.arbete@example.com", workPhone: "070-174 06 07" });
+    expect(await jsonOf<MembershipJson>(await change(alfa.id, { workPhone: null }))).toEqual({ ...base, workEmail: "alva.arbete@example.com" });
+    expect(await contactsOf(alfa.id)).toEqual([{ work_email: "alva.arbete@example.com", work_phone: null }]);
+    // The work e-mail is required: null does not take it away (modules/memberships/work-email.db.test.ts).
+    expect((await change(alfa.id, { workEmail: null })).status).toBe(400);
+    expect(await contactsOf(alfa.id)).toEqual([{ work_email: "alva.arbete@example.com", work_phone: null }]);
   });
 
   it("changes nothing for an empty body, and writes no history for an idle time that stays", async () => {
@@ -110,6 +112,7 @@ describe("updateMyMembership", () => {
   it("works in the company that the path names, also when the session works in another, and changes only the person's own membership", async () => {
     expect((await chooseCompany(server, session, alfa.id)).status).toBe(200);
     expect(await jsonOf<MembershipJson>(await change(beta.id, { idleTimeout: 480, workEmail: "alva.beta@example.org" }))).toEqual({
+      id: inBeta,
       companyId: beta.id,
       userId: person.id,
       status: "active",

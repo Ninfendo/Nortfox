@@ -121,10 +121,10 @@ describe("the paths and the methods", () => {
   });
 
   it.each([
-    ["POST", "/v1/company", "GET, HEAD"],
+    ["POST", "/v1/company", "GET, HEAD, PATCH"],
     ["PUT", "/v1/health", "GET, HEAD"],
     ["DELETE", "/v1/test-accounts", "GET, HEAD"],
-    ["OPTIONS", "/v1/company", "GET, HEAD"],
+    ["OPTIONS", "/v1/company", "GET, HEAD, PATCH"],
     ["PATCH", "/v1/me/companies/recent", "GET, HEAD"],
     ["DELETE", "/v1/me/companies/recent", "GET, HEAD"],
     ["GET", `/v1/me/companies/${COMPANY}`, "PATCH"],

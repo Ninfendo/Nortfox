@@ -11,12 +11,14 @@
 // when a registry operation has no arguments, so each later part's session
 // operations are checked here too.
 
-import { REGISTRY, type Operation } from "@nortfox/contract";
+import { REGISTRY, fullPermissions, type Operation, type Program } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, callTool, mcpClient, type AppPool } from "../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../test/database.ts";
+import { addGrant } from "../../test/grants.ts";
 import { addCompanyWithOwner } from "../../test/ledger.ts";
+import { addMembership, type Company } from "../../test/memberships.ts";
 import { OPERATION_ARGUMENTS, restRequestOf, type ArgumentsFixture } from "../../test/operation-arguments.ts";
 import { expectNoTokens } from "../../test/secrets.ts";
 import {
@@ -89,6 +91,9 @@ describe("the session operations on /mcp", () => {
     await db.close();
   });
 
+  /** The company that companyOf made last for each person. */
+  const companies = new Map<string, Company>();
+
   const fixture: ArgumentsFixture = {
     setupToken: async () => {
       const link = await createSetupLink(pool.database, TEST_ORIGIN, server.clock.now());
@@ -104,7 +109,22 @@ describe("the session operations on /mcp", () => {
       const challenge = await challengeOf(await passwordStep(server, person.email, person.password));
       return { challenge, code: codeOf(person, server.clock.now()) };
     },
-    companyOf: async (person) => (await addCompanyWithOwner(app, { actor: person.id, kind: "user" }, { name: "Testbolaget My AB" })).row.company_id,
+    companyOf: async (person) => {
+      const made = await addCompanyWithOwner(app, { actor: person.id, kind: "user" }, { name: "Testbolaget My AB" });
+      companies.set(person.id, { ...made, id: made.row.company_id, asOwner: { actor: person.id, kind: "user" } });
+      return made.row.company_id;
+    },
+    memberOf: async (person, program) => {
+      const company = companies.get(person.id);
+      if (company === undefined) {
+        throw new Error("The fixture made no company for the person.");
+      }
+      const member = await addMembership(app, owner, company);
+      if (program !== undefined) {
+        await addGrant(app, company, member, program, fullPermissions(program as Program));
+      }
+      return member;
+    },
   };
 
   it("covers every session operation, and every operation of the registry has its arguments", () => {

@@ -24,6 +24,12 @@ export interface ArgumentsFixture {
   readonly challenge: () => Promise<{ readonly challenge: string; readonly code: string }>;
   /** A company that `person` owns, made as the app does. */
   readonly companyOf: (person: TestIdentity) => Promise<string>;
+  /**
+   * A member of the company that companyOf made last for `person`, another
+   * person, made as the app does, holding `program` when one is given: the
+   * member's id.
+   */
+  readonly memberOf: (person: TestIdentity, program?: string) => Promise<string>;
 }
 
 /** The arguments of an operation, from the fixture and, for a signed-in operation, the person whose session calls it. */
@@ -57,6 +63,21 @@ export const OPERATION_ARGUMENTS: Readonly<Record<string, ArgumentsOf>> = {
   listRecentCompanies: none,
   selectCompany: async (fixture, actor) => ({ companyId: await fixture.companyOf(actorOf(actor)), idempotencyKey: "choose-the-company" }),
   updateMyMembership: async (fixture, actor) => ({ companyId: await fixture.companyOf(actorOf(actor)), idleTimeout: 60, idempotencyKey: "change-my-membership" }),
+  updateCompany: () => Promise.resolve({ name: "Testbolaget Lambda AB", city: "Lund", idempotencyKey: "change-the-company" }),
+  listPermissions: none,
+  listUsers: none,
+  getUser: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)) }),
+  updateUser: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)), idleTimeout: 60, idempotencyKey: "change-the-user" }),
+  removeUser: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)), idempotencyKey: "remove-the-user" }),
+  assignProgram: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)), program: "read", full: true, idempotencyKey: "grant-the-program" }),
+  removeProgram: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor), "read"), program: "read", idempotencyKey: "remove-the-program" }),
+  moveProgram: async (fixture, actor) => ({
+    memberId: await fixture.memberOf(actorOf(actor), "read"),
+    program: "read",
+    targetMemberId: await fixture.memberOf(actorOf(actor)),
+    idempotencyKey: "move-the-program",
+  }),
+  updateUserRights: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor), "read"), permissions: ["reports.vat"], idempotencyKey: "set-the-rights" }),
 };
 
 /** A REST request of `operation` from its flat input: the path parameters in the path, the query, the body and the key. */

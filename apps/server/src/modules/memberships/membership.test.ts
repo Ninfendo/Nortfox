@@ -30,6 +30,7 @@ describe("readMembership", () => {
         Promise.resolve({ rows: statement.includes("access.memberships") ? [row] : [] } as unknown as QueryResult<Row>),
     };
     expect(await readMembership(answering, "4f3e2d1c-0b9a-4876-9543-210fedcba987", new Date("2090-03-15T10:00:00.000Z"))).toEqual({
+      id: "4f3e2d1c-0b9a-4876-9543-210fedcba987",
       companyId: row.company_id,
       status: "invited",
       idleTimeout: 120,

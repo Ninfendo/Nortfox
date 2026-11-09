@@ -95,13 +95,27 @@ export {
   RecentCompanies,
   RoleKey,
   SysAdmin,
+  WorkEmail,
+  WorkPhone,
   createCompany,
   getCompany,
   listCompanies,
   listRecentCompanies,
+  updateCompany,
   updateMyMembership,
 } from "./operations/companies.ts";
 export { LANGUAGES, Me, TWO_STEP_CHOICES, User, getMe } from "./operations/me.ts";
+export {
+  PermissionCatalogue,
+  PermissionEntry,
+  PermissionGroup,
+  PermissionGroupKey,
+  PermissionKey,
+  ProgramDefinition,
+  RoleEntry,
+  listPermissions,
+} from "./operations/permissions.ts";
+export { Member, UserRights, assignProgram, getUser, listUsers, moveProgram, removeProgram, removeUser, updateUser, updateUserRights } from "./operations/users.ts";
 export { Session, getSession, selectCompany } from "./operations/session.ts";
 export { Health, getHealth } from "./operations/status.ts";
 export { Cursor, LIMIT, Limit, effectiveLimit, pageOf } from "./paging.ts";

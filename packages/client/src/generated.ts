@@ -6,7 +6,7 @@
 import type { CallOptions, Send, WriteOptions } from "./runtime.ts";
 
 /**
- * A company: its id, name, organisation number and tenant id.
+ * A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.
  */
 export interface Company {
   /**
@@ -25,6 +25,46 @@ export interface Company {
    * The company's number for programs, its tenant id. It never changes.
    */
   readonly databaseNumber: number;
+  /**
+   * Adress: the postal address's street or box line. Absent when it is not set.
+   */
+  readonly address?: string;
+  /**
+   * Postnummer: the postal address's postal code. Absent when it is not set.
+   */
+  readonly zipCode?: string;
+  /**
+   * Ort: the postal address's town. Absent when it is not set.
+   */
+  readonly city?: string;
+  /**
+   * Land: the postal address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE. Absent when it is not set.
+   */
+  readonly countryCode?: string;
+  /**
+   * Besöksadress: the visiting address's street. Absent when it is not set.
+   */
+  readonly visitAddress?: string;
+  /**
+   * The visiting address's postal code. Absent when it is not set.
+   */
+  readonly visitZipCode?: string;
+  /**
+   * The visiting address's town. Absent when it is not set.
+   */
+  readonly visitCity?: string;
+  /**
+   * The visiting address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE. Absent when it is not set.
+   */
+  readonly visitCountryCode?: string;
+  /**
+   * Telefon: the company's phone number. Absent when it is not set.
+   */
+  readonly phone?: string;
+  /**
+   * E-post: the company's e-mail address. Absent when it is not set.
+   */
+  readonly email?: string;
 }
 
 /**
@@ -97,9 +137,64 @@ export interface Me {
 }
 
 /**
+ * Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.
+ */
+export interface Member {
+  /**
+   * The membership's id: the member's id in the company, which the paths of /v1/users take as memberId.
+   */
+  readonly id: string;
+  /**
+   * The company's id.
+   */
+  readonly companyId: string;
+  /**
+   * The person's id. Absent while the membership is invited.
+   */
+  readonly userId?: string;
+  /**
+   * The person's name. Absent while the membership has no person.
+   */
+  readonly name?: string;
+  /**
+   * invited, active, inactive, removed or left.
+   */
+  readonly status: "invited" | "active" | "inactive" | "removed" | "left";
+  readonly adminLevel?: SysAdmin;
+  /**
+   * Utloggning efter inaktivitet, in whole minutes: 15, 30, 60, 120 (2 hours, the default) or 480 (8 hours).
+   */
+  readonly idleTimeout: 15 | 30 | 60 | 120 | 480;
+  /**
+   * The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed.
+   */
+  readonly workEmail?: string;
+  /**
+   * The person's work phone number in this company. Absent when none is set.
+   */
+  readonly workPhone?: string;
+  /**
+   * The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended.
+   */
+  readonly roles: readonly Role[];
+  /**
+   * The member's program grants as they are now, in the catalogue's order, also one that has ended.
+   */
+  readonly programs: readonly ProgramGrant[];
+  /**
+   * The programs the member administers, in the catalogue's order.
+   */
+  readonly programsAdministered: readonly ProgramAdmin[];
+}
+
+/**
  * Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered.
  */
 export interface Membership {
+  /**
+   * The membership's id: the member's id in the company, which the paths of /v1/users take as memberId.
+   */
+  readonly id: string;
   /**
    * The company's id.
    */
@@ -118,7 +213,7 @@ export interface Membership {
    */
   readonly idleTimeout: 15 | 30 | 60 | 120 | 480;
   /**
-   * The person's work e-mail address in this company, where its notices go. Absent when none is set.
+   * The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed.
    */
   readonly workEmail?: string;
   /**
@@ -152,6 +247,73 @@ export interface PasswordSignIn {
    */
   readonly challenge?: string;
 }
+
+/**
+ * Behörighet: a permission of the catalogue, with its group, its screen words and its marks.
+ */
+export interface Permission {
+  readonly key: PermissionKey;
+  readonly group: PermissionGroupKey;
+  /**
+   * The permission's words on the screen, such as Bokför.
+   */
+  readonly label: string;
+  /**
+   * Whether it is its group's view right, which every other permission of the group needs.
+   */
+  readonly view: boolean;
+  /**
+   * Whether it is only switched on by hand: Full behörighet never holds it.
+   */
+  readonly manualOnly: boolean;
+}
+
+/**
+ * The permission catalogue: the roles, the programs with their sets, the groups and the permissions, in order.
+ */
+export interface PermissionCatalogue {
+  /**
+   * The plan's six roles, in their order.
+   */
+  readonly roles: readonly RoleDefinition[];
+  /**
+   * The programs, in the catalogue's order.
+   */
+  readonly programs: readonly ProgramDefinition[];
+  /**
+   * The groups, in the catalogue's order.
+   */
+  readonly groups: readonly PermissionGroup[];
+  /**
+   * Every permission, in the catalogue's order.
+   */
+  readonly permissions: readonly Permission[];
+}
+
+/**
+ * A group of permissions, with its kind and its screen words.
+ */
+export interface PermissionGroup {
+  readonly key: PermissionGroupKey;
+  /**
+   * program, for a Bokföring group of a program's own rights; reports, for Rapporter; or register, for Register/Övrigt.
+   */
+  readonly kind: "program" | "reports" | "register";
+  /**
+   * The group's words on the screen, such as Verifikationer.
+   */
+  readonly label: string;
+}
+
+/**
+ * A group of the catalogue, by its key: vouchers (Verifikationer), supplier-invoices (Leverantörsfakturor), reports (Rapporter) or register (Register/Övrigt).
+ */
+export type PermissionGroupKey = "vouchers" | "supplier-invoices" | "reports" | "register";
+
+/**
+ * A permission of the catalogue, by its key, such as vouchers.view (Verifikationer) or vouchers.book (Bokför).
+ */
+export type PermissionKey = "vouchers.view" | "vouchers.book" | "vouchers.delete" | "vouchers.alter" | "vouchers.accrue" | "vouchers.created-by" | "vouchers.cash-register" | "vouchers.receipts" | "vouchers.accruals" | "vouchers.run-accruals-vouchers" | "vouchers.run-accruals-supplier-invoices" | "vouchers.run-accruals-customer-invoices" | "vouchers.reconcile" | "vouchers.delete-bank-transactions" | "vouchers.search-amount" | "vouchers.settings" | "vouchers.lock-period" | "vouchers.approve-own-series" | "vouchers.see-all-series" | "supplier-invoices.view" | "supplier-invoices.save" | "supplier-invoices.book" | "supplier-invoices.void" | "supplier-invoices.payment-file" | "supplier-invoices.undo-payment-file" | "supplier-invoices.accrue" | "supplier-invoices.delete-attachments" | "supplier-invoices.created-by" | "supplier-invoices.inbox" | "supplier-invoices.send-for-interpretation" | "supplier-invoices.disbursements" | "supplier-invoices.settings" | "reports.balance-sheet" | "reports.deleted-vouchers" | "reports.general-ledger" | "reports.opening-balance" | "reports.account-analysis" | "reports.liquidity" | "reports.vat" | "reports.accruals" | "reports.periodic-summary" | "reports.project-accounting" | "reports.budget" | "reports.income-statement" | "reports.income-statement-12-months" | "reports.income-statement-advanced" | "reports.system-documentation" | "reports.voucher-list" | "reports.show-struck-rows" | "reports.processing-history" | "reports.supplier-invoices" | "reports.supplier-statistics" | "reports.supplier-ledger" | "reports.supplier-due-list" | "register.suppliers" | "register.chart-of-accounts" | "register.cost-centres" | "register.projects" | "register.sie-export" | "register.sie-import" | "register.export-files" | "register.anonymise-fiscal-year" | "register.removed-users" | "register.delete-processing-history";
 
 /**
  * Problem details (RFC 9457) with a stable code.
@@ -208,6 +370,31 @@ export interface ProgramAdmin {
 }
 
 /**
+ * Program: a program of the catalogue, with its screen words, its end, and its set.
+ */
+export interface ProgramDefinition {
+  readonly key: Program;
+  /**
+   * The program's words on the screen, such as Bokföring.
+   */
+  readonly label: string;
+  /**
+   * The days after which a grant of the program ends by itself: 30 for Revisor. Absent for a program whose grant has no end.
+   */
+  readonly lifetimeDays?: number;
+  /**
+   * The program's set: every permission a grant of it may hold, in the catalogue's order.
+   */
+  readonly permissions: readonly ({
+    readonly key: PermissionKey;
+    /**
+     * Whether Full behörighet holds it. A permission that it does not hold is only switched on by hand.
+     */
+    readonly full: boolean;
+  })[];
+}
+
+/**
  * Program: a program granted to a member, with the rights the grant holds.
  */
 export interface ProgramGrant {
@@ -244,6 +431,19 @@ export interface RecentCompanies {
  * One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor.
  */
 export type Role = "owner" | "admin" | "bookkeeper" | "approver" | "viewer" | "auditor";
+
+/**
+ * One of the plan's six roles, as a set in this model: owner and admin by the admin level that adminLevel names; the other four by a grant of the program that program names, with Full behörighet when full is true.
+ */
+export interface RoleDefinition {
+  readonly key: Role;
+  readonly adminLevel?: SysAdmin;
+  readonly program?: Program;
+  /**
+   * For a program's role: whether only a grant with Full behörighet makes it, as for bookkeeper.
+   */
+  readonly full?: boolean;
+}
 
 /**
  * The browser's session: the person it signed in, and the company it works in once one is chosen.
@@ -296,6 +496,20 @@ export interface User {
    * Språk: sv (Svenska) or en (English). It applies in every company.
    */
   readonly language: "sv" | "en";
+}
+
+/**
+ * A member's Rapporter and Register/Övrigt rights, and the program grants that hold them.
+ */
+export interface UserRights {
+  /**
+   * The member's Rapporter and Register/Övrigt rights, as the grants hold them now, in the catalogue's order.
+   */
+  readonly permissions: readonly string[];
+  /**
+   * The member's grants as they are now, in the catalogue's order.
+   */
+  readonly programs: readonly ProgramGrant[];
 }
 
 export interface Operations {
@@ -445,6 +659,67 @@ export interface Operations {
   getCompany(options?: CallOptions): Promise<Company>;
 
   /**
+   * Change the company
+   *
+   * Changes the request's company: its name, its postal and visiting addresses, and its phone number and e-mail address. A field left out stays as it is, and null takes an address field or a contact detail away. The organisation number never changes, so the operation does not take it.
+   *
+   * `PATCH /v1/company`
+   *
+   * Needs the permission `company:update`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  updateCompany(
+    input: {
+      /**
+       * The company's name.
+       */
+      readonly name?: string;
+      /**
+       * Adress: the postal address's street or box line. null takes it away.
+       */
+      readonly address?: string | null;
+      /**
+       * Postnummer: the postal address's postal code. null takes it away.
+       */
+      readonly zipCode?: string | null;
+      /**
+       * Ort: the postal address's town. null takes it away.
+       */
+      readonly city?: string | null;
+      /**
+       * Land: the postal address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE. null takes it away.
+       */
+      readonly countryCode?: string | null;
+      /**
+       * Besöksadress: the visiting address's street. null takes it away.
+       */
+      readonly visitAddress?: string | null;
+      /**
+       * The visiting address's postal code. null takes it away.
+       */
+      readonly visitZipCode?: string | null;
+      /**
+       * The visiting address's town. null takes it away.
+       */
+      readonly visitCity?: string | null;
+      /**
+       * The visiting address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE. null takes it away.
+       */
+      readonly visitCountryCode?: string | null;
+      /**
+       * Telefon: the company's phone number. null takes it away.
+       */
+      readonly phone?: string | null;
+      /**
+       * E-post: the company's e-mail address. null takes it away.
+       */
+      readonly email?: string | null;
+    },
+    options: WriteOptions,
+  ): Promise<Company>;
+
+  /**
    * Check that the server is up
    *
    * Answers as soon as the server runs. It reads no data.
@@ -486,7 +761,7 @@ export interface Operations {
   /**
    * Change your membership
    *
-   * Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is, and null takes a work contact away.
+   * Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away.
    *
    * `PATCH /v1/me/companies/{companyId}`
    *
@@ -504,9 +779,9 @@ export interface Operations {
       readonly companyId: string;
     } & {
       /**
-       * The work e-mail address in this company, or null for none.
+       * The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away.
        */
-      readonly workEmail?: string | null;
+      readonly workEmail?: string;
       /**
        * The work phone number in this company, or null for none.
        */
@@ -518,6 +793,19 @@ export interface Operations {
     },
     options: WriteOptions,
   ): Promise<Membership>;
+
+  /**
+   * List the permissions
+   *
+   * Gives the permission catalogue as the install holds it: the plan's six roles, the programs with each one's set and what Full behörighet holds, the groups, and every permission, each in the catalogue's order, with its view and manual-only marks.
+   *
+   * `GET /v1/permissions`
+   *
+   * Needs a signed-in person, and works in no company.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  listPermissions(options?: CallOptions): Promise<PermissionCatalogue>;
 
   /**
    * Read the session
@@ -596,6 +884,257 @@ export interface Operations {
     },
     options?: CallOptions,
   ): Promise<SetupResult>;
+
+  /**
+   * List the users
+   *
+   * Lists the company's invited, active and inactive members, in the order they were added, each with the person's name, the status, the admin level, the idle logout, the work contacts and the programs. A program administrator sees only the programs they administer.
+   *
+   * `GET /v1/users`
+   *
+   * Needs the permission `users:read`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * The answer holds personal data: `/items/*\/name`, `/items/*\/workEmail`, `/items/*\/workPhone`.
+   */
+  listUsers(
+    input?: {
+      /**
+       * How many items a page holds: from 1 to 500. Any other whole number gives 100.
+       */
+      readonly limit?: number;
+      /**
+       * Where the page starts: the nextCursor of the page before. Leave it out for the first page.
+       */
+      readonly cursor?: string;
+    },
+    options?: CallOptions,
+  ): Promise<{
+  /**
+   * The items of this page, in the list's order.
+   */
+  readonly items: readonly Member[];
+  /**
+   * Where the next page starts. It is absent on the last page.
+   */
+  readonly nextCursor?: string;
+  /**
+   * How many items the whole list holds.
+   */
+  readonly total: number;
+}>;
+
+  /**
+   * Read a user
+   *
+   * Gives one invited, active or inactive member of the company, as listUsers gives it. Any other id, also one of a removed or a left member, gets 422 user-not-found.
+   *
+   * `GET /v1/users/{memberId}`
+   *
+   * Needs the permission `users:read`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
+   */
+  getUser(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+    },
+    options?: CallOptions,
+  ): Promise<Member>;
+
+  /**
+   * Remove a user
+   *
+   * Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, and its sessions end. The member's work contacts are erased. The company always keeps an active system administrator.
+   *
+   * `DELETE /v1/users/{memberId}`
+   *
+   * Needs the permission `users:admin`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  removeUser(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+    },
+    options: WriteOptions,
+  ): Promise<void>;
+
+  /**
+   * Change a user
+   *
+   * Changes a member of the company: Aktiv användare, the system administrator's level, the programs the member administers, the idle logout and the work contacts. A field left out stays as it is. adminLevel admin makes the member a system administrator, and null makes them no longer one; only creating a company gives the owner's level, which admin keeps. The work e-mail address is required, so null is refused for it. The company always keeps an active system administrator.
+   *
+   * `PATCH /v1/users/{memberId}`
+   *
+   * Needs the permission `users:admin`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
+   */
+  updateUser(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+    } & {
+      /**
+       * Aktiv användare: true lets the member work in the company, false stops it, and keeps their rights. An invited member has not accepted yet, and takes neither.
+       */
+      readonly active?: boolean;
+      /**
+       * admin makes the member a system administrator, or keeps the level of one; null makes them no longer one. Only creating a company gives the owner's level.
+       */
+      readonly adminLevel?: "admin";
+      /**
+       * Every program the member administers, Programadministratör: the list replaces the one there was.
+       */
+      readonly programsAdministered?: readonly ProgramAdmin[];
+      /**
+       * Utloggning efter inaktivitet, in whole minutes: 15, 30, 60, 120 (2 hours, the default) or 480 (8 hours).
+       */
+      readonly idleTimeout?: 15 | 30 | 60 | 120 | 480;
+      /**
+       * The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away.
+       */
+      readonly workEmail?: string;
+      /**
+       * The work phone number in this company, or null for none.
+       */
+      readonly workPhone?: string | null;
+    },
+    options: WriteOptions,
+  ): Promise<Member>;
+
+  /**
+   * Grant a program
+   *
+   * Tilldela program: grants the program to a member, with Full behörighet (full: true), or with a list of its rights. For a member who holds the program, the list replaces the grant's, which keeps its time and its end; a grant that has ended is granted again. A program administrator grants only the programs they administer.
+   *
+   * `PUT /v1/users/{memberId}/programs/{program}`
+   *
+   * Needs the permission `programs:grant`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  assignProgram(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+      /**
+       * The program: bookkeeping, approval-read, read or auditor.
+       */
+      readonly program: "bookkeeping" | "approval-read" | "read" | "auditor";
+    } & {
+      /**
+       * Full behörighet: every right of the program's Full behörighet.
+       */
+      readonly full?: true;
+      /**
+       * The rights the grant holds: the program's own, its Rapporter and its Register/Övrigt rights, as the catalogue's keys.
+       */
+      readonly permissions?: readonly PermissionKey[];
+    },
+    options: WriteOptions,
+  ): Promise<ProgramGrant>;
+
+  /**
+   * Remove a program
+   *
+   * Ta bort program: takes the program's grant from a member. A program administrator removes only the programs they administer.
+   *
+   * `DELETE /v1/users/{memberId}/programs/{program}`
+   *
+   * Needs the permission `programs:grant`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  removeProgram(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+      /**
+       * The program: bookkeeping, approval-read, read or auditor.
+       */
+      readonly program: "bookkeeping" | "approval-read" | "read" | "auditor";
+    },
+    options: WriteOptions,
+  ): Promise<void>;
+
+  /**
+   * Move a program
+   *
+   * Flytta program: gives a member's grant of the program to another member, who must not hold the program, and takes it from the first. The grant keeps its time and its end. With permissions, it is narrowed first: the list holds only rights the grant holds. A program administrator moves only the programs they administer.
+   *
+   * `POST /v1/users/{memberId}/programs/{program}/move`
+   *
+   * Needs the permission `programs:grant`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  moveProgram(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+      /**
+       * The program: bookkeeping, approval-read, read or auditor.
+       */
+      readonly program: "bookkeeping" | "approval-read" | "read" | "auditor";
+    } & {
+      /**
+       * The member who gets the grant, by the membership's id.
+       */
+      readonly targetMemberId: string;
+      /**
+       * The rights the grant holds: the program's own, its Rapporter and its Register/Övrigt rights, as the catalogue's keys.
+       */
+      readonly permissions?: readonly PermissionKey[];
+    },
+    options: WriteOptions,
+  ): Promise<ProgramGrant>;
+
+  /**
+   * Change a user's rights
+   *
+   * Anpassa Rapporter and Anpassa Register/Övrigt: sets a member's Rapporter and Register/Övrigt rights, the whole list. Each of the member's grants holds those its program covers, and keeps its own rights. A right that no grant of the member covers is refused. A program administrator sets them only in the grants of the programs they administer.
+   *
+   * `PUT /v1/users/{memberId}/rights`
+   *
+   * Needs the permission `programs:grant`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  updateUserRights(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+    } & {
+      /**
+       * Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys.
+       */
+      readonly permissions: readonly PermissionKey[];
+    },
+    options: WriteOptions,
+  ): Promise<UserRights>;
 }
 
 export function createOperations(send: Send): Operations {
@@ -619,12 +1158,35 @@ export function createOperations(send: Send): Operations {
 },
     createCompany: async (input, options) => (await send({ method: "POST", path: "/v1/companies", body: true, key: true }, input, options)) as Company,
     getCompany: async (options) => (await send({ method: "GET", path: "/v1/company" }, undefined, options)) as Company,
+    updateCompany: async (input, options) => (await send({ method: "PATCH", path: "/v1/company", body: true, key: true }, input, options)) as Company,
     getHealth: async (options) => (await send({ method: "GET", path: "/v1/health" }, undefined, options)) as Health,
     getMe: async (options) => (await send({ method: "GET", path: "/v1/me" }, undefined, options)) as Me,
     listRecentCompanies: async (options) => (await send({ method: "GET", path: "/v1/me/companies/recent" }, undefined, options)) as RecentCompanies,
     updateMyMembership: async (input, options) => (await send({ method: "PATCH", path: "/v1/me/companies/{companyId}", params: ["companyId"], body: true, key: true }, input, options)) as Membership,
+    listPermissions: async (options) => (await send({ method: "GET", path: "/v1/permissions" }, undefined, options)) as PermissionCatalogue,
     getSession: async (options) => (await send({ method: "GET", path: "/v1/session" }, undefined, options)) as Session,
     selectCompany: async (input, options) => (await send({ method: "POST", path: "/v1/session/company", body: true, key: true }, input, options)) as Session,
     completeSetup: async (input, options) => (await send({ method: "POST", path: "/v1/setup/{token}", params: ["token"], body: true }, input, options)) as SetupResult,
+    listUsers: async (input, options) => (await send({ method: "GET", path: "/v1/users", query: ["limit", "cursor"] }, input, options)) as {
+  /**
+   * The items of this page, in the list's order.
+   */
+  readonly items: readonly Member[];
+  /**
+   * Where the next page starts. It is absent on the last page.
+   */
+  readonly nextCursor?: string;
+  /**
+   * How many items the whole list holds.
+   */
+  readonly total: number;
+},
+    getUser: async (input, options) => (await send({ method: "GET", path: "/v1/users/{memberId}", params: ["memberId"] }, input, options)) as Member,
+    removeUser: async (input, options) => { await send({ method: "DELETE", path: "/v1/users/{memberId}", params: ["memberId"], key: true, answer: "none" }, input, options); },
+    updateUser: async (input, options) => (await send({ method: "PATCH", path: "/v1/users/{memberId}", params: ["memberId"], body: true, key: true }, input, options)) as Member,
+    assignProgram: async (input, options) => (await send({ method: "PUT", path: "/v1/users/{memberId}/programs/{program}", params: ["memberId", "program"], body: true, key: true }, input, options)) as ProgramGrant,
+    removeProgram: async (input, options) => { await send({ method: "DELETE", path: "/v1/users/{memberId}/programs/{program}", params: ["memberId", "program"], key: true, answer: "none" }, input, options); },
+    moveProgram: async (input, options) => (await send({ method: "POST", path: "/v1/users/{memberId}/programs/{program}/move", params: ["memberId", "program"], body: true, key: true }, input, options)) as ProgramGrant,
+    updateUserRights: async (input, options) => (await send({ method: "PUT", path: "/v1/users/{memberId}/rights", params: ["memberId"], body: true, key: true }, input, options)) as UserRights,
   };
 }

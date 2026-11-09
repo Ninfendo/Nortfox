@@ -21,21 +21,17 @@ export type AdminLevel = (typeof ADMIN_LEVELS)[number];
 export const MEMBER_PERMISSIONS: readonly Permission[] = ["company:read"];
 
 /**
- * What a system administrator holds beside a member's own. The operations
- * that need it (the company's details, its users and their programs) come
- * later in slice 2c, and their permissions with them, so for now it is
- * empty: a permission that no operation needs is never on the list.
+ * What a system administrator holds beside a member's own: the company's
+ * details, its users and their programs. None of it is a work right.
  */
-export const SYSTEM_ADMINISTRATOR_PERMISSIONS: readonly Permission[] = [];
+export const SYSTEM_ADMINISTRATOR_PERMISSIONS: readonly Permission[] = ["company:update", "users:read", "users:admin", "programs:grant"];
 
 /**
  * What a program administrator holds beside a member's own: a member who
- * administers at least one program. The operations that need it (the
- * company's users and the program grants) come later in slice 2c, and their
- * permissions with them, so for now it is empty. The handlers keep a program
- * administrator to their own programs.
+ * administers at least one program. They read the users and grant
+ * programs, and the handlers keep them to the programs they administer.
  */
-export const PROGRAM_ADMINISTRATOR_PERMISSIONS: readonly Permission[] = [];
+export const PROGRAM_ADMINISTRATOR_PERMISSIONS: readonly Permission[] = ["users:read", "programs:grant"];
 
 /** The permissions a membership holds by being one, with `adminLevel`, or with none for a plain member. Each call gives a new set. */
 export function platformPermissions(adminLevel: AdminLevel | null): ReadonlySet<Permission> {

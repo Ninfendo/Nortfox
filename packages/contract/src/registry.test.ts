@@ -11,7 +11,7 @@ describe("REGISTRY", () => {
     expect(registryProblems(REGISTRY, Object.keys(PERMISSIONS))).toEqual([]);
   });
 
-  it("holds getHealth and getCompany, the browser's sign-in, the person's own operations, and the companies", () => {
+  it("holds getHealth and getCompany, the browser's sign-in, the person's own operations, the companies, the catalogue, and the users and their programs", () => {
     expect(
       REGISTRY.map((entry) => {
         const { permission, assistant, writes, list, session, company, personalOutput } = entry["x-nortfox"];
@@ -68,6 +68,51 @@ describe("REGISTRY", () => {
         "signed-in",
         { assistant: false, writes: true, list: false, session: null, company: { input: "companyId" }, personalOutput: ["/workEmail", "/workPhone"] },
       ],
+      ["updateCompany", "PATCH /v1/company", "company:update", { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] }],
+      ["listPermissions", "GET /v1/permissions", "signed-in", { assistant: false, writes: false, list: false, session: null, company: "none", personalOutput: [] }],
+      [
+        "listUsers",
+        "GET /v1/users",
+        "users:read",
+        { assistant: false, writes: false, list: true, session: null, company: "credential", personalOutput: ["/items/*/name", "/items/*/workEmail", "/items/*/workPhone"] },
+      ],
+      [
+        "getUser",
+        "GET /v1/users/{memberId}",
+        "users:read",
+        { assistant: false, writes: false, list: false, session: null, company: "credential", personalOutput: ["/name", "/workEmail", "/workPhone"] },
+      ],
+      [
+        "updateUser",
+        "PATCH /v1/users/{memberId}",
+        "users:admin",
+        { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: ["/name", "/workEmail", "/workPhone"] },
+      ],
+      ["removeUser", "DELETE /v1/users/{memberId}", "users:admin", { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] }],
+      [
+        "assignProgram",
+        "PUT /v1/users/{memberId}/programs/{program}",
+        "programs:grant",
+        { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] },
+      ],
+      [
+        "removeProgram",
+        "DELETE /v1/users/{memberId}/programs/{program}",
+        "programs:grant",
+        { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] },
+      ],
+      [
+        "moveProgram",
+        "POST /v1/users/{memberId}/programs/{program}/move",
+        "programs:grant",
+        { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] },
+      ],
+      [
+        "updateUserRights",
+        "PUT /v1/users/{memberId}/rights",
+        "programs:grant",
+        { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] },
+      ],
     ]);
   });
 
@@ -89,6 +134,18 @@ describe("REGISTRY", () => {
       selectCompany:
         "Chooses the browser session's company. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
       updateMyMembership: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
+      updateCompany: "Changes the company you work in: its name, its addresses, its phone number and its e-mail address. Its organisation number never changes.",
+      listPermissions:
+        "Gives the permission catalogue: the roles, the programs with their sets, the groups and every permission in order, with the view and manual-only marks.",
+      listUsers: "Lists the users of the company you work in, with their status, admin level and programs. A program administrator sees only the programs they administer.",
+      getUser: "Gives one user of the company you work in, by the member's id.",
+      updateUser:
+        "Changes a user of the company you work in: whether they are active, their system administrator's level, the programs they administer, their idle logout and their work contacts.",
+      removeUser: "Removes a user from the company you work in. You cannot remove yourself.",
+      assignProgram: "Grants a program to a user of the company you work in, with Full behörighet or with a list of its rights.",
+      removeProgram: "Takes a program from a user of the company you work in.",
+      moveProgram: "Moves a program from one user of the company you work in to another, narrowed first if you give a list of its rights.",
+      updateUserRights: "Sets the Rapporter and Register/Övrigt rights of a user of the company you work in.",
     });
   });
 
@@ -101,7 +158,14 @@ describe("REGISTRY", () => {
 
   it("describes each permission in a sentence", () => {
     expect(PERMISSIONS).toEqual({
-      "company:read": "Read the company: its id, name, organisation number and tenant id.",
+      "company:read": "Read the company: its id, name, organisation number, tenant id, addresses and contact details.",
+      "company:update": "Change the company's name, addresses and contact details. Its organisation number never changes.",
+      "users:read":
+        "Read the company's users: each member's status, admin level, idle logout, work contacts and programs. A program administrator sees only the programs they administer.",
+      "users:admin":
+        "Run the company's users: activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, and remove a member.",
+      "programs:grant":
+        "Grant, narrow, move and remove the members' programs, and set their Rapporter and Register/Övrigt rights. A program administrator does it only for the programs they administer.",
     });
   });
 

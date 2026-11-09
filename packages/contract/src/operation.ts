@@ -25,7 +25,14 @@ import { CHALLENGES, type SecurityScheme } from "./security.ts";
  * needs none, and says "public".
  */
 export const PERMISSIONS = {
-  "company:read": "Read the company: its id, name, organisation number and tenant id.",
+  "company:read": "Read the company: its id, name, organisation number, tenant id, addresses and contact details.",
+  "company:update": "Change the company's name, addresses and contact details. Its organisation number never changes.",
+  "users:read":
+    "Read the company's users: each member's status, admin level, idle logout, work contacts and programs. A program administrator sees only the programs they administer.",
+  "users:admin":
+    "Run the company's users: activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, and remove a member.",
+  "programs:grant":
+    "Grant, narrow, move and remove the members' programs, and set their Rapporter and Register/Övrigt rights. A program administrator does it only for the programs they administer.",
 } as const;
 
 export type Permission = keyof typeof PERMISSIONS;
@@ -313,9 +320,10 @@ export function takesIdempotencyKey(operation: Pick<Operation, "x-nortfox">): bo
  * as a link that has ended. It can also be refused for too many attempts, or
  * because the server checks as many passwords as it can at once. An
  * operation whose input names its company is refused by a rule when the
- * person is no active member there.
+ * person is no active member there, and a read that names a thing in its
+ * path, such as a member, when the company holds none.
  */
-function refusals(meta: OperationMeta, hasBody: boolean, forbidden: readonly string[]): RefusalStatus[] {
+function refusals(meta: OperationMeta, hasBody: boolean, hasParams: boolean, forbidden: readonly string[]): RefusalStatus[] {
   const { permission, writes } = meta;
   const anyone = permission === PUBLIC || permission === NONE;
   const key = writes && permission !== NONE;
@@ -324,7 +332,7 @@ function refusals(meta: OperationMeta, hasBody: boolean, forbidden: readonly str
     ...(anyone ? [] : ([401] as const)),
     ...(forbidden.length > 0 ? ([403] as const) : []),
     ...(key ? ([409] as const) : []),
-    ...(writes || permission === NONE || isCompanyInput(meta.company) ? ([422] as const) : []),
+    ...(writes || permission === NONE || isCompanyInput(meta.company) || hasParams ? ([422] as const) : []),
     ...(hasBody ? ([413, 415] as const) : []),
     ...(permission === NONE ? ([429] as const) : []),
     500,
@@ -412,7 +420,7 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
   }
   const responses: Record<string, ResponseConfig> = { [status]: successResponse(definition.id, status, output) };
   const texts: RefusalTexts = { forbidden: forbiddenCauses(permission, definition.method), challenge: () => challengeOf({ "x-nortfox": meta }) };
-  for (const code of refusals(meta, body !== undefined, texts.forbidden)) {
+  for (const code of refusals(meta, body !== undefined, params !== undefined, texts.forbidden)) {
     responses[code] = refusal(code, texts);
   }
   const security = securityOf(permission);

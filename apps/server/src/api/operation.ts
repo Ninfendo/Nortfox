@@ -308,6 +308,8 @@ export interface DataCall {
   readonly context: CompanyContext;
   /** The request's transaction, in the company. */
   readonly tx: Queryable;
+  /** The server's clock. */
+  readonly now: () => Date;
 }
 
 /** The page a list's handler reads: at most `limit` items, after the item whose sort key is `after`. */
@@ -960,12 +962,12 @@ function runData(handler: DataHandler | ListHandler, context: CompanyContext, re
       return Promise.resolve(refuse({ kind: "invalid", problems: page.problems }));
     }
     const listed = async (tx: Queryable): Promise<Answer<unknown>> => {
-      const answer = await handler.run({ context, tx, page: page.value }, input);
+      const answer = await handler.run({ context, tx, now: deps.now, page: page.value }, input);
       return answer.ok ? ok(wirePage(answer.output, scope, deps.cursorKey)) : answer;
     };
     return runFramed(operation, settingsFrame(settings, listed, deps), undefined, deps);
   }
-  const frame = settingsFrame(settings, (tx) => handler.run({ context, tx }, input), deps);
+  const frame = settingsFrame(settings, (tx) => handler.run({ context, tx, now: deps.now }, input), deps);
   const keyed = key === undefined ? undefined : { actorId: context.personId, input, key, store: keysFor(operation, context.company.companyId) };
   return runFramed(operation, frame, keyed, deps);
 }

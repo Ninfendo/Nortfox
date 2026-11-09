@@ -84,9 +84,14 @@ function latest(ends: readonly (Date | null)[]): Date | null {
   return new Date(most);
 }
 
-/** The platform's permissions of a member: by being one, by its admin level, and by administering a program. */
+/**
+ * The platform's permissions of a member: by being one, by its admin level,
+ * and by administering a program, each once, where it first comes. A system
+ * administrator who administers a program holds users:read and
+ * programs:grant by both.
+ */
 function platformOf(access: MemberAccess): string[] {
-  return [...platformPermissions(access.adminLevel), ...(access.programsAdministered.length > 0 ? PROGRAM_ADMINISTRATOR_PERMISSIONS : [])];
+  return [...new Set([...platformPermissions(access.adminLevel), ...(access.programsAdministered.length > 0 ? PROGRAM_ADMINISTRATOR_PERMISSIONS : [])])];
 }
 
 describe("the effective permissions of any member", () => {

@@ -14,35 +14,20 @@
 // the admin role, with the same permissions (open point 1).
 //
 // The creator makes the company with createCompany. The other members are
-// invited and accept, and get their program with "Full behörighet", as
-// "Tilldela program" preselects it, or are made system administrator: the
-// tests write those as the database holds them, as the owner, since
-// inviteUser, assignProgram and updateUser come in later steps of this part,
-// which then make these members through the operations. The server's clock
-// starts at the database's, so a Revisor grant holds.
+// invited and accept, as the database holds it, since inviteUser and
+// acceptInvitation come in the next step of this part, which then makes
+// them through the operations. The owner gives them their program with
+// assignProgram and "Full behörighet", as "Tilldela program" preselects
+// it, or makes them system administrator with updateUser. The server's
+// clock starts at the database's, so a Revisor grant holds.
 
 import { fullPermissions, type Me, type Program, type ProgramGrant, type Role } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { addGrant, addProgramAdmin, grantTimes } from "../../../test/grants.ts";
-import { acceptedMember, asMember, changeMembership, type Company } from "../../../test/memberships.ts";
-import {
-  MINUTE,
-  addSignInIdentity,
-  chooseCompany,
-  expectNoSecretsAtRestFromSignInApps,
-  expectNoTokensFromSignInApps,
-  getAs,
-  jsonOf,
-  signIn,
-  signInApp,
-  testClock,
-  writeAs,
-  type SignInApp,
-  type TestIdentity,
-} from "../../../test/sign-in.ts";
+import { expectNoSecretsAtRestFromSignInApps, expectNoTokensFromSignInApps, getAs, jsonOf, signInApp, testClock, type SignInApp, type TestIdentity } from "../../../test/sign-in.ts";
+import { apiCompany, calls, newMember, sessionIn, type ApiCompany, type TestMember } from "../../../test/users.ts";
 
 /** The six that only Bokföring - Attest & Läs holds (issue 12, catalogue item 9). */
 const APPROVAL_READ_ONLY = [
@@ -56,6 +41,9 @@ const APPROVAL_READ_ONLY = [
 
 /** The manual-only rights that this slice builds. */
 const MANUAL_ONLY = ["register.anonymise-fiscal-year", "register.removed-users", "register.delete-processing-history"];
+
+/** What a system administrator holds, the owner and the admin alike: a member's own, the company's details, its users and their programs. */
+const SYSTEM_ADMINISTRATOR = ["company:read", "company:update", "programs:grant", "users:admin", "users:read"];
 
 /** The program of each role that is one. */
 const PROGRAM_OF = { bookkeeper: "bookkeeping", approver: "approval-read", viewer: "read", auditor: "auditor" } as const satisfies Partial<Record<Role, Program>>;
@@ -71,8 +59,7 @@ describe("the six roles in getMe", () => {
   let owner: Client;
   let pool: AppPool;
   let server: SignInApp;
-  let creator: TestIdentity;
-  let company: Company;
+  let company: ApiCompany;
 
   beforeAll(async () => {
     db = await freshDatabase();
@@ -80,24 +67,7 @@ describe("the six roles in getMe", () => {
     owner = await db.connect("owner");
     pool = appPool(db, 4);
     server = signInApp(pool.database, { clock: testClock(new Date()) });
-    creator = await addSignInIdentity(owner);
-    const { session } = await signIn(server, creator);
-    const made = await jsonOf<{ id: string; name: string; organizationNumber: string; databaseNumber: number }>(
-      await writeAs(server, session, "POST", "/v1/companies", { name: "Testbolaget Alfa AB", organizationNumber: "556000-0167" }),
-      201,
-    );
-    const asOwner = { actor: creator.id, kind: "user" } as const;
-    const [first] = await asMember<{ id: string }>(app, made.id, asOwner, "SELECT id FROM access.memberships WHERE live_user_id = $1", [creator.id]);
-    if (first === undefined) {
-      throw new Error("createCompany made no membership for its creator.");
-    }
-    company = {
-      row: { company_id: made.id, name: made.name, organization_number: made.organizationNumber, database_number: made.databaseNumber },
-      owner: creator.id,
-      membership: first.id,
-      id: made.id,
-      asOwner,
-    };
+    company = await apiCompany(server, { app, owner });
   });
 
   afterAll(async () => {
@@ -107,43 +77,34 @@ describe("the six roles in getMe", () => {
 
   /** What getMe gives `person` in a new session that has chosen the company. */
   async function meInCompany(person: TestIdentity): Promise<Me> {
-    // A new TOTP code comes with the next 30 seconds.
-    server.clock.advance(MINUTE);
-    const { session } = await signIn(server, person);
-    expect((await chooseCompany(server, session, company.id)).status).toBe(200);
-    return jsonOf<Me>(await getAs(server, session, "/v1/me"));
+    return jsonOf<Me>(await getAs(server, await sessionIn(server, person, company.id), "/v1/me"));
   }
 
   /** A new person, invited to the company, who accepts. */
-  async function invited(): Promise<{ person: TestIdentity; membership: string }> {
-    const person = await addSignInIdentity(owner);
-    return { person, membership: await acceptedMember(app, owner, company, person.id) };
+  function invited(): Promise<TestMember> {
+    return newMember({ app, owner }, company);
   }
 
-  /** An invited member who holds the role's program with "Full behörighet", and the grant as getMe gives it. */
+  /** The owner's call of an operation that answers JSON. */
+  async function asOwner<T>(response: Promise<Response>): Promise<T> {
+    return jsonOf<T>(await response);
+  }
+
+  /** An invited member to whom the owner grants the role's program with "Full behörighet", and the grant as assignProgram answers it. */
   async function memberWithProgram(role: keyof typeof PROGRAM_OF): Promise<{ person: TestIdentity; grant: ProgramGrant }> {
-    const { person, membership } = await invited();
-    const program = PROGRAM_OF[role];
-    const row = await addGrant(app, company, membership, program, fullPermissions(program));
-    const times = await grantTimes(app, company, row.id);
-    return {
-      person,
-      grant: {
-        program,
-        permissions: fullPermissions(program),
-        full: true,
-        grantedAt: times.grantedAt.toISOString(),
-        ...(times.expiresAt === null ? {} : { expiresAt: times.expiresAt.toISOString() }),
-      },
-    };
+    const { person, id } = await invited();
+    const grant = await asOwner<ProgramGrant>(calls.assignProgram(server, company.session, id, PROGRAM_OF[role], { full: true }));
+    expect(grant).toMatchObject({ program: PROGRAM_OF[role], permissions: fullPermissions(PROGRAM_OF[role]), full: true });
+    return { person, grant };
   }
 
   it("getMe gives exactly the owner's permissions", async () => {
-    const me = await meInCompany(creator);
-    expect(me.permissions).toEqual(["company:read"]);
+    const me = await meInCompany(company.creator);
+    expect(me.permissions).toEqual(SYSTEM_ADMINISTRATOR);
     expect(me.membership).toMatchObject({
+      id: company.membership,
       companyId: company.id,
-      userId: creator.id,
+      userId: company.creator.id,
       status: "active",
       adminLevel: "owner",
       roles: ["owner"],
@@ -153,10 +114,10 @@ describe("the six roles in getMe", () => {
   });
 
   it("getMe gives exactly the admin's permissions", async () => {
-    const { person, membership } = await invited();
-    await changeMembership(app, company, membership, "admin_level = 'admin'");
+    const { person, id } = await invited();
+    expect((await calls.updateUser(server, company.session, id, { adminLevel: "admin" })).status).toBe(200);
     const me = await meInCompany(person);
-    expect(me.permissions).toEqual(["company:read"]);
+    expect(me.permissions).toEqual(SYSTEM_ADMINISTRATOR);
     expect(me.membership).toMatchObject({ userId: person.id, status: "active", adminLevel: "admin", roles: ["admin"], programs: [], programsAdministered: [] });
   });
 
@@ -196,23 +157,22 @@ describe("the six roles in getMe", () => {
   });
 
   it("the creator holds owner, a member made system administrator holds admin, and both hold the same permissions", async () => {
-    const { person, membership } = await invited();
+    const { person, id } = await invited();
     expect((await meInCompany(person)).membership?.roles).toEqual([]);
-    await changeMembership(app, company, membership, "admin_level = 'admin'");
+    expect((await calls.updateUser(server, company.session, id, { adminLevel: "admin" })).status).toBe(200);
     const admin = await meInCompany(person);
-    const theOwner = await meInCompany(creator);
+    const theOwner = await meInCompany(company.creator);
     expect(theOwner.membership).toMatchObject({ adminLevel: "owner", roles: ["owner"] });
     expect(admin.membership).toMatchObject({ adminLevel: "admin", roles: ["admin"] });
     expect(admin.permissions).toEqual(theOwner.permissions);
   });
 
   it("gives a member with several programs each grant in the catalogue's order, the union of their rights, each role and the programs administered", async () => {
-    const { person, membership } = await invited();
-    const auditor = await addGrant(app, company, membership, "auditor", fullPermissions("auditor"));
-    await addGrant(app, company, membership, "bookkeeping", ["vouchers.view", "vouchers.book", "register.projects"]);
-    await addGrant(app, company, membership, "read", fullPermissions("read"));
-    await addProgramAdmin(app, company, membership, "auditor");
-    await addProgramAdmin(app, company, membership, "bookkeeping");
+    const { person, id } = await invited();
+    const auditor = await asOwner<ProgramGrant>(calls.assignProgram(server, company.session, id, "auditor", { full: true }));
+    await asOwner(calls.assignProgram(server, company.session, id, "bookkeeping", { permissions: ["vouchers.view", "vouchers.book", "register.projects"] }));
+    await asOwner(calls.assignProgram(server, company.session, id, "read", { full: true }));
+    await asOwner(calls.updateUser(server, company.session, id, { programsAdministered: [{ program: "auditor" }, { program: "bookkeeping" }] }));
     const me = await meInCompany(person);
     expect(me.membership?.programs.map((grant) => [grant.program, grant.full])).toEqual([
       ["bookkeeping", false],
@@ -221,11 +181,14 @@ describe("the six roles in getMe", () => {
     ]);
     expect(me.membership?.programs[0]?.permissions).toEqual(["vouchers.view", "vouchers.book", "register.projects"]);
     expect(me.membership?.programs[0]?.expiresAt).toBeUndefined();
-    expect(me.membership?.programs[2]?.expiresAt).toBe((await grantTimes(app, company, auditor.id)).expiresAt?.toISOString());
+    expect(me.membership?.programs[2]?.expiresAt).toBe(auditor.expiresAt);
     expect(me.membership?.programsAdministered).toEqual([{ program: "bookkeeping" }, { program: "auditor" }]);
     // A narrowed Bokföring makes no bookkeeper.
     expect(me.membership?.roles).toEqual(["viewer", "auditor"]);
-    expect(me.permissions).toEqual(sorted(["company:read", ...new Set([...fullPermissions("auditor"), ...fullPermissions("read"), "vouchers.book", "register.projects"])]));
+    // A program administrator reads the users and grants programs, beside the grants' rights.
+    expect(me.permissions).toEqual(
+      sorted(["company:read", "programs:grant", "users:read", ...new Set([...fullPermissions("auditor"), ...fullPermissions("read"), "vouchers.book", "register.projects"])]),
+    );
   });
 
   it("leaves no token in an answer and no secret at rest", async () => {

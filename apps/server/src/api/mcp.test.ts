@@ -17,6 +17,7 @@ import {
   PROTOCOL_VERSION_META_KEY,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
+import { CATALOGUE_PERMISSIONS } from "@nortfox/contract";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -99,9 +100,18 @@ const IDEMPOTENCY_KEY = {
     'A key you choose for this write, 1 to 255 characters of visible ASCII without " and \\. Send the same key with the same input again, and you get the first answer back instead of a second write.',
 };
 
+/** A company's detail as the company gives it, and as updateCompany takes it. */
+const DETAIL = (description: string) => ({ type: "string", description: `${description} Absent when it is not set.` });
+const COUNTRY_DETAIL = (description: string) => ({ ...DETAIL(description), pattern: "^[A-Z]{2}$" });
+const DETAIL_INPUT = (description: string, maxLength: number) => ({ description: `${description} null takes it away.`, anyOf: [{ type: "string", minLength: 1, maxLength }, { type: "null" }] });
+const COUNTRY_INPUT = (description: string) => ({ description: `${description} null takes it away.`, anyOf: [{ type: "string", pattern: "^[A-Z]{2}$" }, { type: "null" }] });
+
+/** What a work e-mail address must look like, as z.email() with the Unicode pattern writes it. */
+const EMAIL = { type: "string", maxLength: 254, format: "email", pattern: '^[^\\s@"]{1,64}@[^\\s@]{1,255}$' };
+
 const COMPANY_SCHEMA = {
   type: "object",
-  description: "A company: its id, name, organisation number and tenant id.",
+  description: "A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.",
   properties: {
     id: { ...UUID, description: "The company's id." },
     name: { type: "string", description: "The company's name." },
@@ -111,6 +121,16 @@ const COMPANY_SCHEMA = {
       description: "The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number.",
     },
     databaseNumber: { type: "integer", minimum: 1, maximum: 2147483647, description: "The company's number for programs, its tenant id. It never changes." },
+    address: DETAIL("Adress: the postal address's street or box line."),
+    zipCode: DETAIL("Postnummer: the postal address's postal code."),
+    city: DETAIL("Ort: the postal address's town."),
+    countryCode: COUNTRY_DETAIL("Land: the postal address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE."),
+    visitAddress: DETAIL("Besöksadress: the visiting address's street."),
+    visitZipCode: DETAIL("The visiting address's postal code."),
+    visitCity: DETAIL("The visiting address's town."),
+    visitCountryCode: COUNTRY_DETAIL("The visiting address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE."),
+    phone: DETAIL("Telefon: the company's phone number."),
+    email: DETAIL("E-post: the company's e-mail address."),
   },
   required: ["id", "name", "organizationNumber", "databaseNumber"],
   additionalProperties: false,
@@ -143,63 +163,82 @@ const DATE_TIME = {
     "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
 };
 
-const MEMBERSHIP = {
+const ROLE = {
+  type: "string",
+  enum: ["owner", "admin", "bookkeeper", "approver", "viewer", "auditor"],
+  description:
+    "One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor.",
+};
+
+const PROGRAM_GRANT = {
   type: "object",
   properties: {
-    companyId: { ...UUID, description: "The company's id." },
-    userId: { description: "The person's id. Absent while the membership is invited.", ...UUID },
-    status: { type: "string", enum: ["invited", "active", "inactive", "removed", "left"], description: "invited, active, inactive, removed or left." },
-    adminLevel: SYS_ADMIN,
-    idleTimeout: IDLE_TIMEOUT,
-    workEmail: { type: "string", description: "The person's work e-mail address in this company, where its notices go. Absent when none is set." },
-    workPhone: { type: "string", description: "The person's work phone number in this company. Absent when none is set." },
-    roles: {
-      type: "array",
-      items: {
-        type: "string",
-        enum: ["owner", "admin", "bookkeeper", "approver", "viewer", "auditor"],
-        description:
-          "One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor.",
-      },
-      description:
-        "The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended.",
-    },
-    programs: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          program: PROGRAM,
-          permissions: { type: "array", items: { type: "string" }, description: "The rights the grant holds, as the catalogue's permission keys, in the catalogue's order." },
-          full: { type: "boolean", description: "Full behörighet: whether the grant holds every right of its program's Full behörighet, which a grant gets by default." },
-          grantedAt: { ...DATE_TIME, description: "When the program was granted." },
-          expiresAt: {
-            description: "When the grant ends by itself, with no action by anyone: a Revisor grant 30 days after it was granted. From then on it gives nothing. Absent for a grant with no end.",
-            ...DATE_TIME,
-          },
-        },
-        required: ["program", "permissions", "full", "grantedAt"],
-        additionalProperties: false,
-        description: "Program: a program granted to a member, with the rights the grant holds.",
-      },
-      description: "The member's program grants as they are now, in the catalogue's order, also one that has ended.",
-    },
-    programsAdministered: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: { program: PROGRAM },
-        required: ["program"],
-        additionalProperties: false,
-        description: "Programadministratör: the member grants, narrows and removes this program, and its Rapporter and Register/Övrigt rights.",
-      },
-      description: "The programs the member administers, in the catalogue's order.",
+    program: PROGRAM,
+    permissions: { type: "array", items: { type: "string" }, description: "The rights the grant holds, as the catalogue's permission keys, in the catalogue's order." },
+    full: { type: "boolean", description: "Full behörighet: whether the grant holds every right of its program's Full behörighet, which a grant gets by default." },
+    grantedAt: { ...DATE_TIME, description: "When the program was granted." },
+    expiresAt: {
+      description: "When the grant ends by itself, with no action by anyone: a Revisor grant 30 days after it was granted. From then on it gives nothing. Absent for a grant with no end.",
+      ...DATE_TIME,
     },
   },
-  required: ["companyId", "status", "idleTimeout", "roles", "programs", "programsAdministered"],
+  required: ["program", "permissions", "full", "grantedAt"],
+  additionalProperties: false,
+  description: "Program: a program granted to a member, with the rights the grant holds.",
+};
+
+const PROGRAM_ADMIN = {
+  type: "object",
+  properties: { program: PROGRAM },
+  required: ["program"],
+  additionalProperties: false,
+  description: "Programadministratör: the member grants, narrows and removes this program, and its Rapporter and Register/Övrigt rights.",
+};
+
+/** The fields of a membership, in their order, without its id, its company and its person. */
+const MEMBERSHIP_FIELDS = {
+  status: { type: "string", enum: ["invited", "active", "inactive", "removed", "left"], description: "invited, active, inactive, removed or left." },
+  adminLevel: SYS_ADMIN,
+  idleTimeout: IDLE_TIMEOUT,
+  workEmail: {
+    type: "string",
+    description:
+      "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. Absent for an invited member, and for one who was removed.",
+  },
+  workPhone: { type: "string", description: "The person's work phone number in this company. Absent when none is set." },
+  roles: {
+    type: "array",
+    items: ROLE,
+    description:
+      "The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended.",
+  },
+  programs: { type: "array", items: PROGRAM_GRANT, description: "The member's program grants as they are now, in the catalogue's order, also one that has ended." },
+  programsAdministered: { type: "array", items: PROGRAM_ADMIN, description: "The programs the member administers, in the catalogue's order." },
+};
+
+const MEMBERSHIP_IDS = {
+  id: { ...UUID, description: "The membership's id: the member's id in the company, which the paths of /v1/users take as memberId." },
+  companyId: { ...UUID, description: "The company's id." },
+  userId: { description: "The person's id. Absent while the membership is invited.", ...UUID },
+};
+
+const MEMBERSHIP = {
+  type: "object",
+  properties: { ...MEMBERSHIP_IDS, ...MEMBERSHIP_FIELDS },
+  required: ["id", "companyId", "status", "idleTimeout", "roles", "programs", "programsAdministered"],
   additionalProperties: false,
   description:
     "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered.",
+};
+
+const MEMBER = {
+  type: "object",
+  properties: { ...MEMBERSHIP_IDS, name: { type: "string", description: "The person's name. Absent while the membership has no person." }, ...MEMBERSHIP_FIELDS },
+  required: ["id", "companyId", "status", "idleTimeout", "roles", "programs", "programsAdministered"],
+  additionalProperties: false,
+  description:
+    "Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. " +
+    "A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.",
 };
 
 const COMPANY_CHOICE = {
@@ -217,6 +256,10 @@ const SESSION = {
   additionalProperties: false,
   description: "The browser's session: the person it signed in, and the company it works in once one is chosen.",
 };
+
+const WORK_EMAIL = { ...EMAIL, description: "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away." };
+
+const WORK_PHONE = { anyOf: [{ type: "string", minLength: 1, maxLength: 50 }, { type: "null" }], description: "The work phone number in this company, or null for none." };
 
 /** The tools of the companies and of the person's own memberships, as tools/list gives them. */
 const COMPANY_TOOLS = [
@@ -298,11 +341,8 @@ const COMPANY_TOOLS = [
       type: "object",
       properties: {
         companyId: { ...UUID, description: "The company's id." },
-        workEmail: {
-          description: "The work e-mail address in this company, or null for none.",
-          anyOf: [{ type: "string", maxLength: 254, format: "email", pattern: '^[^\\s@"]{1,64}@[^\\s@]{1,255}$' }, { type: "null" }],
-        },
-        workPhone: { description: "The work phone number in this company, or null for none.", anyOf: [{ type: "string", minLength: 1, maxLength: 50 }, { type: "null" }] },
+        workEmail: WORK_EMAIL,
+        workPhone: WORK_PHONE,
         idleTimeout: IDLE_TIMEOUT,
         idempotencyKey: IDEMPOTENCY_KEY,
       },
@@ -310,6 +350,310 @@ const COMPANY_TOOLS = [
       additionalProperties: false,
     },
     outputSchema: MEMBERSHIP,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "updateCompany",
+    title: "Change the company",
+    description: "Changes the company you work in: its name, its addresses, its phone number and its e-mail address. Its organisation number never changes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { description: "The company's name.", type: "string", minLength: 1, maxLength: 200 },
+        address: DETAIL_INPUT("Adress: the postal address's street or box line.", 200),
+        zipCode: DETAIL_INPUT("Postnummer: the postal address's postal code.", 20),
+        city: DETAIL_INPUT("Ort: the postal address's town.", 100),
+        countryCode: COUNTRY_INPUT("Land: the postal address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE."),
+        visitAddress: DETAIL_INPUT("Besöksadress: the visiting address's street.", 200),
+        visitZipCode: DETAIL_INPUT("The visiting address's postal code.", 20),
+        visitCity: DETAIL_INPUT("The visiting address's town.", 100),
+        visitCountryCode: COUNTRY_INPUT("The visiting address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE."),
+        phone: DETAIL_INPUT("Telefon: the company's phone number.", 50),
+        email: { description: "E-post: the company's e-mail address. null takes it away.", anyOf: [EMAIL, { type: "null" }] },
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: COMPANY_SCHEMA,
+    annotations: { readOnlyHint: false },
+  },
+];
+
+const PERMISSION_KEY = {
+  type: "string",
+  enum: CATALOGUE_PERMISSIONS.map((permission) => permission.key),
+  description: "A permission of the catalogue, by its key, such as vouchers.view (Verifikationer) or vouchers.book (Bokför).",
+};
+
+const GROUP_KEY = {
+  type: "string",
+  enum: ["vouchers", "supplier-invoices", "reports", "register"],
+  description:
+    "A group of the catalogue, by its key: vouchers (Verifikationer), supplier-invoices (Leverantörsfakturor), reports (Rapporter) or register (Register/Övrigt).",
+};
+
+/** The member that a path names, and a program as a path names it. */
+const MEMBER_ID = { ...UUID, description: "The member's id: the membership's id, Membership.id." };
+const PROGRAM_PARAMETER = { type: "string", enum: ["bookkeeping", "approval-read", "read", "auditor"], description: "The program: bookkeeping, approval-read, read or auditor." };
+
+/** A grant's rights as a change gives them. */
+const GRANT_PERMISSIONS = (description: string) => ({ maxItems: 64, type: "array", items: PERMISSION_KEY, description });
+const GRANT_RIGHTS = "The rights the grant holds: the program's own, its Rapporter and its Register/Övrigt rights, as the catalogue's keys.";
+
+/** The tools of the catalogue and of the company's users, as tools/list gives them. */
+const USER_TOOLS = [
+  {
+    name: "listPermissions",
+    title: "List the permissions",
+    description: "Gives the permission catalogue: the roles, the programs with their sets, the groups and every permission in order, with the view and manual-only marks.",
+    inputSchema: NO_INPUT,
+    outputSchema: {
+      type: "object",
+      properties: {
+        roles: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              key: ROLE,
+              adminLevel: SYS_ADMIN,
+              program: PROGRAM,
+              full: { description: "For a program's role: whether only a grant with Full behörighet makes it, as for bookkeeper.", type: "boolean" },
+            },
+            required: ["key"],
+            additionalProperties: false,
+            description:
+              "One of the plan's six roles, as a set in this model: owner and admin by the admin level that adminLevel names; the other four by a grant of the program that program names, with Full behörighet when full is true.",
+          },
+          description: "The plan's six roles, in their order.",
+        },
+        programs: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              key: PROGRAM,
+              label: { type: "string", description: "The program's words on the screen, such as Bokföring." },
+              lifetimeDays: {
+                description: "The days after which a grant of the program ends by itself: 30 for Revisor. Absent for a program whose grant has no end.",
+                type: "integer",
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              permissions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    key: PERMISSION_KEY,
+                    full: { type: "boolean", description: "Whether Full behörighet holds it. A permission that it does not hold is only switched on by hand." },
+                  },
+                  required: ["key", "full"],
+                  additionalProperties: false,
+                },
+                description: "The program's set: every permission a grant of it may hold, in the catalogue's order.",
+              },
+            },
+            required: ["key", "label", "permissions"],
+            additionalProperties: false,
+            description: "Program: a program of the catalogue, with its screen words, its end, and its set.",
+          },
+          description: "The programs, in the catalogue's order.",
+        },
+        groups: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              key: GROUP_KEY,
+              kind: {
+                type: "string",
+                enum: ["program", "reports", "register"],
+                description: "program, for a Bokföring group of a program's own rights; reports, for Rapporter; or register, for Register/Övrigt.",
+              },
+              label: { type: "string", description: "The group's words on the screen, such as Verifikationer." },
+            },
+            required: ["key", "kind", "label"],
+            additionalProperties: false,
+            description: "A group of permissions, with its kind and its screen words.",
+          },
+          description: "The groups, in the catalogue's order.",
+        },
+        permissions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              key: PERMISSION_KEY,
+              group: GROUP_KEY,
+              label: { type: "string", description: "The permission's words on the screen, such as Bokför." },
+              view: { type: "boolean", description: "Whether it is its group's view right, which every other permission of the group needs." },
+              manualOnly: { type: "boolean", description: "Whether it is only switched on by hand: Full behörighet never holds it." },
+            },
+            required: ["key", "group", "label", "view", "manualOnly"],
+            additionalProperties: false,
+            description: "Behörighet: a permission of the catalogue, with its group, its screen words and its marks.",
+          },
+          description: "Every permission, in the catalogue's order.",
+        },
+      },
+      required: ["roles", "programs", "groups", "permissions"],
+      additionalProperties: false,
+      description: "The permission catalogue: the roles, the programs with their sets, the groups and the permissions, in order.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "listUsers",
+    title: "List the users",
+    description: "Lists the users of the company you work in, with their status, admin level and programs. A program administrator sees only the programs they administer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", default: 100, description: "How many items a page holds: from 1 to 500. Any other whole number gives 100." },
+        cursor: { description: "Where the page starts: the nextCursor of the page before. Leave it out for the first page.", type: "string" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        items: { type: "array", items: MEMBER, description: "The items of this page, in the list's order." },
+        nextCursor: { description: "Where the next page starts. It is absent on the last page.", type: "string" },
+        total: { type: "integer", minimum: 0, maximum: 9007199254740991, description: "How many items the whole list holds." },
+      },
+      required: ["items", "total"],
+      additionalProperties: false,
+      description: "A page of the list.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "getUser",
+    title: "Read a user",
+    description: "Gives one user of the company you work in, by the member's id.",
+    inputSchema: { type: "object", properties: { memberId: MEMBER_ID }, required: ["memberId"], additionalProperties: false },
+    outputSchema: MEMBER,
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "updateUser",
+    title: "Change a user",
+    description:
+      "Changes a user of the company you work in: whether they are active, their system administrator's level, the programs they administer, their idle logout and their work contacts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memberId: MEMBER_ID,
+        active: {
+          description: "Aktiv användare: true lets the member work in the company, false stops it, and keeps their rights. An invited member has not accepted yet, and takes neither.",
+          type: "boolean",
+        },
+        adminLevel: {
+          description: "admin makes the member a system administrator, or keeps the level of one; null makes them no longer one. Only creating a company gives the owner's level.",
+          anyOf: [{ type: "string", const: "admin" }, { type: "null" }],
+        },
+        programsAdministered: {
+          description: "Every program the member administers, Programadministratör: the list replaces the one there was.",
+          maxItems: 4,
+          type: "array",
+          items: PROGRAM_ADMIN,
+        },
+        idleTimeout: IDLE_TIMEOUT,
+        workEmail: WORK_EMAIL,
+        workPhone: WORK_PHONE,
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["memberId", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: MEMBER,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "removeUser",
+    title: "Remove a user",
+    description: "Removes a user from the company you work in. You cannot remove yourself.",
+    inputSchema: { type: "object", properties: { memberId: MEMBER_ID, idempotencyKey: IDEMPOTENCY_KEY }, required: ["memberId", "idempotencyKey"], additionalProperties: false },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "assignProgram",
+    title: "Grant a program",
+    description: "Grants a program to a user of the company you work in, with Full behörighet or with a list of its rights.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memberId: MEMBER_ID,
+        program: PROGRAM_PARAMETER,
+        full: { description: "Full behörighet: every right of the program's Full behörighet.", type: "boolean", const: true },
+        permissions: GRANT_PERMISSIONS(GRANT_RIGHTS),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["memberId", "program", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: PROGRAM_GRANT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "removeProgram",
+    title: "Remove a program",
+    description: "Takes a program from a user of the company you work in.",
+    inputSchema: {
+      type: "object",
+      properties: { memberId: MEMBER_ID, program: PROGRAM_PARAMETER, idempotencyKey: IDEMPOTENCY_KEY },
+      required: ["memberId", "program", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "moveProgram",
+    title: "Move a program",
+    description: "Moves a program from one user of the company you work in to another, narrowed first if you give a list of its rights.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memberId: MEMBER_ID,
+        program: PROGRAM_PARAMETER,
+        targetMemberId: { ...UUID, description: "The member who gets the grant, by the membership's id." },
+        permissions: GRANT_PERMISSIONS(GRANT_RIGHTS),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["memberId", "program", "targetMemberId", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: PROGRAM_GRANT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "updateUserRights",
+    title: "Change a user's rights",
+    description: "Sets the Rapporter and Register/Övrigt rights of a user of the company you work in.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memberId: MEMBER_ID,
+        permissions: GRANT_PERMISSIONS("Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys."),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["memberId", "permissions", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        permissions: { type: "array", items: { type: "string" }, description: "The member's Rapporter and Register/Övrigt rights, as the grants hold them now, in the catalogue's order." },
+        programs: { type: "array", items: PROGRAM_GRANT, description: "The member's grants as they are now, in the catalogue's order." },
+      },
+      required: ["permissions", "programs"],
+      additionalProperties: false,
+      description: "A member's Rapporter and Register/Övrigt rights, and the program grants that hold them.",
+    },
     annotations: { readOnlyHint: false },
   },
 ];
@@ -498,32 +842,12 @@ const TOOLS = [
     description:
       "Gives the company you work in: its id, name, organisation number and database number. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
     inputSchema: NO_INPUT,
-    outputSchema: {
-      type: "object",
-      description: "A company: its id, name, organisation number and tenant id.",
-      properties: {
-        id: { ...UUID, description: "The company's id." },
-        name: { type: "string", description: "The company's name." },
-        organizationNumber: {
-          type: "string",
-          pattern: "^[0-9]{6}-[0-9]{4}$",
-          description:
-            "The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number.",
-        },
-        databaseNumber: {
-          type: "integer",
-          minimum: 1,
-          maximum: 2147483647,
-          description: "The company's number for programs, its tenant id. It never changes.",
-        },
-      },
-      required: ["id", "name", "organizationNumber", "databaseNumber"],
-      additionalProperties: false,
-    },
+    outputSchema: COMPANY_SCHEMA,
     annotations: { readOnlyHint: true },
   },
   ...SIGN_IN_TOOLS,
   ...COMPANY_TOOLS,
+  ...USER_TOOLS,
   {
     name: "testBookVoucher",
     title: "Book a voucher",
@@ -851,7 +1175,7 @@ describe("/mcp on the real server", () => {
         era === "2025" ? {} : { versionNegotiation: { mode: { pin: "2026-07-28" } } },
       );
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(server.port)}/mcp`)));
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...[...SIGN_IN_TOOLS, ...COMPANY_TOOLS].map((tool) => tool.name)]);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...[...SIGN_IN_TOOLS, ...COMPANY_TOOLS, ...USER_TOOLS].map((tool) => tool.name)]);
       expect(await callTool(client, "getHealth")).toEqual({ isError: false, structured: { status: "ok", version: TEST_VERSION } });
       await client.close();
     } finally {

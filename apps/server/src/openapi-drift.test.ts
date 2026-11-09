@@ -112,6 +112,16 @@ describe("the credentials in the API description", () => {
       listRecentCompanies: [{ sessionCookie: [] }],
       selectCompany: [{ sessionCookie: [] }],
       updateMyMembership: [{ sessionCookie: [] }],
+      updateCompany: [{ sessionCookie: [] }],
+      listPermissions: [{ sessionCookie: [] }],
+      listUsers: [{ sessionCookie: [] }],
+      getUser: [{ sessionCookie: [] }],
+      updateUser: [{ sessionCookie: [] }],
+      removeUser: [{ sessionCookie: [] }],
+      assignProgram: [{ sessionCookie: [] }],
+      removeProgram: [{ sessionCookie: [] }],
+      moveProgram: [{ sessionCookie: [] }],
+      updateUserRights: [{ sessionCookie: [] }],
     });
   });
 

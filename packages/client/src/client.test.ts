@@ -167,14 +167,70 @@ describe("createClient", () => {
     await expect(client.listCompanies({ query: "alfa", limit: 10 })).resolves.toEqual({ items: [{ company, adminLevel: "owner" }], total: 1 });
     await expect(client.listRecentCompanies()).resolves.toEqual({ companies: [{ company }] });
     await expect(client.selectCompany({ companyId: company.id }, { idempotencyKey: "choose-1" })).resolves.toEqual({ user, company });
-    await expect(client.updateMyMembership({ companyId: company.id, workEmail: null, idleTimeout: 30 }, { idempotencyKey: "change-1" })).resolves.toEqual(membership);
+    await expect(client.updateMyMembership({ companyId: company.id, workPhone: null, idleTimeout: 30 }, { idempotencyKey: "change-1" })).resolves.toEqual(membership);
     const json = { accept: "application/json", "content-type": "application/json" };
     expect(calls).toEqual([
       ["https://nortfox.example/v1/companies", { method: "POST", headers: { ...json, "idempotency-key": "make-1" }, body: '{"name":"Testbolaget Alfa AB","organizationNumber":"556000-0167"}' }],
       ["https://nortfox.example/v1/companies?query=alfa&limit=10", { method: "GET", headers: { accept: "application/json" } }],
       ["https://nortfox.example/v1/me/companies/recent", { method: "GET", headers: { accept: "application/json" } }],
       ["https://nortfox.example/v1/session/company", { method: "POST", headers: { ...json, "idempotency-key": "choose-1" }, body: `{"companyId":"${company.id}"}` }],
-      [`https://nortfox.example/v1/me/companies/${company.id}`, { method: "PATCH", headers: { ...json, "idempotency-key": "change-1" }, body: '{"workEmail":null,"idleTimeout":30}' }],
+      [`https://nortfox.example/v1/me/companies/${company.id}`, { method: "PATCH", headers: { ...json, "idempotency-key": "change-1" }, body: '{"workPhone":null,"idleTimeout":30}' }],
+    ]);
+  });
+
+  it("sends each operation of the company's details, the catalogue, the users and their programs as its operation takes it", async () => {
+    const company = { id: "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e", name: "Testbolaget Alfa AB", organizationNumber: "556000-0167", databaseNumber: 7, city: "Lund" };
+    const member = { id: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", companyId: company.id, status: "active", idleTimeout: 120, roles: [], programs: [], programsAdministered: [] };
+    const grant = { program: "read", permissions: ["vouchers.view"], full: false, grantedAt: "2090-03-15T10:00:00.000Z" };
+    const catalogue = { roles: [], programs: [], groups: [], permissions: [] };
+    const target = "3d4e5f6a-7b8c-4d9e-8f1a-2b3c4d5e6f7a";
+    const answers: Response[] = [
+      Response.json(company),
+      Response.json(catalogue),
+      Response.json({ items: [member], total: 1 }),
+      Response.json(member),
+      Response.json(member),
+      new Response(null, { status: 204 }),
+      Response.json(grant),
+      new Response(null, { status: 204 }),
+      Response.json(grant),
+      Response.json({ permissions: ["reports.vat"], programs: [grant] }),
+    ];
+    const calls: [string, RequestInit][] = [];
+    const client = createClient({
+      baseUrl: "https://nortfox.example",
+      fetch: (input, init) => {
+        calls.push([input, init]);
+        return Promise.resolve(answers.shift() ?? Response.json({}));
+      },
+    });
+    await expect(client.updateCompany({ city: "Lund", phone: null }, { idempotencyKey: "company-1" })).resolves.toEqual(company);
+    await expect(client.listPermissions()).resolves.toEqual(catalogue);
+    await expect(client.listUsers({ limit: 5 })).resolves.toEqual({ items: [member], total: 1 });
+    await expect(client.getUser({ memberId: member.id })).resolves.toEqual(member);
+    await expect(client.updateUser({ memberId: member.id, adminLevel: "admin", programsAdministered: [{ program: "read" }] }, { idempotencyKey: "user-1" })).resolves.toEqual(member);
+    await expect(client.removeUser({ memberId: member.id }, { idempotencyKey: "remove-1" })).resolves.toBeUndefined();
+    await expect(client.assignProgram({ memberId: member.id, program: "read", permissions: ["vouchers.view"] }, { idempotencyKey: "grant-1" })).resolves.toEqual(grant);
+    await expect(client.removeProgram({ memberId: member.id, program: "read" }, { idempotencyKey: "take-1" })).resolves.toBeUndefined();
+    await expect(client.moveProgram({ memberId: member.id, program: "read", targetMemberId: target }, { idempotencyKey: "move-1" })).resolves.toEqual(grant);
+    await expect(client.updateUserRights({ memberId: member.id, permissions: ["reports.vat"] }, { idempotencyKey: "rights-1" })).resolves.toEqual({
+      permissions: ["reports.vat"],
+      programs: [grant],
+    });
+    const json = { accept: "application/json", "content-type": "application/json" };
+    const read = { method: "GET", headers: { accept: "application/json" } };
+    const users = `https://nortfox.example/v1/users/${member.id}`;
+    expect(calls).toEqual([
+      ["https://nortfox.example/v1/company", { method: "PATCH", headers: { ...json, "idempotency-key": "company-1" }, body: '{"city":"Lund","phone":null}' }],
+      ["https://nortfox.example/v1/permissions", read],
+      ["https://nortfox.example/v1/users?limit=5", read],
+      [users, read],
+      [users, { method: "PATCH", headers: { ...json, "idempotency-key": "user-1" }, body: '{"adminLevel":"admin","programsAdministered":[{"program":"read"}]}' }],
+      [users, { method: "DELETE", headers: { accept: "application/json", "idempotency-key": "remove-1" } }],
+      [`${users}/programs/read`, { method: "PUT", headers: { ...json, "idempotency-key": "grant-1" }, body: '{"permissions":["vouchers.view"]}' }],
+      [`${users}/programs/read`, { method: "DELETE", headers: { accept: "application/json", "idempotency-key": "take-1" } }],
+      [`${users}/programs/read/move`, { method: "POST", headers: { ...json, "idempotency-key": "move-1" }, body: `{"targetMemberId":"${target}"}` }],
+      [`${users}/rights`, { method: "PUT", headers: { ...json, "idempotency-key": "rights-1" }, body: '{"permissions":["reports.vat"]}' }],
     ]);
   });
 
