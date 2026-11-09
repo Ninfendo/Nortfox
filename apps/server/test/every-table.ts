@@ -71,6 +71,8 @@ export interface Scenario {
   readonly series: Readonly<Record<string, ScenarioSeries>>;
   /** Each company's vouchers in its series A, by company. */
   readonly vouchers: Readonly<Record<string, ScenarioVouchers>>;
+  /** Each company's owner's membership, by company. */
+  readonly owners: Readonly<Record<string, string>>;
   readonly changes: readonly Change[];
 }
 
@@ -94,6 +96,8 @@ export const KEYS: Readonly<Record<string, string>> = {
   "ledger.idempotency_keys": "id",
   "access.memberships": "id",
   "access.events": "id",
+  "access.program_grants": "id",
+  "access.program_admins": "id",
 };
 
 /** A made-up fingerprint of a request, as the server stores it with an idempotency key. */
@@ -139,6 +143,22 @@ function vouchersOf(scenario: Scenario, company: string): ScenarioVouchers {
   return vouchers;
 }
 
+function ownerOf(scenario: Scenario, company: string): string {
+  const membership = scenario.owners[company];
+  if (membership === undefined) {
+    throw new Error("The scenario made no owner for that company.");
+  }
+  return membership;
+}
+
+/** The statement that grants a program: its id, the company, the membership, the program and the rights. The trigger sets the rest. */
+const INSERT_GRANT = `INSERT INTO access.program_grants AS t (id, company_id, membership_id, program, permissions)
+                      VALUES ($1, $2, $3, $4, $5) RETURNING to_jsonb(t) AS row`;
+
+/** The statement that makes a member a program's administrator: its id, the company, the membership and the program. */
+const INSERT_PROGRAM_ADMIN = `INSERT INTO access.program_admins AS t (id, company_id, membership_id, program)
+                              VALUES ($1, $2, $3, $4) RETURNING to_jsonb(t) AS row`;
+
 /**
  * The statement that inserts a company: its id, its name and its organisation
  * number. A company needs an active system administrator by the commit, so a
@@ -171,6 +191,15 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
   "access.events": (company) => ({
     sql: INSERT_EVENT,
     params: [randomUUID(), company, null, {}],
+  }),
+  // A program the owner holds no grant of, and no administrator's level in.
+  "access.program_grants": (company, scenario) => ({
+    sql: INSERT_GRANT,
+    params: [randomUUID(), company, ownerOf(scenario, company), "auditor", ["vouchers.view"]],
+  }),
+  "access.program_admins": (company, scenario) => ({
+    sql: INSERT_PROGRAM_ADMIN,
+    params: [randomUUID(), company, ownerOf(scenario, company), "approval-read"],
   }),
   "ledger.reader_roles": (company) => ({
     sql: "INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, 'nortfox_test_reader_c'::pg_catalog.regrole)",
@@ -309,6 +338,36 @@ export const APP_WRITES: Readonly<Record<string, Readonly<Partial<Record<"INSERT
       company: scenario.companyA,
       sql: INSERT_EVENT,
       params: [randomUUID(), scenario.companyA, null, {}],
+    }),
+  },
+  // A's member holds Bokföring and administers it; A's owner holds neither Revisor nor its administration.
+  "access.program_grants": {
+    INSERT: (scenario) => ({
+      company: scenario.companyA,
+      sql: "INSERT INTO access.program_grants (company_id, membership_id, program, permissions) VALUES ($1, $2, 'auditor', '{vouchers.view}')",
+      params: [scenario.companyA, ownerOf(scenario, scenario.companyA)],
+    }),
+    UPDATE: (scenario) => ({
+      company: scenario.companyA,
+      sql: "UPDATE access.program_grants SET permissions = '{vouchers.view}' WHERE company_id = $1 AND program = 'bookkeeping'",
+      params: [scenario.companyA],
+    }),
+    DELETE: (scenario) => ({
+      company: scenario.companyA,
+      sql: "DELETE FROM access.program_grants WHERE company_id = $1 AND program = 'bookkeeping'",
+      params: [scenario.companyA],
+    }),
+  },
+  "access.program_admins": {
+    INSERT: (scenario) => ({
+      company: scenario.companyA,
+      sql: "INSERT INTO access.program_admins (company_id, membership_id, program) VALUES ($1, $2, 'auditor')",
+      params: [scenario.companyA, ownerOf(scenario, scenario.companyA)],
+    }),
+    DELETE: (scenario) => ({
+      company: scenario.companyA,
+      sql: "DELETE FROM access.program_admins WHERE company_id = $1 AND program = 'bookkeeping'",
+      params: [scenario.companyA],
     }),
   },
   "ledger.fiscal_years": {
@@ -663,6 +722,57 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     })),
   );
 
+  // The rights, by the app: in A the user grants the member Bokföring, which
+  // an integration narrows, and grants the owner Läs, which the system user
+  // withdraws; the user makes the member Bokföring's administrator, and the
+  // owner Läs's, which an integration takes back. In B the integration grants
+  // its own person Läs, and makes it Revisor's administrator.
+  const bookkeepingA = randomUUID();
+  const readA = randomUUID();
+  const readB = randomUUID();
+  const bookkeepingAdminA = randomUUID();
+  const readAdminA = randomUUID();
+  const auditorAdminB = randomUUID();
+  const withdraw = (table: string): string => `DELETE FROM ${table} AS t WHERE t.id = $1 RETURNING to_jsonb(t) AS row`;
+  changes.push(
+    ...(await change(app, { company: companyA, actor: user, kind: "user", channel: "rest" }, "access.program_grants", "INSERT", bookkeepingA, {
+      sql: INSERT_GRANT,
+      params: [bookkeepingA, companyA, memberA, "bookkeeping", ["vouchers.view", "vouchers.book", "reports.vat"]],
+    })),
+    ...(await change(app, { company: companyA, actor: integration, kind: "integration", channel: "mcp" }, "access.program_grants", "UPDATE", bookkeepingA, {
+      sql: "UPDATE access.program_grants AS t SET permissions = $2 WHERE t.id = $1 RETURNING to_jsonb(t) AS row",
+      params: [bookkeepingA, ["vouchers.view", "reports.vat"]],
+    })),
+    ...(await change(app, { company: companyA, actor: user, kind: "user" }, "access.program_grants", "INSERT", readA, {
+      sql: INSERT_GRANT,
+      params: [readA, companyA, ownerA, "read", ["vouchers.view"]],
+    })),
+    ...(await change(app, { company: companyA, actor: system, kind: "system" }, "access.program_grants", "DELETE", readA, {
+      sql: withdraw("access.program_grants"),
+      params: [readA],
+    })),
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.program_grants", "INSERT", readB, {
+      sql: INSERT_GRANT,
+      params: [readB, companyB, ownerB, "read", ["vouchers.view", "reports.vat"]],
+    })),
+    ...(await change(app, { company: companyA, actor: user, kind: "user", channel: "rest" }, "access.program_admins", "INSERT", bookkeepingAdminA, {
+      sql: INSERT_PROGRAM_ADMIN,
+      params: [bookkeepingAdminA, companyA, memberA, "bookkeeping"],
+    })),
+    ...(await change(app, { company: companyA, actor: user, kind: "user" }, "access.program_admins", "INSERT", readAdminA, {
+      sql: INSERT_PROGRAM_ADMIN,
+      params: [readAdminA, companyA, ownerA, "read"],
+    })),
+    ...(await change(app, { company: companyA, actor: integration, kind: "integration" }, "access.program_admins", "DELETE", readAdminA, {
+      sql: withdraw("access.program_admins"),
+      params: [readAdminA],
+    })),
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.program_admins", "INSERT", auditorAdminB, {
+      sql: INSERT_PROGRAM_ADMIN,
+      params: [auditorAdminB, companyB, ownerB, "auditor"],
+    })),
+  );
+
   // The reader roles' bindings, by the owner: reader A to company A, and
   // reader B first to A, then to B.
   const bindingA = randomUUID();
@@ -1013,6 +1123,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       [companyA]: { kept: keptA.id, last: lastA.id, deleted: deletedA.id },
       [companyB]: { kept: keptB.id, last: keptB.id, deleted: deletedB.id },
     },
+    owners: { [companyA]: ownerA, [companyB]: ownerB },
     changes,
   };
 }

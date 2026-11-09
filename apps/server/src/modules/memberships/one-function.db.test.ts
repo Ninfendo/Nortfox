@@ -10,7 +10,10 @@
 // the memberships and the companies, so a request reads no membership and no
 // company outside its company. Of the routines the app may run (functions,
 // procedures and aggregates, in any schema), no other reads the memberships
-// or the companies as the owner. No routine at all, whoever may run it, sets
+// or the companies as the owner, but one with a rule of its own: the people
+// of a company, access.company_people, reads the memberships only in the
+// transaction's company, in the definition that this check pins
+// (company-people.db.test.ts proves what it gives). No routine at all, whoever may run it, sets
 // a setting, runs dynamic SQL (by EXECUTE, or through one of PostgreSQL's
 // functions that run SQL from a text or read a table, a schema or the
 // database by name, such as query_to_xml) or writes a name in SQL's Unicode
@@ -25,7 +28,9 @@
 // function; a routine that runs SQL through each of those functions of
 // PostgreSQL's; a routine that sets the transaction's company, as the owner
 // or as the app, also a trigger and one that the app may not run; such SQL
-// in each place the catalog keeps it; a rule; and an app policy by person.
+// in each place the catalog keeps it; a rule; an app policy by person; and
+// the people of a company in another definition, under another name, with
+// other arguments, or called by another routine.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -54,8 +59,49 @@ interface ActiveMembership {
   readonly database_number: number;
 }
 
+/** A routine that the app may run, that runs as the owner and reads the memberships, but only in the transaction's company, in its pinned definition. */
+interface InCompany {
+  /** Its schema, name and arguments, as the catalog prints them. */
+  readonly routine: string;
+  /** Its whole definition, as pg_get_functiondef prints it. */
+  readonly definition: string;
+}
+
+/**
+ * The people of a company: the one other routine that may read the
+ * memberships as the owner. Its rule of its own is this definition, which
+ * reads them only in the transaction's company, and the companies not at
+ * all. So any change to it counts until this test is read again with the
+ * change. company-people.db.test.ts shows what it gives.
+ */
+const IN_COMPANY: readonly InCompany[] = [
+  {
+    routine: "access.company_people(ids uuid[])",
+    definition: [
+      "CREATE OR REPLACE FUNCTION access.company_people(ids uuid[])",
+      " RETURNS TABLE(id uuid, name text, email text)",
+      " LANGUAGE sql",
+      " STABLE SECURITY DEFINER",
+      " SET search_path TO 'pg_catalog', 'pg_temp'",
+      "BEGIN ATOMIC",
+      " SELECT i.id,",
+      "     i.name,",
+      "     i.email",
+      "    FROM access.identities i",
+      "   WHERE ((i.id = ANY (company_people.ids)) AND (EXISTS ( SELECT",
+      "            FROM access.memberships m",
+      "           WHERE ((m.company_id = ledger.current_company_id()) AND (m.user_id = i.id)))))",
+      "   ORDER BY i.id;",
+      "END",
+      "",
+    ].join("\n"),
+  },
+];
+
 /** The catalog check's problems, after a routine's name, or after the place of SQL that the catalog keeps. */
 const READS = `the app may run it, it runs as the owner, and it reads ${GUARDED_TABLES.join(" or ")}, which only ${THE_FUNCTION} may.`;
+const IN_COMPANY_CHANGED =
+  "the app may run it, it runs as the owner, and it reads access.memberships or ledger.companies in another definition than the one this check pins, which reads the memberships only in the transaction's company.";
 const AGGREGATE_READS = `the app may run it, a function of the aggregate runs as the owner, and it reads ${GUARDED_TABLES.join(" or ")}, which only ${THE_FUNCTION} may.`;
 const DYNAMIC =
   "it runs dynamic SQL (EXECUTE, or one of PostgreSQL's functions that run SQL from a text or read a table, a schema or the database by name), whose reads and settings no check can see.";
@@ -224,12 +270,16 @@ const RULES: readonly { readonly why: Why; readonly word: string; readonly patte
  *   and a view has only one).
  *
  * And the app's only policy on either table is the company policy.
+ *
+ * `inCompany` names the routines that may read the memberships as the owner
+ * all the same, each only in the definition it pins, which reads them in the
+ * transaction's company alone. One in another definition counts.
  */
-async function oneFunctionProblems(client: Client, allowed: readonly Allowed[] = ALLOWED): Promise<string[]> {
+async function oneFunctionProblems(client: Client, allowed: readonly Allowed[] = ALLOWED, inCompany: readonly InCompany[] = IN_COMPANY): Promise<string[]> {
   // The recursive query's estimated cost makes PostgreSQL compile it with JIT,
   // which takes a second or more, while the query itself runs in milliseconds.
   await client.query("SET jit = off");
-  const readers = await client.query<{ name: string; routine: string | null; why: Why; aggregate: boolean; app_runs: boolean }>(
+  const readers = await client.query<{ name: string; routine: string | null; why: Why; aggregate: boolean; app_runs: boolean; body: string | null }>(
     `
     WITH RECURSIVE texts AS (
       SELECT p.oid, p.proname::text AS proname, n.nspname || '.' || p.proname AS name,
@@ -295,7 +345,7 @@ async function oneFunctionProblems(client: Client, allowed: readonly Allowed[] =
       SELECT k.place, k.body, pg_catalog.lower(k.body) AS small FROM kept AS k
     )
     SELECT DISTINCT 0 AS kind, f.name, f.routine, r.why, p.prokind = 'a' AS aggregate,
-      pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE') AS app_runs
+      pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE') AS app_runs, f.body
     FROM reading AS r JOIN functions AS f ON f.oid = r.oid JOIN pg_catalog.pg_proc AS p ON p.oid = r.oid
     WHERE r.why <> 'reads' OR (pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE')
       AND p.prorettype NOT IN ('pg_catalog.trigger'::pg_catalog.regtype, 'pg_catalog.event_trigger'::pg_catalog.regtype)
@@ -303,10 +353,10 @@ async function oneFunctionProblems(client: Client, allowed: readonly Allowed[] =
         SELECT FROM support AS s JOIN reading AS sr ON sr.oid = s.fn AND sr.why = 'reads' JOIN pg_catalog.pg_proc AS sp ON sp.oid = s.fn
         WHERE s.aggregate = r.oid AND sp.prosecdef)))
     UNION
-    SELECT 1, s.place, NULL, u.why, false, false FROM stored AS s JOIN patterns AS u
+    SELECT 1, s.place, NULL, u.why, false, false, NULL FROM stored AS s JOIN patterns AS u
       ON u.why <> 'reads' AND CASE WHEN pg_catalog.strpos(s.small, u.word) = 0 THEN false ELSE s.body ~* u.pattern END
     UNION
-    SELECT 1, s.place, NULL, r.why, false, false FROM stored AS s JOIN reading AS r
+    SELECT 1, s.place, NULL, r.why, false, false, NULL FROM stored AS s JOIN reading AS r
       ON r.why <> 'reads' AND CASE WHEN pg_catalog.strpos(s.small, pg_catalog.lower(r.proname)) = 0 THEN false
         ELSE s.body ~* ($5 || pg_catalog.regexp_replace(r.proname, '([^[:alnum:]_])', '[\\1]', 'g') || $6) END
     ORDER BY 1, 2, 4`,
@@ -335,8 +385,22 @@ async function oneFunctionProblems(client: Client, allowed: readonly Allowed[] =
     [GUARDED_TABLES],
   );
   const why: Readonly<Record<Why, string>> = { reads: READS, dynamic: DYNAMIC, sets: SETS, escapes: ESCAPES };
-  const counted = readers.rows.filter((row) => row.app_runs || !allowed.some((allowance) => allowance.routine === row.routine && allowance.why === row.why));
-  const problems = [...new Set(counted.map((row) => `${row.name}: ${row.why === "reads" && row.aggregate ? AGGREGATE_READS : why[row.why]}`))];
+  const named = (row: { routine: string | null }): InCompany | undefined => inCompany.find((entry) => entry.routine === row.routine);
+  const counted = readers.rows.filter(
+    (row) =>
+      !(row.why === "reads" && named(row)?.definition === row.body) &&
+      (row.app_runs || !allowed.some((allowance) => allowance.routine === row.routine && allowance.why === row.why)),
+  );
+  const problems = [
+    ...new Set(
+      counted.map((row) => {
+        if (row.why === "reads") {
+          return `${row.name}: ${named(row) === undefined ? (row.aggregate ? AGGREGATE_READS : READS) : IN_COMPANY_CHANGED}`;
+        }
+        return `${row.name}: ${why[row.why]}`;
+      }),
+    ),
+  ];
   for (const rule of rules.rows) {
     problems.push(`${rule.relation}: it has the rule ${rule.name}. ${RULE}`);
   }
@@ -522,6 +586,57 @@ describe("the one membership function", () => {
           CREATE FUNCTION access.owners_own() RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
             RETURN (SELECT count(*) FROM access.memberships);`),
       ).toEqual([]);
+    });
+
+    describe("the people of a company, which reads the memberships in the transaction's company only, in its pinned definition", () => {
+      /** The people of a company made again with `where`, as its condition on the memberships, and `extra`, joined to it. */
+      function peopleWith(where: string, extra = ""): string {
+        return `
+          CREATE OR REPLACE FUNCTION access.company_people(ids uuid[]) RETURNS TABLE (id uuid, name text, email text)
+          LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+          BEGIN ATOMIC
+            SELECT i.id, i.name, i.email FROM access.identities AS i ${extra}
+            WHERE i.id = ANY (company_people.ids) AND EXISTS (SELECT FROM access.memberships AS m WHERE ${where} AND m.user_id = i.id)
+            ORDER BY i.id;
+          END;`;
+      }
+
+      it("counts it without its pin, and passes it with the pin, as the migration made it", async () => {
+        expect(await oneFunctionProblems(owner, ALLOWED, [])).toEqual([`access.company_people: ${READS}`]);
+        expect(await oneFunctionProblems(owner)).toEqual([]);
+        expect(await problemsAfter(peopleWith("m.company_id = ledger.current_company_id()"))).toEqual([]);
+      });
+
+      it.each([
+        ["reads the memberships of every company", "true"],
+        ["reads the person's own memberships in every company", "m.live_user_id = access.current_person_id()"],
+        ["reads a company that a caller could name", "m.company_id = COALESCE(ledger.current_company_id(), m.company_id)"],
+      ])("counts it in another definition: one that %s", async (_case, where) => {
+        expect(await problemsAfter(peopleWith(where))).toEqual([`access.company_people: ${IN_COMPANY_CHANGED}`]);
+      });
+
+      it("counts it when it reads the companies too", async () => {
+        expect(await problemsAfter(peopleWith("m.company_id = ledger.current_company_id()", "JOIN ledger.companies AS c ON c.company_id = ledger.current_company_id()"))).toEqual([
+          `access.company_people: ${IN_COMPANY_CHANGED}`,
+        ]);
+      });
+
+      it("counts a copy under another name, another routine of its name, and a routine that calls it", async () => {
+        const copy = peopleWith("m.company_id = ledger.current_company_id()").replace("access.company_people(ids uuid[])", "access.people_copy(ids uuid[])").replace("company_people.ids", "people_copy.ids");
+        expect(await problemsAfter(`${copy} GRANT EXECUTE ON FUNCTION access.people_copy(uuid[]) TO nortfox_app;`)).toEqual([`access.people_copy: ${READS}`]);
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION access.company_people(ids uuid[], extra integer) RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              RETURN (SELECT count(*) FROM access.memberships AS m WHERE m.company_id = ledger.current_company_id());
+            GRANT EXECUTE ON FUNCTION access.company_people(uuid[], integer) TO nortfox_app;`),
+        ).toEqual([`access.company_people: ${READS}`]);
+        expect(
+          await problemsAfter(`
+            CREATE FUNCTION access.people_through(ids uuid[]) RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+              RETURN (SELECT count(*) FROM access.company_people(ids));
+            GRANT EXECUTE ON FUNCTION access.people_through(uuid[]) TO nortfox_app;`),
+        ).toEqual([`access.people_through: ${READS}`]);
+      });
     });
 
     it("finds such a function whatever the spelling of the table: quoted, in capitals, or with space or comments around the dot", async () => {

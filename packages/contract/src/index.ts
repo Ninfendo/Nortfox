@@ -1,5 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+export {
+  CATALOGUE_GROUPS,
+  CATALOGUE_PERMISSIONS,
+  CATALOGUE_PROGRAMS,
+  GROUP_KINDS,
+  PROGRAMS,
+  PROGRAM_PERMISSIONS,
+  fullPermissions,
+  programPermissions,
+  viewPermissionOf,
+} from "./access/catalogue.ts";
+export type {
+  CatalogueGroup,
+  CataloguePermission,
+  CataloguePermissionKey,
+  CatalogueProgram,
+  GroupKey,
+  GroupKind,
+  Program,
+  ProgramPermission,
+} from "./access/catalogue.ts";
 export { ADMIN_LEVELS, MEMBER_PERMISSIONS, SYSTEM_ADMINISTRATOR_PERMISSIONS, platformPermissions } from "./access/permissions.ts";
 export type { AdminLevel } from "./access/permissions.ts";
 export { assistantOperations } from "./assistant.ts";

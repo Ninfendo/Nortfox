@@ -96,6 +96,8 @@ export const LEDGER_RULES = [
   "immutable-field",
   "install-not-empty",
   "last-system-administrator",
+  "view-permission-missing",
+  "not-in-program",
   "period-outside-fiscal-year",
   "fiscal-year-strands-rows",
 ] as const;

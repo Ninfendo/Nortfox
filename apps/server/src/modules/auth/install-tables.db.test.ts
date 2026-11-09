@@ -65,10 +65,14 @@ describe("the install-wide tables", () => {
     );
   }
 
-  it("is the list the guard pins: four person tables, one company table and eight secret tables", () => {
+  it("is the list the guard pins: four person tables, one company table, four public tables and eight secret tables", () => {
     expect(Object.fromEntries([...INSTALL_TABLES].map(([table, entry]) => [table, entry.class]))).toEqual({
       "access.account_events": "person",
       "access.attempt_counters": "secret",
+      "access.catalogue_groups": "public",
+      "access.catalogue_permissions": "public",
+      "access.catalogue_program_permissions": "public",
+      "access.catalogue_programs": "public",
       "access.idempotency_keys": "person",
       "access.identities": "person",
       "access.install_keys": "secret",

@@ -319,6 +319,8 @@ describe("the problem codes", () => {
       "immutable-field",
       "install-not-empty",
       "last-system-administrator",
+      "view-permission-missing",
+      "not-in-program",
       "period-outside-fiscal-year",
       "fiscal-year-strands-rows",
     ];
