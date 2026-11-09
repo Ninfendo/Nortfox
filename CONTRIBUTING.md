@@ -24,7 +24,7 @@ Other commands:
 | `pnpm --filter @nortfox/web dev` | Runs the web app. It passes `/v1` to the server on port 4100. |
 | `pnpm test` | Runs every test suite once, the database tests too. `pnpm test:coverage` also checks the coverage floors. |
 | `pnpm db:test` | Starts the test database: PostgreSQL in Docker, on 127.0.0.1:55433, with its data in memory. `pnpm db:test:stop` stops it. |
-| `pnpm backup:test` | Runs the point-in-time restore test: the compose file of an install in Docker, restored from each backup repository ([deploy/README.md](deploy/README.md)). It needs bash and Docker. CI runs it in the job `backup`. |
+| `pnpm backup:test` | Runs the point-in-time restore test: the compose file of an install in Docker, restored from each backup repository ([deploy/README.md](deploy/README.md)). It needs bash and Docker. Its project is `nortfox-backup-test`, or the name in `NORTFOX_BACKUP_PROJECT`. CI runs it in the job `backup`. |
 | `pnpm openapi` | After a change to the registry in `packages/contract`: writes `packages/client/openapi.json` and the generated client. CI fails when they are out of date. |
 | `pnpm changeset` | Records what users will notice in your change. |
 | `pnpm names` | Runs the names check over every file. |
@@ -72,6 +72,7 @@ The guard runs in `pnpm check`, in CI, and in the pre-commit hook over the stage
 
 - One slice or one fix per PR, with its tests and, when users will notice it, a changeset.
 - A slice's terms go into [docs/glossary.md](docs/glossary.md), each with its name in `/v1` and the code. `packages/contract/src/terms.test.ts` checks that the glossary and `/v1` give the same names.
+- A new operation or problem code goes into [docs/api.md](docs/api.md) in the same PR. `packages/contract/src/api-docs.test.ts` checks its tables of operations and codes against the registry and the contract.
 - Every new rule has tests, and every new guard has a test that shows it fails on a bad input.
 - No PR lowers a coverage floor, switches off a lint rule or skips a check.
 - Test data is made up: fictional companies and people, the test numbers on the fixture guard's list, and addresses at the reserved example domains. Never personal data or real company data.

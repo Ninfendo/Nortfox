@@ -399,6 +399,50 @@ export async function untilSomeoneWaitsForLock(observer: Client): Promise<void> 
   throw new Error("No backend ever waited for a lock.");
 }
 
+/** Reads `path` with the browser's session cookie, as the web app does. */
+export function getAs(app: SignInApp, session: string, path: string, browser: Omit<Browser, "cookies"> = {}): Promise<Response> {
+  return sendAsBrowser(app, "GET", path, { ...browser, cookies: { session } });
+}
+
+/** Sends a write with a body and an idempotency key, with the browser's session cookie, as the web app does. */
+export function writeAs(
+  app: SignInApp,
+  session: string,
+  method: "POST" | "PATCH" | "PUT" | "DELETE",
+  path: string,
+  body: unknown,
+  options: { readonly key?: string; readonly ipAddress?: string } = {},
+): Promise<Response> {
+  return app.send(
+    path,
+    {
+      method,
+      headers: {
+        origin: TEST_ORIGIN,
+        "content-type": "application/json",
+        "idempotency-key": options.key ?? randomUUID(),
+        ...cookieHeader({ session }),
+      },
+      body: JSON.stringify(body),
+    },
+    addressOf(options.ipAddress === undefined ? {} : { ipAddress: options.ipAddress }),
+  );
+}
+
+/** Byt företag: the session chooses the company, as the web app does. */
+export function chooseCompany(app: SignInApp, session: string, companyId: string, options: { readonly key?: string; readonly ipAddress?: string } = {}): Promise<Response> {
+  return writeAs(app, session, "POST", "/v1/session/company", { companyId }, options);
+}
+
+/** The answer's JSON, after checking its status. */
+export async function jsonOf<T = Record<string, unknown>>(response: Response, status = 200): Promise<T> {
+  const text = await response.text();
+  if (response.status !== status) {
+    throw new Error(`The answer is ${String(response.status)}, not ${String(status)}: ${text}`);
+  }
+  return JSON.parse(text) as T;
+}
+
 /** The problem details of a 422 sign-in-failed, the one answer of every failed sign-in step. */
 export function signInFailed(detail: string): ProblemBody {
   return { type: "about:blank", title: "Unprocessable Content", status: 422, detail, code: "sign-in-failed" };

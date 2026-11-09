@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { personal } from "./fields.ts";
 import { IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
 import { Money } from "./money.ts";
 import {
@@ -11,6 +12,7 @@ import {
   challengeOf,
   defineListOperation,
   defineOperation,
+  isCompanyInput,
   outputSchema,
   paramsSchema,
   querySchema,
@@ -110,6 +112,7 @@ describe("defineOperation", () => {
       list: false,
       session: null,
       company: "credential",
+      personalOutput: [],
     });
     expect(write["x-nortfox"]).toEqual({
       permission: "test:write",
@@ -119,7 +122,63 @@ describe("defineOperation", () => {
       list: false,
       session: null,
       company: "credential",
+      personalOutput: [],
     });
+  });
+
+  it("lists the personal fields of its output, and none for an answer with no body", () => {
+    const Person = z.strictObject({ id: z.uuid(), name: personal(z.string()), email: personal(z.string()).optional() });
+    const readSelf = defineOperation({
+      id: "readSelf",
+      method: "get",
+      path: "/v1/selves",
+      tags: ["items"],
+      summary: "Read yourself",
+      description: "Reads the person.",
+      output: z.strictObject({ person: Person, others: z.array(Person) }),
+      permission: "signed-in",
+      tool: "Reads the person.",
+      writes: false,
+    });
+    expect(readSelf["x-nortfox"].personalOutput).toEqual(["/person/name", "/person/email", "/others/*/name", "/others/*/email"]);
+    const ended = defineOperation({
+      id: "endSelf",
+      method: "post",
+      path: "/v1/selves",
+      tags: ["items"],
+      summary: "End",
+      description: "Ends.",
+      output: NoBody,
+      status: 204,
+      permission: "signed-in",
+      tool: "Ends.",
+      writes: true,
+    });
+    expect(ended["x-nortfox"].personalOutput).toEqual([]);
+  });
+
+  it.each([
+    ["current", "current" as const],
+    ["new", "new" as const],
+    ["the input", { input: "companyId" }],
+  ])("takes a signed-in person's company from %s, and refuses by a rule only an input's company it may not enter", (_what, company) => {
+    const inCompany = defineOperation({
+      id: "readOwnCompany",
+      method: "get",
+      path: "/v1/own-companies",
+      tags: ["items"],
+      summary: "Read",
+      description: "Reads.",
+      query: z.strictObject({ companyId: z.uuid() }),
+      output: Item,
+      permission: "signed-in",
+      company,
+      tool: "Reads.",
+      writes: false,
+    });
+    expect(inCompany["x-nortfox"].company).toEqual(company);
+    expect(statuses(inCompany)).toEqual(typeof company === "object" ? ["200", "400", "401", "422", "500"] : ["200", "400", "401", "500"]);
+    expect(isCompanyInput(company)).toBe(typeof company === "object");
   });
 
   it("takes the company from the credential for an operation with a permission, and from nowhere for one without", () => {
@@ -493,6 +552,7 @@ describe("defineListOperation", () => {
       list: true,
       session: null,
       company: "credential",
+      personalOutput: [],
     });
     const query = querySchema(list);
     expect(Object.keys(query?.shape ?? {})).toEqual(["name", "limit", "cursor"]);

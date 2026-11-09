@@ -6,7 +6,7 @@
 // cookie or, for a login challenge, in the answer, and is kept only as its
 // hash (auth/tokens.ts).
 
-import type { SignInMethod } from "../../api/context.ts";
+import type { SecondStep, SignInMethod } from "../../api/context.ts";
 import type { RuleRefusal } from "../../api/operation.ts";
 import { newToken, tokenHash, tokenKind } from "../../auth/tokens.ts";
 import type { Queryable } from "../../db/database.ts";
@@ -39,13 +39,27 @@ export async function knownDevice(tx: Queryable, identityId: string, deviceHash:
 }
 
 /**
- * Opens a session of an active identity, on its device if any, and gives the
- * session's token, which only the cookie carries; undefined when the
- * identity is no longer active.
+ * Opens a session of an active identity, after its second step, on its
+ * device if any, and gives the session's token, which only the cookie
+ * carries; undefined when the identity is no longer active.
  */
-export async function openSession(tx: Queryable, identityId: string, method: SignInMethod, deviceId: string | null, at: Date): Promise<string | undefined> {
+export async function openSession(
+  tx: Queryable,
+  identityId: string,
+  method: SignInMethod,
+  secondStep: SecondStep,
+  deviceId: string | null,
+  at: Date,
+): Promise<string | undefined> {
   const token = newToken("session");
-  const opened = await tx.query<{ id: string | null }>("SELECT access.open_session($1, $2, $3, $4, $5) AS id", [tokenHash(token), identityId, method, deviceId, at]);
+  const opened = await tx.query<{ id: string | null }>("SELECT access.open_session($1, $2, $3, $4, $5, $6) AS id", [
+    tokenHash(token),
+    identityId,
+    method,
+    secondStep,
+    deviceId,
+    at,
+  ]);
   // A SELECT of one function call gives one row: the session's id, or NULL.
   const [row] = opened.rows as [{ readonly id: string | null }];
   return row.id === null ? undefined : token;

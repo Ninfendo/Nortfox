@@ -71,6 +71,7 @@ describe("GET /openapi.json", () => {
       list: false,
       session: null,
       company: "none",
+      personalOutput: [],
     });
     expect(Object.keys(health?.responses ?? {})).toEqual(["200", "400", "500"]);
     expect(health?.responses?.["400"]?.content).toEqual({
@@ -85,6 +86,7 @@ describe("GET /openapi.json", () => {
       list: false,
       session: null,
       company: "credential",
+      personalOutput: [],
     });
     expect(Object.keys(company?.responses ?? {})).toEqual(["200", "400", "401", "403", "500"]);
     expect(company?.responses?.["401"]?.headers).toEqual({
@@ -92,13 +94,17 @@ describe("GET /openapi.json", () => {
     });
     expect(Object.keys(document.components.schemas).sort()).toEqual([
       "Company",
+      "CompanyChoice",
       "FieldProblem",
       "Health",
       "Me",
+      "Membership",
       "PasswordSignIn",
       "Problem",
+      "RecentCompanies",
       "Session",
       "SetupResult",
+      "SysAdmin",
       "TotpEnrolment",
       "User",
     ]);
@@ -115,7 +121,7 @@ describe("GET /openapi.json", () => {
 
 describe("createApp", () => {
   it("serves the registry by default, and no test-only operation", async () => {
-    const { hono, registry } = createApp(defaults({ resolve: testResolver({ t: principalOf("c") }) }));
+    const { hono, registry } = createApp(defaults({ resolve: testResolver({ t: await principalOf("6f5e4d3c-2b1a-4c9d-8e7f-0a1b2c3d4e5f") }) }));
     expect(registry).toBe(REGISTRY);
     expect((await hono.request("/v1/company")).status).toBe(401);
     expect((await hono.request("/v1/test-accounts", { headers: bearer("t") })).status).toBe(404);

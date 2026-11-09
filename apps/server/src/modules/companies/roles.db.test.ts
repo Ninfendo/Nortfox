@@ -27,12 +27,16 @@ import { guardedRelations } from "../../db/table-guard.ts";
 const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "access.account_events": ["INSERT", "SELECT"],
   "access.attempt_counters": [],
+  "access.events": ["INSERT", "SELECT"],
   "access.idempotency_keys": ["INSERT", "SELECT"],
   "access.identities": ["SELECT", "UPDATE"],
   "access.install_keys": [],
   "access.known_devices": [],
   "access.login_challenges": [],
+  "access.membership_contacts": ["DELETE", "INSERT", "SELECT", "UPDATE"],
+  "access.memberships": ["INSERT", "SELECT", "UPDATE"],
   "access.password_credentials": [],
+  "access.recent_companies": ["INSERT", "SELECT", "UPDATE"],
   "access.sessions": [],
   "access.setup_tokens": [],
   "access.totp_secrets": [],
@@ -60,12 +64,16 @@ const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
 const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "access.account_events": [],
   "access.attempt_counters": [],
+  "access.events": ["SELECT"],
   "access.idempotency_keys": [],
   "access.identities": [],
   "access.install_keys": [],
   "access.known_devices": [],
   "access.login_challenges": [],
+  "access.membership_contacts": [],
+  "access.memberships": ["SELECT"],
   "access.password_credentials": [],
+  "access.recent_companies": [],
   "access.sessions": [],
   "access.setup_tokens": [],
   "access.totp_secrets": [],
@@ -95,7 +103,9 @@ const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
  */
 const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
   nortfox_app: [
+    "access.active_membership",
     "access.challenge_by_token",
+    "access.choose_company",
     "access.claim_attempt",
     "access.clear_attempts",
     "access.complete_setup",
@@ -110,6 +120,7 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
     "access.install_key",
     "access.known_device",
     "access.lock_attempts",
+    "access.lock_session",
     "access.open_challenge",
     "access.open_session",
     "access.purge_expired",
@@ -128,6 +139,14 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
   ],
   nortfox_test_reader_a: ["ledger.current_company_id", "ledger.current_role_oid", "ledger.reader_company_id"],
 };
+
+/**
+ * The routines of ours, as a condition on pg_proc AS p and pg_namespace AS
+ * n: in every schema but PostgreSQL's own, outside the extensions, such as
+ * btree_gist's in public.
+ */
+const OUR_ROUTINES = `n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend AS d WHERE d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND d.objid = p.oid AND d.deptype = 'e')`;
 
 const TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
 
@@ -148,9 +167,7 @@ describe("the database roles", () => {
     db = await freshDatabase();
     app = await db.connect("app");
     owner = await db.connect("owner");
-    await inTransaction(app, { company, actor, kind: "user" }, () =>
-      app.query("INSERT INTO ledger.companies (company_id, name, organization_number) VALUES ($1, 'Testbolaget Alfa AB', '556000-0167')", [company]),
-    );
+    await addCompany(app, { actor, kind: "user" }, { id: company });
   });
 
   afterAll(async () => {
@@ -200,6 +217,16 @@ describe("the database roles", () => {
     ["empty the identities", "TRUNCATE access.identities"],
     ["call the trigger that keeps the identities' rules", "SELECT access.identities_rules()"],
     ["call the trigger that keeps a column set once", "SELECT access.keep_set_once()"],
+    ["delete a membership", "DELETE FROM access.memberships"],
+    ["empty the memberships", "TRUNCATE access.memberships"],
+    ["call the trigger that keeps the memberships' rules", "SELECT access.memberships_rules()"],
+    ["call the check of a company's system administrator", "SELECT access.keep_system_administrator()"],
+    ["switch the check of a company's system administrator off", "ALTER TABLE access.memberships DISABLE TRIGGER memberships_system_administrator"],
+    ["drop the check of a company's system administrator", "DROP TRIGGER companies_system_administrator ON ledger.companies"],
+    ["change an entry of the behandlingshistorik", "UPDATE access.events SET heading = 'sign-in'"],
+    ["delete an entry of the behandlingshistorik", "DELETE FROM access.events"],
+    ["call the trigger that keeps the entries", "SELECT access.events_rules()"],
+    ["call the trigger that stamps the work contacts", "SELECT access.membership_contacts_rules()"],
   ])("refuses the app to %s", async (_case, sql) => {
     await expectError(app.query(sql), INSUFFICIENT_PRIVILEGE);
   });
@@ -284,17 +311,40 @@ describe("the database roles", () => {
     ]);
   });
 
+  /** The routines of ours, in any schema, that `role` may run, by name. */
+  async function callableBy(role: string): Promise<string[]> {
+    const found = await owner.query<{ name: string }>(
+      `SELECT DISTINCT n.nspname || '.' || p.proname AS name
+       FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+       WHERE ${OUR_ROUTINES} AND pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE')
+       ORDER BY 1`,
+      [role],
+    );
+    return found.rows.map((row) => row.name);
+  }
+
   it("lets the app and a reader call only the functions they need", async () => {
     for (const [role, wanted] of Object.entries(CALLABLE_FUNCTIONS)) {
-      const found = await owner.query<{ name: string }>(
-        `SELECT DISTINCT n.nspname || '.' || p.proname AS name
-         FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-         WHERE n.nspname IN ('access', 'ledger', 'audit', 'meta') AND pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE')
-         ORDER BY 1`,
-        [role],
-      );
-      expect(found.rows.map((row) => row.name), role).toEqual(wanted);
+      expect(await callableBy(role), role).toEqual(wanted);
     }
+  });
+
+  it("counts a routine of ours in any schema, and leaves out the extensions' and PostgreSQL's own", async () => {
+    await owner.query("BEGIN");
+    try {
+      await owner.query(`
+        CREATE FUNCTION public.work_in() RETURNS text LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp RETURN (SELECT 'x');
+        GRANT EXECUTE ON FUNCTION public.work_in() TO nortfox_app;`);
+      expect(await callableBy("nortfox_app")).toEqual([...(CALLABLE_FUNCTIONS["nortfox_app"] ?? []), "public.work_in"]);
+    } finally {
+      await owner.query("ROLLBACK");
+    }
+    // btree_gist's functions are in public, and the app may run them.
+    const extension = await owner.query<{ count: bigint }>(
+      `SELECT count(*) AS count FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public' AND pg_catalog.has_function_privilege('nortfox_app', p.oid, 'EXECUTE')`,
+    );
+    expect(extension.rows[0]?.count).toBeGreaterThan(0n);
   });
 
   it("opens no function of ours to PUBLIC, pins each one's search path, and runs each trigger with the owner's rights", async () => {
@@ -305,7 +355,7 @@ describe("the database roles", () => {
         ) AS public,
         p.proconfig AS config, p.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype AS trigger, p.prosecdef AS definer
       FROM pg_catalog.pg_proc AS p JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
-      WHERE n.nspname IN ('access', 'ledger', 'audit', 'meta')
+      WHERE ${OUR_ROUTINES}
       ORDER BY 1`);
     expect(found.rows.filter((row) => row.trigger).length).toBeGreaterThan(0);
     for (const row of found.rows) {

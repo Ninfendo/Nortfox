@@ -31,6 +31,7 @@ export const REFUSALS = [
   { reason: "series_code_changed", code: "NF019" },
   { reason: "immutable_field", code: "NF020" },
   { reason: "install_not_empty", code: "NF021" },
+  { reason: "last_system_administrator", code: "NF022" },
   { reason: "actor_missing", code: "NF050" },
   { reason: "append_only", code: "NF051" },
   { reason: "internal_only", code: "NF052" },

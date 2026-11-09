@@ -15,7 +15,7 @@ import type { ContextResolver } from "./context.ts";
 
 const ALLOWED = "https://nortfox.example";
 
-const TOKENS = { writer: principalOf(randomUUID()) };
+const TOKENS = { writer: await principalOf(randomUUID()) };
 
 /** A resolver that counts the requests it reads. */
 function countingResolver(): { readonly resolve: ContextResolver; readonly calls: () => number } {

@@ -28,7 +28,8 @@
 //    as a sign-in, refuses every call with 403 browser-only before any
 //    argument is read: an MCP client signs in through OAuth. For any other
 //    tool, the actor and the permission are checked before any argument is
-//    read, as on /v1.
+//    read, as on /v1. A principal whose company access the one membership
+//    function did not give is a fault of the server: 500 internal-error.
 // 4. The arguments are the operation's flat input: a path parameter goes to
 //    the path parameters, a query field to the query, idempotencyKey to a
 //    write's key, and every other argument to the body, or to the query of an
@@ -69,7 +70,7 @@ import {
 } from "@nortfox/contract";
 import type { Hono } from "hono";
 import type { Principal, RequestContext } from "./context.ts";
-import { authorize, runOperation, type Handler, type Outcome } from "./operation.ts";
+import { authorize, runOperation, type Handler, type Outcome, type Refusal } from "./operation.ts";
 import { browserOnly, internalError, originNotAllowed, problemOf } from "./problem.ts";
 import { BODY_LIMIT, problemResponse, type V1Deps, type V1Env } from "./v1.ts";
 
@@ -193,7 +194,14 @@ async function callTool(served: ServedTool, principal: Principal | undefined, ar
   if (served.browserOnly) {
     return toolAnswer(browserOnly().body, true);
   }
-  const denied = authorize(handler.operation, principal);
+  let denied: Refusal | undefined;
+  try {
+    denied = authorize(handler.operation, principal);
+  } catch (error) {
+    // A principal whose company access the one membership function did not give: a fault of the server.
+    deps.report(error);
+    return toolAnswer(internalError().body, true);
+  }
   if (denied !== undefined) {
     return toolAnswer(problemOf(denied).body, true);
   }

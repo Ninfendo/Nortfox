@@ -6,8 +6,10 @@
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
+import { connectAs } from "./cluster.ts";
 import { inTransaction } from "./database.ts";
 import type { ActorKind } from "./every-table.ts";
+import { addIdentity } from "./identities.ts";
 
 /** Who acts in a transaction. */
 export interface Actor {
@@ -20,15 +22,113 @@ export function someUser(): Actor {
   return { actor: randomUUID(), kind: "user" };
 }
 
-/** Adds a company as `client`, and gives its id. */
-export async function addCompany(client: Client, who: Actor = someUser()): Promise<string> {
-  const company = randomUUID();
-  await inTransaction(client, { company, ...who }, () =>
-    client.query("INSERT INTO ledger.companies (company_id, name, organization_number) VALUES ($1, 'Testbolaget Alfa AB', '556000-0167')", [
-      company,
-    ]),
+/** What a test may give a new company. Each value left out takes a made-up one. */
+export interface CompanyValues {
+  readonly id?: string;
+  readonly name?: string;
+  readonly organizationNumber?: string;
+  /** A tenant id to give, which the database refuses: it gives each company its own. */
+  readonly databaseNumber?: unknown;
+}
+
+/** A company as the database holds it. */
+export interface CompanyRow {
+  readonly company_id: string;
+  readonly name: string;
+  readonly organization_number: string;
+  readonly database_number: number;
+}
+
+/** A company that a test made, with its owner. */
+export interface MadeCompany {
+  readonly row: CompanyRow;
+  /** The owner's identity, which made the company. */
+  readonly owner: string;
+  /** The owner's membership, the company's first. */
+  readonly membership: string;
+}
+
+/**
+ * Inserts a company in the open transaction of `client`, which has the
+ * company and the actor set, and gives its row. The database checks at the
+ * commit that the company has an active system administrator, so the same
+ * transaction adds its owner (insertOwner), unless the test wants that
+ * refusal. Every test makes its companies here or with addCompany.
+ */
+export async function insertCompany(client: Client, values: CompanyValues & { readonly id: string }): Promise<CompanyRow> {
+  const columns = ["company_id", "name", "organization_number", ...(values.databaseNumber === undefined ? [] : ["database_number"])];
+  const params = [
+    values.id,
+    values.name ?? "Testbolaget Alfa AB",
+    values.organizationNumber ?? "556000-0167",
+    ...(values.databaseNumber === undefined ? [] : [values.databaseNumber]),
+  ];
+  const found = await client.query<CompanyRow>(
+    `INSERT INTO ledger.companies (${columns.join(", ")}) VALUES (${params.map((_value, index) => `$${String(index + 1)}`).join(", ")})
+     RETURNING company_id, name, organization_number, database_number`,
+    params,
   );
-  return company;
+  const [row] = found.rows;
+  if (row === undefined) {
+    throw new Error("The company was not added.");
+  }
+  return row;
+}
+
+/** Adds a company's first membership, its owner's, active, in the open transaction of `client`, and gives its id. */
+export async function insertOwner(client: Client, company: string, person: string): Promise<string> {
+  const found = await client.query<{ id: string }>(
+    "INSERT INTO access.memberships (company_id, user_id, status, admin_level) VALUES ($1, $2, 'active', 'owner') RETURNING id",
+    [company, person],
+  );
+  const [row] = found.rows;
+  if (row === undefined) {
+    throw new Error("The membership was not added.");
+  }
+  return row.id;
+}
+
+/**
+ * Makes `person` a login identity, unless it is one already, as the owner
+ * does: in a connection of its own as the owner, to the database of
+ * `client`, committed.
+ */
+export async function ensureIdentity(client: Client, person: string): Promise<void> {
+  if (client.database === undefined) {
+    throw new Error("The connection names no database.");
+  }
+  const owner = await connectAs("nortfox_owner", client.database);
+  try {
+    const found = await owner.query("SELECT FROM access.identities WHERE id = $1", [person]);
+    if (found.rows.length === 0) {
+      await addIdentity(owner, { id: person, name: "Dagny Lund" });
+    }
+  } finally {
+    await owner.end();
+  }
+}
+
+/**
+ * Adds a company as `client`, as createCompany does: its maker is a person,
+ * a login identity, which acts in one transaction that inserts the company
+ * and makes the person its owner, the company's first membership, active.
+ */
+export async function addCompanyWithOwner(client: Client, who: Actor = someUser(), values: CompanyValues = {}): Promise<MadeCompany> {
+  if (who.kind === "system") {
+    throw new Error("A person makes a company: the internal system user has no identity.");
+  }
+  await ensureIdentity(client, who.actor);
+  const company = values.id ?? randomUUID();
+  return inTransaction(client, { company, ...who }, async () => {
+    const row = await insertCompany(client, { ...values, id: company });
+    const membership = await insertOwner(client, company, who.actor);
+    return { row, owner: who.actor, membership };
+  });
+}
+
+/** Adds a company as `client`, with `who` as its owner (addCompanyWithOwner), and gives its id. */
+export async function addCompany(client: Client, who: Actor = someUser(), values: CompanyValues = {}): Promise<string> {
+  return (await addCompanyWithOwner(client, who, values)).row.company_id;
 }
 
 /** A fiscal year as the database holds it, with its dates as text. */

@@ -64,9 +64,9 @@ describe("the body of a write on /v1", () => {
     server = buildTestApp({
       database: pool.database,
       resolve: testResolver({
-        writer: principalOf(books.company),
-        reader: principalOf(books.company, { permissions: ["company:read"] }),
-        lockedOut: principalOf(locked.company, { kind: "integration" }),
+        writer: await principalOf(books.company),
+        reader: await principalOf(books.company, { permissions: ["company:read"] }),
+        lockedOut: await principalOf(locked.company, { kind: "integration" }),
       }),
       handlers: testHandlers(controls),
       report: () => undefined,
@@ -404,10 +404,10 @@ describe("the body of a write on /v1", () => {
     const OTHER_THING = "2f3e4d5c-6b7a-4899-8a1b-2c3d4e5f6a7b";
     let shapes: ServerApp;
 
-    beforeAll(() => {
+    beforeAll(async () => {
       shapes = buildTestApp({
         database: pool.database,
-        resolve: testResolver({ writer: principalOf(books.company) }),
+        resolve: testResolver({ writer: await principalOf(books.company) }),
         registry: SHAPES_REGISTRY,
         handlers: shapesHandlers(shapeLog()),
         report: () => undefined,

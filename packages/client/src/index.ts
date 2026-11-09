@@ -3,7 +3,8 @@
 import { createOperations, type Operations } from "./generated.ts";
 import { createSend, type ClientOptions } from "./runtime.ts";
 
-export type { Company, FieldProblem, Health, Me, PasswordSignIn, Problem, Session, SetupResult, TotpEnrolment, User, Operations } from "./generated.ts";
+export type { Company, CompanyChoice, FieldProblem, Health, Me, Membership, PasswordSignIn, Problem, RecentCompanies, Session, SetupResult, TotpEnrolment, User, Operations } from "./generated.ts";
+export type { SysAdmin } from "./generated.ts";
 export { ApiError } from "./runtime.ts";
 export type { CallOptions, ClientOptions, FetchFunction, WriteOptions } from "./runtime.ts";
 

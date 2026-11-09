@@ -11,9 +11,11 @@
 import { EventEmitter } from "node:events";
 import type { Pool } from "pg";
 import { describe, expect, it } from "vitest";
+import { testMembership } from "../../test/api.ts";
+import type { ResolvedMembership } from "../modules/memberships/resolve.ts";
 import { commit, databaseOver, type TransactionSettings } from "./database.ts";
 
-const SETTINGS: TransactionSettings = { companyId: "a company", actorId: "an actor", actorKind: "user", channel: "mcp" };
+const SETTINGS: TransactionSettings = { actorId: "an actor", actorKind: "user", channel: "mcp" };
 
 /** A fake connection that answers each statement as `answer` says, and notes how it was released. */
 class FakeConnection extends EventEmitter {
@@ -88,5 +90,68 @@ describe("handing a connection back", () => {
     expect(await database.read(SETTINGS, () => Promise.resolve(commit(1)))).toBe(1);
     expect(connection.sent).toEqual(["BEGIN", "SELECT", "COMMIT"]);
     expect(connection.released).toEqual([false]);
+  });
+});
+
+// A lookup enters a company only with a membership that the one membership
+// function gave in that lookup (modules/memberships/resolve.ts). Anything
+// else is refused before any statement; resolve.db.test.ts shows the rest on
+// PostgreSQL.
+describe("entering a company in a lookup", () => {
+  it("refuses a plain object with a membership's fields, and sends no statement for it", async () => {
+    const connection = new FakeConnection(() => Promise.resolve({ rows: [] }));
+    const database = databaseOver(poolOf(connection), () => undefined);
+    const plain = { personId: "an actor", membershipId: "a membership", companyId: "a company", adminLevel: null, idleTimeoutMinutes: 120 };
+    const refused = await database.lookup("rest", async (tx) => {
+      await tx.actAs("an actor", "user");
+      return commit(await tx.enter(plain as unknown as ResolvedMembership).then(() => undefined, (error: unknown) => error));
+    });
+    expect(refused).toEqual(new Error("tx.enter takes only a membership that the one membership function gave in this transaction (modules/memberships/resolve.ts)."));
+    expect(connection.sent).toEqual(["BEGIN", "SELECT", "SELECT", "COMMIT"]);
+  });
+});
+
+// A read or a write in a company takes the company only as a company access
+// that the one membership function gave (modules/memberships/resolve.ts),
+// for the transaction's actor. A company id by itself, a plain object and
+// another person's access are refused before any statement, so no file sets
+// a company that the function did not give.
+describe("a transaction in a company", () => {
+  const COMPANY = "5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a";
+  const ACTOR = "4f3e2d1c-0b9a-4876-9543-210fedcba987";
+  const NOT_AN_ACCESS = new Error("A transaction in a company takes a company access that the one membership function gave (modules/memberships/resolve.ts).");
+
+  it("refuses a company id, or a plain object with an access's fields, and sends no statement", async () => {
+    for (const company of [COMPANY, { companyId: COMPANY, membershipId: "a membership", personId: ACTOR, adminLevel: null, permissions: new Set<string>() }]) {
+      const connection = new FakeConnection(() => Promise.resolve({ rows: [] }));
+      const database = databaseOver(poolOf(connection), () => undefined);
+      const settings = { company, actorId: ACTOR, actorKind: "user", channel: "rest" } as unknown as TransactionSettings;
+      await expect(database.read(settings, () => Promise.resolve(commit(1)))).rejects.toEqual(NOT_AN_ACCESS);
+      await expect(database.write(settings, () => Promise.resolve(commit(1)))).rejects.toEqual(NOT_AN_ACCESS);
+      expect(connection.sent).toEqual([]);
+    }
+  });
+
+  it("refuses an access of another person than the actor, and sends no statement", async () => {
+    const connection = new FakeConnection(() => Promise.resolve({ rows: [] }));
+    const database = databaseOver(poolOf(connection), () => undefined);
+    const access = (await testMembership(COMPANY, ACTOR)).access([]);
+    const settings: TransactionSettings = { company: access, actorId: "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d", actorKind: "user", channel: "rest" };
+    await expect(database.write(settings, () => Promise.resolve(commit(1)))).rejects.toEqual(new Error("A transaction in a company acts as the person of its company access."));
+    expect(connection.sent).toEqual([]);
+  });
+
+  it("sets the company of an access of its actor", async () => {
+    const values: unknown[][] = [];
+    const connection = new FakeConnection(() => Promise.resolve({ rows: [] }));
+    const query = connection.query.bind(connection);
+    connection.query = (text: string, sent?: unknown[]) => {
+      values.push(sent ?? []);
+      return query(text);
+    };
+    const database = databaseOver(poolOf(connection), () => undefined);
+    const access = (await testMembership(COMPANY, ACTOR)).access([]);
+    expect(await database.read({ company: access, actorId: ACTOR, actorKind: "integration", channel: "mcp" }, () => Promise.resolve(commit(1)))).toBe(1);
+    expect(values[1]).toEqual([COMPANY, ACTOR, "integration", "mcp"]);
   });
 });

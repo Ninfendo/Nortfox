@@ -1,6 +1,6 @@
 # 8. Authentication
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: the login of the compatible API. Amended 2026-11-04, in slice 2c: the session's cookies, the cross-site rule, and the company of a request that works in one.
+Status: accepted, 2026-11-01. Amended 2026-11-02: the login of the compatible API. Amended 2026-11-04, in slice 2c: the session's cookies, the cross-site rule, and the company of a request that works in one. Amended 2026-11-05, in slice 2c: the company of a signed-in person's own request.
 
 ## Context
 
@@ -30,7 +30,7 @@ People log in from the web app. Programs and MCP clients need access too. Progra
 - The access token of that flow has the established token's shape: a JWT that carries the company's tenant id as a claim. The established API's docs tell integrators to read the tenant id from the token, so an opaque token would break those integrations. 2e's issue takes the claim names from a token of the established system. NortFox never trusts what the token says: the token holds a random value, is stored only as a hash and is looked up on every request. This shape is a working default that the owner may change.
 - The code and the refresh token of that flow are opaque and random, and are stored only as hashes. Every token of that flow is bound to one company. It works only on the compatible API's paths, as the MCP tokens work only for `/mcp`.
 - In the established flow, a live access token cannot be revoked: it works until it expires. In NortFox, revoking a consent, or the client, stops every token it gave on the next request, access tokens included, because every token is looked up. This is NortFox's own working default, which the owner may change.
-- Every request that works in a company acts in that one company, as one user. A sign-in acts before there is a user, and a signed-in person's own requests, such as reading their own login data, work in no company. A service account has no user: its request acts as its client, with the rights its scopes give. The permission a request needs comes from the operation's entry in the registry.
+- Every request that works in a company acts in that one company, as one user. A sign-in acts before there is a user. A signed-in person's own request works in no company, in its credential's company (`getMe`, `getSession`), in the company it makes (`createCompany`), or in the company its input names, where the person must be an active member (`selectCompany`, `updateMyMembership`). A service account has no user: its request acts as its client, with the rights its scopes give. The permission a request needs comes from the operation's entry in the registry.
 
 ## Consequences
 

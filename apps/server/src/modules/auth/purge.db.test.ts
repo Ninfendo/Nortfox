@@ -6,8 +6,9 @@
 // past their end, sessions that ended more than 30 days ago or began more
 // than 30 days and 12 hours ago, attempt counters whose hour has passed and
 // whose lock has ended, a person's idempotency keys 24 hours after they were
-// stored, and the account events past the 100 latest of each identity. It
-// deletes no identity. The tests move the server's clock forwards only.
+// stored, and the account events past the 100 latest of each identity, but
+// for the failed sign-ins of the last hour, which the behandlingshistorik
+// counts. It deletes no identity. The tests move the server's clock forwards only.
 
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
@@ -79,7 +80,7 @@ describe("the purge of expired login rows", () => {
   it("deletes a session 30 days after it ended, and one that never ended 30 days after its 12 hours", async () => {
     const person = await addIdentity(owner);
     const session = (ended: Date | null): Promise<string> =>
-      insert("INSERT INTO access.sessions (token_hash, identity_id, method, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', $3, $3, $4, $5)", [
+      insert("INSERT INTO access.sessions (token_hash, identity_id, method, second_step, started_at, last_seen_at, ended_at, end_reason) VALUES ($1, $2, 'password-email', 'totp', $3, $3, $4, $5)", [
         tokenHash(),
         person,
         T0,
@@ -133,6 +134,32 @@ describe("the purge of expired login rows", () => {
     await purge(later(T0, 365 * DAY));
     const identities = await owner.query("SELECT id FROM access.identities WHERE id = ANY ($1::uuid[])", [[busy, quiet]]);
     expect(identities.rows).toHaveLength(2);
+  });
+
+  it("keeps an identity's failed sign-ins of the last hour past the 100, which the behandlingshistorik counts, by the database's clock", async () => {
+    const busy = await addIdentity(owner);
+    // Three failed sign-ins two hours ago, stamped as the database would have; the trigger that stamps the time is off for the insert.
+    const superuser = await db.admin();
+    await superuser.query("BEGIN");
+    await superuser.query("SET LOCAL session_replication_role = replica");
+    await superuser.query(
+      "INSERT INTO access.account_events (identity_id, kind, details, at) SELECT $1, 'sign-in', '{\"outcome\": \"failed\", \"old\": true}', pg_catalog.clock_timestamp() - interval '2 hours' FROM generate_series(1, 3)",
+      [busy],
+    );
+    await superuser.query("COMMIT");
+    // Two logouts, then 101 failed sign-ins, now.
+    for (let count = 0; count < 2; count += 1) {
+      await asPerson(app, busy, () => app.query("INSERT INTO access.account_events (identity_id, kind) VALUES ($1, 'logout')", [busy]));
+    }
+    for (let count = 0; count < 101; count += 1) {
+      await asPerson(app, busy, () => app.query("INSERT INTO access.account_events (identity_id, kind, details) VALUES ($1, 'sign-in', $2)", [busy, { outcome: "failed", count }]));
+    }
+    await purge(T0);
+    const kept = await owner.query<{ kind: string; count: number | null }>(
+      "SELECT kind, (details ->> 'count')::integer AS count FROM access.account_events WHERE identity_id = $1 ORDER BY at, id",
+      [busy],
+    );
+    expect(kept.rows.map((row) => row.count)).toEqual(Array.from({ length: 101 }, (_unused, index) => index));
   });
 
   it("is the app's to run, and a reader's not", async () => {

@@ -43,7 +43,7 @@ import { open } from "../../auth/secret-box.ts";
 import { matchingStep } from "../../auth/totp.ts";
 import { newToken, tokenHash } from "../../auth/tokens.ts";
 import { commit, rollBack, type Ending, type Queryable } from "../../db/database.ts";
-import { addAccountEvent, addAfterAnswer, asPerson, signInDetails, type AccountEvent } from "./account-events.ts";
+import { addAccountEvent, addFailedSignIn, asPerson, signInDetails, type AccountEvent } from "./account-events.ts";
 import { TOTP_CAP, TOTP_WINDOW_MS, countFailure, giveBackFailure, lockAttempts, totpLockEnd, totpWait, type AttemptCounter } from "./limits.ts";
 import { CODE_FAILED, openSession } from "./sign-in.ts";
 
@@ -107,20 +107,20 @@ async function unopened(call: NoneCall, person: string, secret: { readonly id: s
   );
 }
 
-/** A wrong code, which counted before its check: the tenth locks the step, and both go to Kontoaktivitet after the answer. */
+/** A wrong code, which counted before its check: the tenth locks the step, and both go to Kontoaktivitet after the answer, the code to the person's companies too. */
 async function wrongCode(call: NoneCall, challenge: ChallengeRow, counted: AttemptCounter, at: Date): Promise<Answer<never>> {
   const { database, channel } = call;
   const person = challenge.identity_id;
   const until = totpLockEnd(at);
-  const events: AccountEvent[] = [{ kind: "sign-in", details: signInDetails(challenge.method, "totp", call.request, "failed") }];
+  let lock: AccountEvent | undefined;
   if (counted.failures === TOTP_CAP) {
     await database.write({ channel }, async (tx) => {
       await lockAttempts(tx, person, "totp", until);
       return commit(undefined);
     });
-    events.push({ kind: "sign-in-locked", details: { step: "totp", until: until.toISOString() } });
+    lock = { kind: "sign-in-locked", details: { step: "totp", until: until.toISOString() } };
   }
-  addAfterAnswer(call.later, database, channel, person, events);
+  addFailedSignIn(call.later, database, channel, person, signInDetails(challenge.method, "totp", call.request, "failed"), lock, at);
   return refused(CODE_FAILED);
 }
 
@@ -178,7 +178,7 @@ export const verifyTotpHandler = handleNone(verifyTotp, async (call, { body }): 
     }
     const device = await deviceOf(tx, person, challenge.device_hash);
     const remembered = await tx.query<{ id: string | null }>("SELECT access.remember_device($1, $2, $3) AS id", [person, device.hash, at]);
-    const session = await openSession(tx, person, challenge.method, (remembered.rows as [{ readonly id: string | null }])[0].id, at);
+    const session = await openSession(tx, person, challenge.method, "totp", (remembered.rows as [{ readonly id: string | null }])[0].id, at);
     if (session === undefined) {
       return rollBack("not-active");
     }

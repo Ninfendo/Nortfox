@@ -98,7 +98,10 @@ describe("the behandlingshistorik", () => {
       SELECT n.nspname || '.' || c.relname AS relation, p.privilege
       FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
       CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE')) AS p (privilege)
-      WHERE c.relkind IN ('r', 'p') AND n.nspname IN ('ledger', 'audit', 'meta')
+      WHERE c.relkind IN ('r', 'p')
+        AND (n.nspname IN ('ledger', 'audit', 'meta') OR EXISTS (
+          SELECT FROM pg_catalog.pg_attribute AS a WHERE a.attrelid = c.oid AND a.attname = 'company_id' AND a.attnum > 0 AND NOT a.attisdropped
+        ))
         AND pg_catalog.has_table_privilege('nortfox_app', c.oid, p.privilege)
       ORDER BY 1, 2`);
     expect(writable.rows.length).toBeGreaterThan(0);

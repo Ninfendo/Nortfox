@@ -60,8 +60,8 @@ describe("the same problem details by REST and by MCP", () => {
     server = buildTestApp({
       database: pool.database,
       resolve: testResolver({
-        writer: principalOf(books.company),
-        outsider: principalOf(books.company, { permissions: ["company:read"] }),
+        writer: await principalOf(books.company),
+        outsider: await principalOf(books.company, { permissions: ["company:read"] }),
       }),
     });
     writer = await mcpClient(server, { token: "writer" });

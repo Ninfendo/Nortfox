@@ -18,8 +18,11 @@ interface IdentityRow {
   readonly two_step: Me["twoStep"];
 }
 
+/** The person's own part of getMe: the identity, all of it that the person may read. */
+export type MyIdentity = Pick<Me, "user" | "personalIdentityNumber" | "mobile" | "twoStep">;
+
 /** The signed-in person's identity, all of it that the person may read. */
-export async function readMe(tx: Queryable, personId: string): Promise<Me> {
+export async function readMe(tx: Queryable, personId: string): Promise<MyIdentity> {
   const found = await tx.query<IdentityRow>(
     "SELECT id, name, email, language, personal_identity_number, mobile, two_step FROM access.identities WHERE id = $1",
     [personId],
