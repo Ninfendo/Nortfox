@@ -9,9 +9,10 @@
 // the only copy of the new identity's TOTP secret, so when that answer is
 // lost, the command makes a new link while the install's only identity is
 // the one a setup link made and it never confirmed its secret: using the new
-// link replaces that identity (issue 54). On an install with any other
-// identity, or once that one confirmed its secret, no link is made: every
-// other person is invited.
+// link replaces that identity (issue 54). The identities that earlier setup
+// links replaced do not count, so this works again when a later answer is
+// lost too. On an install with any other identity, or once that one
+// confirmed its secret, no link is made: every other person is invited.
 
 import { readRefusal } from "./db/refusals.ts";
 import { commit, type Database } from "./db/database.ts";

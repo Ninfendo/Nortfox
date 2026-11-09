@@ -10,16 +10,18 @@
 // new identity comes from the new input, with a new pending secret in the
 // new 201. Once the identity has confirmed its secret, nothing changes: the
 // command makes no link, and a link made before refuses with
-// install-not-empty. The same holds while the install has another identity.
-// I1 holds: a link works once, and a newer link stops an older one. The
-// races run through the API against real PostgreSQL, in parallel sessions of
-// the app's pool. Every test ends with both secret scans, and no TOTP secret
-// comes in more than one answer.
+// install-not-empty. The same holds while the install has another identity,
+// but one that an earlier setup link replaced. I1 holds: a link works once,
+// and a newer link stops an older one. The races run through the API against
+// real PostgreSQL, in parallel sessions of the app's pool, the purge's among
+// them. Every test ends with both secret scans, and no TOTP secret comes in
+// more than one answer.
 
+import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { TEST_INSTALL_KEY, appPool, problemIn, untilAtGate, type AppPool, type ProblemBody } from "../../../test/api.ts";
-import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
+import { backendPid, failureOf, freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { addIdentity, deleteIdentity } from "../../../test/identities.ts";
 import { expectNoTokensButChallenges, type SecretsInClear } from "../../../test/secrets.ts";
 import {
@@ -53,6 +55,7 @@ import { open } from "../../auth/secret-box.ts";
 import { base32Decode } from "../../auth/totp.ts";
 import type { Database, TransactionSettings } from "../../db/database.ts";
 import { createSetupLink, setupLinkMessage } from "../../setup.ts";
+import { purgeExpired } from "./purge.ts";
 
 /** An install of its own: its database, the app's pool, the owner to read what it holds, an observer of the app's backends, and every sign-in app on it. */
 interface Install {
@@ -206,6 +209,37 @@ async function sealedOf(install: Install, identity: string): Promise<{ id: strin
 /** Whether a transaction is the person's own. */
 function asActor(person: string): (settings: TransactionSettings) => boolean {
   return (settings) => settings.actorId === person;
+}
+
+/** Waits until at least `count` backends of the app wait for a lock. `observer` logs in as the app. */
+async function untilWaitingForLocks(observer: Client, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const found = await observer.query<{ waiting: number }>(
+      "SELECT count(*)::int AS waiting FROM pg_catalog.pg_stat_activity WHERE datname = pg_catalog.current_database() AND wait_event_type = 'Lock'",
+    );
+    if ((found.rows[0]?.waiting ?? 0) >= count) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`Fewer than ${String(count)} backends ever waited for a lock.`);
+}
+
+/** Waits until a backend of the app waits for a lock that a backend other than `pid` holds. `observer` logs in as the app. */
+async function untilWaitingForAnotherThan(observer: Client, pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
+    const found = await observer.query(
+      `SELECT 1 FROM pg_catalog.pg_stat_activity AS a
+       WHERE a.datname = pg_catalog.current_database() AND a.wait_event_type = 'Lock'
+         AND pg_catalog.cardinality(pg_catalog.pg_blocking_pids(a.pid)) > 0 AND NOT ($1 = ANY (pg_catalog.pg_blocking_pids(a.pid)))`,
+      [pid],
+    );
+    if ((found.rowCount ?? 0) > 0) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`No backend ever waited for a lock that a backend other than ${String(pid)} holds.`);
 }
 
 /**
@@ -487,6 +521,66 @@ describe("the races of a new setup link", () => {
       }
       await scanned(install);
     }
+  });
+
+  it("refuses the new link's use when the old identity confirms its secret on a challenge that the use's delete did not see", async () => {
+    const install = await emptyInstall();
+    const old = await firstIdentity(install);
+    await challengeOf(await passwordStep(install.server, old.email, old.password));
+    const link = await newLink(install);
+    // The owner holds the first challenge's row, so the use's delete of the old identity's challenges waits on it.
+    const ownerPid = await backendPid(install.owner);
+    await install.owner.query("BEGIN");
+    await install.owner.query("SELECT 1 FROM access.login_challenges WHERE identity_id = $1 FOR UPDATE", [old.id]);
+    const use = complete(install.server, link.token, { password: SECOND_PASSWORD });
+    await untilSomeoneWaitsForLock(install.observer);
+    // A second challenge, which the waiting delete does not see, and the right code on it: the step waits before its commit, with the secret locked.
+    const second = await challengeOf(await passwordStep(install.server, old.email, old.password));
+    const holding = holdingWrites(install.pool.database, asActor(old.id), "commit");
+    const confirming = totpStep(appOn(install, holding.database), second, codeOf(old, install.clock.now()));
+    await untilAtGate(holding.gate, confirming);
+    // The owner lets go. The use deletes the first challenge, and then waits for the step's lock on the secret.
+    await install.owner.query("COMMIT");
+    await untilWaitingForAnotherThan(install.observer, ownerPid);
+    holding.gate.open();
+    const [confirmed, used] = [await confirming, await use];
+    // Never both: the step signed in, so the use refuses, and the old identity stays with its confirmed secret.
+    expect({ step: confirmed.status, use: used.status, active: await activeOf(install) }).toEqual({ step: 204, use: 422, active: [old.id] });
+    expect(await problemIn(used)).toEqual(INSTALL_NOT_EMPTY);
+    expect((await loginRowsOf(install, old.id)).totpSecrets).toEqual(["active"]);
+    const session = setCookiesOf(confirmed)["__Host-nortfox-session"]?.value ?? "";
+    expect((await getAs(install.server, session, "/v1/session")).status).toBe(200);
+    await scanned(install);
+  });
+
+  it("lets the purge and the new link's use both commit while the old identity has a challenge past its end", async () => {
+    const install = await emptyInstall();
+    const old = await firstIdentity(install);
+    // The person tried to sign in with the lost secret, and the challenge has passed its end since.
+    await challengeOf(await passwordStep(install.server, old.email, old.password));
+    install.clock.advance(DAY);
+    const link = await newLink(install);
+    // The owner holds the challenge's row, so the purge reaches it first and waits, and the use comes next.
+    await install.owner.query("BEGIN");
+    await install.owner.query("SELECT 1 FROM access.login_challenges WHERE identity_id = $1 FOR UPDATE", [old.id]);
+    const purge = failureOf(purgeExpired(install.pool.database, install.clock.now()));
+    await untilWaitingForLocks(install.observer, 1);
+    const use = complete(install.server, link.token, { password: SECOND_PASSWORD });
+    await untilWaitingForLocks(install.observer, 2);
+    await install.owner.query("COMMIT");
+    const [purgeFailure, used] = [await purge, await use];
+    const purged = purgeFailure instanceof Error ? purgeFailure.message : purgeFailure;
+    // Neither is ended as a deadlock (40P01): the purge takes the setup links' lock before any challenge, as the use does.
+    expect({ purge: purged ?? "committed", use: used.status, reports: install.server.reports.map(String) }).toEqual({
+      purge: "committed",
+      use: 201,
+      reports: [],
+    });
+    const person = await enrolled(used, SECOND_PASSWORD);
+    expect(await activeOf(install)).toEqual([person.id]);
+    expect(await loginRowsOf(install, old.id)).toEqual({ passwords: 0, totpSecrets: [], challenges: 0, sessions: 0, devices: 0 });
+    await signIn(install.server, person);
+    await scanned(install);
   });
 
   it("replaces once when the new link is used twice at once, held or not", async () => {

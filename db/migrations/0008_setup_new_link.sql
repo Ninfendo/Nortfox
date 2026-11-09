@@ -123,10 +123,13 @@ $create$;
 -- challenges and then its secrets, and checks the identity again only after
 -- the locks. So a TOTP step of the identity that runs at the same time
 -- either confirms the secret first, and this refuses, or waits, and then
--- finds its challenge or its secret gone. The identity stays the actor on
--- what it did, as every deleted identity does. A challenge that a password
--- step opens at the same time names a deleted identity once this commits,
--- and the TOTP step refuses it.
+-- finds its challenge or its secret gone. The lock on the secrets is needed
+-- on its own: a TOTP step can run on a challenge that a password step opened
+-- while this waited, which the delete of the challenges does not see. The
+-- purge takes the setup links' lock first too (below). The identity stays
+-- the actor on what it did, as every deleted identity does. A challenge that
+-- a password step opens at the same time names a deleted identity once this
+-- commits, and the TOTP step refuses it.
 CREATE OR REPLACE FUNCTION access.complete_setup(
   token_hash bytea, at timestamptz, person uuid, name text, email text, password_hash text, totp_secret_id uuid, totp_secret bytea
 ) RETURNS boolean
@@ -169,17 +172,23 @@ BEGIN
 END
 $complete$;
 
--- The purge, as 0007 made it, but for one thing: it deletes a setup link at
--- its end only when it was not used. A used link names the identity it made,
--- and the one it replaced, which the setup functions read. It deletes no
--- identity.
+-- The purge, as 0007 made it, but for two things. It deletes a setup link at
+-- its end only when it was not used: a used link names the identity it made,
+-- and the one it replaced, which the setup functions read. And it deletes
+-- the setup links first, so it takes their lock before any login challenge,
+-- as complete_setup does, which deletes the challenges of the identity it
+-- replaces. In the other order, a purge that held an expired challenge of
+-- that identity, and a use that held the setup links' lock, would each wait
+-- for the other (40P01). Now a purge waits for a running use at its first
+-- statement, holding nothing the use needs, and a use waits for a running
+-- purge. It deletes no identity.
 CREATE OR REPLACE FUNCTION access.purge_expired(at timestamptz) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
 AS $purge$
 BEGIN
-  DELETE FROM access.login_challenges AS c WHERE c.expires_at <= purge_expired.at;
   DELETE FROM access.setup_tokens AS t WHERE t.expires_at <= purge_expired.at AND t.used_at IS NULL;
+  DELETE FROM access.login_challenges AS c WHERE c.expires_at <= purge_expired.at;
   DELETE FROM access.sessions AS s
   WHERE s.ended_at <= purge_expired.at - interval '30 days'
     OR (s.ended_at IS NULL AND s.started_at <= purge_expired.at - interval '30 days 12 hours');
