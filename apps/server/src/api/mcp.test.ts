@@ -106,8 +106,8 @@ const COUNTRY_DETAIL = (description: string) => ({ ...DETAIL(description), patte
 const DETAIL_INPUT = (description: string, maxLength: number) => ({ description: `${description} null takes it away.`, anyOf: [{ type: "string", minLength: 1, maxLength }, { type: "null" }] });
 const COUNTRY_INPUT = (description: string) => ({ description: `${description} null takes it away.`, anyOf: [{ type: "string", pattern: "^[A-Z]{2}$" }, { type: "null" }] });
 
-/** What an e-mail address must look like, as z.email() with the pattern of one mailbox writes it (packages/contract/src/address.ts). */
-const EMAIL = { type: "string", maxLength: 254, format: "email", pattern: MAILBOX.source };
+/** What an e-mail address must look like: RFC 6531's, idn-email, with the pattern of one mailbox (packages/contract/src/address.ts). */
+const EMAIL = { type: "string", maxLength: 254, format: "idn-email", pattern: MAILBOX.source };
 
 const COMPANY_SCHEMA = {
   type: "object",
@@ -241,9 +241,23 @@ const MEMBER = {
     "A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.",
 };
 
+/** A company as the company lists give it: what names it, and no detail. */
+const COMPANY_SUMMARY = {
+  type: "object",
+  description: "A company as the company lists give it: its id, name, organisation number and tenant id. getCompany gives its addresses and contact details.",
+  properties: {
+    id: COMPANY_SCHEMA.properties.id,
+    name: COMPANY_SCHEMA.properties.name,
+    organizationNumber: COMPANY_SCHEMA.properties.organizationNumber,
+    databaseNumber: COMPANY_SCHEMA.properties.databaseNumber,
+  },
+  required: ["id", "name", "organizationNumber", "databaseNumber"],
+  additionalProperties: false,
+};
+
 const COMPANY_CHOICE = {
   type: "object",
-  properties: { company: COMPANY_SCHEMA, adminLevel: SYS_ADMIN },
+  properties: { company: COMPANY_SUMMARY, adminLevel: SYS_ADMIN },
   required: ["company"],
   additionalProperties: false,
   description: "A company where the person is an active member, with the person's system administrator's level there when they have one.",
@@ -384,6 +398,13 @@ const PERMISSION_KEY = {
   type: "string",
   enum: CATALOGUE_PERMISSIONS.map((permission) => permission.key),
   description: "A permission of the catalogue, by its key, such as vouchers.view (Verifikationer) or vouchers.book (Bokför).",
+};
+
+const RIGHT_KEY = {
+  type: "string",
+  enum: CATALOGUE_PERMISSIONS.filter((permission) => permission.group === "reports" || permission.group === "register").map((permission) => permission.key),
+  description:
+    "A Rapporter or Register/Övrigt right of the catalogue, by its key, such as reports.vat (Momsrapport) or register.sie-export (Sie-export). A right of a program's own group, such as vouchers.view, is not one.",
 };
 
 const GROUP_KEY = {
@@ -638,7 +659,12 @@ const USER_TOOLS = [
       type: "object",
       properties: {
         memberId: MEMBER_ID,
-        permissions: GRANT_PERMISSIONS("Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys."),
+        permissions: {
+          maxItems: 32,
+          type: "array",
+          items: RIGHT_KEY,
+          description: "Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys. A right of a program's own is refused.",
+        },
         idempotencyKey: IDEMPOTENCY_KEY,
       },
       required: ["memberId", "permissions", "idempotencyKey"],
@@ -967,7 +993,7 @@ const TOOLS = [
     name: "getCompany",
     title: "Read the company",
     description:
-      "Gives the company you work in: its id, name, organisation number and database number. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
+      "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
     inputSchema: NO_INPUT,
     outputSchema: COMPANY_SCHEMA,
     annotations: { readOnlyHint: true },

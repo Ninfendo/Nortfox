@@ -146,6 +146,8 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
     "access.purge_expired",
     "access.remember_device",
     "access.session_by_token",
+    "access.take_administrators_turn",
+    "access.take_invitations_turn",
     "access.touch_session",
     "access.use_challenge",
     "access.use_invitation_link",

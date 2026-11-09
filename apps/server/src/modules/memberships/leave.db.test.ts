@@ -26,6 +26,7 @@ import {
   signInApp,
   testClock,
   untilSomeoneWaitsForLock,
+  writeAs,
   type SignInApp,
 } from "../../../test/sign-in.ts";
 import { apiCompany, calls, invite, joinWith, newMember, sessionIn, type ApiCompany } from "../../../test/users.ts";
@@ -64,7 +65,7 @@ describe("leaving a company", () => {
 
   it("the person no longer reaches the company", async () => {
     const member = await newMember(server, { app, owner }, company);
-    expect((await calls.updateUser(server, company.session, member.id, { workPhone: "070-222 33 44" })).status).toBe(200);
+    expect((await calls.updateUser(server, company.session, member.id, { workPhone: "070-174 06 18" })).status).toBe(200);
     const session = await sessionIn(server, member.person, company.id);
     expect((await calls.leaveCompany(server, session, company.id)).status).toBe(204);
     expect(await rowOf(member.id)).toEqual({ status: "left", user_id: member.person.id, live_user_id: null });
@@ -102,15 +103,38 @@ describe("leaving a company", () => {
     expect(me.membership.id).toBe(renewed);
   });
 
-  it("a repeat with its key finds the company no longer available, as any call naming it does", async () => {
+  it("a repeat with its key gives its first answer, from a session in another company and from a fresh one", async () => {
     const member = await newMember(server, { app, owner }, company);
-    const session = await sessionIn(server, member.person, company.id);
+    // The person works in a company of their own, and leaves the other one from there.
+    server.clock.advance(MINUTE);
+    const { session } = await signIn(server, member.person);
+    const own = await jsonOf<{ id: string }>(await writeAs(server, session, "POST", "/v1/companies", { name: "Testbolaget Eget AB", organizationNumber: "556000-0167" }), 201);
+    expect((await chooseCompany(server, session, own.id)).status).toBe(200);
     expect((await calls.leaveCompany(server, session, company.id, "leave-once")).status).toBe(204);
-    // The session ended with the leave. The runner asks the one membership function before it reads the key.
+    const again = await calls.leaveCompany(server, session, company.id, "leave-once");
+    expect(again.status).toBe(204);
+    expect(await again.text()).toBe("");
     server.clock.advance(MINUTE);
     const fresh = await signIn(server, member.person);
-    expect(await jsonOf<ProblemBody>(await calls.leaveCompany(server, fresh.session, company.id, "leave-once"), 422)).toMatchObject({ code: "company-not-available" });
+    expect((await calls.leaveCompany(server, fresh.session, company.id, "leave-once")).status).toBe(204);
     expect((await rowOf(member.id))?.status).toBe("left");
+    // The key is kept with the person, outside every company table, and a key the person never used there finds the company no longer available.
+    expect((await superuser.query("SELECT 1 FROM ledger.idempotency_keys WHERE idempotency_key = 'leave-once'")).rows).toEqual([]);
+    expect(await jsonOf<ProblemBody>(await calls.leaveCompany(server, fresh.session, company.id, "leave-never"), 422)).toMatchObject({
+      code: "company-not-available",
+      pointer: "/companyId",
+    });
+  });
+
+  it("a key that another request used in the company, which the person no longer reaches, gets idempotency-key-reused", async () => {
+    const member = await newMember(server, { app, owner }, company);
+    const session = await sessionIn(server, member.person, company.id);
+    expect((await writeAs(server, session, "PATCH", `/v1/me/companies/${company.id}`, { workPhone: "070-174 06 15" }, { key: "used-elsewhere" })).status).toBe(200);
+    expect((await calls.removeUser(server, company.session, member.id)).status).toBe(204);
+    server.clock.advance(MINUTE);
+    const fresh = await signIn(server, member.person);
+    expect(await jsonOf<ProblemBody>(await calls.leaveCompany(server, fresh.session, company.id, "used-elsewhere"), 422)).toMatchObject({ code: "idempotency-key-reused" });
+    expect((await rowOf(member.id))?.status).toBe("removed");
   });
 
   it("a leave that waits for the membership's removal finds the company no longer available", async () => {

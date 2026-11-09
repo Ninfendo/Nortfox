@@ -778,7 +778,11 @@ CREATE TRIGGER invitations_stop_links AFTER UPDATE OF superseded_at ON access.in
 -- company does not have, or that was accepted or stopped. The link takes the
 -- invitation's name, address and end. The server gives the company's and
 -- the sender's names, which it reads in the same transaction: no function
--- that the app may run reads the companies.
+-- that the app may run reads the companies. It locks the invitation's row
+-- when it reads it as open, FOR NO KEY UPDATE, until the transaction ends.
+-- So a stop of the invitation, by a newer one or by the member's removal,
+-- waits for the link's commit, and then stops the link too; and a stop that
+-- came first is seen once it commits, and no link is made.
 CREATE FUNCTION access.issue_invitation_link(token_hash bytea, invitation uuid, company_name text, inviter_name text, at timestamptz) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -788,7 +792,8 @@ DECLARE
 BEGIN
   SELECT i.name, i.email, i.expires_at INTO open
   FROM access.invitations AS i
-  WHERE i.id = issue_invitation_link.invitation AND i.company_id = ledger.current_company_id() AND i.accepted_at IS NULL AND i.superseded_at IS NULL;
+  WHERE i.id = issue_invitation_link.invitation AND i.company_id = ledger.current_company_id() AND i.accepted_at IS NULL AND i.superseded_at IS NULL
+  FOR NO KEY UPDATE;
   IF NOT FOUND THEN
     RETURN false;
   END IF;
@@ -870,6 +875,68 @@ GRANT EXECUTE ON FUNCTION
   access.use_invitation_link(bytea, timestamptz),
   access.accept_invitation_as_new(bytea, timestamptz, text, text, uuid, bytea)
 TO nortfox_app;
+
+-- The turns of the user administration ----------------------------------------------
+--
+-- Two turns of the transaction's company, each an advisory lock on the hash
+-- of the company's id, in a class of keys of its own, held until the
+-- transaction ends, as the ledger's turn is (ledger.take_turn, 0002). Each
+-- orders the changes whose check the server must see settled before it
+-- sends a mail, which it does before its commit (plan 2.15), without the
+-- company's row: every change of a membership, a new fiscal year and
+-- updateCompany lock that row, and would wait for the mail.
+--
+-- - The invitations' turn, alone: inviteUser takes it before it reads the
+--   addresses of the company. Of two invitations to one address at once, the
+--   second waits for the first's commit, and then reads its invitation.
+-- - The administrators' turn: a change that takes an active system
+--   administrator away takes it before the server's check of the last one.
+--   A disconnect takes it alone, since it sends its mail before its commit;
+--   a removal, a deactivation, a demotion and a leave take it with each
+--   other. So a disconnect's check reads after each such change has
+--   committed, none of them commits while the disconnect sends its mail, and
+--   the loser of a race sends none. The database's check at the commit stays
+--   the authority (keep_system_administrator, 0007).
+--
+-- No role but the owner may take an advisory lock (db/database.sql): the app
+-- takes these through the functions alone, in the transaction's company.
+-- Holding one only delays that company's invitations or changes of its
+-- administrators, as holding its row would, which the app may too. Two
+-- companies whose ids hash alike share a turn, which costs only a wait. A
+-- transaction that works in no company takes none and is refused.
+CREATE FUNCTION access.take_invitations_turn() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $turn$
+DECLARE
+  company uuid := ledger.current_company_id();
+BEGIN
+  IF company IS NULL THEN
+    RAISE EXCEPTION 'The transaction works in no company, so it has no turn of its invitations to take.';
+  END IF;
+  PERFORM pg_advisory_xact_lock(4646211, hashtext(company::text));
+END
+$turn$;
+
+CREATE FUNCTION access.take_administrators_turn(alone boolean) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $turn$
+DECLARE
+  company uuid := ledger.current_company_id();
+BEGIN
+  IF company IS NULL THEN
+    RAISE EXCEPTION 'The transaction works in no company, so it has no turn of its administrators to take.';
+  END IF;
+  IF take_administrators_turn.alone THEN
+    PERFORM pg_advisory_xact_lock(4646212, hashtext(company::text));
+  ELSE
+    PERFORM pg_advisory_xact_lock_shared(4646212, hashtext(company::text));
+  END IF;
+END
+$turn$;
+
+GRANT EXECUTE ON FUNCTION access.take_invitations_turn(), access.take_administrators_turn(boolean) TO nortfox_app;
 
 -- The purge, as 0008 made it, but for one thing: it deletes the invitation
 -- links at their end, used and stopped ones too, after the setup links.

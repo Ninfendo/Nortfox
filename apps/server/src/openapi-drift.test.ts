@@ -4,7 +4,7 @@
 // this test, and the build job's `pnpm openapi` with `git diff --exit-code`.
 // The client's own test does the same for src/generated.ts.
 
-import { IDEMPOTENCY_KEY_ARGUMENT, REGISTRY, getHealth, toolInputSchema } from "@nortfox/contract";
+import { IDEMPOTENCY_KEY_ARGUMENT, MAILBOX, REGISTRY, getHealth, toolInputSchema } from "@nortfox/contract";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { testListAccounts } from "../test/api.ts";
@@ -202,11 +202,24 @@ describe("the inputs in the API description and in the tools' schemas", () => {
     return { properties: (object?.["properties"] ?? {}) as Record<string, Schema>, items: array?.["items"] as Schema | undefined };
   }
 
-  /** Where the tool's schema and the description differ in null or in the values they take, by the field's pointer, down every field and item. */
+  /**
+   * The format and the pattern of each text branch of a schema. A uuid's
+   * pattern is zod's own form of its format, which only the tools' schemas
+   * write out, so a uuid is compared by its format alone.
+   */
+  function textForms(schema: Schema): string[] {
+    return branches(schema)
+      .filter((branch) => branch["type"] === "string" || (Array.isArray(branch["type"]) && branch["type"].includes("string")))
+      .map((branch) => JSON.stringify({ format: branch["format"], pattern: branch["format"] === "uuid" ? undefined : branch["pattern"] }))
+      .sort();
+  }
+
+  /** Where the tool's schema and the description differ in null, in the values they take, or in a text's format and pattern, by the field's pointer, down every field and item. */
   function differences(tool: Schema, described: Schema, pointer: string): string[] {
     const own = [
       ...(takesNull(tool) === takesNull(described) ? [] : [`${pointer}: null ${takesNull(tool) ? "taken by the tool, refused by" : "refused by the tool, taken by"} the description`]),
       ...(JSON.stringify(valuesOf(tool)) === JSON.stringify(valuesOf(described)) ? [] : [`${pointer}: the values ${JSON.stringify(valuesOf(tool))} and ${JSON.stringify(valuesOf(described))}`]),
+      ...(JSON.stringify(textForms(tool)) === JSON.stringify(textForms(described)) ? [] : [`${pointer}: the text forms ${textForms(tool).join(", ")} and ${textForms(described).join(", ")}`]),
     ];
     const toolParts = partsOf(tool);
     const describedParts = partsOf(described);
@@ -240,6 +253,23 @@ describe("the inputs in the API description and in the tools' schemas", () => {
     expect(problems).toEqual([]);
   });
 
+  it("describes every e-mail address that the API takes as RFC 6531's, idn-email, with its pattern, in both", () => {
+    const fields = [
+      ["completeSetup", "email"],
+      ["updateMyMembership", "workEmail"],
+      ["updateCompany", "email"],
+      ["inviteUser", "email"],
+      ["updateUser", "workEmail"],
+    ] as const;
+    for (const [operationId, field] of fields) {
+      const operation = REGISTRY.find((each) => each.operationId === operationId);
+      const tool = partsOf(operation === undefined ? {} : toolInputSchema(operation)).properties[field] ?? {};
+      for (const schema of [tool, describedInput(operationId)[field] ?? {}]) {
+        expect(textForms(schema), `${operationId}.${field}`).toEqual([JSON.stringify({ format: "idn-email", pattern: MAILBOX.source })]);
+      }
+    }
+  });
+
   it("sees a nullable field of a few values whose null the description leaves out", () => {
     const tool = { anyOf: [{ type: "string", const: "admin" }, { type: "null" }] };
     expect(differences(tool, { type: ["string", "null"], enum: ["admin"] }, "/adminLevel")).toEqual([
@@ -247,6 +277,9 @@ describe("the inputs in the API description and in the tools' schemas", () => {
       '/adminLevel: the values ["admin",null] and ["admin"]',
     ]);
     expect(differences(tool, { type: ["string", "null"], enum: ["admin", null] }, "/adminLevel")).toEqual([]);
+    expect(differences({ type: "string", format: "idn-email", pattern: "^x$" }, { type: "string", format: "email" }, "/email")).toEqual([
+      '/email: the text forms {"format":"idn-email","pattern":"^x$"} and {"format":"email"}',
+    ]);
     expect(differences({ type: "object", properties: { level: tool } }, { type: "object", properties: { level: { type: "string", enum: ["admin"] } } }, "")).toEqual([
       "/level: null taken by the tool, refused by the description",
       '/level: the values ["admin",null] and ["admin"]',

@@ -8,9 +8,10 @@
 // - inviteUser, "Lägg till användare": an invited member with the name, and
 //   an invitation to the address. An address that a member of the company
 //   has, or that an open invitation of it goes to, is refused (already-member).
-//   It locks the company's row first, FOR NO KEY UPDATE, so two invitations
+//   It takes the company's turn of its invitations first, so two invitations
 //   of one company take turns, and the second of two to one address at once
-//   finds the first's and is refused too.
+//   finds the first's and is refused too. The turn is not the company's row,
+//   so no other change of the company waits for the mail.
 // - resendInvitation, "Skicka en ny inbjudan": a new invitation of an
 //   invited member, to their latest one's name and address. The database
 //   stops the old one and its link.
@@ -18,7 +19,9 @@
 //   company, and a new invitation goes to the person's name and the member's
 //   work e-mail, which a new or an existing identity may accept. The member
 //   keeps the admin level and the programs, and the company its last active
-//   system administrator.
+//   system administrator: the check takes the administrators' turn alone, so
+//   a change that takes another one away commits first or waits for the
+//   disconnect, and the one of the two that loses sends no mail.
 //
 // With no mail set up for the install, each is refused first, with 422
 // mail-not-configured, before it reads or changes anything: the setting is
@@ -31,7 +34,7 @@ import { handleData, ok, refused, type RuleRefusal } from "../../api/operation.t
 import type { Queryable } from "../../db/database.ts";
 import { MAIL_NOT_CONFIGURED, type InstallMail } from "../../mail/mailer.ts";
 import { invitationLink, invitationMail } from "../../mail/texts.ts";
-import { addInvitation, addInvitedMember, addressInCompany, latestInvitation, type InvitationTo } from "../memberships/invitations.ts";
+import { addInvitation, addInvitedMember, addressInCompany, latestInvitation, takeInvitationsTurn, type InvitationTo } from "../memberships/invitations.ts";
 import { disconnectMember, hasOtherAdministrator, heldMemberNow, holdMember, lastAdministrator, takesAdministrator } from "../memberships/members.ts";
 import { userNotFound } from "./users.ts";
 
@@ -68,7 +71,7 @@ export const inviteUserHandler = handleData(inviteUser, async ({ context, tx, no
   }
   const email = body.email.normalize("NFC");
   // The company's invitations take turns: a second one to the same address waits, and then finds the first.
-  await tx.query("SELECT 1 FROM ledger.companies FOR NO KEY UPDATE");
+  await takeInvitationsTurn(tx);
   if (await addressInCompany(tx, email)) {
     return refused(ALREADY_MEMBER);
   }
@@ -108,7 +111,8 @@ export const disconnectUserIdentityHandler = handleData(disconnectUserIdentity, 
   if (member.status === "invited") {
     return refused(NO_IDENTITY);
   }
-  if (takesAdministrator(member, { status: "invited", adminLevel: member.adminLevel }) && !(await hasOtherAdministrator(tx, member))) {
+  // The disconnect sends its mail before its commit, so it takes the administrators' turn alone: its check reads every competing change settled.
+  if (takesAdministrator(member, { status: "invited", adminLevel: member.adminLevel }) && !(await hasOtherAdministrator(tx, member, "alone"))) {
     return lastAdministrator(member);
   }
   const to = await disconnectMember(tx, member);

@@ -6,6 +6,9 @@
 // which sends through nodemailer's JSON transport here, so no test reaches a
 // mail server.
 
+import { emailAddress } from "@nortfox/contract";
+import fc from "fast-check";
+import { domainToUnicode } from "node:url";
 import nodemailer from "nodemailer";
 import { describe, expect, it } from "vitest";
 import { SmtpMailer, smtpMailer, smtpSettingsOf, smtpTransportOptions } from "./smtp.ts";
@@ -188,6 +191,43 @@ describe("the SMTP mailer", () => {
       { to: [{ address: '"a,b"@evil.example', name: "" }], envelope: { from: "nortfox@mail.example", to: ['"a,b"@evil.example'] } },
       { to: [{ address: '"victim x"@evil.example', name: "" }], envelope: { from: "nortfox@mail.example", to: ['"victim x"@evil.example'] } },
     ]);
+  });
+
+  it("sends each address that the API takes to its domain as it is written, in the envelope and in To", async () => {
+    const sent: { to: string; envelope: string }[] = [];
+    const json = nodemailer.createTransport({ jsonTransport: true });
+    const mailer = new SmtpMailer(
+      {
+        sendMail: async (mail) => {
+          const info = await json.sendMail(mail);
+          const [header] = (JSON.parse(info.message) as { to: { address: string }[] }).to;
+          sent.push({ to: header?.address ?? "", envelope: info.envelope.to[0] ?? "" });
+          return info;
+        },
+      },
+      "nortfox@mail.example",
+    );
+    const labels = ["example", "Example", "exämple", "EXÄMPLE", "παράδειγμα", "bücher", "straße", "com", "test", "localhost", "ex\u00ADample", "\uFF45xample", "xn--bcher-kva", "\uFB01le", "42"];
+    const address = fc.array(fc.constantFrom(...labels), { minLength: 1, maxLength: 3 }).map((parts) => `karin.lund@${parts.join(".")}`);
+    const domainOf = (email: string): string => email.slice(email.lastIndexOf("@") + 1);
+    let taken = 0;
+    await fc.assert(
+      fc.asyncProperty(address, async (email) => {
+        if (!emailAddress().safeParse(email).success) {
+          return;
+        }
+        taken += 1;
+        sent.length = 0;
+        await mailer.send({ to: email, subject: "s", text: "t" });
+        const written = domainOf(email).toLowerCase().normalize("NFC");
+        for (const each of sent.flatMap((mail) => [mail.to, mail.envelope])) {
+          expect(domainToUnicode(domainOf(each))).toBe(written);
+        }
+        expect(sent).toHaveLength(1);
+      }),
+      { numRuns: 300 },
+    );
+    expect(taken).toBeGreaterThan(50);
   });
 
   it("throws when the mail server refuses", async () => {

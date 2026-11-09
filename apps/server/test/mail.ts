@@ -3,10 +3,12 @@
 // The fake mail sink of the tests: a mailer that keeps every mail in memory,
 // so a test reads the subject, the text and the link of each one, and never
 // reaches a mail server. A test can make its next send fail, as a mail
-// server that refuses does. The addresses are made up.
+// server that refuses does, or wait at a gate, as a slow one does. The
+// addresses are made up.
 
 import type { InstallMail, MailMessage, Mailer } from "../src/mail/mailer.ts";
 import { INVITATION_PAGE } from "../src/mail/texts.ts";
+import { gate, type Gate } from "./api.ts";
 
 /** The origin the links of the test mails start with: the sign-in tests' own. */
 export const MAIL_ORIGIN = "https://nortfox.example";
@@ -18,20 +20,32 @@ export class FakeMailSink implements Mailer {
   /** Every mail sent, in order. */
   readonly messages: MailMessage[] = [];
   #failNext: string | undefined;
+  #holdNext: Gate | undefined;
 
-  send(message: MailMessage): Promise<void> {
+  async send(message: MailMessage): Promise<void> {
     const failure = this.#failNext;
     if (failure !== undefined) {
       this.#failNext = undefined;
-      return Promise.reject(new Error(failure));
+      throw new Error(failure);
+    }
+    const held = this.#holdNext;
+    if (held !== undefined) {
+      this.#holdNext = undefined;
+      await held.pass();
     }
     this.messages.push(message);
-    return Promise.resolve();
   }
 
   /** Makes the next send fail, with `message`, as a mail server's refusal says it. */
   failNext(message = "The test's mail server refused the mail."): void {
     this.#failNext = message;
+  }
+
+  /** Makes the next send wait at a gate, as a slow mail server does, until the test opens it; then it is sent. */
+  holdNext(): Gate {
+    const held = gate();
+    this.#holdNext = held;
+    return held;
   }
 
   /** The mails sent to `to`, in order. */

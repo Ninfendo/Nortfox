@@ -86,6 +86,7 @@ export { Invitation, InvitationAcceptance, acceptInvitation, getInvitation } fro
 export {
   Company,
   CompanyChoice,
+  CompanySummary,
   IDLE_TIMEOUTS,
   IdleTimeout,
   MEMBERSHIP_STATUSES,
@@ -119,6 +120,7 @@ export {
 } from "./operations/permissions.ts";
 export {
   Member,
+  RightKey,
   UserRights,
   assignProgram,
   disconnectUserIdentity,

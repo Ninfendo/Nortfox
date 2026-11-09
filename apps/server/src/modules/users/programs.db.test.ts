@@ -22,7 +22,7 @@
 // The operations reach the company's invited, active and inactive members.
 // The server's clock starts at the database's, so a Revisor grant holds.
 
-import { fullPermissions, PROGRAMS, type Program, type ProgramGrant } from "@nortfox/contract";
+import { CATALOGUE_PERMISSIONS, fullPermissions, PROGRAMS, type Program, type ProgramGrant } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool, type ProblemBody } from "../../../test/api.ts";
@@ -326,7 +326,9 @@ describe("the program grants", () => {
       data: { permission: "register.sie-import" },
     });
     const own = await jsonOf<ProblemBody>(await calls.updateUserRights(server, company.session, id, ["reports.vat", "vouchers.view"]), 400);
-    expect(own.errors).toEqual([{ code: "invalid-value", detail: "The field /permissions/1 is not a Rapporter or Register/Övrigt right.", pointer: "/permissions/1" }]);
+    // The schema takes the Rapporter and Register/Övrigt rights alone, and names them.
+    const rights = CATALOGUE_PERMISSIONS.filter((permission) => permission.group === "reports" || permission.group === "register").map((permission) => permission.key);
+    expect(own.errors).toEqual([expect.objectContaining({ code: "invalid-value", pointer: "/permissions/1", data: expect.objectContaining({ allowed: rights }) as unknown })]);
     expect(await grantsOf(id)).toEqual(before);
     const nobody = await jsonOf<ProblemBody>(await calls.updateUserRights(server, company.session, (await membershipIn(app, owner, company, "left")).id, []), 422);
     expect(nobody).toMatchObject({ code: "user-not-found", pointer: "/memberId" });

@@ -16,8 +16,9 @@
 // turns, and a change that waited for a removal finds no member. The
 // database keeps a company's last active system administrator at the commit
 // of every change, and refuses the owner's level on an update; the server
-// refuses the last one's removal, deactivation and demotion first, with the
-// same answer.
+// refuses the last one's removal, deactivation, demotion, disconnect and
+// leave first, with the same answer, after it took the company's turn of its
+// administrators (hasOtherAdministrator).
 
 import { rolesOf, type AdminLevel, type JsonValue, type Member, type Program } from "@nortfox/contract";
 import { LEDGER_REFUSALS } from "../../api/ledger-refusals.ts";
@@ -170,11 +171,17 @@ export async function holdMember(tx: Queryable, id: string): Promise<HeldMember 
 
 /**
  * Whether the company has an active system administrator besides `member`.
- * The server asks it before it removes, deactivates or demotes one; the
- * database checks the same at the commit, after it locked the company's
- * row, which settles a race.
+ * The server asks it before it removes, deactivates, demotes or disconnects
+ * one, and before one leaves; the database checks the same at the commit,
+ * after it locked the company's row, which settles a race. It first takes the
+ * company's turn of its administrators (access.take_administrators_turn):
+ * alone for a disconnect, which sends its mail before its commit, and with
+ * the others for every other change. So a disconnect's check reads every
+ * competing change settled, and none of them commits while it sends its
+ * mail; two changes that send no mail still meet at the database's check.
  */
-export async function hasOtherAdministrator(tx: Queryable, member: HeldMember): Promise<boolean> {
+export async function hasOtherAdministrator(tx: Queryable, member: HeldMember, turn: "alone" | "shared" = "shared"): Promise<boolean> {
+  await tx.query("SELECT access.take_administrators_turn($1)", [turn === "alone"]);
   const found = await tx.query("SELECT 1 FROM access.memberships WHERE id <> $1 AND status = 'active' AND admin_level IS NOT NULL LIMIT 1", [member.id]);
   return found.rows.length > 0;
 }

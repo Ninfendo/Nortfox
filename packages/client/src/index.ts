@@ -6,6 +6,7 @@ import { createSend, type ClientOptions } from "./runtime.ts";
 export type {
   Company,
   CompanyChoice,
+  CompanySummary,
   FieldProblem,
   Health,
   Invitation,
@@ -30,7 +31,7 @@ export type {
   UserRights,
   Operations
 } from "./generated.ts";
-export type { PermissionGroupKey, PermissionKey, Program, Role, SysAdmin } from "./generated.ts";
+export type { PermissionGroupKey, PermissionKey, Program, RightKey, Role, SysAdmin } from "./generated.ts";
 export { ApiError } from "./runtime.ts";
 export type { CallOptions, ClientOptions, FetchFunction, WriteOptions } from "./runtime.ts";
 

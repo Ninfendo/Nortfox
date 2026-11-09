@@ -55,11 +55,15 @@
 //    for a person's operation, with the actor, its kind and the channel. A
 //    company that the input names comes first: where the person has no
 //    active membership, also one that does not exist, the call gets 422
-//    company-not-available and rolls back. A read runs at REPEATABLE READ
+//    company-not-available and rolls back; but a write whose answer is
+//    empty, such as leaveCompany, which its own success makes the person no
+//    member of, gives the answer of its key there first, from the person's
+//    keys. A read runs at REPEATABLE READ
 //    READ ONLY, a write at READ COMMITTED. A write with a key looks the key
 //    up first: in the company's keys; in the person's, for a write in no
 //    company or in a new one; or in the person's in the company, for a write
-//    whose answer holds a person's contact data (keysFor). The same
+//    whose answer holds a person's contact data, and for one that names its
+//    company and answers with no body (keysFor). The same
 //    request's key replays its first answer, another request's gives 422,
 //    and both roll back. Then the handler runs. A read handler adds no
 //    company condition of its own: row level security keeps it to the
@@ -729,9 +733,11 @@ type Run = () => Promise<Answer<unknown>>;
  * credential's, the one the input names or a new one, and then runs `work`
  * with the transaction and the handler's run in it. When the company cannot
  * be set, as for a company the input names where the person is no active
- * member, the transaction rolls back and gives that refusal instead.
+ * member, the transaction rolls back and gives that refusal instead, or what
+ * `unavailable` gives in that transaction, before any company is set: a
+ * keyed write's stored answer (runKeyedWrite).
  */
-type Frame = <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>) => Promise<T | Outcome>;
+type Frame = <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>, unavailable?: (tx: Queryable) => Promise<Outcome | undefined>) => Promise<T | Outcome>;
 
 /** The frame of transactions whose settings name their company, or none. */
 function settingsFrame(settings: TransactionSettings, run: (tx: Queryable) => Promise<Answer<unknown>>, deps: RunnerDeps): Frame {
@@ -750,6 +756,18 @@ interface KeyedWrite {
 }
 
 /**
+ * Whether a keyed write gives its stored answer also where the person no
+ * longer reaches the company that its input names: a write whose answer is
+ * empty, such as leaveCompany's, which its own success makes the person no
+ * member of. Its answer tells nothing of the company, and its key is kept
+ * with the person (keysFor). A write whose answer holds the company's data
+ * is refused there, as any call that names the company is.
+ */
+function replaysWhereUnavailable(operation: Operation): boolean {
+  return isCompanyInput(operation["x-nortfox"].company) && [202, 204].includes(successStatus(operation));
+}
+
+/**
  * A write with an idempotency key (idempotency.ts): the key in flight, then
  * one write transaction that sets the call's company, looks the key up, runs
  * the handler, checks the output and stores the key with the answer before
@@ -764,20 +782,28 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
   try {
     const params = paramsSchema(operation) === undefined ? undefined : input.params;
     const hash = requestHash(deps.fingerprintKey, operation.operationId, input.query, input.body, params);
+    const storedAnswer = async (tx: Queryable): Promise<Outcome | undefined> => {
+      const stored = await store.find(tx, actorId, key);
+      return stored === undefined ? undefined : replay(stored, hash);
+    };
     const first = await answered(operation, () =>
-      frame("write", async (tx, run): Promise<Ending<Outcome | typeof STORED_FIRST_ELSEWHERE>> => {
-        const stored = await store.find(tx, actorId, key);
-        if (stored !== undefined) {
-          return rollBack(replay(stored, hash));
-        }
-        const answer = await run();
-        if (!answer.ok) {
-          return rollBack(refusedBy(operation, answer.refusal));
-        }
-        const outcome = success(operation, answer) as Extract<Outcome, { readonly ok: true }>;
-        const kept = await store.store(tx, { key, operationId: operation.operationId, hash, status: outcome.status, body: outcome.output });
-        return kept ? commit(outcome) : rollBack(STORED_FIRST_ELSEWHERE);
-      }),
+      frame(
+        "write",
+        async (tx, run): Promise<Ending<Outcome | typeof STORED_FIRST_ELSEWHERE>> => {
+          const stored = await storedAnswer(tx);
+          if (stored !== undefined) {
+            return rollBack(stored);
+          }
+          const answer = await run();
+          if (!answer.ok) {
+            return rollBack(refusedBy(operation, answer.refusal));
+          }
+          const outcome = success(operation, answer) as Extract<Outcome, { readonly ok: true }>;
+          const kept = await store.store(tx, { key, operationId: operation.operationId, hash, status: outcome.status, body: outcome.output });
+          return kept ? commit(outcome) : rollBack(STORED_FIRST_ELSEWHERE);
+        },
+        replaysWhereUnavailable(operation) ? storedAnswer : undefined,
+      ),
     );
     if (first !== STORED_FIRST_ELSEWHERE) {
       return first;
@@ -798,11 +824,14 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
  * Where a write in a company keeps its key: in the company's keys, unless
  * its answer holds a person's contact data (personalOutput), whose key is
  * kept outside every company table, so the answer never reaches the
- * company's history. A write in no company, or in a company it makes, keeps
- * its key per person (personKeys).
+ * company's history; or unless it gives its answer again where the person
+ * no longer reaches the company (replaysWhereUnavailable), whose key the
+ * person reads without entering the company. Those two keep it with the
+ * person, in the company. A write in no company, or in a company it makes,
+ * keeps its key per person (personKeys).
  */
 function keysFor(operation: Operation, companyId: string): KeyStore {
-  return operation["x-nortfox"].personalOutput.length > 0 ? personCompanyKeys(companyId) : companyKeys(companyId);
+  return operation["x-nortfox"].personalOutput.length > 0 || replaysWhereUnavailable(operation) ? personCompanyKeys(companyId) : companyKeys(companyId);
 }
 
 /** Runs a call in its frame: a keyed write, or one transaction, a write for an operation that writes and a read for any other. */
@@ -889,14 +918,18 @@ export function companyNotAvailable(operation: Operation): Answer<never> {
  * transaction, in which the one membership function gives the person's
  * active membership there, and the transaction enters its company. A company
  * where the person has none, also one that does not exist, gives the same
- * refusal, before the key is looked up and before the handler runs.
+ * refusal, before the company's key is looked up and before the handler
+ * runs; but a write that replays there gives the answer that the person's
+ * key holds (replaysWhereUnavailable), read before any company is set.
  */
 function inputFrame(settings: PersonSettings, field: string, companyId: unknown, run: (tx: Queryable, membership: ResolvedMembership) => Promise<Answer<unknown>>, deps: RunnerDeps): Frame {
-  return <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>) =>
+  return <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>, unavailable?: (tx: Queryable) => Promise<Outcome | undefined>) =>
     deps.database.person(mode, settings, async (tx): Promise<Ending<T | Outcome>> => {
-      const membership = typeof companyId === "string" && UUID.test(companyId) ? await resolveActive(tx, companyId) : undefined;
+      const named = typeof companyId === "string" && UUID.test(companyId);
+      const membership = named ? await resolveActive(tx, companyId) : undefined;
       if (membership === undefined) {
-        return rollBack(ruleOf(notAvailable(field)));
+        const kept = named && unavailable !== undefined ? await unavailable(tx) : undefined;
+        return rollBack(kept ?? ruleOf(notAvailable(field)));
       }
       await tx.enter(membership);
       return work(tx, () => run(tx, membership));

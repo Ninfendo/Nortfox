@@ -67,22 +67,37 @@ function detailInput(name: CompanyDetail) {
     .meta({ description: `${description} null takes it away.` });
 }
 
+/** What names a company: its id, name, organisation number and tenant id. */
+const COMPANY_NAMES = {
+  id: z.uuid().meta({ description: "The company's id." }),
+  name: z.string().meta({ description: "The company's name." }),
+  organizationNumber: z
+    .string()
+    .regex(ORGANIZATION_NUMBER)
+    .meta({
+      description: "The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number.",
+    }),
+  databaseNumber: z
+    .int()
+    .min(1)
+    .max(2147483647)
+    .meta({ description: "The company's number for programs, its tenant id. It never changes." }),
+};
+
+/**
+ * A company as the company lists give it, from the one membership
+ * function: what names it, and no detail. getCompany gives the details.
+ */
+export const CompanySummary = z.strictObject(COMPANY_NAMES).meta({
+  id: "CompanySummary",
+  description: "A company as the company lists give it: its id, name, organisation number and tenant id. getCompany gives its addresses and contact details.",
+});
+
+export type CompanySummary = z.infer<typeof CompanySummary>;
+
 export const Company = z
   .strictObject({
-    id: z.uuid().meta({ description: "The company's id." }),
-    name: z.string().meta({ description: "The company's name." }),
-    organizationNumber: z
-      .string()
-      .regex(ORGANIZATION_NUMBER)
-      .meta({
-        description:
-          "The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number.",
-      }),
-    databaseNumber: z
-      .int()
-      .min(1)
-      .max(2147483647)
-      .meta({ description: "The company's number for programs, its tenant id. It never changes." }),
+    ...COMPANY_NAMES,
     address: detailOutput("address"),
     zipCode: detailOutput("zipCode"),
     city: detailOutput("city"),
@@ -204,7 +219,7 @@ export type Membership = z.infer<typeof Membership>;
 
 export const CompanyChoice = z
   .strictObject({
-    company: Company,
+    company: CompanySummary,
     adminLevel: SysAdmin.optional(),
   })
   .meta({
@@ -234,10 +249,10 @@ export const getCompany = defineOperation({
   tags: ["companies"],
   summary: "Read the company",
   description:
-    "Gives the company the request works in: its id, name, organisation number and tenant id. The company comes from the request's credential.",
+    "Gives the company the request works in: its id, name, organisation number and tenant id, and its postal and visiting addresses and its phone number and e-mail address when they are set. The company comes from the request's credential.",
   output: Company,
   permission: "company:read",
-  tool: "Gives the company you work in: its id, name, organisation number and database number. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
+  tool: "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
   assistant: true,
   writes: false,
 });

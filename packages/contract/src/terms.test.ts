@@ -43,6 +43,8 @@ const SCHEMAS: Readonly<Record<string, readonly string[]>> = {
   // Slice 2c, part 2: the companies and the memberships.
   Membership: ["id", "companyId", "userId", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone", "roles", "programs", "programsAdministered"],
   CompanyChoice: ["company", "adminLevel"],
+  // Slice 2c, part 3: the company as the company lists give it.
+  CompanySummary: ["id", "name", "organizationNumber", "databaseNumber"],
   RecentCompanies: ["companies"],
   // Slice 2c, part 3: the roles and the programs.
   ProgramGrant: ["program", "permissions", "full", "grantedAt", "expiresAt"],
@@ -79,6 +81,7 @@ const REFERENCES: Readonly<Record<string, string>> = {
   "Session.company": "Company",
   "Membership.adminLevel": "SysAdmin",
   "CompanyChoice.adminLevel": "SysAdmin",
+  "CompanyChoice.company": "CompanySummary",
   // Slice 2c, part 3.
   "ProgramGrant.program": "Program",
   "ProgramAdmin.program": "Program",
@@ -98,7 +101,7 @@ const REFERENCES: Readonly<Record<string, string>> = {
  * name in backticks, a field by its own name.
  */
 const TERMS: readonly (readonly [string, readonly string[]])[] = [
-  ["Företag / company", ["Company"]],
+  ["Företag / company", ["Company", "CompanySummary"]],
   ["Organisationsnummer / organisation number", ["Company.organizationNumber"]],
   ["(no screen word) / tenant id", ["Company.databaseNumber"]],
   [

@@ -21,10 +21,12 @@ import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import {
   MINUTE,
   addSignInIdentity,
+  answeredWithoutWaiting,
   chooseCompany,
   expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
   getAs,
+  holdingWrites,
   jsonOf,
   signIn,
   signInApp,
@@ -69,7 +71,7 @@ describe("disconnecting a member's identity", () => {
   /** A member with a work e-mail of their own, a program and the admin level, and a session that works in the company. */
   async function aMember(workEmail: string): Promise<{ member: TestMember; session: string }> {
     const member = await newMember(server, { app, owner }, company);
-    expect((await calls.updateUser(server, company.session, member.id, { workEmail, workPhone: "070-111 22 33", adminLevel: "admin" })).status).toBe(200);
+    expect((await calls.updateUser(server, company.session, member.id, { workEmail, workPhone: "070-174 06 16", adminLevel: "admin" })).status).toBe(200);
     expect((await calls.assignProgram(server, company.session, member.id, "read")).status).toBe(200);
     return { member, session: await sessionIn(server, member.person, company.id) };
   }
@@ -145,7 +147,7 @@ describe("disconnecting a member's identity", () => {
     const held = appPoolHolding(db, 2, /^SELECT company_id FROM access\.memberships WHERE id = \$1 AND status = 'active'/);
     try {
       const racer = signInApp(held.database, { clock: server.clock });
-      const changing = writeAs(racer, session, "PATCH", `/v1/me/companies/${company.id}`, { workPhone: "070-999 88 77", idleTimeout: 15 });
+      const changing = writeAs(racer, session, "PATCH", `/v1/me/companies/${company.id}`, { workPhone: "070-174 06 17", idleTimeout: 15 });
       await held.gate.reached;
       expect((await calls.disconnectUserIdentity(server, company.session, member.id)).status).toBe(200);
       const token = server.mail.invitationTokenTo("gun.arbete@example.com");
@@ -164,6 +166,53 @@ describe("disconnecting a member's identity", () => {
       held.gate.open();
       await held.pool.end();
     }
+  });
+
+  /** A company of its own, with its owner and a second system administrator. */
+  async function twoAdministrators(): Promise<{ beta: ApiCompany; admin: TestMember }> {
+    const beta = await apiCompany(server, { app, owner }, "Testbolaget Beta AB");
+    const admin = await newMember(server, { app, owner }, beta);
+    expect((await calls.updateUser(server, beta.session, admin.id, { adminLevel: "admin" })).status).toBe(200);
+    return { beta, admin };
+  }
+
+  it("a disconnect that sends its mail while the other system administrator leaves keeps the company's administrator, and the leave is refused", async () => {
+    const { beta, admin } = await twoAdministrators();
+    const leaving = await sessionIn(server, beta.creator, beta.id);
+    // The owner disconnects the admin, and waits for a slow mail server before the commit.
+    const held = server.mail.holdNext();
+    const disconnecting = calls.disconnectUserIdentity(server, beta.session, admin.id);
+    await held.reached;
+    // The owner leaves from another session meanwhile, which would leave the company with no system administrator.
+    const leave = calls.leaveCompany(server, leaving, beta.id);
+    const early = await answeredWithoutWaiting(superuser, leave);
+    held.open();
+    expect(early).toBe("waited");
+    expect((await disconnecting).status).toBe(200);
+    expect(await jsonOf<ProblemBody>(await leave, 422)).toMatchObject({ code: "last-system-administrator" });
+    expect(await rowOf(beta.membership)).toMatchObject({ status: "active", admin_level: "owner" });
+    expect(await rowOf(admin.id)).toMatchObject({ status: "invited", user_id: null, admin_level: "admin" });
+    // The mail that went out holds a link that works.
+    expect((await calls.getInvitation(server, server.mail.invitationTokenTo(admin.person.email))).status).toBe(200);
+  });
+
+  it("a disconnect that comes while the other system administrator's demotion of the disconnecting one commits is refused, and sends no mail", async () => {
+    const { beta, admin } = await twoAdministrators();
+    const adminSession = await sessionIn(server, admin.person, beta.id);
+    // The admin's demotion of the owner passed its check of the last system administrator, and waits before its commit.
+    const holding = holdingWrites(pool.database, () => true, "commit");
+    const racer = signInApp(holding.database, { clock: server.clock });
+    const demotion = calls.updateUser(racer, adminSession, beta.membership, { adminLevel: null });
+    await holding.gate.reached;
+    const mails = server.mail.messages.length;
+    const disconnecting = calls.disconnectUserIdentity(server, beta.session, admin.id);
+    const early = await answeredWithoutWaiting(superuser, disconnecting);
+    holding.gate.open();
+    expect(early).toBe("waited");
+    expect((await demotion).status).toBe(200);
+    expect(await jsonOf<ProblemBody>(await disconnecting, 422)).toMatchObject({ code: "last-system-administrator" });
+    expect(server.mail.messages).toHaveLength(mails);
+    expect(await rowOf(admin.id)).toMatchObject({ status: "active", user_id: admin.person.id, admin_level: "admin" });
   });
 
   it("disconnects an inactive member", async () => {

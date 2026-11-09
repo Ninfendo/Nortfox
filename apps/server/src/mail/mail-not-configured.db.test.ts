@@ -89,6 +89,13 @@ describe("an install with no mail set up", () => {
   it("refuses before the request's own checks, so it tells nothing about a member", async () => {
     expect(await jsonOf<ProblemBody>(await calls.resendInvitation(without, session, "00000000-0000-4000-8000-000000000000"), 422)).toEqual(NOT_CONFIGURED);
     expect(await jsonOf<ProblemBody>(await calls.disconnectUserIdentity(without, session, company.membership), 422)).toEqual(NOT_CONFIGURED);
+    // inviteUser refuses before it reads the addresses: a member's, and an open invitation's in another letter case, get the same answer as any other.
+    await invite(withMail, company.session, "olle.oppen@example.com", "Olle Öppen");
+    const before = await rows();
+    expect(await jsonOf<ProblemBody>(await calls.inviteUser(without, session, { name: "Någon Annan", email: company.creator.email }), 422)).toEqual(NOT_CONFIGURED);
+    expect(await jsonOf<ProblemBody>(await calls.inviteUser(without, session, { name: "Olle Öppen", email: "Olle.Oppen@Example.com" }), 422)).toEqual(NOT_CONFIGURED);
+    expect(await rows()).toEqual(before);
+    expect(without.mail.messages).toEqual([]);
   });
 
   it("answers a mail that the mail server refuses with 500, and changes nothing", async () => {
@@ -100,6 +107,17 @@ describe("an install with no mail set up", () => {
     expect(await rows()).toEqual(before);
     expect(withMail.reports).toHaveLength(reported + 1);
     expect(errorReport(withMail.reports.at(-1))).not.toContain("lena.fel@example.com");
+  });
+
+  it.each(["kalle@intranet", "anna@example.c"])("keeps the address %s out of the report when the mail server quotes it in its refusal", async (email) => {
+    const before = await rows();
+    withMail.mail.failNext(`Can't send mail - all recipients were rejected: 550 5.1.1 <${email}>: Recipient address rejected: User unknown in local recipient table`);
+    const failed = await calls.inviteUser(withMail, company.session, { name: "Kalle Berg", email });
+    expect(await jsonOf<ProblemBody>(failed, 500)).toMatchObject({ code: "internal-error" });
+    expect(await rows()).toEqual(before);
+    const report = errorReport(withMail.reports.at(-1));
+    expect(report).toContain("<[e-mail]>: Recipient address rejected");
+    expect(report).not.toContain(email);
   });
 
   it("leaves no token in an answer and no secret at rest", async () => {

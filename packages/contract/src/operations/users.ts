@@ -22,7 +22,7 @@ import { emailAddress } from "../address.ts";
 import { noNul, singleLine, wellFormed } from "../text.ts";
 import { IdleTimeout, Membership, ProgramAdmin, ProgramGrant, WorkEmail, WorkPhone } from "./companies.ts";
 import { PermissionKey } from "./permissions.ts";
-import { PROGRAMS } from "../access/catalogue.ts";
+import { CATALOGUE_GROUPS, CATALOGUE_PERMISSIONS, PROGRAMS, type CataloguePermissionKey } from "../access/catalogue.ts";
 
 const { id, companyId, userId, ...membership } = Membership.shape;
 
@@ -67,6 +67,19 @@ const GrantPermissions = z
   .array(PermissionKey)
   .max(64)
   .meta({ description: "The rights the grant holds: the program's own, its Rapporter and its Register/Övrigt rights, as the catalogue's keys." });
+
+/** The kind of each group of the catalogue, by its key. */
+const GROUP_KIND = new Map(CATALOGUE_GROUPS.map((group) => [group.key, group.kind]));
+
+/** The keys of the catalogue's Rapporter and Register/Övrigt rights, in its order. */
+const RIGHT_KEYS = CATALOGUE_PERMISSIONS.filter((permission) => GROUP_KIND.get(permission.group) !== "program").map((permission) => permission.key);
+
+/** Anpassa Rapporter and Anpassa Register/Övrigt: a right that stands alone, by its key, such as reports.vat (Momsrapport). */
+export const RightKey = z.enum(RIGHT_KEYS as [CataloguePermissionKey, ...CataloguePermissionKey[]]).meta({
+  id: "RightKey",
+  description:
+    "A Rapporter or Register/Övrigt right of the catalogue, by its key, such as reports.vat (Momsrapport) or register.sie-export (Sie-export). A right of a program's own group, such as vouchers.view, is not one.",
+});
 
 /** The paths of one member, and of one of a member's programs. */
 const MemberPath = z.strictObject({ memberId: MemberId });
@@ -300,7 +313,7 @@ export const updateUserRights = defineOperation({
     "A right that no grant of the member covers is refused. A program administrator sets them only in the grants of the programs they administer.",
   params: MemberPath,
   body: z.strictObject({
-    permissions: GrantPermissions.meta({ description: "Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys." }),
+    permissions: z.array(RightKey).max(RIGHT_KEYS.length).meta({ description: "Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys. A right of a program's own is refused." }),
   }),
   output: UserRights,
   permission: "programs:grant",

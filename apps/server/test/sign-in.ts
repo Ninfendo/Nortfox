@@ -443,6 +443,28 @@ export async function untilSomeoneWaitsForLock(observer: Client): Promise<void> 
   throw new Error("No backend ever waited for a lock.");
 }
 
+/**
+ * The answer of `call`, when it comes before any backend of the test's
+ * database waits for a lock; or "waited" when one waits first, and the call
+ * still runs. `observer` logs in as the role whose backends it watches.
+ */
+export async function answeredWithoutWaiting<T>(observer: Client, call: Promise<T>): Promise<T | "waited"> {
+  const state = { settled: false };
+  const watched = call.finally(() => {
+    state.settled = true;
+  });
+  // A call that throws later, after the test moved on, is the test's own to await.
+  void watched.catch(() => undefined);
+  for (let attempt = 0; attempt < 1000 && !state.settled; attempt += 1) {
+    const found = await observer.query("SELECT 1 FROM pg_catalog.pg_stat_activity WHERE datname = pg_catalog.current_database() AND wait_event_type = 'Lock'");
+    if ((found.rowCount ?? 0) > 0) {
+      return "waited";
+    }
+    await delay(10);
+  }
+  return watched;
+}
+
 /** Reads `path` with the browser's session cookie, as the web app does. */
 export function getAs(app: SignInApp, session: string, path: string, browser: Omit<Browser, "cookies"> = {}): Promise<Response> {
   return sendAsBrowser(app, "GET", path, { ...browser, cookies: { session } });

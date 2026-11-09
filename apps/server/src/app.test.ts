@@ -95,6 +95,7 @@ describe("GET /openapi.json", () => {
     expect(Object.keys(document.components.schemas).sort()).toEqual([
       "Company",
       "CompanyChoice",
+      "CompanySummary",
       "FieldProblem",
       "Health",
       "Invitation",
@@ -114,6 +115,7 @@ describe("GET /openapi.json", () => {
       "ProgramDefinition",
       "ProgramGrant",
       "RecentCompanies",
+      "RightKey",
       "Role",
       "RoleDefinition",
       "Session",

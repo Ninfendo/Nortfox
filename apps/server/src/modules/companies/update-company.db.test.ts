@@ -10,6 +10,7 @@
 // and getMe give them. Only a system administrator changes the company. A
 // change is in the behandlingshistorik, as every change of a company row is.
 
+import { CompanyChoice } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool, type ProblemBody } from "../../../test/api.ts";
@@ -114,6 +115,18 @@ describe("updateCompany", () => {
     for (const [field, column] of Object.entries(COLUMNS)) {
       expect(row[column], column).toBe(DETAILS[field as keyof typeof DETAILS]);
     }
+  });
+
+  it("gives the company lists the company's id, name, organisation number and tenant id, which is all their schema names, also when its details are set", async () => {
+    await calls.updateCompany(server, company.session, DETAILS);
+    const summary = { id: company.id, name: "Testbolaget Alfa Gamma AB", organizationNumber: "556000-0167", databaseNumber: company.row.database_number };
+    const listed = await jsonOf<{ items: { company: Record<string, unknown> }[] }>(await getAs(server, company.session, "/v1/companies"));
+    const recent = await jsonOf<{ companies: { company: Record<string, unknown> }[] }>(await getAs(server, company.session, "/v1/me/companies/recent"));
+    for (const choice of [listed.items.find((item) => item.company["id"] === company.id), recent.companies.find((item) => item.company["id"] === company.id)]) {
+      expect(choice?.company).toEqual(summary);
+    }
+    // The schema of the lists' company names those four fields and no detail.
+    expect(Object.keys(CompanyChoice.shape.company.shape)).toEqual(Object.keys(summary));
   });
 
   it("keeps a field left out, takes a detail away with null, and gives no field that is not set", async () => {

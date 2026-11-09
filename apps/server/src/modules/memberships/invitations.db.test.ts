@@ -22,6 +22,7 @@ import {
   DAY,
   MINUTE,
   addSignInIdentity,
+  answeredWithoutWaiting,
   challengeOf,
   chooseCompany,
   expectNoSecretsAtRestFromSignInApps,
@@ -39,7 +40,7 @@ import {
   writeAs,
   type SignInApp,
 } from "../../../test/sign-in.ts";
-import { acceptAs, apiCompany, calls, invite, newMember, type ApiCompany } from "../../../test/users.ts";
+import { acceptAs, apiCompany, calls, invite, newMember, sessionIn, type ApiCompany } from "../../../test/users.ts";
 import { tokenHash } from "../../auth/tokens.ts";
 import { base32Decode, totpCode } from "../../auth/totp.ts";
 import { invitationLink, invitationMail } from "../../mail/texts.ts";
@@ -221,6 +222,26 @@ describe("invitations", () => {
       expect(mailsAfterOne).toBe(mails + 1);
     });
 
+    it("refuses a member's address with a domain that a mail reaches under another name, so it never becomes a second address for one mailbox", async () => {
+      const member = await newMember(server, { app, owner }, company);
+      const [local, domain] = member.person.email.split("@") as [string, string];
+      const members = await superuser.query("SELECT id FROM access.memberships");
+      const mails = server.mail.messages.length;
+      const twins = [
+        `${local}@${domain.replace(".", "\u3002")}`,
+        `${local}@${domain}\u200B`,
+        `${local}@${domain.slice(0, 2)}\u00AD${domain.slice(2)}`,
+        `${local}@\uFF45${domain.slice(1)}`,
+        `${local}@${domain.toUpperCase().replace(/[A-Z]/g, (letter) => String.fromCodePoint((letter.codePointAt(0) ?? 0) + 0xfee0))}`,
+      ];
+      for (const email of twins) {
+        const problem = await jsonOf<ProblemBody>(await calls.inviteUser(server, company.session, { name: "Karin Tvilling", email }), 400);
+        expect(problem.errors?.map((error) => [error.code, error.pointer])).toEqual([["bad-format", "/email"]]);
+      }
+      expect((await superuser.query("SELECT id FROM access.memberships")).rows).toEqual(members.rows);
+      expect(server.mail.messages).toHaveLength(mails);
+    });
+
     it("refuses an address that a member has only as the work e-mail, in any letter case", async () => {
       const member = await newMember(server, { app, owner }, company);
       expect((await calls.updateUser(server, company.session, member.id, { workEmail: "berit.arbete@example.com" })).status).toBe(200);
@@ -234,12 +255,12 @@ describe("invitations", () => {
 
     it("refuses the second of two invitations to one address at once", async () => {
       const members = (await superuser.query("SELECT id FROM access.memberships WHERE company_id = $1", [company.id])).rows.length;
-      // The first holds the company's row, and has sent its mail, when it waits before its commit.
+      // The first holds the company's turn of its invitations, and has sent its mail, when it waits before its commit.
       const holding = holdingWrites(pool.database, () => true, "commit");
       const racer = signInApp(holding.database, { clock: server.clock });
       const first = calls.inviteUser(racer, company.session, { name: "Cecilia Samtidig", email: "cecilia.samtidig@example.com" });
       await holding.gate.reached;
-      // The second waits for the company's row, and then reads the first's invitation.
+      // The second waits for the turn, and then reads the first's invitation.
       const second = calls.inviteUser(server, company.session, { name: "Cecilia Samtidig", email: "Cecilia.Samtidig@example.com" });
       try {
         await untilSomeoneWaitsForLock(superuser);
@@ -251,6 +272,27 @@ describe("invitations", () => {
       expect((await superuser.query("SELECT id FROM access.memberships WHERE company_id = $1", [company.id])).rows).toHaveLength(members + 1);
       expect(server.mail.to("Cecilia.Samtidig@example.com")).toEqual([]);
       expect(racer.mail.to("cecilia.samtidig@example.com")).toHaveLength(1);
+    });
+
+    it("lets the company's other changes commit while an invitation waits for its mail", async () => {
+      const member = await newMember(server, { app, owner }, company);
+      const memberSession = await sessionIn(server, member.person, company.id);
+      const ownerSession = await sessionIn(server, company.creator, company.id);
+      // The invitation has locked what it locks, and waits for a slow mail server before its commit.
+      const held = server.mail.holdNext();
+      const inviting = calls.inviteUser(server, company.session, { name: "Petra Långsam", email: "petra.langsam@example.com" });
+      await held.reached;
+      try {
+        // A change of a membership, whose commit checks the company's last system administrator, and a change of the company.
+        const idle = await answeredWithoutWaiting(superuser, writeAs(server, memberSession, "PATCH", `/v1/me/companies/${company.id}`, { idleTimeout: 60 }));
+        expect(idle === "waited" ? idle : idle.status).toBe(200);
+        const details = await answeredWithoutWaiting(superuser, calls.updateCompany(server, ownerSession, { city: "Uppsala" }));
+        expect(details === "waited" ? details : details.status).toBe(200);
+      } finally {
+        held.open();
+      }
+      expect((await inviting).status).toBe(201);
+      expect(server.mail.to("petra.langsam@example.com")).toHaveLength(1);
     });
 
     it("keeps its answer for a repeat with its key, and sends no second mail", async () => {

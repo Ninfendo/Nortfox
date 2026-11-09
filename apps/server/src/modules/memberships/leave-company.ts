@@ -4,7 +4,8 @@
 // and 7): the person leaves a company where they are an active member, from
 // the company list. The runner gives the person's active membership there
 // from the one membership function, in the request's own transaction, or
-// refuses with company-not-available. The handler locks the membership's
+// refuses with company-not-available; a repeat with the leave's key gives
+// its first answer there, from the person's keys. The handler locks the membership's
 // row and reads it after the lock, so a change that committed first, such as
 // a removal or a disconnect, leaves nothing to leave. The company's last
 // active system administrator cannot leave: the server refuses it first,

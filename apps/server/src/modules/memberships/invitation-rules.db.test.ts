@@ -296,6 +296,63 @@ describe("the invitations and their links in the database", () => {
       }
     });
 
+    it.each([
+      ["a newer invitation", "the link first"],
+      ["a newer invitation", "the stop first"],
+      ["the member's removal", "the link first"],
+      ["the member's removal", "the stop first"],
+    ] as const)("leaves no live link when %s stops the invitation while its link is made, %s", async (stop, order) => {
+      const linking = await db.connect("app");
+      const stopping = await db.connect("app");
+      try {
+        const email = `karin.${randomUUID()}@example.com`;
+        const { id, member } = await invited(alfa, email);
+        const hash = tokenHash();
+        const settings = { company: alfa.id, ...alfa.asOwner, channel: "rest" };
+        const link = (): Promise<{ made: boolean }[]> =>
+          linking
+            .query<{ made: boolean }>("SELECT access.issue_invitation_link($1, $2, 'Testbolaget Alfa AB', 'Alva Berg', pg_catalog.clock_timestamp()) AS made", [hash, id])
+            .then((result) => result.rows);
+        const stopIt = (): Promise<unknown> =>
+          stop === "a newer invitation"
+            ? stopping.query("INSERT INTO access.invitations (company_id, membership_id, name, email) VALUES ($1, $2, 'Karin Lund', $3)", [alfa.id, member, email])
+            : stopping.query("UPDATE access.memberships SET status = 'removed' WHERE id = $1", [member]);
+        const [first, second] = order === "the link first" ? [linking, stopping] : [stopping, linking];
+        // The first holds its change, not committed yet, while the second runs.
+        await begin(first, settings);
+        const firstDone = order === "the link first" ? await link() : await stopIt();
+        await begin(second, settings);
+        const pid = await backendPid(second);
+        const state = { done: false };
+        const later = (async () => {
+          const done = order === "the link first" ? await stopIt() : await link();
+          await second.query("COMMIT");
+          return done;
+        })().finally(() => {
+          state.done = true;
+        });
+        for (let attempt = 0; attempt < 1000 && !state.done; attempt += 1) {
+          const waiting = await superuser.query<{ waiting: boolean }>("SELECT wait_event_type IS NOT DISTINCT FROM 'Lock' AS waiting FROM pg_catalog.pg_stat_activity WHERE pid = $1", [pid]);
+          if (waiting.rows[0]?.waiting === true) {
+            break;
+          }
+          await delay(10);
+        }
+        await first.query("COMMIT");
+        const secondDone = await later;
+        // A link made first is stopped with its invitation; a link asked for after the stop is not made.
+        expect(order === "the link first" ? firstDone : secondDone).toEqual([{ made: order === "the link first" }]);
+        expect(await linkOf(hash)).toEqual(order === "the link first" ? { used: false, superseded: true, email } : undefined);
+        expect(await found(hash)).toEqual([]);
+        const person = randomUUID();
+        expect(await asNewIn(alfa, person, hash)).toBe(false);
+        expect(await identityExists(person)).toBe(false);
+      } finally {
+        await linking.end();
+        await stopping.end();
+      }
+    });
+
     it("stands its name on one line, for the app and for the owner", async () => {
       const member = await addMembership(app, owner, alfa, { status: "invited" });
       const insert = "INSERT INTO access.invitations (company_id, membership_id, name, email) VALUES ($1, $2, $3, 'karin.lund@example.com')";

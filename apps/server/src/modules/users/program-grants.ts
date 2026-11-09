@@ -44,7 +44,7 @@ import {
   type Program,
 } from "@nortfox/contract";
 import { LEDGER_REFUSALS } from "../../api/ledger-refusals.ts";
-import { handleData, invalidInput, ok, refused, type Answer, type RuleRefusal } from "../../api/operation.ts";
+import { handleData, ok, refused, type Answer, type RuleRefusal } from "../../api/operation.ts";
 import { holdMember, holdMembers, reaches } from "../memberships/members.ts";
 import { deleteGrant, grantOutput, grantsOf, insertGrant, moveGrant, readPrograms, setGrantRights, type HeldGrant } from "../memberships/programs.ts";
 import { reachOf } from "./reach.ts";
@@ -185,15 +185,8 @@ function inOrder(wanted: ReadonlySet<string>): string[] {
 }
 
 export const updateUserRightsHandler = handleData(updateUserRights, async ({ context, tx, now }, { params, body }) => {
+  // The schema takes the Rapporter and Register/Övrigt rights alone (RightKey).
   const { permissions } = body;
-  const own = permissions.flatMap((permission, index) =>
-    reportOrRegister(permission)
-      ? []
-      : [{ code: "invalid-value", detail: `The field /permissions/${String(index)} is not a Rapporter or Register/Övrigt right.`, pointer: `/permissions/${String(index)}`, data: {} }],
-  );
-  if (own.length > 0) {
-    return invalidInput(own);
-  }
   const member = await holdMember(tx, params.memberId);
   if (member === undefined) {
     return userNotFound();

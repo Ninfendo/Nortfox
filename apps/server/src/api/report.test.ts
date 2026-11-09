@@ -56,6 +56,12 @@ describe("scrubbing a text", () => {
     ["an address with letters beyond ASCII in its domain", "failed for anna@räkning.example.org and Åsa.Nilsson@ekonomi.exämpel.example.com now", "failed for [e-mail] and [e-mail] now"],
     ["an address in Greek letters, and one written decomposed", "for \u0390rene@example.com and A\u030asa@example.com.", "for [e-mail] and [e-mail]."],
     ["an address with every symbol that a local part may hold", "for a!b#c$d%e&f'g*h+i/j=k?l^m_n`o{p|q}r~s-t@example.org", "for [e-mail]"],
+    [
+      "an address whose domain is one label, ends in one letter or ends in a number, as a mail server quotes it",
+      "Can't send mail - all recipients were rejected: 550 5.1.1 <kalle@intranet>: Recipient address rejected; anna@example.c and anna@example.123 too",
+      "Can't send mail - all recipients were rejected: 550 5.1.1 <[e-mail]>: Recipient address rejected; [e-mail] and [e-mail] too",
+    ],
+    ["an address with a slash inside its local part", "for a/b@localhost.", "for [e-mail]."],
   ])("takes out %s", (_case, text, scrubbed) => {
     expect(scrub(text)).toBe(scrubbed);
   });

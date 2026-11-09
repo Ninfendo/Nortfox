@@ -5,14 +5,16 @@
 // RFC 6531's UTF-8, its one @ and a domain of labels. A display name, a
 // comment, a group, a list, a quoted local part, an address literal, a space,
 // a control character and a control of the text's direction are refused,
-// with bad-format, in every field that takes an address. A person's and a
+// with bad-format, in every field that takes an address. So is a domain that
+// a mail reaches under another name than the one written: one that IDNA's
+// mapping changes, an A-label, and one that ends in a number. A person's and a
 // company's name stand on one line: a line break, another control character
 // and a control of the text's direction are refused, with invalid-value, in
 // every field that takes one.
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { MAILBOX } from "./address.ts";
+import { MAILBOX, emailAddress, writtenAsMailed } from "./address.ts";
 import { bodySchema } from "./operation.ts";
 import { completeSetup } from "./operations/auth.ts";
 import { createCompany, updateCompany, updateMyMembership } from "./operations/companies.ts";
@@ -79,10 +81,46 @@ const NOT_MAILBOXES = [
   "@example.org",
   "x@",
   `${"a".repeat(65)}@example.com`,
+  // A local part that ends in a slash: no mailbox has one, and a log reads it as a package's path (/@scope).
+  "a/@example.org",
+  "a.b/@example.org",
+];
+
+/**
+ * Addresses whose domain a mail is not sent to as it is written: IDNA's
+ * mapping (UTS 46, as nodemailer, the browsers and the resolvers read a
+ * domain) drops a character of it, folds one into another, or reads a dot in
+ * it, or the domain is written as its A-label, or ends in a number, which
+ * the URL Standard reads as an IPv4 address. Each would be stored and shown
+ * as one address and mailed to another, so it is refused.
+ */
+const NOT_AS_MAILED = [
+  "anna.lind@example\u3002com",
+  "anna.lind@example\uFF0Ecom",
+  "anna.lind@example\uFF61com",
+  "anna.lind@example.com\u200B",
+  "anna.lind@ex\u00ADample.com",
+  "anna.lind@ex\u2060ample.com",
+  "anna.lind@example\uFE0F.com",
+  "anna.lind@ex\u034Fample.com",
+  "anna.lind@ex\u200Dample.com",
+  "anna.lind@\uFF45xample.test",
+  "anna.lind@\uFF25\uFF38\uFF21\uFF2D\uFF30\uFF2C\uFF25.test",
+  "anna.lind@\uFB01le.example",
+  "anna.lind@\u2460.example",
+  "anna.lind@\u00B5.example",
+  "anna.lind@\u210Cej.example",
+  "anna.lind@xn--bcher-kva.example",
+  "anna.lind@XN--BCHER-KVA.example",
+  "anna.lind@xn--zz.example",
+  "anna.lind@example.123",
+  "anna.lind@192.0.2.1",
+  "anna.lind@10.3.1",
+  "anna.lind@example.0x1f",
 ];
 
 /** Names that stand on one line. */
-const NAMES = ["Karin Lund", "Testbolaget Alfa AB", "Åsa Öberg-Ängström", "O'Brien & Söner HB", "Δοκιμή", "عربي", "क्षत्रिय", "👩\u200D💻 Alva"];
+const NAMES = ["Karin Lund", "Testbolaget Alfa AB", "Åsa Öberg-Ängström", "O'Brien & Söner HB", "Δοκιμή", "عربي", "क\u094Dषत\u094Dरिय", "👩\u200D💻 Alva"];
 
 /** Names with a character that a name never holds. */
 const NOT_NAMES = [
@@ -111,6 +149,34 @@ describe("an e-mail address", () => {
 
   it.each(NOT_MAILBOXES)("refuses %j, which is not one mailbox", (address) => {
     expect(MAILBOX.test(address)).toBe(false);
+  });
+
+  it.each(NOT_AS_MAILED)("refuses %j, which a mail would reach under another domain", (address) => {
+    expect(emailAddress().safeParse(address).success).toBe(false);
+  });
+
+  it.each(MAILBOXES)("takes %j, whose domain a mail reaches as it is written", (address) => {
+    expect(emailAddress().safeParse(address).success).toBe(true);
+  });
+
+  it("names its domain as it is written: the labels in Unicode, or in ASCII, in any letter case", () => {
+    expect(writtenAsMailed("exämple.test")).toBe(true);
+    expect(writtenAsMailed("ExÄmple.TEST")).toBe(true);
+    expect(writtenAsMailed("exa\u0308mple.test")).toBe(true);
+    expect(writtenAsMailed("localhost")).toBe(true);
+    expect(writtenAsMailed("ex\u00ADample.com")).toBe(false);
+    expect(writtenAsMailed("xn--exmple-cua.test")).toBe(false);
+    expect(writtenAsMailed("1.example.42")).toBe(false);
+  });
+
+  it("refuses an address that is not mailed as it is written with bad-format, in every field that takes one", () => {
+    for (const address of NOT_AS_MAILED) {
+      expect(problemsOf(inviteUser, { name: "Karin Lund", email: address })).toEqual([["bad-format", "/email"]]);
+      expect(problemsOf(updateUser, { workEmail: address })).toEqual([["bad-format", "/workEmail"]]);
+      expect(problemsOf(updateMyMembership, { workEmail: address })).toEqual([["bad-format", "/workEmail"]]);
+      expect(problemsOf(updateCompany, { email: address })).toEqual([["bad-format", "/email"]]);
+      expect(problemsOf(completeSetup, { name: "Alva Berg", email: address, password: "första-lösenordet-20" })).toEqual([["bad-format", "/email"]]);
+    }
   });
 
   it("is the form of every address the API takes, refused with bad-format at its pointer", () => {

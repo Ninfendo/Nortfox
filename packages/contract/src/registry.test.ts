@@ -162,7 +162,7 @@ describe("REGISTRY", () => {
   it("gives each operation its MCP tool text", () => {
     expect(Object.fromEntries(REGISTRY.map((entry) => [entry.operationId, entry["x-nortfox"].tool]))).toEqual({
       getHealth: "Checks that the NortFox server is up, and gives its version. It reads no data.",
-      getCompany: "Gives the company you work in: its id, name, organisation number and database number. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
+      getCompany: "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
       completeSetup: "Makes the first identity of an empty install. It serves the browser's sign-in, so this tool refuses every call.",
       loginWithPassword: "Signs a browser in with a password. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
       verifyTotp: "Gives the TOTP code of a browser's sign-in. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",

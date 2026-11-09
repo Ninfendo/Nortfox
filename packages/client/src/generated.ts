@@ -71,8 +71,30 @@ export interface Company {
  * A company where the person is an active member, with the person's system administrator's level there when they have one.
  */
 export interface CompanyChoice {
-  readonly company: Company;
+  readonly company: CompanySummary;
   readonly adminLevel?: SysAdmin;
+}
+
+/**
+ * A company as the company lists give it: its id, name, organisation number and tenant id. getCompany gives its addresses and contact details.
+ */
+export interface CompanySummary {
+  /**
+   * The company's id.
+   */
+  readonly id: string;
+  /**
+   * The company's name.
+   */
+  readonly name: string;
+  /**
+   * The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number.
+   */
+  readonly organizationNumber: string;
+  /**
+   * The company's number for programs, its tenant id. It never changes.
+   */
+  readonly databaseNumber: number;
 }
 
 /**
@@ -463,6 +485,11 @@ export interface RecentCompanies {
 }
 
 /**
+ * A Rapporter or Register/Övrigt right of the catalogue, by its key, such as reports.vat (Momsrapport) or register.sie-export (Sie-export). A right of a program's own group, such as vouchers.view, is not one.
+ */
+export type RightKey = "reports.balance-sheet" | "reports.deleted-vouchers" | "reports.general-ledger" | "reports.opening-balance" | "reports.account-analysis" | "reports.liquidity" | "reports.vat" | "reports.accruals" | "reports.periodic-summary" | "reports.project-accounting" | "reports.budget" | "reports.income-statement" | "reports.income-statement-12-months" | "reports.income-statement-advanced" | "reports.system-documentation" | "reports.voucher-list" | "reports.show-struck-rows" | "reports.processing-history" | "reports.supplier-invoices" | "reports.supplier-statistics" | "reports.supplier-ledger" | "reports.supplier-due-list" | "register.suppliers" | "register.chart-of-accounts" | "register.cost-centres" | "register.projects" | "register.sie-export" | "register.sie-import" | "register.export-files" | "register.anonymise-fiscal-year" | "register.removed-users" | "register.delete-processing-history";
+
+/**
  * One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor.
  */
 export type Role = "owner" | "admin" | "bookkeeper" | "approver" | "viewer" | "auditor";
@@ -683,7 +710,7 @@ export interface Operations {
   /**
    * Read the company
    *
-   * Gives the company the request works in: its id, name, organisation number and tenant id. The company comes from the request's credential.
+   * Gives the company the request works in: its id, name, organisation number and tenant id, and its postal and visiting addresses and its phone number and e-mail address when they are set. The company comes from the request's credential.
    *
    * `GET /v1/company`
    *
@@ -1316,9 +1343,9 @@ export interface Operations {
       readonly memberId: string;
     } & {
       /**
-       * Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys.
+       * Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys. A right of a program's own is refused.
        */
-      readonly permissions: readonly PermissionKey[];
+      readonly permissions: readonly RightKey[];
     },
     options: WriteOptions,
   ): Promise<UserRights>;

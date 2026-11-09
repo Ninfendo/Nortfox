@@ -16,8 +16,9 @@
 // It never holds a detail, a where, a hint, an internal query or a
 // statement's parameters. It takes every token (nf?_...), every
 // personnummer form (8 or 6 digits, then 4, with or without a hyphen or a
-// plus) and every e-mail address, in any script, out of what it keeps. A thrown value that is
-// not an Error is reported by its type only.
+// plus) and every e-mail address that the API takes, in any script, out of
+// what it keeps. A thrown value that is not an Error is reported by its type
+// only.
 
 /** NortFox's tokens, and any cut piece of one. */
 const TOKEN = /nf[a-z]_[A-Za-z0-9_-]*/g;
@@ -26,11 +27,14 @@ const TOKEN = /nf[a-z]_[A-Za-z0-9_-]*/g;
 const IDENTITY_NUMBER = /(?<![0-9])(?:[0-9]{8}|[0-9]{6})[-+]?[0-9]{4}(?![0-9])/g;
 
 /**
- * An e-mail address: a local part, @, and a domain that ends in a name of letters. The local part holds letters,
- * marks and digits of any script (RFC 6531), dots, and every symbol that RFC 5322 lets an atom hold. The domain's
- * labels hold letters, marks, digits and hyphens, so an internationalised domain is one too.
+ * An e-mail address, as every address that the API takes is one (packages/contract/src/address.ts): a local part,
+ * @, and a domain of one label or more. The local part holds letters, marks and digits of any script (RFC 6531),
+ * dots, and every symbol that RFC 5322 lets an atom hold, and does not end in a slash, as no address the API takes
+ * does: so a package's path, /@scope, stays as it is. The domain's labels hold letters, marks, digits and hyphens,
+ * so an internationalised domain is one too, and a domain of one label, such as intranet, or with a last label of
+ * one letter is one too. A domain of digits and dots alone, such as a package's version (pkg@2.1.5), is not one.
  */
-const EMAIL = /[\p{L}\p{M}\p{N}.!#$%&'*+/=?^_`{|}~-]+@[\p{L}\p{M}\p{N}-]+(?:\.[\p{L}\p{M}\p{N}-]+)*\.[\p{L}\p{M}]{2,}/gu;
+const EMAIL = /[\p{L}\p{M}\p{N}.!#$%&'*+/=?^_`{|}~-]*[\p{L}\p{M}\p{N}.!#$%&'*+=?^_`{|}~-]@(?=[\p{L}\p{M}\p{N}.-]*?(?![0-9])[\p{L}\p{M}\p{N}-])[\p{L}\p{M}\p{N}-]+(?:\.[\p{L}\p{M}\p{N}-]+)*/gu;
 
 /** The text with every token, personnummer form and e-mail address taken out. */
 export function scrub(text: string): string {

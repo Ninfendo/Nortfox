@@ -20,6 +20,16 @@ export interface InvitationTo {
   readonly email: string;
 }
 
+/**
+ * Takes the transaction's company's turn of its invitations until the
+ * transaction ends (access.take_invitations_turn): a second invitation of
+ * the company waits for the first's commit. It is not the company's row, so
+ * no other change of the company waits for the invitation's mail.
+ */
+export async function takeInvitationsTurn(tx: Queryable): Promise<void> {
+  await tx.query("SELECT access.take_invitations_turn()");
+}
+
 /** Adds an invited member to the company, with no person: the membership's id. */
 export async function addInvitedMember(tx: Queryable, companyId: string): Promise<string> {
   const made = await tx.query<{ id: string }>("INSERT INTO access.memberships (company_id, status) VALUES ($1, 'invited') RETURNING id", [companyId]);
