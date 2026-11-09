@@ -14,7 +14,7 @@
 //   database.
 // - none: runs before there is an actor, such as a sign-in. Anyone may call
 //   it. Its handler gets the database and opens its own transactions, the
-//   services (the password wrapper and the install secret), the request's
+//   services (the password wrapper, the install secret and the mail), the request's
 //   facts, the clock, the queue for work after the answer, and the principal
 //   when the request has one. It takes no idempotency key.
 // - person: a signed-in person's operation. One transaction as the person,
@@ -26,7 +26,8 @@
 // - person-list: a signed-in person's list, in no company. Its cursors are
 //   the person's own.
 // - data and list: an operation with a permission, in the credential's
-//   company. One transaction in that company.
+//   company. One transaction in that company, with the clock and the
+//   services, such as the install's mail.
 //
 // The runner's steps, in this order:
 //
@@ -126,6 +127,7 @@ import type { CompanyContext, Principal, RequestContext } from "./context.ts";
 import { readCursor, signCursor, type CursorScope } from "./cursor.ts";
 import { checkKey, companyKeys, personCompanyKeys, personKeys, requestHash, type KeyCheck, type KeyStore, type KeysInFlight, type StoredAnswer } from "./idempotency.ts";
 import { ledgerRule } from "./ledger-refusals.ts";
+import type { InstallMail } from "../mail/mailer.ts";
 
 /** A handler's refusal by a rule: a stable code, a sentence, and the field and facts when it has them. */
 export interface RuleRefusal {
@@ -228,12 +230,14 @@ export interface RequestFacts {
   readonly device?: string;
 }
 
-/** What the server's own handlers use besides the database: the password wrapper and the install secret. */
+/** What the server's own handlers use besides the database: the password wrapper, the install secret and the install's mail. */
 export interface Services {
   /** The one wrapper of passwords (auth/password.ts). */
   readonly passwords: PasswordHasher;
   /** The install secret, which seals the TOTP secrets and keys the HMACs (auth/install-key.ts). */
   readonly installKey: InstallKey;
+  /** The install's mail, or undefined when the install has none set up (mail/mailer.ts). */
+  readonly mail: InstallMail | undefined;
 }
 
 /** What a handler of an operation that runs before sign-in gets besides its input. It opens its own transactions. */
@@ -310,6 +314,8 @@ export interface DataCall {
   readonly tx: Queryable;
   /** The server's clock. */
   readonly now: () => Date;
+  /** What the server's own handlers use besides the database, such as the install's mail. */
+  readonly services: Services;
 }
 
 /** The page a list's handler reads: at most `limit` items, after the item whose sort key is `after`. */
@@ -677,19 +683,26 @@ function wirePage(page: PageResult<unknown>, scope: CursorScope, key: Uint8Array
   return next === undefined ? { items, total } : { items, total, nextCursor: signCursor(key, scope, next) };
 }
 
+/** The names of an operation's flat input: its path parameters, its query's fields and its body's. */
+function inputFields(operation: Operation): string[] {
+  return [paramsSchema(operation), querySchema(operation), bodySchema(operation)].flatMap((schema) => (schema === undefined ? [] : Object.keys(schema.shape)));
+}
+
 /**
- * Runs a transaction, and gives a refusal of the ledger that is a rule a
- * request can break as the rule's refusal. A password wrapper whose queue is
- * full gives server-busy. Every other error is thrown again.
+ * Runs a transaction of `operation`, and gives a refusal of the ledger that
+ * is a rule a request can break as the rule's refusal, with the field's
+ * pointer for a unique violation of a field that the input names. A password
+ * wrapper whose queue is full gives server-busy. Every other error is thrown
+ * again.
  */
-async function answered<T>(transaction: () => Promise<T>): Promise<T | Outcome> {
+async function answered<T>(operation: Operation, transaction: () => Promise<T>): Promise<T | Outcome> {
   try {
     return await transaction();
   } catch (error) {
     if (error instanceof ServerBusy) {
       return refuse({ kind: "server-busy", retryAfterSeconds: error.retryAfterSeconds });
     }
-    const rule = ledgerRule(error);
+    const rule = ledgerRule(error, inputFields(operation));
     if (rule === undefined) {
       throw error;
     }
@@ -751,7 +764,7 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
   try {
     const params = paramsSchema(operation) === undefined ? undefined : input.params;
     const hash = requestHash(deps.fingerprintKey, operation.operationId, input.query, input.body, params);
-    const first = await answered(() =>
+    const first = await answered(operation, () =>
       frame("write", async (tx, run): Promise<Ending<Outcome | typeof STORED_FIRST_ELSEWHERE>> => {
         const stored = await store.find(tx, actorId, key);
         if (stored !== undefined) {
@@ -797,7 +810,7 @@ function runFramed(operation: Operation, frame: Frame, keyed: Omit<KeyedWrite, "
   if (keyed !== undefined) {
     return runKeyedWrite({ ...keyed, operation, frame }, deps);
   }
-  return answered(() => frame(operation["x-nortfox"].writes ? "write" : "read", async (_tx, run) => ending(operation, await run())));
+  return answered(operation, () => frame(operation["x-nortfox"].writes ? "write" : "read", async (_tx, run) => ending(operation, await run())));
 }
 
 /** The queue of a call whose surface gave none: work after the answer is then a fault of the server. */
@@ -833,7 +846,7 @@ async function runNone(handler: NoneHandler, call: OperationCall, input: AnyInpu
     now: deps.now,
     later,
   };
-  return answered(async () => {
+  return answered(handler.operation, async () => {
     const answer = await handler.run(noneCall, input);
     return answer.ok ? success(handler.operation, answer) : refusedBy(handler.operation, answer.refusal);
   });
@@ -962,12 +975,12 @@ function runData(handler: DataHandler | ListHandler, context: CompanyContext, re
       return Promise.resolve(refuse({ kind: "invalid", problems: page.problems }));
     }
     const listed = async (tx: Queryable): Promise<Answer<unknown>> => {
-      const answer = await handler.run({ context, tx, now: deps.now, page: page.value }, input);
+      const answer = await handler.run({ context, tx, now: deps.now, services: deps.services, page: page.value }, input);
       return answer.ok ? ok(wirePage(answer.output, scope, deps.cursorKey)) : answer;
     };
     return runFramed(operation, settingsFrame(settings, listed, deps), undefined, deps);
   }
-  const frame = settingsFrame(settings, (tx) => handler.run({ context, tx, now: deps.now }, input), deps);
+  const frame = settingsFrame(settings, (tx) => handler.run({ context, tx, now: deps.now, services: deps.services }, input), deps);
   const keyed = key === undefined ? undefined : { actorId: context.personId, input, key, store: keysFor(operation, context.company.companyId) };
   return runFramed(operation, frame, keyed, deps);
 }

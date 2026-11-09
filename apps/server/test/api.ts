@@ -14,7 +14,7 @@ import { Pool } from "pg";
 import { z } from "zod";
 import type { CompanyAccess, ContextResolver, Principal, PrincipalKind } from "../src/api/context.ts";
 import { KeysInFlight } from "../src/api/idempotency.ts";
-import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps } from "../src/api/operation.ts";
+import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps, type Services } from "../src/api/operation.ts";
 import { assertV1Routes } from "../src/api/route-guard.ts";
 import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
 import { InstallKey } from "../src/auth/install-key.ts";
@@ -235,6 +235,11 @@ export function testHandlers(controls: BookingControls = bookingControls(), vers
   return [...serverHandlers(version), testBookVoucherHandler(controls), testListAccountsHandler];
 }
 
+/** The services of a handler that a test calls directly: the passwords at the tests' small cost, the test install key, and no mail. */
+export function testServices(): Services {
+  return { passwords: testPasswords(), installKey: TEST_INSTALL_KEY, mail: undefined };
+}
+
 /** The clock of the runner in a test that calls it directly. */
 export const TEST_NOW = new Date("2090-03-15T10:00:00.000Z");
 
@@ -246,7 +251,7 @@ export function runnerDeps(database: Database): RunnerDeps {
     fingerprintKey: FINGERPRINT_KEY,
     keysInFlight: new KeysInFlight(),
     now: () => TEST_NOW,
-    services: { passwords: testPasswords(), installKey: TEST_INSTALL_KEY },
+    services: testServices(),
   };
 }
 

@@ -7,7 +7,7 @@
 // the same field problem, and nothing touches the database.
 
 import { describe, expect, it } from "vitest";
-import { TEST_INSTALL_KEY, TEST_NOW, testPasswords, untouchedDatabase } from "../../../test/api.ts";
+import { TEST_NOW, testServices, untouchedDatabase } from "../../../test/api.ts";
 import type { NoneCall } from "../../api/operation.ts";
 import { completeSetupHandler } from "./complete-setup.ts";
 
@@ -17,7 +17,7 @@ describe("completeSetup's handler", () => {
     const call: NoneCall = {
       principal: undefined,
       database,
-      services: { passwords: testPasswords(), installKey: TEST_INSTALL_KEY },
+      services: testServices(),
       channel: "rest",
       request: {},
       now: () => TEST_NOW,

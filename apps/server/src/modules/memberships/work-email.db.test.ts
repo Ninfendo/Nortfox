@@ -53,7 +53,7 @@ describe("the work e-mail address", () => {
     owner = await db.connect("owner");
     superuser = await db.admin();
     pool = appPool(db, 4);
-    server = signInApp(pool.database, { clock: testClock() });
+    server = signInApp(pool.database, { clock: testClock(new Date()) });
     company = await apiCompany(server, { app, owner });
   });
 
@@ -94,7 +94,7 @@ describe("the work e-mail address", () => {
   });
 
   it("updateUser refuses null for the work e-mail, while the phone may be cleared", async () => {
-    const member = await newMember({ app, owner }, company);
+    const member = await newMember(server, { app, owner }, company);
     const set = await jsonOf<{ workEmail?: string; workPhone?: string }>(
       await calls.updateUser(server, company.session, member.id, { workEmail: "gunnar.arbete@example.com", workPhone: "070-174 06 11" }),
     );

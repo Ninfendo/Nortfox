@@ -122,6 +122,12 @@ describe("the credentials in the API description", () => {
       removeProgram: [{ sessionCookie: [] }],
       moveProgram: [{ sessionCookie: [] }],
       updateUserRights: [{ sessionCookie: [] }],
+      inviteUser: [{ sessionCookie: [] }],
+      resendInvitation: [{ sessionCookie: [] }],
+      disconnectUserIdentity: [{ sessionCookie: [] }],
+      getInvitation: undefined,
+      acceptInvitation: undefined,
+      leaveCompany: [{ sessionCookie: [] }],
     });
   });
 

@@ -82,6 +82,7 @@ export type {
   SuccessStatus,
 } from "./operation.ts";
 export { PasswordSignIn, SetupResult, TotpEnrolment, completeSetup, loginWithPassword, logout, verifyTotp } from "./operations/auth.ts";
+export { Invitation, InvitationAcceptance, acceptInvitation, getInvitation } from "./operations/invitations.ts";
 export {
   Company,
   CompanyChoice,
@@ -99,6 +100,7 @@ export {
   WorkPhone,
   createCompany,
   getCompany,
+  leaveCompany,
   listCompanies,
   listRecentCompanies,
   updateCompany,
@@ -115,7 +117,21 @@ export {
   RoleEntry,
   listPermissions,
 } from "./operations/permissions.ts";
-export { Member, UserRights, assignProgram, getUser, listUsers, moveProgram, removeProgram, removeUser, updateUser, updateUserRights } from "./operations/users.ts";
+export {
+  Member,
+  UserRights,
+  assignProgram,
+  disconnectUserIdentity,
+  getUser,
+  inviteUser,
+  listUsers,
+  moveProgram,
+  removeProgram,
+  removeUser,
+  resendInvitation,
+  updateUser,
+  updateUserRights,
+} from "./operations/users.ts";
 export { Session, getSession, selectCompany } from "./operations/session.ts";
 export { Health, getHealth } from "./operations/status.ts";
 export { Cursor, LIMIT, Limit, effectiveLimit, pageOf } from "./paging.ts";

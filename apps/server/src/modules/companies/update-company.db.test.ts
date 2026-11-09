@@ -68,7 +68,7 @@ describe("updateCompany", () => {
     owner = await db.connect("owner");
     superuser = await db.admin();
     pool = appPool(db, 4);
-    server = signInApp(pool.database, { clock: testClock() });
+    server = signInApp(pool.database, { clock: testClock(new Date()) });
     company = await apiCompany(server, { app, owner });
   });
 
@@ -214,7 +214,7 @@ describe("updateCompany", () => {
 
   it("needs a system administrator: a member gets permission-missing, and the company stays", async () => {
     const before = await companyRow();
-    const member = await newMember({ app, owner }, company);
+    const member = await newMember(server, { app, owner }, company);
     const session = await sessionIn(server, member.person, company.id);
     const problem = await jsonOf<ProblemBody>(await calls.updateCompany(server, session, { name: "Testbolaget Epsilon AB" }), 403);
     expect(problem).toMatchObject({ code: "permission-missing", permission: "company:update" });

@@ -19,7 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool, type ProblemBody } from "../../../test/api.ts";
 import { CHECK_VIOLATION, expectError, freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { PERSONAL_IDENTITY_NUMBERS } from "../../../test/identities.ts";
-import { acceptedMember, addMembership, aCompany, asMember, membershipIn } from "../../../test/memberships.ts";
+import { aCompany, asMember, membershipIn } from "../../../test/memberships.ts";
 import {
   HOUR,
   MINUTE,
@@ -32,7 +32,7 @@ import {
   testClock,
   type SignInApp,
 } from "../../../test/sign-in.ts";
-import { apiCompany, calls, newMember, sessionIn, type ApiCompany, type TestMember } from "../../../test/users.ts";
+import { apiCompany, calls, invite, joinWith, newMember, sessionIn, type ApiCompany, type TestMember } from "../../../test/users.ts";
 
 interface MemberJson {
   readonly id: string;
@@ -70,7 +70,7 @@ describe("the company's users", () => {
     owner = await db.connect("owner");
     superuser = await db.admin();
     pool = appPool(db, 4);
-    server = signInApp(pool.database, { clock: testClock() });
+    server = signInApp(pool.database, { clock: testClock(new Date()) });
     company = await apiCompany(server, { app, owner });
   });
 
@@ -80,7 +80,7 @@ describe("the company's users", () => {
   });
 
   function member(): Promise<TestMember> {
-    return newMember({ app, owner }, company);
+    return newMember(server, { app, owner }, company);
   }
 
   async function membershipRow(id: string): Promise<{ status: string; admin_level: string | null; idle_timeout_minutes: number }> {
@@ -100,14 +100,15 @@ describe("the company's users", () => {
       const company2 = await apiCompany(server, { app, owner }, "Testbolaget Beta AB");
       const person = await addSignInIdentity(owner, { personalIdentityNumber: PERSONAL_IDENTITY_NUMBERS[0] });
       await owner.query("UPDATE access.identities SET name = 'Elsa Fors', mobile = '070-174 06 14' WHERE id = $1", [person.id]);
-      const joined = await acceptedMember(app, owner, company2, person.id);
-      const invited = await addMembership(app, owner, company2, { status: "invited" });
+      // Invited at a work address of their own, so the list shows that address and never the person's own.
+      const joined = await joinWith(server, person, (await invite(server, company2.session, "elsa.arbete@example.com", "Elsa Fors")).token);
+      const invited = (await invite(server, company2.session, "frans.bjuden@example.com", "Frans Bjuden")).id;
       const page = await jsonOf<Page>(await calls.listUsers(server, company2.session));
       expect(page.total).toBe(3);
       expect(page.items.map((item) => [item.id, item.name, item.status])).toEqual([
         [company2.membership, "Alva Berg", "active"],
         [joined, "Elsa Fors", "active"],
-        [invited, undefined, "invited"],
+        [invited, "Frans Bjuden", "invited"],
       ]);
       expect(page.items[0]).toEqual({
         id: company2.membership,
@@ -269,7 +270,7 @@ describe("the company's users", () => {
       // Off again changes nothing.
       expect((await jsonOf<MemberJson>(await calls.updateUser(server, company.session, target.id, { active: false }))).status).toBe("inactive");
       expect((await jsonOf<MemberJson>(await calls.updateUser(server, company.session, target.id, { active: true }))).status).toBe("active");
-      const invited = await addMembership(app, owner, company, { status: "invited" });
+      const invited = (await invite(server, company.session, "gun.bjuden@example.com", "Gun Bjuden")).id;
       for (const active of [true, false]) {
         expect(await jsonOf<ProblemBody>(await calls.updateUser(server, company.session, invited, { active }), 422)).toEqual({
           type: "about:blank",

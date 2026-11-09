@@ -78,18 +78,6 @@ export async function addMembership(app: Client, owner: Client, company: Company
   return row.id;
 }
 
-/**
- * Invites a new member to `company`, as the owner, and lets `person` accept,
- * as the database holds an invitation and its acceptance: a membership with
- * no person, then active with the person, by the person's own change. Gives
- * the membership's id.
- */
-export async function acceptedMember(app: Client, owner: Client, company: Company, person: string): Promise<string> {
-  const membership = await addMembership(app, owner, company, { status: "invited" });
-  await changeMembership(app, company, membership, "status = 'active', user_id = $2", [person], { actor: person, kind: "user" });
-  return membership;
-}
-
 /** Changes a membership of `company` with `set`, whose parameters start at $2, as `who` (by default the owner), and gives its row. */
 export async function changeMembership(
   app: Client,

@@ -39,6 +39,17 @@ const USER_REFUSALS = [
   "right-not-covered",
 ] as const;
 
+/** The refusals of the invitations and their links, and of the unique keys a request can meet, each at 422. */
+const INVITATION_REFUSALS = [
+  "user-not-invited",
+  "already-member",
+  "mail-not-configured",
+  "invitation-link-invalid",
+  "sign-in-required",
+  "email-taken",
+  "personal-identity-number-taken",
+] as const;
+
 describe("jsonPointer", () => {
   it.each([
     [[], ""],
@@ -337,12 +348,16 @@ describe("the problem codes", () => {
       "fiscal-year-strands-rows",
     ];
     expect(Object.entries(PROBLEM_CODES).filter(([, status]) => status === 422).map(([code]) => code).sort()).toEqual(
-      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid", "company-not-available", ...USER_REFUSALS].sort(),
+      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid", "company-not-available", ...USER_REFUSALS, ...INVITATION_REFUSALS].sort(),
     );
   });
 
   it("list the refusals of the user administration, each at 422", () => {
     expect(Object.fromEntries(USER_REFUSALS.map((code) => [code, PROBLEM_CODES[code]]))).toEqual(Object.fromEntries(USER_REFUSALS.map((code) => [code, 422])));
+  });
+
+  it("list the refusals of the invitations and of the unique keys, each at 422", () => {
+    expect(Object.fromEntries(INVITATION_REFUSALS.map((code) => [code, PROBLEM_CODES[code]]))).toEqual(Object.fromEntries(INVITATION_REFUSALS.map((code) => [code, 422])));
   });
 
   it("list every code a field problem can have", () => {

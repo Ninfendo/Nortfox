@@ -35,6 +35,8 @@ const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "access.idempotency_keys": ["INSERT", "SELECT"],
   "access.identities": ["SELECT", "UPDATE"],
   "access.install_keys": [],
+  "access.invitation_links": [],
+  "access.invitations": ["INSERT", "SELECT", "UPDATE"],
   "access.known_devices": [],
   "access.login_challenges": [],
   "access.membership_contacts": ["DELETE", "INSERT", "SELECT", "UPDATE"],
@@ -78,6 +80,8 @@ const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "access.idempotency_keys": [],
   "access.identities": [],
   "access.install_keys": [],
+  "access.invitation_links": [],
+  "access.invitations": ["SELECT"],
   "access.known_devices": [],
   "access.login_challenges": [],
   "access.membership_contacts": [],
@@ -115,6 +119,7 @@ const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
  */
 const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
   nortfox_app: [
+    "access.accept_invitation_as_new",
     "access.active_membership",
     "access.challenge_by_token",
     "access.choose_company",
@@ -131,6 +136,8 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
     "access.give_back_failure",
     "access.identifier_form",
     "access.install_key",
+    "access.invitation_by_token",
+    "access.issue_invitation_link",
     "access.known_device",
     "access.lock_attempts",
     "access.lock_session",
@@ -141,6 +148,7 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
     "access.session_by_token",
     "access.touch_session",
     "access.use_challenge",
+    "access.use_invitation_link",
     "access.use_totp_step",
     "ledger.applicable_locks",
     "ledger.automatic_lock_end_date",
@@ -247,6 +255,15 @@ describe("the database roles", () => {
     ["empty the grants", "TRUNCATE access.program_grants"],
     ["change a program administrator", "UPDATE access.program_admins SET program = 'read'"],
     ["call the trigger that keeps the program administrators' rules", "SELECT access.program_admins_rules()"],
+    ["delete an invitation", "DELETE FROM access.invitations"],
+    ["empty the invitations", "TRUNCATE access.invitations"],
+    ["call the trigger that keeps the invitations' rules", "SELECT access.invitations_rules()"],
+    ["call the trigger that stops a member's older invitations", "SELECT access.supersede_invitations()"],
+    ["call the trigger that stops a removed member's invitation", "SELECT access.withdraw_invitations()"],
+    ["call the trigger that stops an invitation's link", "SELECT access.stop_invitation_links()"],
+    ["read the invitation links", "SELECT * FROM access.invitation_links"],
+    ["use an invitation link by hand", "UPDATE access.invitation_links SET used_at = pg_catalog.clock_timestamp()"],
+    ["switch the invitations' rules off", "ALTER TABLE access.invitations DISABLE TRIGGER invitations_rules"],
   ])("refuses the app to %s", async (_case, sql) => {
     await expectError(app.query(sql), INSUFFICIENT_PRIVILEGE);
   });

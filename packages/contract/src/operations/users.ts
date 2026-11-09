@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { personal } from "../fields.ts";
 import { NoBody, defineListOperation, defineOperation } from "../operation.ts";
+import { noNul, wellFormed } from "../text.ts";
 import { IdleTimeout, Membership, ProgramAdmin, ProgramGrant, WorkEmail, WorkPhone } from "./companies.ts";
 import { PermissionKey } from "./permissions.ts";
 import { PROGRAMS } from "../access/catalogue.ts";
@@ -30,7 +31,9 @@ export const Member = z
     id,
     companyId,
     userId,
-    name: personal(z.string().meta({ description: "The person's name. Absent while the membership has no person." })).optional(),
+    name: personal(
+      z.string().meta({ description: "The person's name; for an invited member, the name the latest invitation was sent to. Absent for an invited member with no invitation." }),
+    ).optional(),
     ...membership,
   })
   .meta({
@@ -218,6 +221,70 @@ export const moveProgram = defineOperation({
   output: ProgramGrant,
   permission: "programs:grant",
   tool: "Moves a program from one user of the company you work in to another, narrowed first if you give a list of its rights.",
+  writes: true,
+});
+
+/** What the mail of an invitation says about the link, for the operations that send one. */
+const SENDS =
+  "The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. " +
+  "With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes.";
+
+export const inviteUser = defineOperation({
+  id: "inviteUser",
+  method: "post",
+  path: "/v1/users",
+  tags: ["users"],
+  summary: "Invite a user",
+  description:
+    "Lägg till användare: makes an invited member of the company, with a name and an e-mail address, and sends the invitation to that address. " +
+    `${SENDS} An address that a member of the company has, or that an open invitation of the company goes to, gets 422 already-member.`,
+  body: z.strictObject({
+    name: z.string().min(1).max(200).check(noNul(), wellFormed()).meta({ description: "Namn: the invited person's name." }),
+    email: z
+      .email({ pattern: z.regexes.unicodeEmail })
+      .max(254)
+      .check(noNul(), wellFormed())
+      .meta({ description: "E-postadress: where the invitation goes. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address." }),
+  }),
+  output: Member,
+  status: 201,
+  permission: "users:admin",
+  tool: "Invites a person to the company you work in, with a name and an e-mail address: the invitation goes to that address by mail.",
+  writes: true,
+});
+
+export const resendInvitation = defineOperation({
+  id: "resendInvitation",
+  method: "post",
+  path: "/v1/users/{memberId}/invitation",
+  tags: ["users"],
+  summary: "Send a new invitation",
+  description:
+    "Skicka en ny inbjudan: sends an invited member a new invitation, to the name and the e-mail address of their latest one. " +
+    `${SENDS} A member who is not invited gets 422 user-not-invited.`,
+  params: MemberPath,
+  output: NoBody,
+  status: 204,
+  permission: "users:admin",
+  tool: "Sends a new invitation to a user of the company you work in who has not accepted theirs, and stops the old link.",
+  writes: true,
+});
+
+export const disconnectUserIdentity = defineOperation({
+  id: "disconnectUserIdentity",
+  method: "post",
+  path: "/v1/users/{memberId}/disconnect",
+  tags: ["users"],
+  summary: "Disconnect a user's identity",
+  description:
+    "Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, " +
+    "to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, " +
+    "and is invited again; their sessions end, and their work contacts are erased. " +
+    `${SENDS} An invited member gets 422 user-invited. The company always keeps an active system administrator.`,
+  params: MemberPath,
+  output: Member,
+  permission: "users:admin",
+  tool: "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
   writes: true,
 });
 

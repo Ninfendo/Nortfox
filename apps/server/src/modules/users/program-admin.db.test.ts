@@ -56,7 +56,7 @@ describe("a program administrator", () => {
     pool = appPool(db, 4);
     server = signInApp(pool.database, { clock: testClock(new Date()) });
     company = await apiCompany(server, { app, owner });
-    administrator = await newMember({ app, owner }, company);
+    administrator = await newMember(server, { app, owner }, company);
     const appointed = await jsonOf<MemberJson>(await calls.updateUser(server, company.session, administrator.id, { programsAdministered: [{ program: "bookkeeping" }] }));
     expect(appointed.programsAdministered).toEqual([{ program: "bookkeeping" }]);
     session = await sessionIn(server, administrator.person, company.id);
@@ -68,7 +68,7 @@ describe("a program administrator", () => {
   });
 
   function member(): Promise<TestMember> {
-    return newMember({ app, owner }, company);
+    return newMember(server, { app, owner }, company);
   }
 
   async function programsOf(membership: string): Promise<{ program: string; permissions: string[] }[]> {

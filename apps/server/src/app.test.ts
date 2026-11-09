@@ -97,6 +97,8 @@ describe("GET /openapi.json", () => {
       "CompanyChoice",
       "FieldProblem",
       "Health",
+      "Invitation",
+      "InvitationAcceptance",
       "Me",
       "Member",
       "Membership",

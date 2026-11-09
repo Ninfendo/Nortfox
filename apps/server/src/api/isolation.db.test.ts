@@ -19,6 +19,7 @@ import {
   testListAccountsHandler,
   testMembership,
   testResolver,
+  testServices,
   type AppPool,
 } from "../../test/api.ts";
 import { freshDatabase, inTransaction, type TestDatabase } from "../../test/database.ts";
@@ -129,11 +130,11 @@ describe("two companies through the API", () => {
     // A transaction set to company B as A's person, as no request makes one, to show that the company alone decides.
     const inB: TransactionSettings = { company: (await testMembership(companyB, contextA.personId)).access([]), actorId: contextA.personId, actorKind: "user", channel: "rest" };
     const company = await pool.database.read(inB, async (tx) =>
-      commit(await getCompanyHandler.run({ context: contextA, tx, now: () => TEST_NOW }, { params: {}, query: {}, body: undefined })),
+      commit(await getCompanyHandler.run({ context: contextA, tx, now: () => TEST_NOW, services: testServices() }, { params: {}, query: {}, body: undefined })),
     );
     expect(company).toMatchObject({ ok: true, output: { id: companyB } });
     const page = await pool.database.read(inB, async (tx) =>
-      commit(await testListAccountsHandler.run({ context: contextA, tx, now: () => TEST_NOW, page: { limit: 500 } }, { params: {}, query: {}, body: undefined })),
+      commit(await testListAccountsHandler.run({ context: contextA, tx, now: () => TEST_NOW, services: testServices(), page: { limit: 500 } }, { params: {}, query: {}, body: undefined })),
     );
     expect(page).toEqual({
       ok: true,

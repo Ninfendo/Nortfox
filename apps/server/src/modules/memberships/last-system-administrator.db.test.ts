@@ -2,17 +2,18 @@
 
 // M10 (issue 12, "Users in a company" 7): a company always has at least one
 // active system administrator. Removing, deactivating or demoting the last
-// one is refused through REST with 422 last-system-administrator: the
-// server refuses it early, with its own check, and the database stays the
-// authority, refusing at the commit what a race got past that check. So of
-// two system administrators who remove each other at once, or of a removal
-// and a demotion at once, exactly one succeeds and the other gets the same
-// code. Each case asserts the code, never only the status.
+// one, and the last one leaving, are refused through REST with 422
+// last-system-administrator: the server refuses each early, with its own
+// check, and the database stays the authority, refusing at the commit what
+// a race got past that check. So of two system administrators who remove
+// each other at once, of a removal and a demotion at once, of two who leave
+// at once, and of a removal and a leave at once, exactly one succeeds and
+// the other gets the same code. Each case asserts the code, never only the
+// status.
 //
-// This is the REST half of this part. The last one leaving (leaveCompany)
-// comes in the next step of this part, the last one deleting their identity
-// in part 6, and the same paths through MCP once MCP clients sign in (part
-// 5): each extends this file.
+// This is the REST half of slice 2c. The last one deleting their identity
+// comes in part 6, and the same paths through MCP once MCP clients sign in
+// (part 5): each extends this file.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -49,7 +50,7 @@ describe("the last system administrator", () => {
     owner = await db.connect("owner");
     superuser = await db.admin();
     pool = appPool(db, 6);
-    server = signInApp(pool.database, { clock: testClock() });
+    server = signInApp(pool.database, { clock: testClock(new Date()) });
   });
 
   afterAll(async () => {
@@ -77,7 +78,7 @@ describe("the last system administrator", () => {
   /** A company with its owner, and a second system administrator who works in it. */
   async function twoAdministrators(): Promise<{ company: ApiCompany; admin: TestMember; adminSession: string }> {
     const company = await apiCompany(server, { app, owner });
-    const admin = await newMember({ app, owner }, company);
+    const admin = await newMember(server, { app, owner }, company);
     expect((await calls.updateUser(server, company.session, admin.id, { adminLevel: "admin" })).status).toBe(200);
     const adminSession = await sessionIn(server, admin.person, company.id);
     return { company, admin, adminSession };
@@ -87,7 +88,7 @@ describe("the last system administrator", () => {
     it("deactivating the last one", async () => {
       const company = await apiCompany(server, { app, owner });
       // An inactive system administrator does not count.
-      const inactive = await newMember({ app, owner }, company);
+      const inactive = await newMember(server, { app, owner }, company);
       await calls.updateUser(server, company.session, inactive.id, { adminLevel: "admin", active: false });
       const before = await rowsOf(company);
       expect(await jsonOf<ProblemBody>(await calls.updateUser(server, company.session, company.membership, { active: false }), 422)).toEqual(lastAdministrator(company));
@@ -113,6 +114,15 @@ describe("the last system administrator", () => {
       expect(await jsonOf<ProblemBody>(await calls.removeUser(server, adminSession, company.membership), 422)).toEqual(lastAdministrator(company));
       expect(await jsonOf<ProblemBody>(await calls.updateUser(server, adminSession, company.membership, { active: false }), 422)).toEqual(lastAdministrator(company));
       expect(await rowsOf(company)).toEqual(before);
+    });
+
+    it("the last one leaving", async () => {
+      const { company, admin, adminSession } = await twoAdministrators();
+      expect((await calls.leaveCompany(server, adminSession, company.id)).status).toBe(204);
+      const before = await rowsOf(company);
+      expect(await jsonOf<ProblemBody>(await calls.leaveCompany(server, company.session, company.id), 422)).toEqual(lastAdministrator(company));
+      expect(await rowsOf(company)).toEqual(before);
+      expect(before[admin.id]).toEqual({ status: "left", admin_level: "admin" });
     });
 
     it("but not one of two: the other stays", async () => {
@@ -180,6 +190,55 @@ describe("the last system administrator", () => {
       const rows = await rowsOf(company);
       expect(rows[company.membership]).toEqual({ status: "active", admin_level: "owner" });
       expect(rows[admin.id]).toEqual({ status: "removed", admin_level: "admin" });
+    }
+  });
+
+  it("of two system administrators leaving in parallel, exactly one succeeds", async () => {
+    const { company, admin, adminSession } = await twoAdministrators();
+    const [first, second] = await oneAfterTheOther(
+      (racer) => calls.leaveCompany(racer, company.session, company.id),
+      () => calls.leaveCompany(server, adminSession, company.id),
+    );
+    expect(second.status).toBe(204);
+    expect(await jsonOf<ProblemBody>(first, 422)).toEqual(lastAdministrator(company));
+    const rows = await rowsOf(company);
+    expect(rows[company.membership]).toEqual({ status: "active", admin_level: "owner" });
+    expect(rows[admin.id]).toEqual({ status: "left", admin_level: "admin" });
+  });
+
+  it("a removal racing a leave: exactly one succeeds, in either order", async () => {
+    // A third member was a system administrator, and their session, which chose the company before, keeps users:admin (R11).
+    async function withStaleAdministrator(): Promise<{ company: ApiCompany; admin: TestMember; adminSession: string; staleSession: string }> {
+      const made = await twoAdministrators();
+      const stale = await newMember(server, { app, owner }, made.company);
+      expect((await calls.updateUser(server, made.company.session, stale.id, { adminLevel: "admin" })).status).toBe(200);
+      const staleSession = await sessionIn(server, stale.person, made.company.id);
+      expect((await calls.updateUser(server, made.company.session, stale.id, { adminLevel: null })).status).toBe(200);
+      return { ...made, staleSession };
+    }
+    {
+      const { company, admin, adminSession, staleSession } = await withStaleAdministrator();
+      const [leave, removal] = await oneAfterTheOther(
+        (racer) => calls.leaveCompany(racer, adminSession, company.id),
+        () => calls.removeUser(server, staleSession, company.membership),
+      );
+      expect(removal.status).toBe(204);
+      expect(await jsonOf<ProblemBody>(leave, 422)).toEqual(lastAdministrator(company));
+      const rows = await rowsOf(company);
+      expect(rows[company.membership]).toEqual({ status: "removed", admin_level: "owner" });
+      expect(rows[admin.id]).toEqual({ status: "active", admin_level: "admin" });
+    }
+    {
+      const { company, admin, adminSession, staleSession } = await withStaleAdministrator();
+      const [removal, leave] = await oneAfterTheOther(
+        (racer) => calls.removeUser(racer, staleSession, company.membership),
+        () => calls.leaveCompany(server, adminSession, company.id),
+      );
+      expect(leave.status).toBe(204);
+      expect(await jsonOf<ProblemBody>(removal, 422)).toEqual(lastAdministrator(company));
+      const rows = await rowsOf(company);
+      expect(rows[company.membership]).toEqual({ status: "active", admin_level: "owner" });
+      expect(rows[admin.id]).toEqual({ status: "left", admin_level: "admin" });
     }
   });
 

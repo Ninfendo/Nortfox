@@ -19,6 +19,7 @@
     "@modelcontextprotocol/server": "catalog:",
     "@nortfox/contract": "workspace:*",
     "hono": "catalog:",
+    "nodemailer": "catalog:",
     "pg": "catalog:",
     "zod": "catalog:"
   },

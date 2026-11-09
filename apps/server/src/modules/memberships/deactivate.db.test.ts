@@ -48,7 +48,7 @@ describe("a deactivated member", () => {
   });
 
   it("cannot choose the company", async () => {
-    const member = await newMember({ app, owner }, company);
+    const member = await newMember(server, { app, owner }, company);
     expect((await calls.updateUser(server, company.session, member.id, { active: false })).status).toBe(200);
     server.clock.advance(MINUTE);
     const { session } = await signIn(server, member.person);
@@ -58,7 +58,7 @@ describe("a deactivated member", () => {
   });
 
   it("their session is refused on the next request", async () => {
-    const member = await newMember({ app, owner }, company);
+    const member = await newMember(server, { app, owner }, company);
     const session = await sessionIn(server, member.person, company.id);
     expect((await getAs(server, session, "/v1/company")).status).toBe(200);
     expect((await calls.updateUser(server, company.session, member.id, { active: false })).status).toBe(200);
@@ -71,7 +71,7 @@ describe("a deactivated member", () => {
   });
 
   it("reactivating restores the same rights", async () => {
-    const member = await newMember({ app, owner }, company);
+    const member = await newMember(server, { app, owner }, company);
     await calls.assignProgram(server, company.session, member.id, "bookkeeping", { permissions: ["vouchers.view", "vouchers.book", "reports.vat"] });
     await calls.assignProgram(server, company.session, member.id, "auditor");
     await calls.updateUser(server, company.session, member.id, { programsAdministered: [{ program: "read" }], idleTimeout: 60 });

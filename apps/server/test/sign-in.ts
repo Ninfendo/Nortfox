@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// What the sign-in tests share: an app with the server's session resolver
-// and a clock the test moves, identities with a real password hash and a
-// real sealed TOTP secret, the steps of a sign-in as a browser sends them,
-// and the cookies an answer sets. Every value is made up: the addresses are
-// at example.com, and a personnummer comes only from the fixture guard's
-// list. The passwords are hashed at the tests' small cost (test/api.ts),
-// unless a test asks for the production cost.
+// What the sign-in tests share: an app with the server's session resolver,
+// a clock the test moves and a fake mail sink, identities with a real
+// password hash and a real sealed TOTP secret, the steps of a sign-in as a
+// browser sends them, and the cookies an answer sets. Every value is made
+// up: the addresses are at example.com, and a personnummer comes only from
+// the fixture guard's list. The passwords are hashed at the tests' small
+// cost (test/api.ts), unless a test asks for the production cost.
 
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,13 +15,14 @@ import { expect } from "vitest";
 import { buildTestApp, gate, testPasswords, TEST_INSTALL_KEY, TEST_NOW, type Gate, type ProblemBody } from "./api.ts";
 import type { TestDatabase } from "./database.ts";
 import { addIdentity, addPassword, someEmail } from "./identities.ts";
+import { FakeMailSink, testMail } from "./mail.ts";
 import { expectNoSecretsAtRest, expectNoTokensButChallenges, type SecretsInClear } from "./secrets.ts";
 import type { AppOptions, ServerApp } from "../src/app.ts";
 import { sessionResolver } from "../src/auth/resolver.ts";
 import { seal } from "../src/auth/secret-box.ts";
 import { base32Decode, newTotpSecret, totpCode } from "../src/auth/totp.ts";
 import type { PasswordHasher } from "../src/auth/password.ts";
-import type { Database, TransactionSettings } from "../src/db/database.ts";
+import type { Database, Ending, TransactionSettings } from "../src/db/database.ts";
 
 /** The install's own origin in the sign-in tests: the one a browser sends. */
 export const TEST_ORIGIN = "https://nortfox.example";
@@ -55,6 +56,8 @@ export function testClock(start: Date = TEST_NOW): TestClock {
 export interface SignInApp {
   readonly app: ServerApp;
   readonly clock: TestClock;
+  /** The fake mail sink that the app's mail goes to: empty, and unused, for an app with no mail set up. */
+  readonly mail: FakeMailSink;
   /** Every error the app reported, for the secret scan. */
   readonly reports: unknown[];
   /** The body of every answer that send gave, as text, for the secret scan. */
@@ -69,6 +72,8 @@ export interface SignInAppOptions {
   readonly clock?: TestClock;
   readonly passwords?: PasswordHasher;
   readonly options?: Partial<AppOptions>;
+  /** The install's mail: a fake sink of its own by default, or none set up. */
+  readonly mail?: "none";
 }
 
 /** Every sign-in app that the test file made, for the secret scan at its end. */
@@ -113,7 +118,23 @@ export async function expectNoSecretsAtRestFromSignInApps(db: TestDatabase, secr
   });
 }
 
-/** The fields of a JSON body that are secrets in clear: its password and its code, when it has them. */
+/** Keeps each password and code of a JSON value, at any depth, such as a new identity's password. */
+function keepSecretsOf(value: unknown, sent: SignInApp["sent"]): void {
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
+  for (const [name, item] of Object.entries(value)) {
+    if (name === "password" && typeof item === "string") {
+      sent.passwords.push(item);
+    } else if (name === "code" && typeof item === "string") {
+      sent.codes.push(item);
+    } else {
+      keepSecretsOf(item, sent);
+    }
+  }
+}
+
+/** The fields of a JSON body that are secrets in clear: its passwords and its codes, when it has them. */
 function keepSecrets(body: unknown, sent: SignInApp["sent"]): void {
   if (typeof body !== "string") {
     return;
@@ -124,13 +145,7 @@ function keepSecrets(body: unknown, sent: SignInApp["sent"]): void {
   } catch {
     return;
   }
-  const { password, code } = typeof parsed === "object" && parsed !== null ? (parsed as { password?: unknown; code?: unknown }) : {};
-  if (typeof password === "string") {
-    sent.passwords.push(password);
-  }
-  if (typeof code === "string") {
-    sent.codes.push(code);
-  }
+  keepSecretsOf(parsed, sent);
 }
 
 export function signInApp(database: Database, options: SignInAppOptions = {}): SignInApp {
@@ -138,6 +153,7 @@ export function signInApp(database: Database, options: SignInAppOptions = {}): S
   const reports: unknown[] = [];
   const bodies: string[] = [];
   const sent: SignInApp["sent"] = { passwords: [], codes: [] };
+  const mail = new FakeMailSink();
   const app = buildTestApp({
     database,
     resolve: sessionResolver({ database, now: clock.now }),
@@ -145,11 +161,13 @@ export function signInApp(database: Database, options: SignInAppOptions = {}): S
     allowedOrigins: [TEST_ORIGIN],
     passwordHasher: options.passwords ?? testPasswords(),
     report: (error) => reports.push(error),
+    ...(options.mail === "none" ? {} : { mail: testMail(mail) }),
     ...options.options,
   });
   const server: SignInApp = {
     app,
     clock,
+    mail,
     reports,
     bodies,
     sent,
@@ -350,10 +368,10 @@ export async function signIn(app: SignInApp, identity: TestIdentity, browser: Br
 }
 
 /**
- * A database whose next write that `holds` picks waits at a gate until the
- * test opens it: at its start, before its work runs, or before its commit,
- * after its work, with its row locks held. Every other transaction runs as
- * it is.
+ * A database whose next write that `holds` picks, a write of a company or a
+ * person's write, waits at a gate until the test opens it: at its start,
+ * before its work runs, or before its commit, after its work, with its row
+ * locks held. Every other transaction runs as it is.
  */
 export function holdingWrites(
   database: Database,
@@ -367,22 +385,26 @@ export function holdingWrites(
     armed &&= !picked;
     return picked;
   };
+  /** The work, held at the gate when `settings` are picked. */
+  const heldWork =
+    <Q, T>(settings: TransactionSettings, work: (tx: Q) => Promise<Ending<T>>) =>
+    async (tx: Q): Promise<Ending<T>> => {
+      const picked = picks(settings);
+      if (picked && where === "start") {
+        await held.pass();
+      }
+      const ending = await work(tx);
+      if (picked && where === "commit") {
+        await held.pass();
+      }
+      return ending;
+    };
   return {
     gate: held,
     database: {
       ...database,
-      write: (settings, work) =>
-        database.write(settings, async (tx) => {
-          const picked = picks(settings);
-          if (picked && where === "start") {
-            await held.pass();
-          }
-          const ending = await work(tx);
-          if (picked && where === "commit") {
-            await held.pass();
-          }
-          return ending;
-        }),
+      write: (settings, work) => database.write(settings, heldWork(settings, work)),
+      person: (mode, settings, work) => database.person(mode, settings, mode === "write" ? heldWork(settings, work) : work),
     },
   };
 }

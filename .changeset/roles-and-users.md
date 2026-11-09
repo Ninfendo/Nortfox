@@ -3,7 +3,7 @@
 "@nortfox/client": minor
 ---
 
-Roles, programs and the user administration, the third part of login. `docs/api.md` gives the rules, under The companies, The users, and The roles and the programs.
+Roles, programs and the user administration, the third part of login. `docs/api.md` gives the rules, under The companies, The users, The invitations, and The roles and the programs.
 
 - A member's work rights come from their program grants: Bokföring, Bokföring - Attest & Läs, Läs and Revisor, each with the rights of the permission catalogue it holds. A Revisor grant ends by itself 30 days after it was granted, with no action by anyone.
 - `getMe` gives, in a company, the membership's `id`, its `roles` (the plan's six: `owner`, `admin`, `bookkeeper`, `approver`, `viewer` and `auditor`), its `programs` and its `programsAdministered`, and the permissions of the member's grants beside the member's own. `updateMyMembership` answers the membership with the same fields.
@@ -14,4 +14,9 @@ Roles, programs and the user administration, the third part of login. `docs/api.
 - `listPermissions` gives the permission catalogue: the roles, the programs with their sets, the groups and every permission, in order, with the manual-only marks.
 - `updateCompany` changes the company's name, its postal and visiting addresses and its phone and e-mail; `getCompany` gives them. The organisation number never changes.
 - The work e-mail address is required: `createCompany` gives the owner the person's own e-mail address as the work e-mail, `updateMyMembership` and `updateUser` refuse `null` for it, and an install's existing members get their identity's e-mail address once.
-- The client exports `Program`, `ProgramGrant`, `ProgramAdmin`, `Role`, `Member`, `UserRights`, `Permission`, `PermissionKey`, `PermissionGroup`, `PermissionGroupKey`, `ProgramDefinition`, `RoleDefinition` and `PermissionCatalogue`.
+- `inviteUser`, Lägg till användare, invites a person by e-mail, with a name and an address; `resendInvitation`, Skicka en ny inbjudan, sends a new one and stops the old link; and `disconnectUserIdentity` takes the identity from a member and sends a new invitation, which a new or an existing identity may accept. An invitation's link, Acceptera inbjudan, works once, for 14 days. With no mail set up for the install, the three get 422 `mail-not-configured` and change nothing.
+- `getInvitation` reads an invitation by its link, and `acceptInvitation` accepts it, with a new identity, Skapa ett nytt NortFox ID, which takes the invitation's address and its TOTP secret and signs in next, or with the signed-in identity, Koppla ihop med befintligt NortFox ID. The member's work e-mail becomes the invitation's address.
+- `leaveCompany`, Koppla bort användaren, lets a person leave a company; only a new invitation lets them back. The last active system administrator cannot leave, nor be disconnected.
+- A second identity with an e-mail address gets 422 `email-taken`, and a person's second membership of one company 422 `already-member`, also when a race gets past the server's own checks.
+- The install's mail goes through its SMTP server, set with `NORTFOX_SMTP_URL`, `NORTFOX_SMTP_PASSWORD_FILE` and `NORTFOX_MAIL_FROM` (`deploy/README.md`).
+- The client exports `Program`, `ProgramGrant`, `ProgramAdmin`, `Role`, `Member`, `UserRights`, `Invitation`, `InvitationAcceptance`, `Permission`, `PermissionKey`, `PermissionGroup`, `PermissionGroupKey`, `ProgramDefinition`, `RoleDefinition` and `PermissionCatalogue`.

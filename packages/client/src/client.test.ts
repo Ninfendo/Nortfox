@@ -234,6 +234,45 @@ describe("createClient", () => {
     ]);
   });
 
+  it("sends each operation of the invitations as its operation takes it", async () => {
+    const member = { id: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", companyId: "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e", status: "invited", idleTimeout: 120, roles: [], programs: [], programsAdministered: [] };
+    const invitation = { name: "Karin Lund", email: "karin.lund@example.com", expiresAt: "2090-03-29T10:00:00.000Z", companyName: "Testbolaget Alfa AB", inviterName: "Alva Berg" };
+    const accepted = { user: { id: "4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b", name: "Karin Lund", email: "karin.lund@example.com", language: "sv" }, membership: { ...member, status: "active" } };
+    const token = "the-invitation-token";
+    const answers: Response[] = [
+      Response.json(member, { status: 201 }),
+      new Response(null, { status: 204 }),
+      Response.json(member),
+      Response.json(invitation),
+      Response.json(accepted),
+      new Response(null, { status: 204 }),
+    ];
+    const calls: [string, RequestInit][] = [];
+    const client = createClient({
+      baseUrl: "https://nortfox.example",
+      fetch: (input, init) => {
+        calls.push([input, init]);
+        return Promise.resolve(answers.shift() ?? Response.json({}));
+      },
+    });
+    await expect(client.inviteUser({ name: "Karin Lund", email: "karin.lund@example.com" }, { idempotencyKey: "invite-1" })).resolves.toEqual(member);
+    await expect(client.resendInvitation({ memberId: member.id }, { idempotencyKey: "resend-1" })).resolves.toBeUndefined();
+    await expect(client.disconnectUserIdentity({ memberId: member.id }, { idempotencyKey: "disconnect-1" })).resolves.toEqual(member);
+    await expect(client.getInvitation({ token })).resolves.toEqual(invitation);
+    await expect(client.acceptInvitation({ token, newIdentity: { name: "Karin Lund", password: "karins-lösenord" } })).resolves.toEqual(accepted);
+    await expect(client.leaveCompany({ companyId: member.companyId }, { idempotencyKey: "leave-1" })).resolves.toBeUndefined();
+    const json = { accept: "application/json", "content-type": "application/json" };
+    const users = `https://nortfox.example/v1/users/${member.id}`;
+    expect(calls).toEqual([
+      ["https://nortfox.example/v1/users", { method: "POST", headers: { ...json, "idempotency-key": "invite-1" }, body: '{"name":"Karin Lund","email":"karin.lund@example.com"}' }],
+      [`${users}/invitation`, { method: "POST", headers: { accept: "application/json", "idempotency-key": "resend-1" } }],
+      [`${users}/disconnect`, { method: "POST", headers: { accept: "application/json", "idempotency-key": "disconnect-1" } }],
+      [`https://nortfox.example/v1/invitations/${token}`, { method: "GET", headers: { accept: "application/json" } }],
+      [`https://nortfox.example/v1/invitations/${token}/accept`, { method: "POST", headers: json, body: '{"newIdentity":{"name":"Karin Lund","password":"karins-lösenord"}}' }],
+      [`https://nortfox.example/v1/me/companies/${member.companyId}/leave`, { method: "POST", headers: { accept: "application/json", "idempotency-key": "leave-1" } }],
+    ]);
+  });
+
   it("uses the global fetch when none is given", async () => {
     const server = answering(200, { status: "ok", version: "2.0.0" });
     vi.stubGlobal("fetch", server.fetch);

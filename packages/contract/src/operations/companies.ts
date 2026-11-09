@@ -13,7 +13,7 @@ import { PROGRAMS } from "../access/catalogue.ts";
 import { ROLE_KEYS } from "../access/effective.ts";
 import { ADMIN_LEVELS } from "../access/permissions.ts";
 import { personal } from "../fields.ts";
-import { defineListOperation, defineOperation } from "../operation.ts";
+import { NoBody, defineListOperation, defineOperation } from "../operation.ts";
 import { noNul, wellFormed } from "../text.ts";
 
 /** An organisation number: ten digits with a hyphen after the sixth. */
@@ -329,6 +329,26 @@ export const updateMyMembership = defineOperation({
   permission: "signed-in",
   company: { input: "companyId" },
   tool: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
+  writes: true,
+});
+
+/** Koppla bort användaren: the person leaves a company from the company list. */
+export const leaveCompany = defineOperation({
+  id: "leaveCompany",
+  method: "post",
+  path: "/v1/me/companies/{companyId}/leave",
+  tags: ["me"],
+  summary: "Leave a company",
+  description:
+    "The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, " +
+    "and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, " +
+    "so its last one cannot leave.",
+  params: z.strictObject({ companyId: z.uuid().meta({ description: "The company's id." }) }),
+  output: NoBody,
+  status: 204,
+  permission: "signed-in",
+  company: { input: "companyId" },
+  tool: "Leaves a company where you are an active member. Only a new invitation lets you back.",
   writes: true,
 });
 

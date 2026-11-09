@@ -13,9 +13,8 @@
 // needs a catalogue permission yet, so the test-only right checks
 // (test/rights.ts) show whether a request holds one, beside getMe's list. The
 // company's owner grants Revisor with assignProgram and switches its rights
-// on with updateUserRights. The member is invited and accepts as the
-// database holds it, since the invitations come in the next step of this
-// part.
+// on with updateUserRights. The member is invited with inviteUser and
+// accepts with acceptInvitation.
 
 import { fullPermissions, type Me } from "@nortfox/contract";
 import type { Client } from "pg";
@@ -23,13 +22,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { grantTimes } from "../../../test/grants.ts";
-import { acceptedMember, asMember } from "../../../test/memberships.ts";
+import { asMember } from "../../../test/memberships.ts";
 import { rightPath, withRightChecks } from "../../../test/rights.ts";
 import {
   DAY,
   HOUR,
   MINUTE,
-  addSignInIdentity,
   chooseCompany,
   expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
@@ -41,7 +39,7 @@ import {
   type SignInApp,
   type TestIdentity,
 } from "../../../test/sign-in.ts";
-import { apiCompany, calls, type ApiCompany } from "../../../test/users.ts";
+import { apiCompany, calls, newMember, type ApiCompany } from "../../../test/users.ts";
 import { tokenHash } from "../../auth/tokens.ts";
 
 /** The rights the checks of this file read. */
@@ -72,8 +70,7 @@ describe("a Revisor grant", () => {
 
   /** A member of the company with Revisor and "Full behörighet", the grant's id, and when it was granted and ends. */
   async function auditor(): Promise<{ person: TestIdentity; membership: string; grant: string; grantedAt: Date; end: Date }> {
-    const person = await addSignInIdentity(owner);
-    const membership = await acceptedMember(app, owner, company, person.id);
+    const { person, id: membership } = await newMember(admin, { app, owner }, company);
     expect((await calls.assignProgram(admin, company.session, membership, "auditor", { full: true })).status).toBe(200);
     const [grant] = await asMember<{ id: string }>(app, company.id, company.asOwner, "SELECT id FROM access.program_grants WHERE membership_id = $1", [membership]);
     if (grant === undefined) {
@@ -165,7 +162,8 @@ describe("a Revisor grant", () => {
 
   it("Exportera filer and Sie-export are off until switched on", async () => {
     const { person, membership } = await auditor();
-    const server = serverAt(new Date());
+    // A minute after the member's sign-in at the acceptance, so the next TOTP code is a new one.
+    const server = serverAt(new Date(admin.clock.now().getTime() + MINUTE));
     const session = await sessionInCompany(server, person);
     const off = await meOf(server, session);
     expect(off.permissions).not.toContain("register.export-files");

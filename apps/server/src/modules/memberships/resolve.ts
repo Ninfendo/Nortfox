@@ -12,7 +12,9 @@
 // security changes.
 //
 // It gives ResolvedMembership objects, which only this module can make:
-// their constructor takes a token that never leaves the module. A
+// their constructor takes a token that never leaves the module. So is an
+// InvitationEntry, the one other way into a company: a live invitation
+// link, which the person who accepts it holds (acceptInvitation). A
 // principal's company access (CompanyAccess) is made only from one, and
 // authorize refuses a company access that this module did not make. A
 // lookup enters a company only with a membership that the function gave in
@@ -139,6 +141,69 @@ export class ResolvedMembership {
   resolvedIn(transaction: Queryable): boolean {
     return this.#transaction === transaction;
   }
+}
+
+/** A row of access.invitation_by_token, with the person the transaction acts as. */
+interface InvitationRow {
+  readonly invited_company_id: string;
+  readonly invitation_id: string;
+  readonly email: string;
+  readonly person_id: string | null;
+}
+
+/**
+ * A live invitation link, as the database gave it in one transaction, for
+ * the person that transaction acts as: the company the invitation is to, and
+ * the invitation. The link is the credential of an acceptance (issue 12,
+ * "Users in a company" 3): whoever holds a live link may accept it, and a
+ * transaction of that person enters the company with it, to accept, and for
+ * nothing else (db/database.ts). The acceptance then uses the link once, in
+ * the same company, or changes nothing.
+ */
+export class InvitationEntry {
+  /** The person the transaction acts as: the one who accepts. */
+  readonly personId: string;
+  readonly companyId: string;
+  readonly invitationId: string;
+  /** The address the invitation was sent to. */
+  readonly email: string;
+  /** The transaction the link was read in. */
+  readonly #transaction: Queryable;
+
+  constructor(token: symbol, row: InvitationRow, transaction: Queryable) {
+    if (token !== MEMBERSHIP_TOKEN) {
+      throw new Error("Only modules/memberships/resolve.ts makes an InvitationEntry, from a live invitation link that the database gave.");
+    }
+    if (row.person_id === null) {
+      throw new Error("An invitation link is accepted by a person, and the transaction acts as none.");
+    }
+    this.personId = row.person_id;
+    this.companyId = row.invited_company_id;
+    this.invitationId = row.invitation_id;
+    this.email = row.email;
+    this.#transaction = transaction;
+    Object.freeze(this);
+  }
+
+  /** Whether the database gave this link in `transaction`. */
+  resolvedIn(transaction: Queryable): boolean {
+    return this.#transaction === transaction;
+  }
+}
+
+/**
+ * The live invitation link whose token hashes to `linkHash`, at `at`, for the
+ * person the transaction acts as; or undefined for a link that is unknown,
+ * used, stopped or past its end. The transaction may then enter the link's
+ * company (tx.enter), to accept the invitation.
+ */
+export async function invitationEntry(tx: Queryable, linkHash: Buffer, at: Date): Promise<InvitationEntry | undefined> {
+  const found = await tx.query<InvitationRow>(
+    "SELECT l.invited_company_id, l.invitation_id, l.email, access.current_person_id() AS person_id FROM access.invitation_by_token($1, $2) AS l",
+    [linkHash, at],
+  );
+  const [row] = found.rows;
+  return row === undefined ? undefined : new InvitationEntry(MEMBERSHIP_TOKEN, row, tx);
 }
 
 /**

@@ -98,6 +98,7 @@ export const KEYS: Readonly<Record<string, string>> = {
   "access.events": "id",
   "access.program_grants": "id",
   "access.program_admins": "id",
+  "access.invitations": "id",
 };
 
 /** A made-up fingerprint of a request, as the server stores it with an idempotency key. */
@@ -159,6 +160,10 @@ const INSERT_GRANT = `INSERT INTO access.program_grants AS t (id, company_id, me
 const INSERT_PROGRAM_ADMIN = `INSERT INTO access.program_admins AS t (id, company_id, membership_id, program)
                               VALUES ($1, $2, $3, $4) RETURNING to_jsonb(t) AS row`;
 
+/** The statement that invites a member: the invitation's id, the company and the membership. The trigger stamps who sent it, when and its end. */
+const INSERT_INVITATION = `INSERT INTO access.invitations AS t (id, company_id, membership_id, name, email)
+                           VALUES ($1, $2, $3, 'Cecilia Dahl', 'cecilia.dahl@example.com') RETURNING to_jsonb(t) AS row`;
+
 /**
  * The statement that inserts a company: its id, its name and its organisation
  * number. A company needs an active system administrator by the commit, so a
@@ -200,6 +205,11 @@ export const ROW_INSERTS: Readonly<Record<string, (company: string, scenario: Sc
   "access.program_admins": (company, scenario) => ({
     sql: INSERT_PROGRAM_ADMIN,
     params: [randomUUID(), company, ownerOf(scenario, company), "approval-read"],
+  }),
+  // An invitation of the owner's membership: the database leaves to the server which members it invites.
+  "access.invitations": (company, scenario) => ({
+    sql: INSERT_INVITATION,
+    params: [randomUUID(), company, ownerOf(scenario, company)],
   }),
   "ledger.reader_roles": (company) => ({
     sql: "INSERT INTO ledger.reader_roles (company_id, role_oid) VALUES ($1, 'nortfox_test_reader_c'::pg_catalog.regrole)",
@@ -356,6 +366,19 @@ export const APP_WRITES: Readonly<Record<string, Readonly<Partial<Record<"INSERT
       company: scenario.companyA,
       sql: "DELETE FROM access.program_grants WHERE company_id = $1 AND program = 'bookkeeping'",
       params: [scenario.companyA],
+    }),
+  },
+  // B's invitation is open; A's owner holds none.
+  "access.invitations": {
+    INSERT: (scenario) => ({
+      company: scenario.companyA,
+      sql: "INSERT INTO access.invitations (company_id, membership_id, name, email) VALUES ($1, $2, 'Cecilia Dahl', 'cecilia.dahl@example.com')",
+      params: [scenario.companyA, ownerOf(scenario, scenario.companyA)],
+    }),
+    UPDATE: (scenario) => ({
+      company: scenario.companyB,
+      sql: "UPDATE access.invitations SET superseded_at = pg_catalog.clock_timestamp() WHERE company_id = $1 AND accepted_at IS NULL AND superseded_at IS NULL",
+      params: [scenario.companyB],
     }),
   },
   "access.program_admins": {
@@ -683,16 +706,28 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     })),
   );
 
-  // The memberships, by the app: A invites a member, who accepts, and is
-  // deactivated; B invites someone who has not answered yet.
+  // The memberships and their invitations, by the app: A invites a member,
+  // who accepts, and is deactivated; B invites someone who has not answered
+  // yet.
   const memberA = randomUUID();
   const invitedB = randomUUID();
+  const invitationA = randomUUID();
+  const invitationB = randomUUID();
+  const accept = "UPDATE access.invitations AS t SET accepted_at = pg_catalog.clock_timestamp() WHERE t.id = $1 RETURNING to_jsonb(t) AS row";
   const invite = "INSERT INTO access.memberships AS t (id, company_id, status) VALUES ($1, $2, 'invited') RETURNING to_jsonb(t) AS row";
   const setMembership = (set: string): string => `UPDATE access.memberships AS t SET ${set} WHERE t.id = $1 RETURNING to_jsonb(t) AS row`;
   changes.push(
     ...(await change(app, { company: companyA, actor: user, kind: "user", channel: "rest" }, "access.memberships", "INSERT", memberA, {
       sql: invite,
       params: [memberA, companyA],
+    })),
+    ...(await change(app, { company: companyA, actor: user, kind: "user", channel: "rest" }, "access.invitations", "INSERT", invitationA, {
+      sql: INSERT_INVITATION,
+      params: [invitationA, companyA, memberA],
+    })),
+    ...(await change(app, { company: companyA, actor: member, kind: "user", channel: "rest" }, "access.invitations", "UPDATE", invitationA, {
+      sql: accept,
+      params: [invitationA],
     })),
     ...(await change(app, { company: companyA, actor: member, kind: "user", channel: "rest" }, "access.memberships", "UPDATE", memberA, {
       sql: setMembership("status = 'active', user_id = $2"),
@@ -705,6 +740,10 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.memberships", "INSERT", invitedB, {
       sql: invite,
       params: [invitedB, companyB],
+    })),
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.invitations", "INSERT", invitationB, {
+      sql: INSERT_INVITATION,
+      params: [invitationB, companyB, invitedB],
     })),
   );
 

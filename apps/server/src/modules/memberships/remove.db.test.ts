@@ -5,18 +5,15 @@
 // system administrator and never works on yourself. The member's row stays,
 // with the status removed, and their session is refused on the next request,
 // also after they accept a new invitation, which makes a new membership.
-// The removed member's work contacts are erased. This is the session half:
-// API tokens (part 4) and MCP tokens (part 5) extend this file.
-//
-// The new invitation is made and accepted as the database holds it: the
-// invitations come in the next step of this part, which then makes it
-// through inviteUser and acceptInvitation.
+// The removed member's work contacts are erased, and an invited member's
+// removal stops the link of their invitation. This is the session half: API
+// tokens (part 4) and MCP tokens (part 5) extend this file. Each member is
+// invited with inviteUser and accepts with acceptInvitation.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool, type ProblemBody } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { acceptedMember, addMembership } from "../../../test/memberships.ts";
 import {
   expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
@@ -27,7 +24,7 @@ import {
   writeAs,
   type SignInApp,
 } from "../../../test/sign-in.ts";
-import { apiCompany, calls, newMember, sessionIn, type ApiCompany } from "../../../test/users.ts";
+import { apiCompany, calls, invite, joinWith, newMember, sessionIn, type ApiCompany } from "../../../test/users.ts";
 
 describe("removing a member", () => {
   let db: TestDatabase;
@@ -44,7 +41,7 @@ describe("removing a member", () => {
     owner = await db.connect("owner");
     superuser = await db.admin();
     pool = appPool(db, 4);
-    server = signInApp(pool.database, { clock: testClock() });
+    server = signInApp(pool.database, { clock: testClock(new Date()) });
     company = await apiCompany(server, { app, owner });
   });
 
@@ -59,17 +56,17 @@ describe("removing a member", () => {
   }
 
   it("needs a system administrator", async () => {
-    const target = await newMember({ app, owner }, company);
-    const programAdmin = await newMember({ app, owner }, company);
+    const target = await newMember(server, { app, owner }, company);
+    const programAdmin = await newMember(server, { app, owner }, company);
     await calls.updateUser(server, company.session, programAdmin.id, { programsAdministered: [{ program: "bookkeeping" }] });
-    const plain = await newMember({ app, owner }, company);
+    const plain = await newMember(server, { app, owner }, company);
     for (const actor of [programAdmin, plain]) {
       const session = await sessionIn(server, actor.person, company.id);
       expect(await jsonOf<ProblemBody>(await calls.removeUser(server, session, target.id), 403)).toMatchObject({ code: "permission-missing", permission: "users:admin" });
     }
     expect((await statusOf(target.id))?.status).toBe("active");
     // A member made system administrator removes from their next choice of the company.
-    const admin = await newMember({ app, owner }, company);
+    const admin = await newMember(server, { app, owner }, company);
     await calls.updateUser(server, company.session, admin.id, { adminLevel: "admin" });
     expect((await calls.removeUser(server, await sessionIn(server, admin.person, company.id), target.id)).status).toBe(204);
     expect((await statusOf(target.id))?.status).toBe("removed");
@@ -86,7 +83,7 @@ describe("removing a member", () => {
       pointer: "/memberId",
     });
     // Not even beside another system administrator.
-    const admin = await newMember({ app, owner }, company);
+    const admin = await newMember(server, { app, owner }, company);
     await calls.updateUser(server, company.session, admin.id, { adminLevel: "admin" });
     const session = await sessionIn(server, admin.person, company.id);
     expect(await jsonOf<ProblemBody>(await calls.removeUser(server, session, admin.id), 422)).toMatchObject({ code: "cannot-remove-yourself" });
@@ -95,7 +92,7 @@ describe("removing a member", () => {
   });
 
   it("the row stays with status removed, its work contacts are erased, and no user operation finds it", async () => {
-    const target = await newMember({ app, owner }, company);
+    const target = await newMember(server, { app, owner }, company);
     await calls.updateUser(server, company.session, target.id, { workEmail: "hedda.arbete@example.com", workPhone: "070-174 06 12" });
     await calls.assignProgram(server, company.session, target.id, "read");
     expect((await calls.removeUser(server, company.session, target.id)).status).toBe(204);
@@ -113,26 +110,32 @@ describe("removing a member", () => {
     );
     expect(history.rows).toEqual([{ status: "removed", actor_id: company.creator.id }]);
     // A repeat with the same key gives the first answer.
-    const again = await newMember({ app, owner }, company);
+    const again = await newMember(server, { app, owner }, company);
     const key = "remove-again-once";
     expect((await calls.removeUser(server, company.session, again.id, key)).status).toBe(204);
     expect((await calls.removeUser(server, company.session, again.id, key)).status).toBe(204);
   });
 
-  it("removes an invited member", async () => {
-    const invited = await addMembership(app, owner, company, { status: "invited" });
-    expect((await calls.removeUser(server, company.session, invited)).status).toBe(204);
-    expect((await statusOf(invited))?.status).toBe("removed");
+  it("removes an invited member, and the link of their invitation stops", async () => {
+    const invited = await invite(server, company.session, "ingrid.ny@example.com", "Ingrid Ny");
+    expect((await calls.getInvitation(server, invited.token)).status).toBe(200);
+    expect((await calls.removeUser(server, company.session, invited.id)).status).toBe(204);
+    expect((await statusOf(invited.id))?.status).toBe("removed");
+    expect(await jsonOf<ProblemBody>(await calls.getInvitation(server, invited.token), 422)).toMatchObject({ code: "invitation-link-invalid" });
+    const accept = await calls.acceptInvitation(server, invited.token, { newIdentity: { name: "Ingrid Ny", password: "ingrids-lösenord" } });
+    expect(await jsonOf<ProblemBody>(accept, 422)).toMatchObject({ code: "invitation-link-invalid" });
+    const stopped = await superuser.query<{ stopped: boolean }>("SELECT i.superseded_at IS NOT NULL AS stopped FROM access.invitations AS i WHERE i.membership_id = $1", [invited.id]);
+    expect(stopped.rows).toEqual([{ stopped: true }]);
   });
 
   it("their session is refused on the next request, also after a new invitation is accepted", async () => {
-    const target = await newMember({ app, owner }, company);
+    const target = await newMember(server, { app, owner }, company);
     const session = await sessionIn(server, target.person, company.id);
     expect((await getAs(server, session, "/v1/company")).status).toBe(200);
     expect((await calls.removeUser(server, company.session, target.id)).status).toBe(204);
     expect((await getAs(server, session, "/v1/company")).status).toBe(401);
     // Invited again, and accepted: a new membership, active, and the old one stays removed.
-    const renewed = await acceptedMember(app, owner, company, target.person.id);
+    const renewed = await joinWith(server, target.person, (await invite(server, company.session, target.person.email)).token);
     expect(renewed).not.toBe(target.id);
     expect(await statusOf(renewed)).toEqual({ status: "active", user_id: target.person.id, live_user_id: target.person.id });
     expect((await statusOf(target.id))?.status).toBe("removed");

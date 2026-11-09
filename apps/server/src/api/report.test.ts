@@ -144,7 +144,9 @@ describe("the default reporter", () => {
 
   it("is what createApp reports a failed request with, when the caller gives no reporter", async () => {
     const written = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const database = { ...untouchedDatabase(), read: () => Promise.reject(databaseError()) };
+    // A check violation of the personnummer's form, whose detail holds the failing row, is a fault of the server. A unique violation of the personnummer is a rule, answered with 422 (ledger-refusals.ts).
+    const fault = Object.assign(databaseError(), { code: "23514", constraint: "identities_personal_identity_number_form" });
+    const database = { ...untouchedDatabase(), read: () => Promise.reject(fault) };
     const { hono } = createApp({
       version: TEST_VERSION,
       resolve: testResolver({ t: await principalOf("0d1c2b3a-4958-4a6b-8c7d-9e0f1a2b3c4d", { kind: "user", permissions: ["company:read"] }) }),
@@ -156,7 +158,7 @@ describe("the default reporter", () => {
     expect(response.status).toBe(500);
     const lines = written.mock.calls.map((call) => call.map(String).join(" "));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("code 23505");
+    expect(lines[0]).toContain("code 23514");
     expect(lines[0]).not.toContain("19900101-2385");
     expect(lines[0]).not.toContain("anna.lind");
   });

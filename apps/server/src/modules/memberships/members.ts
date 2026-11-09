@@ -4,8 +4,9 @@
 // (issue 12, "Users in a company"): the memberships of the transaction's
 // company, which row level security keeps to that company, with the
 // person's name from the people of the company (access.company_people,
-// which never gives the personnummer or the mobile number), the work
-// contacts and the programs. The operations reach the invited, active and
+// which never gives the personnummer or the mobile number), or for an
+// invited member the name of their latest invitation, the work contacts and
+// the programs. The operations reach the invited, active and
 // inactive members; a removed or a left member's row stays, and none of
 // these finds it. Only this module names the memberships' table and the
 // people of a company (scripts/guards/membership.ts).
@@ -18,8 +19,9 @@
 // refuses the last one's removal, deactivation and demotion first, with the
 // same answer.
 
-import { rolesOf, type AdminLevel, type Member, type Program } from "@nortfox/contract";
-import type { PageRequest, PageResult } from "../../api/operation.ts";
+import { rolesOf, type AdminLevel, type JsonValue, type Member, type Program } from "@nortfox/contract";
+import { LEDGER_REFUSALS } from "../../api/ledger-refusals.ts";
+import { refused, type Answer, type PageRequest, type PageResult } from "../../api/operation.ts";
 import type { Queryable } from "../../db/database.ts";
 import { grantOutput, memberAccess, readProgramsOf, type MembershipPrograms } from "./programs.ts";
 
@@ -63,18 +65,27 @@ function seen(programs: MembershipPrograms, reach: Reach): MembershipPrograms {
   };
 }
 
-/** The members of `rows` as the API gives them, with the names of their people and the programs that `reach` sees, and their roles at `at`. */
+/**
+ * The members of `rows` as the API gives them, with the names of their
+ * people, or of their latest invitations for the invited ones, the programs
+ * that `reach` sees, and their roles at `at`.
+ */
 async function membersOf(tx: Queryable, rows: readonly MemberRow[], at: Date, reach: Reach): Promise<Member[]> {
   const people = rows.flatMap((row) => (row.user_id === null ? [] : [row.user_id]));
   const named = await tx.query<{ id: string; name: string }>("SELECT id, name FROM access.company_people($1)", [people]);
   const names = new Map(named.rows.map((person) => [person.id, person.name]));
+  const invited = await tx.query<{ membership_id: string; name: string }>(
+    "SELECT DISTINCT ON (membership_id) membership_id, name FROM access.invitations WHERE membership_id = ANY ($1) ORDER BY membership_id, created_at DESC, id DESC",
+    [rows.flatMap((row) => (row.user_id === null ? [row.id] : []))],
+  );
+  const invitedNames = new Map(invited.rows.map((invitation) => [invitation.membership_id, invitation.name]));
   const programs = await readProgramsOf(
     tx,
     rows.map((row) => row.id),
   );
   return rows.map((row) => {
     const visible = seen(programs(row.id), reach);
-    const name = row.user_id === null ? undefined : names.get(row.user_id);
+    const name = row.user_id === null ? invitedNames.get(row.id) : names.get(row.user_id);
     return {
       id: row.id,
       companyId: row.company_id,
@@ -99,8 +110,8 @@ export async function readMember(tx: Queryable, memberId: string, at: Date, reac
   return member;
 }
 
-/** A member that the transaction holds (holdMember), as a system administrator sees it at `at`, after its change. */
-export async function heldMemberNow(tx: Queryable, member: HeldMember, at: Date): Promise<Member> {
+/** A member that the transaction holds (holdMember) or has just made, as a system administrator sees it at `at`, after its change. */
+export async function heldMemberNow(tx: Queryable, member: Pick<HeldMember, "id">, at: Date): Promise<Member> {
   const found = await tx.query<MemberRow>(`SELECT ${MEMBER_COLUMNS} FROM ${MEMBERS} WHERE m.id = $1`, [member.id]);
   // The member is held, so its one row is there.
   return ((await membersOf(tx, found.rows, at, { all: true })) as [Member])[0];
@@ -168,7 +179,17 @@ export async function hasOtherAdministrator(tx: Queryable, member: HeldMember): 
   return found.rows.length > 0;
 }
 
-/** Whether a change takes the last active system administrator away: a removal, a deactivation or a demotion of one. */
+/**
+ * The refusal of a change that takes the company's last active system
+ * administrator away: the same as the database's at the commit, which the
+ * runner gives when a race got past the server's check.
+ */
+export function lastAdministrator(member: HeldMember): Answer<never> {
+  const data: Readonly<Record<string, JsonValue>> = { companyId: member.companyId };
+  return refused({ code: "last-system-administrator", detail: LEDGER_REFUSALS.last_system_administrator.detail, data });
+}
+
+/** Whether a change takes the last active system administrator away: a removal, a deactivation, a demotion, a disconnect or a leave of one. */
 export function takesAdministrator(member: HeldMember, after: { readonly status: string; readonly adminLevel: AdminLevel | null }): boolean {
   return member.status === "active" && member.adminLevel !== null && (after.status !== "active" || after.adminLevel === null);
 }
@@ -202,5 +223,42 @@ export async function writeMember(tx: Queryable, member: HeldMember, change: Mem
  */
 export async function removeMember(tx: Queryable, member: HeldMember): Promise<void> {
   await tx.query("UPDATE access.memberships SET status = 'removed' WHERE id = $1", [member.id]);
+  await tx.query("DELETE FROM access.membership_contacts WHERE contact_company_id = $1 AND membership_id = $2", [member.companyId, member.id]);
+}
+
+/**
+ * Disconnects a held active or inactive member's identity: the membership
+ * is invited again, with no person, in one update, which the
+ * behandlingshistorik holds, and keeps its admin level, its idle time and
+ * its programs. The database ends its sessions. The old person's work
+ * contacts are erased. Gives whom the new invitation goes to: the person's
+ * name, and the member's work e-mail address, read before it is erased.
+ * Every active and inactive member has a work e-mail, so a member without
+ * one is a fault of the server.
+ */
+export async function disconnectMember(tx: Queryable, member: HeldMember): Promise<{ readonly name: string; readonly email: string }> {
+  const found = await tx.query<{ name: string; email: string }>(
+    `SELECT p.name, c.work_email AS email FROM access.company_people($1) AS p
+     JOIN access.membership_contacts AS c ON c.contact_company_id = $2 AND c.membership_id = $3
+     WHERE c.work_email IS NOT NULL`,
+    [[member.userId], member.companyId, member.id],
+  );
+  const [to] = found.rows;
+  if (to === undefined) {
+    throw new Error(`The member ${member.id} has no person with a work e-mail address in the company to invite again.`);
+  }
+  await tx.query("UPDATE access.memberships SET status = 'invited', user_id = NULL WHERE id = $1", [member.id]);
+  await tx.query("DELETE FROM access.membership_contacts WHERE contact_company_id = $1 AND membership_id = $2", [member.companyId, member.id]);
+  return to;
+}
+
+/**
+ * The person leaves the company with their held active membership: the
+ * status left, which is final and only the member's own person sets, and
+ * the database ends its sessions. The row stays, and the work contacts are
+ * erased.
+ */
+export async function leaveMember(tx: Queryable, member: HeldMember): Promise<void> {
+  await tx.query("UPDATE access.memberships SET status = 'left' WHERE id = $1", [member.id]);
   await tx.query("DELETE FROM access.membership_contacts WHERE contact_company_id = $1 AND membership_id = $2", [member.companyId, member.id]);
 }

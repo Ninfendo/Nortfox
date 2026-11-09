@@ -246,6 +246,10 @@ export const INSTALL_TABLES: ReadonlyMap<string, InstallTable> = new Map<string,
   ["access.setup_tokens", { class: "secret", why: "It holds the hashes of the setup links. Only the lookup functions read it." }],
   ["access.attempt_counters", { class: "secret", why: "It counts each account's failed guesses. Only the lookup functions read it." }],
   ["access.install_keys", { class: "secret", why: "It holds the install key's check value of each key id. Only the lookup functions read it." }],
+  [
+    "access.invitation_links",
+    { class: "secret", why: "It holds the hashes of the invitation links, with what a link's page shows before anyone accepts. Only the lookup functions read it." },
+  ],
 ]);
 
 /** The owner's one policy on every install-wide table: every row, which the lookup functions read and write through. */

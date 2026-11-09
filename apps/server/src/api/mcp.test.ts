@@ -233,7 +233,7 @@ const MEMBERSHIP = {
 
 const MEMBER = {
   type: "object",
-  properties: { ...MEMBERSHIP_IDS, name: { type: "string", description: "The person's name. Absent while the membership has no person." }, ...MEMBERSHIP_FIELDS },
+  properties: { ...MEMBERSHIP_IDS, name: { type: "string", description: "The person's name; for an invited member, the name the latest invitation was sent to. Absent for an invited member with no invitation." }, ...MEMBERSHIP_FIELDS },
   required: ["id", "companyId", "status", "idleTimeout", "roles", "programs", "programsAdministered"],
   additionalProperties: false,
   description:
@@ -659,6 +659,133 @@ const USER_TOOLS = [
 ];
 
 /** The tools of the browser's sign-in and of the person's own operations, as tools/list gives them. */
+/** The tools of the invitations, as tools/list gives them, in the registry's order. */
+const INVITATION_TOOLS = [
+  {
+    name: "inviteUser",
+    title: "Invite a user",
+    description: "Invites a person to the company you work in, with a name and an e-mail address: the invitation goes to that address by mail.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", minLength: 1, maxLength: 200, description: "Namn: the invited person's name." },
+        email: {
+          ...EMAIL,
+          description: "E-postadress: where the invitation goes. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.",
+        },
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["name", "email", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: MEMBER,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "resendInvitation",
+    title: "Send a new invitation",
+    description: "Sends a new invitation to a user of the company you work in who has not accepted theirs, and stops the old link.",
+    inputSchema: { type: "object", properties: { memberId: MEMBER_ID, idempotencyKey: IDEMPOTENCY_KEY }, required: ["memberId", "idempotencyKey"], additionalProperties: false },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "disconnectUserIdentity",
+    title: "Disconnect a user's identity",
+    description: "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
+    inputSchema: { type: "object", properties: { memberId: MEMBER_ID, idempotencyKey: IDEMPOTENCY_KEY }, required: ["memberId", "idempotencyKey"], additionalProperties: false },
+    outputSchema: MEMBER,
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "getInvitation",
+    title: "Read an invitation",
+    description: "Reads an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
+    inputSchema: {
+      type: "object",
+      properties: { token: { type: "string", pattern: "^nfi_[A-Za-z0-9_-]{43}$", description: "The invitation link's token, from the invitation's mail." } },
+      required: ["token"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The name the invitation was sent to." },
+        email: { type: "string", description: "The e-mail address the invitation was sent to. A new identity takes it as its e-mail address." },
+        expiresAt: { ...DATE_TIME, description: "When the link stops working: 14 days after the invitation was sent." },
+        companyName: { type: "string", description: "The name of the company the invitation is to, as it was when the invitation was sent." },
+        inviterName: { type: "string", description: "The name of the system administrator who sent the invitation, as it was then." },
+      },
+      required: ["name", "email", "expiresAt", "companyName", "inviterName"],
+      additionalProperties: false,
+      description: "Inbjudan: an invitation to a company, as its link shows it. The link works once, for 14 days, and a newer invitation of the same member stops it.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "acceptInvitation",
+    title: "Accept an invitation",
+    description: "Accepts an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        token: { type: "string", pattern: "^nfi_[A-Za-z0-9_-]{43}$", description: "The invitation link's token, from the invitation's mail." },
+        newIdentity: {
+          description:
+            "Skapa ett nytt NortFox ID: the new identity's name and password. It takes the invitation's e-mail address. Left out, Koppla ihop med befintligt NortFox ID: the signed-in person accepts.",
+          type: "object",
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 200, description: "The person's name." },
+            password: { type: "string", description: "The password: 12 to 1024 characters." },
+          },
+          required: ["name", "password"],
+          additionalProperties: false,
+        },
+      },
+      required: ["token"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        user: USER,
+        membership: MEMBERSHIP,
+        totpEnrolment: {
+          type: "object",
+          properties: {
+            otpauthUri: {
+              type: "string",
+              description: "The TOTP secret as an otpauth URI, for an authenticator app: show it as a QR code. The first right code of it confirms it.",
+            },
+          },
+          required: ["otpauthUri"],
+          additionalProperties: false,
+          description: "A new TOTP secret, which the person adds to an authenticator app.",
+        },
+      },
+      required: ["user", "membership"],
+      additionalProperties: false,
+      description:
+        "An accepted invitation: the person who now holds the membership, and the membership. For a new identity, also its TOTP secret, which no answer gives again: " +
+        "the person signs in next, with the password and a code. The TOTP enrolment is absent when the signed-in identity accepted.",
+    },
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "leaveCompany",
+    title: "Leave a company",
+    description: "Leaves a company where you are an active member. Only a new invitation lets you back.",
+    inputSchema: {
+      type: "object",
+      properties: { companyId: { ...UUID, description: "The company's id." }, idempotencyKey: IDEMPOTENCY_KEY },
+      required: ["companyId", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+];
+
 const SIGN_IN_TOOLS = [
   {
     name: "completeSetup",
@@ -848,6 +975,7 @@ const TOOLS = [
   ...SIGN_IN_TOOLS,
   ...COMPANY_TOOLS,
   ...USER_TOOLS,
+  ...INVITATION_TOOLS,
   {
     name: "testBookVoucher",
     title: "Book a voucher",
@@ -1175,7 +1303,7 @@ describe("/mcp on the real server", () => {
         era === "2025" ? {} : { versionNegotiation: { mode: { pin: "2026-07-28" } } },
       );
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(server.port)}/mcp`)));
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...[...SIGN_IN_TOOLS, ...COMPANY_TOOLS, ...USER_TOOLS].map((tool) => tool.name)]);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...[...SIGN_IN_TOOLS, ...COMPANY_TOOLS, ...USER_TOOLS, ...INVITATION_TOOLS].map((tool) => tool.name)]);
       expect(await callTool(client, "getHealth")).toEqual({ isError: false, structured: { status: "ok", version: TEST_VERSION } });
       await client.close();
     } finally {

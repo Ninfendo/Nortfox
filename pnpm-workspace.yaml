@@ -39,6 +39,7 @@ catalog:
   fast-check: 4.10.2
   globals: 17.13.0
   hono: 4.13.16
+  nodemailer: 10.3.1
   pg: 8.23.1
   react: 19.3.1
   react-dom: 19.3.1

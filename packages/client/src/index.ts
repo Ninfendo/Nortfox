@@ -8,6 +8,8 @@ export type {
   CompanyChoice,
   FieldProblem,
   Health,
+  Invitation,
+  InvitationAcceptance,
   Me,
   Member,
   Membership,

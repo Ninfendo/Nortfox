@@ -16,17 +16,23 @@
 //   1 to 255 written without a leading zero, and its second line is the
 //   secret: at least 32 random bytes, as an even number of hexadecimal
 //   digits. Nothing else is in the file but a line end after the secret.
+// - NORTFOX_SMTP_URL, NORTFOX_SMTP_PASSWORD_FILE and NORTFOX_MAIL_FROM: the
+//   install's mail (mail/smtp.ts). With none of them set, the install has no
+//   mailer, and the operations that send a mail refuse.
 
 import { readFileSync } from "node:fs";
 import { INSTALL_SECRET_MIN_BYTES, InstallKey } from "./auth/install-key.ts";
 import { isOrigin } from "./auth/origin.ts";
 import type { Environment } from "./db/connect.ts";
+import { smtpSettingsOf, type SmtpSettings } from "./mail/smtp.ts";
 
 export interface ServerConfig {
   /** The origin people open NortFox at: the one browser origin that /v1 and /mcp allow. */
   readonly publicOrigin: string;
   /** The install secret. */
   readonly installKey: InstallKey;
+  /** The install's SMTP settings, or undefined when it has no mail set up. */
+  readonly smtp: SmtpSettings | undefined;
 }
 
 /** The hosts that a browser treats as this machine, where http keeps a Secure cookie. */
@@ -89,5 +95,5 @@ export function serverConfig(env: Environment, readFile: (path: string) => strin
   if (keyFile === undefined || keyFile === "") {
     throw new Error("NORTFOX_SECRET_KEY_FILE is not set. Set it to the file of the install secret, as deploy/README.md says.");
   }
-  return { publicOrigin, installKey: readInstallKey(keyFile, readFile) };
+  return { publicOrigin, installKey: readInstallKey(keyFile, readFile), smtp: smtpSettingsOf(env, readFile) };
 }

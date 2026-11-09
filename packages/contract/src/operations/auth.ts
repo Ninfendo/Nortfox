@@ -12,7 +12,7 @@ import { noNul, wellFormed } from "../text.ts";
 import { User } from "./me.ts";
 
 /** A token's form: nf, its kind's letter, an underscore and 43 characters of base64url. */
-function token(letter: string, description: string): z.ZodString {
+export function token(letter: string, description: string): z.ZodString {
   return z
     .string()
     .regex(new RegExp(`^nf${letter}_[A-Za-z0-9_-]{43}$`))

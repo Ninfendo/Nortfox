@@ -822,7 +822,7 @@
           },
           "name": {
             "type": "string",
-            "description": "The person's name. Absent while the membership has no person."
+            "description": "The person's name; for an invited member, the name the latest invitation was sent to. Absent for an invited member with no invitation."
           },
           "status": {
             "type": "string",
@@ -915,6 +915,61 @@
         ],
         "additionalProperties": false,
         "description": "A member's Rapporter and Register/Övrigt rights, and the program grants that hold them."
+      },
+      "Invitation": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name the invitation was sent to."
+          },
+          "email": {
+            "type": "string",
+            "description": "The e-mail address the invitation was sent to. A new identity takes it as its e-mail address."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the link stops working: 14 days after the invitation was sent."
+          },
+          "companyName": {
+            "type": "string",
+            "description": "The name of the company the invitation is to, as it was when the invitation was sent."
+          },
+          "inviterName": {
+            "type": "string",
+            "description": "The name of the system administrator who sent the invitation, as it was then."
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "expiresAt",
+          "companyName",
+          "inviterName"
+        ],
+        "additionalProperties": false,
+        "description": "Inbjudan: an invitation to a company, as its link shows it. The link works once, for 14 days, and a newer invitation of the same member stops it."
+      },
+      "InvitationAcceptance": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/Membership"
+          },
+          "totpEnrolment": {
+            "$ref": "#/components/schemas/TotpEnrolment"
+          }
+        },
+        "required": [
+          "user",
+          "membership"
+        ],
+        "additionalProperties": false,
+        "description": "An accepted invitation: the person who now holds the membership, and the membership. For a new identity, also its TOTP secret, which no answer gives again: the person signs in next, with the password and a code. The TOTP enrolment is absent when the signed-in identity accepted."
       }
     },
     "parameters": {}
@@ -2992,6 +3047,175 @@
             }
           }
         }
+      },
+      "post": {
+        "operationId": "inviteUser",
+        "tags": [
+          "users"
+        ],
+        "summary": "Invite a user",
+        "description": "Lägg till användare: makes an invited member of the company, with a name and an e-mail address, and sends the invitation to that address. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An address that a member of the company has, or that an open invitation of the company goes to, gets 422 already-member.",
+        "x-nortfox": {
+          "permission": "users:admin",
+          "tool": "Invites a person to the company you work in, with a name and an e-mail address: the invitation goes to that address by mail.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": [
+            "/name",
+            "/workEmail",
+            "/workPhone"
+          ]
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Namn: the invited person's name."
+                  },
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "format": "email",
+                    "description": "E-postadress: where the invitation goes. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address."
+                  }
+                },
+                "required": [
+                  "name",
+                  "email"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Member"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/users/{memberId}": {
@@ -4103,6 +4327,690 @@
           },
           "415": {
             "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{memberId}/invitation": {
+      "post": {
+        "operationId": "resendInvitation",
+        "tags": [
+          "users"
+        ],
+        "summary": "Send a new invitation",
+        "description": "Skicka en ny inbjudan: sends an invited member a new invitation, to the name and the e-mail address of their latest one. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. A member who is not invited gets 422 user-not-invited.",
+        "x-nortfox": {
+          "permission": "users:admin",
+          "tool": "Sends a new invitation to a user of the company you work in who has not accepted theirs, and stops the old link.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. The answer has no body."
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{memberId}/disconnect": {
+      "post": {
+        "operationId": "disconnectUserIdentity",
+        "tags": [
+          "users"
+        ],
+        "summary": "Disconnect a user's identity",
+        "description": "Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. The company always keeps an active system administrator.",
+        "x-nortfox": {
+          "permission": "users:admin",
+          "tool": "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": [
+            "/name",
+            "/workEmail",
+            "/workPhone"
+          ]
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Member"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/invitations/{token}": {
+      "get": {
+        "operationId": "getInvitation",
+        "tags": [
+          "invitations"
+        ],
+        "summary": "Read an invitation",
+        "description": "Gives the invitation that a link holds: the name and the e-mail address it was sent to, the company, who sent it, and when the link stops working. A link that is unknown, used, stopped by a newer invitation or past its 14 days gets one answer, 422 invitation-link-invalid.",
+        "x-nortfox": {
+          "permission": "none",
+          "tool": "Reads an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
+          "assistant": false,
+          "writes": false,
+          "list": false,
+          "session": "flow",
+          "company": "none",
+          "personalOutput": [
+            "/name",
+            "/email",
+            "/inviterName"
+          ]
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^nfi_[A-Za-z0-9_-]{43}$",
+              "description": "The invitation link's token, from the invitation's mail."
+            },
+            "required": true,
+            "description": "The invitation link's token, from the invitation's mail.",
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inbjudan: an invitation to a company, as its link shows it. The link works once, for 14 days, and a newer invitation of the same member stops it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invitation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts: wait the seconds that Retry-After gives before the next one.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server checks as many passwords as it can at once: send the request again after the seconds that Retry-After gives.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/invitations/{token}/accept": {
+      "post": {
+        "operationId": "acceptInvitation",
+        "tags": [
+          "invitations"
+        ],
+        "summary": "Accept an invitation",
+        "description": "Accepts the invitation that a link holds, once. With newIdentity, Skapa ett nytt NortFox ID: a new identity with that name and a password of 12 to 1024 characters, which takes the invitation's e-mail address; the answer gives its TOTP secret, and sets no session, so the person signs in next with the password and a code. Without it, Koppla ihop med befintligt NortFox ID: the identity of the browser's session accepts, and with no session the call gets 422 sign-in-required. The member's work e-mail address becomes the invitation's. A link that is unknown, used, stopped by a newer invitation or past its 14 days gets one answer, 422 invitation-link-invalid. An e-mail address that another identity has gets 422 email-taken, and a person who is a member of the company already gets 422 already-member.",
+        "x-nortfox": {
+          "permission": "none",
+          "tool": "Accepts an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": "flow",
+          "company": "none",
+          "personalOutput": [
+            "/user/name",
+            "/user/email",
+            "/membership/workEmail",
+            "/membership/workPhone"
+          ]
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^nfi_[A-Za-z0-9_-]{43}$",
+              "description": "The invitation link's token, from the invitation's mail."
+            },
+            "required": true,
+            "description": "The invitation link's token, from the invitation's mail.",
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "newIdentity": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "The person's name."
+                      },
+                      "password": {
+                        "type": "string",
+                        "description": "The password: 12 to 1024 characters."
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "password"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Skapa ett nytt NortFox ID: the new identity's name and password. It takes the invitation's e-mail address. Left out, Koppla ihop med befintligt NortFox ID: the signed-in person accepts."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An accepted invitation: the person who now holds the membership, and the membership. For a new identity, also its TOTP secret, which no answer gives again: the person signs in next, with the password and a code. The TOTP enrolment is absent when the signed-in identity accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationAcceptance"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts: wait the seconds that Retry-After gives before the next one.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server checks as many passwords as it can at once: send the request again after the seconds that Retry-After gives.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/companies/{companyId}/leave": {
+      "post": {
+        "operationId": "leaveCompany",
+        "tags": [
+          "me"
+        ],
+        "summary": "Leave a company",
+        "description": "The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave.",
+        "x-nortfox": {
+          "permission": "signed-in",
+          "tool": "Leaves a company where you are an active member. Only a new invitation lets you back.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": {
+            "input": "companyId"
+          },
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The company's id."
+            },
+            "required": true,
+            "description": "The company's id.",
+            "name": "companyId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. The answer has no body."
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
             "content": {
               "application/problem+json": {
                 "schema": {

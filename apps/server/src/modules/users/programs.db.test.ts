@@ -76,7 +76,7 @@ describe("the program grants", () => {
   });
 
   function member(): Promise<TestMember> {
-    return newMember({ app, owner }, company);
+    return newMember(server, { app, owner }, company);
   }
 
   async function grantsOf(membership: string): Promise<(GrantRow & { program: string })[]> {
@@ -365,7 +365,7 @@ describe("a Revisor grant that has ended", () => {
       const superuser = await db.admin();
       const server = signInApp(pool.database, { clock: testClock(new Date()) });
       const company = await apiCompany(server, { app, owner });
-      const { id } = await newMember({ app, owner }, company);
+      const { id } = await newMember(server, { app, owner }, company);
       const first = await jsonOf<ProgramGrant>(await calls.assignProgram(server, company.session, id, "auditor"));
       const [old] = (await superuser.query<{ id: string }>("SELECT id FROM access.program_grants WHERE membership_id = $1", [id])).rows;
       // 31 days on, by the server's clock: the grant has ended, and so has every session.

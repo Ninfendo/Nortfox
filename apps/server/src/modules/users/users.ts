@@ -24,12 +24,11 @@
 // The answers hold the work contacts and the person's name, so the keys of
 // updateUser are kept outside every company table.
 
-import { getUser, listUsers, removeUser, updateUser, type JsonValue } from "@nortfox/contract";
+import { getUser, listUsers, removeUser, updateUser } from "@nortfox/contract";
 import { handleData, handleList, ok, refused, type Answer } from "../../api/operation.ts";
-import { LEDGER_REFUSALS } from "../../api/ledger-refusals.ts";
 import { seeSession } from "../../auth/resolver.ts";
 import { setWorkContacts } from "../memberships/membership.ts";
-import { hasOtherAdministrator, heldMemberNow, holdMember, memberPage, readMember, removeMember, takesAdministrator, writeMember, type HeldMember } from "../memberships/members.ts";
+import { hasOtherAdministrator, heldMemberNow, holdMember, lastAdministrator, memberPage, readMember, removeMember, takesAdministrator, writeMember } from "../memberships/members.ts";
 import { setAdministered } from "../memberships/programs.ts";
 import { reachOf } from "./reach.ts";
 
@@ -40,16 +39,6 @@ export function userNotFound(field = "memberId"): Answer<never> {
     detail: `The company has no invited, active or inactive member with the id that ${field} names.`,
     pointer: `/${field}`,
   });
-}
-
-/**
- * The refusal of a change that takes the company's last active system
- * administrator away: the same as the database's at the commit, which the
- * runner gives when a race got past this check.
- */
-export function lastAdministrator(member: HeldMember): Answer<never> {
-  const data: Readonly<Record<string, JsonValue>> = { companyId: member.companyId };
-  return refused({ code: "last-system-administrator", detail: LEDGER_REFUSALS.last_system_administrator.detail, data });
 }
 
 export const listUsersHandler = handleList(listUsers, async ({ context, tx, now, page }) => ok(await memberPage(tx, page, now(), await reachOf(tx, context.company))));

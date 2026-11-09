@@ -10,7 +10,7 @@
 import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 import type { Queryable } from "../../db/database.ts";
-import { CompanyAccess, ResolvedMembership, activeMemberships, resolveActive, type MembershipRow } from "./resolve.ts";
+import { CompanyAccess, InvitationEntry, ResolvedMembership, activeMemberships, invitationEntry, resolveActive, type MembershipRow } from "./resolve.ts";
 
 const COMPANY = "0b7c9d2e-4f61-4a8b-9c3d-2e1f0a9b8c7d";
 const PERSON = "6c5b4a39-2817-4f6e-8d5c-4b3a29180f7e";
@@ -157,5 +157,42 @@ describe("the constructors", () => {
     expect(() => {
       Reflect.construct(CompanyAccess, [undefined, membership, []]);
     }).toThrow(Error);
+  });
+});
+
+describe("an invitation's entry", () => {
+  const LINK = {
+    invited_company_id: COMPANY,
+    invitation_id: "3a2b1c0d-9e8f-4a7b-8c6d-5e4f3a2b1c0d",
+    email: "karin.lund@example.com",
+    person_id: PERSON,
+  };
+
+  /** A transaction that answers every query with `rows`. */
+  function links(rows: readonly unknown[]): Queryable {
+    return { query: <Row extends QueryResultRow>() => Promise.resolve({ rows } as unknown as QueryResult<Row>) };
+  }
+
+  it("is made from a live link, for the transaction's person, and knows the transaction it was read in", async () => {
+    const tx = links([LINK]);
+    const entry = await invitationEntry(tx, Buffer.alloc(32), new Date("2090-03-15T10:00:00.000Z"));
+    expect(entry).toBeInstanceOf(InvitationEntry);
+    expect([entry?.personId, entry?.companyId, entry?.invitationId, entry?.email]).toEqual([PERSON, COMPANY, LINK.invitation_id, LINK.email]);
+    expect(entry?.resolvedIn(tx)).toBe(true);
+    expect(entry?.resolvedIn(links([LINK]))).toBe(false);
+    expect(Object.isFrozen(entry)).toBe(true);
+  });
+
+  it("is nothing for a link that is not live", async () => {
+    expect(await invitationEntry(links([]), Buffer.alloc(32), new Date("2090-03-15T10:00:00.000Z"))).toBeUndefined();
+  });
+
+  it("is refused to every caller but resolve.ts, and with no person", async () => {
+    expect(() => new InvitationEntry(Symbol("made by resolve.ts"), LINK, links([]))).toThrow(
+      new Error("Only modules/memberships/resolve.ts makes an InvitationEntry, from a live invitation link that the database gave."),
+    );
+    await expect(invitationEntry(links([{ ...LINK, person_id: null }]), Buffer.alloc(32), new Date("2090-03-15T10:00:00.000Z"))).rejects.toThrow(
+      "An invitation link is accepted by a person, and the transaction acts as none.",
+    );
   });
 });

@@ -565,3 +565,317 @@ WHERE m.status IN ('active', 'inactive') AND i.email IS NOT NULL
 ON CONFLICT (contact_company_id, membership_id) DO UPDATE SET work_email = excluded.work_email
   WHERE access.membership_contacts.work_email IS NULL;
 ALTER TABLE access.memberships FORCE ROW LEVEL SECURITY;
+
+-- The invitations --------------------------------------------------------------------
+--
+-- Inbjudan: an invitation of a member, "Lägg till användare" or "Skicka en
+-- ny inbjudan", with the name and the e-mail address it was sent to, who
+-- sent it, the transaction's actor, which the history keeps the same way,
+-- with no foreign key, and when. It works for 14 days, in whole days of 24
+-- hours, from when the database stamped it. It ends once: accepted, or
+-- stopped by a newer invitation of the same member or by the member's
+-- removal. A company table: the rights history must say whom a membership
+-- was offered to, and the address is where the link went, so the name and
+-- the address stay in the behandlingshistorik. The membership pairs with
+-- its company, and company_id and id together are a key, so a link names an
+-- invitation with its company.
+CREATE TABLE access.invitations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES ledger.companies (company_id),
+  membership_id uuid NOT NULL,
+  name text NOT NULL CONSTRAINT invitations_name_length CHECK (char_length(name) BETWEEN 1 AND 200),
+  email text NOT NULL CONSTRAINT invitations_email_length CHECK (char_length(email) BETWEEN 1 AND 254),
+  invited_by uuid NOT NULL,
+  created_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  accepted_at timestamptz,
+  superseded_at timestamptz,
+  CONSTRAINT invitations_membership_fkey FOREIGN KEY (company_id, membership_id) REFERENCES access.memberships (company_id, id),
+  CONSTRAINT invitations_accepted_or_superseded CHECK (accepted_at IS NULL OR superseded_at IS NULL),
+  CONSTRAINT invitations_company_id_id_key UNIQUE (company_id, id)
+);
+
+-- The rules no policy keeps, for every role:
+-- - no invitation is deleted (append_only);
+-- - the database stamps who sent it, the transaction's actor, when, to the
+--   millisecond, as the API gives a time, and its end 14 days later, and
+--   refuses each of them, an acceptance and a stop, when they are given
+--   with a new invitation;
+-- - only accepted_at and superseded_at change, each once (the set-once
+--   trigger below), and never both; nothing else ever changes.
+-- A refusal of a given or changed field is immutable_field, with the field.
+CREATE FUNCTION access.invitations_rules() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $rules$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    PERFORM ledger.refuse('append_only', jsonb_build_object('table', 'access.invitations', 'operation', 'DELETE'));
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.invited_by IS NOT NULL THEN
+      PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'invited_by', 'operation', 'create'));
+    END IF;
+    IF NEW.created_at IS NOT NULL THEN
+      PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'created_at', 'operation', 'create'));
+    END IF;
+    IF NEW.expires_at IS NOT NULL THEN
+      PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'expires_at', 'operation', 'create'));
+    END IF;
+    IF NEW.accepted_at IS NOT NULL THEN
+      PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'accepted_at', 'operation', 'create'));
+    END IF;
+    IF NEW.superseded_at IS NOT NULL THEN
+      PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'superseded_at', 'operation', 'create'));
+    END IF;
+    SELECT a.actor_id INTO NEW.invited_by FROM ledger.current_actor() AS a;
+    NEW.created_at := date_trunc('milliseconds', clock_timestamp());
+    NEW.expires_at := NEW.created_at + make_interval(hours => 24 * 14);
+    RETURN NEW;
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'id', 'operation', 'update'));
+  END IF;
+  IF NEW.company_id IS DISTINCT FROM OLD.company_id THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'company_id', 'operation', 'update'));
+  END IF;
+  IF NEW.membership_id IS DISTINCT FROM OLD.membership_id THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'membership_id', 'operation', 'update'));
+  END IF;
+  IF NEW.name IS DISTINCT FROM OLD.name THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'name', 'operation', 'update'));
+  END IF;
+  IF NEW.email IS DISTINCT FROM OLD.email THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'email', 'operation', 'update'));
+  END IF;
+  IF NEW.invited_by IS DISTINCT FROM OLD.invited_by THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'invited_by', 'operation', 'update'));
+  END IF;
+  IF NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'created_at', 'operation', 'update'));
+  END IF;
+  IF NEW.expires_at IS DISTINCT FROM OLD.expires_at THEN
+    PERFORM ledger.refuse('immutable_field', jsonb_build_object('field', 'expires_at', 'operation', 'update'));
+  END IF;
+  RETURN NEW;
+END
+$rules$;
+
+CREATE TRIGGER invitations_rules BEFORE INSERT OR UPDATE OR DELETE ON access.invitations
+  FOR EACH ROW EXECUTE FUNCTION access.invitations_rules();
+CREATE TRIGGER invitations_set_once BEFORE UPDATE ON access.invitations
+  FOR EACH ROW EXECUTE FUNCTION access.keep_set_once('accepted_at', 'superseded_at');
+SELECT meta.protect_company_table('access.invitations', 'id');
+-- An invitation is never deleted, so the app may add them and mark them only.
+GRANT INSERT, UPDATE ON access.invitations TO nortfox_app;
+
+-- A new invitation of a member stops the member's earlier ones that are
+-- still open, at the new one's time (open point 5): a member has one open
+-- invitation at most.
+CREATE FUNCTION access.supersede_invitations() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $supersede$
+BEGIN
+  UPDATE access.invitations AS i SET superseded_at = NEW.created_at
+  WHERE i.company_id = NEW.company_id AND i.membership_id = NEW.membership_id AND i.id <> NEW.id
+    AND i.accepted_at IS NULL AND i.superseded_at IS NULL;
+  RETURN NULL;
+END
+$supersede$;
+
+CREATE TRIGGER invitations_supersede AFTER INSERT ON access.invitations
+  FOR EACH ROW EXECUTE FUNCTION access.supersede_invitations();
+
+-- An invited member's removal stops their open invitation, at the
+-- database's clock.
+CREATE FUNCTION access.withdraw_invitations() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $withdraw$
+BEGIN
+  UPDATE access.invitations AS i SET superseded_at = clock_timestamp()
+  WHERE i.company_id = NEW.company_id AND i.membership_id = NEW.id AND i.accepted_at IS NULL AND i.superseded_at IS NULL;
+  RETURN NULL;
+END
+$withdraw$;
+
+CREATE TRIGGER memberships_withdraw_invitations AFTER UPDATE ON access.memberships
+  FOR EACH ROW WHEN (OLD.status = 'invited' AND NEW.status = 'removed') EXECUTE FUNCTION access.withdraw_invitations();
+
+-- The invitation links -------------------------------------------------------------
+--
+-- The link of an invitation, "Acceptera inbjudan": the token's hash, the
+-- invitation it opens, paired with its company, and what the link's page
+-- shows before anyone accepts: the name and the address the invitation was
+-- sent to, and the company's and the sender's names as they were then. An
+-- invitation has one link. It works once, until the invitation's end, and
+-- stops when its invitation does. A link is used or stopped, never both, and
+-- either mark is set once. A secret install-wide table: the app reaches it
+-- only through the functions below, and the purge deletes a link at its
+-- end.
+CREATE TABLE access.invitation_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  token_hash bytea NOT NULL CONSTRAINT invitation_links_token_hash_form CHECK (octet_length(token_hash) = 32),
+  invited_company_id uuid NOT NULL,
+  invitation_id uuid NOT NULL,
+  name text NOT NULL,
+  email text NOT NULL,
+  company_name text NOT NULL,
+  inviter_name text NOT NULL,
+  created_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  superseded_at timestamptz,
+  CONSTRAINT invitation_links_token_hash_key UNIQUE (token_hash),
+  CONSTRAINT invitation_links_once UNIQUE (invited_company_id, invitation_id),
+  CONSTRAINT invitation_links_invitation_fkey FOREIGN KEY (invited_company_id, invitation_id) REFERENCES access.invitations (company_id, id),
+  CONSTRAINT invitation_links_used_or_superseded CHECK (used_at IS NULL OR superseded_at IS NULL)
+);
+CREATE TRIGGER invitation_links_set_once BEFORE UPDATE ON access.invitation_links
+  FOR EACH ROW EXECUTE FUNCTION access.keep_set_once('used_at', 'superseded_at');
+SELECT meta.protect_install_table('access.invitation_links');
+
+-- An invitation that stops, by a newer one or by the member's removal,
+-- stops its link, at the same time, unless the link was used.
+CREATE FUNCTION access.stop_invitation_links() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $stop$
+BEGIN
+  UPDATE access.invitation_links AS l SET superseded_at = NEW.superseded_at
+  WHERE l.invited_company_id = NEW.company_id AND l.invitation_id = NEW.id AND l.used_at IS NULL AND l.superseded_at IS NULL;
+  RETURN NULL;
+END
+$stop$;
+
+CREATE TRIGGER invitations_stop_links AFTER UPDATE OF superseded_at ON access.invitations
+  FOR EACH ROW WHEN (OLD.superseded_at IS NULL AND NEW.superseded_at IS NOT NULL) EXECUTE FUNCTION access.stop_invitation_links();
+
+-- The functions of the links ---------------------------------------------------------
+
+-- Makes the link of an open invitation of the transaction's company, and
+-- gives true; or gives false, and makes none, for an invitation that the
+-- company does not have, or that was accepted or stopped. The link takes the
+-- invitation's name, address and end. The server gives the company's and
+-- the sender's names, which it reads in the same transaction: no function
+-- that the app may run reads the companies.
+CREATE FUNCTION access.issue_invitation_link(token_hash bytea, invitation uuid, company_name text, inviter_name text, at timestamptz) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $issue$
+DECLARE
+  open record;
+BEGIN
+  SELECT i.name, i.email, i.expires_at INTO open
+  FROM access.invitations AS i
+  WHERE i.id = issue_invitation_link.invitation AND i.company_id = ledger.current_company_id() AND i.accepted_at IS NULL AND i.superseded_at IS NULL;
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+  INSERT INTO access.invitation_links (token_hash, invited_company_id, invitation_id, name, email, company_name, inviter_name, created_at, expires_at)
+  VALUES (
+    issue_invitation_link.token_hash, ledger.current_company_id(), issue_invitation_link.invitation, open.name, open.email,
+    issue_invitation_link.company_name, issue_invitation_link.inviter_name, issue_invitation_link.at, open.expires_at
+  );
+  RETURN true;
+END
+$issue$;
+
+-- A live link, by its hash, at `at`: one that is not used, not stopped and
+-- not past its end. It gives the invitation and its company, and what the
+-- link's page shows. Nothing for any other link.
+CREATE FUNCTION access.invitation_by_token(token_hash bytea, at timestamptz)
+RETURNS TABLE (invited_company_id uuid, invitation_id uuid, name text, email text, company_name text, inviter_name text, expires_at timestamptz)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+BEGIN ATOMIC
+  SELECT l.invited_company_id, l.invitation_id, l.name, l.email, l.company_name, l.inviter_name, l.expires_at
+  FROM access.invitation_links AS l
+  WHERE l.token_hash = invitation_by_token.token_hash AND l.used_at IS NULL AND l.superseded_at IS NULL AND l.expires_at > invitation_by_token.at;
+END;
+
+-- Uses a live link once, for the transaction's person, whose identity is
+-- active, in the link's company, which the transaction has entered: it
+-- gives true, or false when no row changed. Of two uses at once, the second
+-- waits for the first's row lock, then finds the link used.
+CREATE FUNCTION access.use_invitation_link(token_hash bytea, at timestamptz) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $use$
+BEGIN
+  UPDATE access.invitation_links AS l SET used_at = use_invitation_link.at
+  WHERE l.token_hash = use_invitation_link.token_hash AND l.used_at IS NULL AND l.superseded_at IS NULL AND l.expires_at > use_invitation_link.at
+    AND l.invited_company_id = ledger.current_company_id()
+    AND EXISTS (SELECT FROM access.identities AS i WHERE i.id = access.current_person_id() AND i.status = 'active');
+  RETURN FOUND;
+END
+$use$;
+
+-- Uses a live link once, as access.use_invitation_link does, and makes a new
+-- identity with it: the transaction's person, whose id the server picked,
+-- with the name, the link's e-mail address, the password and a pending TOTP
+-- secret, which the server sealed bound to the identity and the secret's
+-- row. It gives false, and makes nothing, for a link that is not live, or
+-- with no person set. An address that another identity has is refused by
+-- the identities' unique index (23505), and nothing is kept.
+CREATE FUNCTION access.accept_invitation_as_new(token_hash bytea, at timestamptz, name text, password_hash text, totp_secret_id uuid, totp_secret bytea) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $accept$
+DECLARE
+  person uuid := access.current_person_id();
+  address text;
+BEGIN
+  IF person IS NULL THEN
+    RETURN false;
+  END IF;
+  UPDATE access.invitation_links AS l SET used_at = accept_invitation_as_new.at
+  WHERE l.token_hash = accept_invitation_as_new.token_hash AND l.used_at IS NULL AND l.superseded_at IS NULL AND l.expires_at > accept_invitation_as_new.at
+    AND l.invited_company_id = ledger.current_company_id()
+  RETURNING l.email INTO address;
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+  INSERT INTO access.identities (id, name, email) VALUES (person, accept_invitation_as_new.name, address);
+  INSERT INTO access.password_credentials (identity_id, password_hash, changed_at) VALUES (person, accept_invitation_as_new.password_hash, accept_invitation_as_new.at);
+  INSERT INTO access.totp_secrets (id, identity_id, secret, state, created_at)
+  VALUES (accept_invitation_as_new.totp_secret_id, person, accept_invitation_as_new.totp_secret, 'pending', accept_invitation_as_new.at);
+  RETURN true;
+END
+$accept$;
+
+GRANT EXECUTE ON FUNCTION
+  access.issue_invitation_link(bytea, uuid, text, text, timestamptz),
+  access.invitation_by_token(bytea, timestamptz),
+  access.use_invitation_link(bytea, timestamptz),
+  access.accept_invitation_as_new(bytea, timestamptz, text, text, uuid, bytea)
+TO nortfox_app;
+
+-- The purge, as 0008 made it, but for one thing: it deletes the invitation
+-- links at their end, used and stopped ones too, after the setup links.
+CREATE OR REPLACE FUNCTION access.purge_expired(at timestamptz) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $purge$
+BEGIN
+  DELETE FROM access.setup_tokens AS t WHERE t.expires_at <= purge_expired.at AND t.used_at IS NULL;
+  DELETE FROM access.invitation_links AS l WHERE l.expires_at <= purge_expired.at;
+  DELETE FROM access.login_challenges AS c WHERE c.expires_at <= purge_expired.at;
+  DELETE FROM access.sessions AS s
+  WHERE s.ended_at <= purge_expired.at - interval '30 days'
+    OR (s.ended_at IS NULL AND s.started_at <= purge_expired.at - interval '30 days 12 hours');
+  DELETE FROM access.attempt_counters AS a
+  WHERE a.window_started_at <= purge_expired.at - interval '1 hour' AND (a.locked_until IS NULL OR a.locked_until <= purge_expired.at);
+  DELETE FROM access.idempotency_keys AS k WHERE k.created_at <= purge_expired.at - interval '24 hours';
+  DELETE FROM access.account_events AS e
+  WHERE e.id IN (
+    SELECT r.id FROM (
+      SELECT x.id, x.kind, x.details, x.at, row_number() OVER (PARTITION BY x.identity_id ORDER BY x.at DESC, x.id DESC) AS place
+      FROM access.account_events AS x
+    ) AS r
+    WHERE r.place > 100
+      AND NOT (r.kind = 'sign-in' AND r.details ->> 'outcome' IS NOT DISTINCT FROM 'failed' AND r.at > clock_timestamp() - interval '1 hour')
+  );
+END
+$purge$;

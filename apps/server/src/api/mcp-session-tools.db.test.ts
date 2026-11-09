@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// T10's halves for slice 2c's first and second parts, generated from the
-// registry: through
-// /mcp, every operation that serves the browser's session (session "flow"),
-// selectCompany among them, keeps its tool, which refuses every call with 403 browser-only before it
-// reads an argument (open point 18). Each tool is called with arguments that
+// T10's halves for slice 2c's first three parts, generated from the
+// registry: through /mcp, every operation that serves the browser's session
+// (session "flow"), selectCompany, getInvitation and acceptInvitation among
+// them, keeps its tool, which refuses every call with 403 browser-only
+// before it reads an argument (open point 18). Each tool is called with arguments that
 // succeed by REST, from test/operation-arguments.ts, and with the browser's
 // session cookie too: the call changes nothing, and the same arguments then
 // succeed by REST. No tool result holds a token of any kind. The test fails
@@ -20,19 +20,25 @@ import { addGrant } from "../../test/grants.ts";
 import { addCompanyWithOwner } from "../../test/ledger.ts";
 import { addMembership, type Company } from "../../test/memberships.ts";
 import { OPERATION_ARGUMENTS, restRequestOf, type ArgumentsFixture } from "../../test/operation-arguments.ts";
+import { invitationTokenIn } from "../../test/mail.ts";
+import { someEmail } from "../../test/identities.ts";
 import { expectNoTokens } from "../../test/secrets.ts";
 import {
+  MINUTE,
   TEST_ORIGIN,
   addSignInIdentity,
   challengeOf,
+  chooseCompany,
   codeOf,
   cookieHeader,
   expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
+  jsonOf,
   passwordStep,
   signIn,
   signInApp,
   testClock,
+  writeAs,
   type SignInApp,
   type TestIdentity,
 } from "../../test/sign-in.ts";
@@ -60,7 +66,11 @@ async function signInRows(owner: Client): Promise<string> {
        (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.account_events AS t),
        (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.idempotency_keys AS t),
        (SELECT pg_catalog.jsonb_agg(t ORDER BY t.identity_id, t.chosen_company_id) FROM access.recent_companies AS t),
-       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.events AS t)
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.events AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.memberships AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.contact_company_id, t.membership_id) FROM access.membership_contacts AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.invitations AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.invitation_links AS t)
      )::text AS rows`,
   );
   return found.rows[0]?.rows ?? "";
@@ -83,7 +93,8 @@ describe("the session operations on /mcp", () => {
     app = await db.connect("app");
     superuser = await db.admin();
     pool = appPool(db, 4);
-    server = signInApp(pool.database, { clock: testClock() });
+    // The database stamps an invitation's time with its own clock, so the server's starts at the same time.
+    server = signInApp(pool.database, { clock: testClock(new Date()) });
   });
 
   afterAll(async () => {
@@ -125,10 +136,46 @@ describe("the session operations on /mcp", () => {
       }
       return member;
     },
+    invitedOf: async (person) => {
+      const company = companies.get(person.id);
+      if (company === undefined) {
+        throw new Error("The fixture made no company for the person.");
+      }
+      server.clock.advance(MINUTE);
+      const { session } = await signIn(server, person);
+      expect((await chooseCompany(server, session, company.id)).status).toBe(200);
+      const invited = await jsonOf<{ id: string }>(await writeAs(server, session, "POST", "/v1/users", { name: "Tove Ny", email: someEmail() }), 201);
+      return invited.id;
+    },
+    invitationToken: async () => {
+      const inviter = await fixture.person();
+      await fixture.companyOf(inviter);
+      await fixture.invitedOf(inviter);
+      const sent = server.mail.messages.at(-1);
+      if (sent === undefined) {
+        throw new Error("The invitation sent no mail.");
+      }
+      return invitationTokenIn(sent);
+    },
+    joinedCompanyOf: async (person) => {
+      const other = await fixture.person();
+      const made = await addCompanyWithOwner(app, { actor: other.id, kind: "user" }, { name: "Testbolaget Ny AB" });
+      await addMembership(app, owner, { ...made, id: made.row.company_id, asOwner: { actor: other.id, kind: "user" } }, { user: person.id });
+      return made.row.company_id;
+    },
   };
 
   it("covers every session operation, and every operation of the registry has its arguments", () => {
-    expect(SESSION_OPERATIONS.map((operation) => operation.operationId)).toEqual(["completeSetup", "loginWithPassword", "verifyTotp", "logout", "getSession", "selectCompany"]);
+    expect(SESSION_OPERATIONS.map((operation) => operation.operationId)).toEqual([
+      "completeSetup",
+      "loginWithPassword",
+      "verifyTotp",
+      "logout",
+      "getSession",
+      "selectCompany",
+      "getInvitation",
+      "acceptInvitation",
+    ]);
     expect(Object.keys(OPERATION_ARGUMENTS).sort()).toEqual(REGISTRY.map((operation) => operation.operationId).sort());
   });
 
@@ -164,6 +211,6 @@ describe("the session operations on /mcp", () => {
     expect(results).toHaveLength(2 * SESSION_OPERATIONS.length);
     expectNoTokens(results);
     expectNoTokensFromSignInApps();
-    await expectNoSecretsAtRestFromSignInApps(db, { passwords: [...people.map((person) => person.password), "signes-första-lösenord"] });
+    await expectNoSecretsAtRestFromSignInApps(db, { passwords: [...people.map((person) => person.password), "signes-första-lösenord", "sixtens-lösenord"] });
   });
 });

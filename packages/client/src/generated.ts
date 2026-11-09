@@ -112,6 +112,41 @@ export interface Health {
 }
 
 /**
+ * Inbjudan: an invitation to a company, as its link shows it. The link works once, for 14 days, and a newer invitation of the same member stops it.
+ */
+export interface Invitation {
+  /**
+   * The name the invitation was sent to.
+   */
+  readonly name: string;
+  /**
+   * The e-mail address the invitation was sent to. A new identity takes it as its e-mail address.
+   */
+  readonly email: string;
+  /**
+   * When the link stops working: 14 days after the invitation was sent.
+   */
+  readonly expiresAt: string;
+  /**
+   * The name of the company the invitation is to, as it was when the invitation was sent.
+   */
+  readonly companyName: string;
+  /**
+   * The name of the system administrator who sent the invitation, as it was then.
+   */
+  readonly inviterName: string;
+}
+
+/**
+ * An accepted invitation: the person who now holds the membership, and the membership. For a new identity, also its TOTP secret, which no answer gives again: the person signs in next, with the password and a code. The TOTP enrolment is absent when the signed-in identity accepted.
+ */
+export interface InvitationAcceptance {
+  readonly user: User;
+  readonly membership: Membership;
+  readonly totpEnrolment?: TotpEnrolment;
+}
+
+/**
  * The signed-in person, with their own login data, and the company the request works in with the person's membership and permissions there.
  */
 export interface Me {
@@ -153,7 +188,7 @@ export interface Member {
    */
   readonly userId?: string;
   /**
-   * The person's name. Absent while the membership has no person.
+   * The person's name; for an invited member, the name the latest invitation was sent to. Absent for an invited member with no invitation.
    */
   readonly name?: string;
   /**
@@ -731,6 +766,66 @@ export interface Operations {
   getHealth(options?: CallOptions): Promise<Health>;
 
   /**
+   * Read an invitation
+   *
+   * Gives the invitation that a link holds: the name and the e-mail address it was sent to, the company, who sent it, and when the link stops working. A link that is unknown, used, stopped by a newer invitation or past its 14 days gets one answer, 422 invitation-link-invalid.
+   *
+   * `GET /v1/invitations/{token}`
+   *
+   * Needs no actor: anyone may call it, before signing in.
+   *
+   * Serves the browser's session: its MCP tool refuses every call.
+   *
+   * The answer holds personal data: `/name`, `/email`, `/inviterName`.
+   */
+  getInvitation(
+    input: {
+      /**
+       * The invitation link's token, from the invitation's mail.
+       */
+      readonly token: string;
+    },
+    options?: CallOptions,
+  ): Promise<Invitation>;
+
+  /**
+   * Accept an invitation
+   *
+   * Accepts the invitation that a link holds, once. With newIdentity, Skapa ett nytt NortFox ID: a new identity with that name and a password of 12 to 1024 characters, which takes the invitation's e-mail address; the answer gives its TOTP secret, and sets no session, so the person signs in next with the password and a code. Without it, Koppla ihop med befintligt NortFox ID: the identity of the browser's session accepts, and with no session the call gets 422 sign-in-required. The member's work e-mail address becomes the invitation's. A link that is unknown, used, stopped by a newer invitation or past its 14 days gets one answer, 422 invitation-link-invalid. An e-mail address that another identity has gets 422 email-taken, and a person who is a member of the company already gets 422 already-member.
+   *
+   * `POST /v1/invitations/{token}/accept`
+   *
+   * Needs no actor: anyone may call it, before signing in.
+   *
+   * Serves the browser's session: its MCP tool refuses every call.
+   *
+   * The answer holds personal data: `/user/name`, `/user/email`, `/membership/workEmail`, `/membership/workPhone`.
+   */
+  acceptInvitation(
+    input: {
+      /**
+       * The invitation link's token, from the invitation's mail.
+       */
+      readonly token: string;
+    } & {
+      /**
+       * Skapa ett nytt NortFox ID: the new identity's name and password. It takes the invitation's e-mail address. Left out, Koppla ihop med befintligt NortFox ID: the signed-in person accepts.
+       */
+      readonly newIdentity?: {
+        /**
+         * The person's name.
+         */
+        readonly name: string;
+        /**
+         * The password: 12 to 1024 characters.
+         */
+        readonly password: string;
+      };
+    },
+    options?: CallOptions,
+  ): Promise<InvitationAcceptance>;
+
+  /**
    * Read yourself
    *
    * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.
@@ -793,6 +888,27 @@ export interface Operations {
     },
     options: WriteOptions,
   ): Promise<Membership>;
+
+  /**
+   * Leave a company
+   *
+   * The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave.
+   *
+   * `POST /v1/me/companies/{companyId}/leave`
+   *
+   * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  leaveCompany(
+    input: {
+      /**
+       * The company's id.
+       */
+      readonly companyId: string;
+    },
+    options: WriteOptions,
+  ): Promise<void>;
 
   /**
    * List the permissions
@@ -926,6 +1042,33 @@ export interface Operations {
 }>;
 
   /**
+   * Invite a user
+   *
+   * Lägg till användare: makes an invited member of the company, with a name and an e-mail address, and sends the invitation to that address. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An address that a member of the company has, or that an open invitation of the company goes to, gets 422 already-member.
+   *
+   * `POST /v1/users`
+   *
+   * Needs the permission `users:admin`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
+   */
+  inviteUser(
+    input: {
+      /**
+       * Namn: the invited person's name.
+       */
+      readonly name: string;
+      /**
+       * E-postadress: where the invitation goes. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.
+       */
+      readonly email: string;
+    },
+    options: WriteOptions,
+  ): Promise<Member>;
+
+  /**
    * Read a user
    *
    * Gives one invited, active or inactive member of the company, as listUsers gives it. Any other id, also one of a removed or a left member, gets 422 user-not-found.
@@ -1016,6 +1159,50 @@ export interface Operations {
     },
     options: WriteOptions,
   ): Promise<Member>;
+
+  /**
+   * Disconnect a user's identity
+   *
+   * Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. The company always keeps an active system administrator.
+   *
+   * `POST /v1/users/{memberId}/disconnect`
+   *
+   * Needs the permission `users:admin`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
+   */
+  disconnectUserIdentity(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+    },
+    options: WriteOptions,
+  ): Promise<Member>;
+
+  /**
+   * Send a new invitation
+   *
+   * Skicka en ny inbjudan: sends an invited member a new invitation, to the name and the e-mail address of their latest one. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. A member who is not invited gets 422 user-not-invited.
+   *
+   * `POST /v1/users/{memberId}/invitation`
+   *
+   * Needs the permission `users:admin`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   */
+  resendInvitation(
+    input: {
+      /**
+       * The member's id: the membership's id, Membership.id.
+       */
+      readonly memberId: string;
+    },
+    options: WriteOptions,
+  ): Promise<void>;
 
   /**
    * Grant a program
@@ -1160,9 +1347,12 @@ export function createOperations(send: Send): Operations {
     getCompany: async (options) => (await send({ method: "GET", path: "/v1/company" }, undefined, options)) as Company,
     updateCompany: async (input, options) => (await send({ method: "PATCH", path: "/v1/company", body: true, key: true }, input, options)) as Company,
     getHealth: async (options) => (await send({ method: "GET", path: "/v1/health" }, undefined, options)) as Health,
+    getInvitation: async (input, options) => (await send({ method: "GET", path: "/v1/invitations/{token}", params: ["token"] }, input, options)) as Invitation,
+    acceptInvitation: async (input, options) => (await send({ method: "POST", path: "/v1/invitations/{token}/accept", params: ["token"], body: true }, input, options)) as InvitationAcceptance,
     getMe: async (options) => (await send({ method: "GET", path: "/v1/me" }, undefined, options)) as Me,
     listRecentCompanies: async (options) => (await send({ method: "GET", path: "/v1/me/companies/recent" }, undefined, options)) as RecentCompanies,
     updateMyMembership: async (input, options) => (await send({ method: "PATCH", path: "/v1/me/companies/{companyId}", params: ["companyId"], body: true, key: true }, input, options)) as Membership,
+    leaveCompany: async (input, options) => { await send({ method: "POST", path: "/v1/me/companies/{companyId}/leave", params: ["companyId"], key: true, answer: "none" }, input, options); },
     listPermissions: async (options) => (await send({ method: "GET", path: "/v1/permissions" }, undefined, options)) as PermissionCatalogue,
     getSession: async (options) => (await send({ method: "GET", path: "/v1/session" }, undefined, options)) as Session,
     selectCompany: async (input, options) => (await send({ method: "POST", path: "/v1/session/company", body: true, key: true }, input, options)) as Session,
@@ -1181,9 +1371,12 @@ export function createOperations(send: Send): Operations {
    */
   readonly total: number;
 },
+    inviteUser: async (input, options) => (await send({ method: "POST", path: "/v1/users", body: true, key: true }, input, options)) as Member,
     getUser: async (input, options) => (await send({ method: "GET", path: "/v1/users/{memberId}", params: ["memberId"] }, input, options)) as Member,
     removeUser: async (input, options) => { await send({ method: "DELETE", path: "/v1/users/{memberId}", params: ["memberId"], key: true, answer: "none" }, input, options); },
     updateUser: async (input, options) => (await send({ method: "PATCH", path: "/v1/users/{memberId}", params: ["memberId"], body: true, key: true }, input, options)) as Member,
+    disconnectUserIdentity: async (input, options) => (await send({ method: "POST", path: "/v1/users/{memberId}/disconnect", params: ["memberId"], key: true }, input, options)) as Member,
+    resendInvitation: async (input, options) => { await send({ method: "POST", path: "/v1/users/{memberId}/invitation", params: ["memberId"], key: true, answer: "none" }, input, options); },
     assignProgram: async (input, options) => (await send({ method: "PUT", path: "/v1/users/{memberId}/programs/{program}", params: ["memberId", "program"], body: true, key: true }, input, options)) as ProgramGrant,
     removeProgram: async (input, options) => { await send({ method: "DELETE", path: "/v1/users/{memberId}/programs/{program}", params: ["memberId", "program"], key: true, answer: "none" }, input, options); },
     moveProgram: async (input, options) => (await send({ method: "POST", path: "/v1/users/{memberId}/programs/{program}/move", params: ["memberId", "program"], body: true, key: true }, input, options)) as ProgramGrant,

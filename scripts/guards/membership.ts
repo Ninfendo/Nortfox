@@ -14,10 +14,10 @@
 // - Only the files of modules/memberships/ name the memberships table or the
 //   people of a company (access.company_people); every other module imports
 //   their functions. The table guard names the table for its reason.
-// - Only resolve.ts builds a ResolvedMembership, a LiveMembership or a
-//   CompanyAccess, gets one from a prototype, or names the token that its
-//   constructors take. No file casts a plain object to one of them, to a
-//   Principal or to a request's context.
+// - Only resolve.ts builds a ResolvedMembership, a LiveMembership, an
+//   InvitationEntry or a CompanyAccess, gets one from a prototype, or names
+//   the token that its constructors take. No file casts a plain object to
+//   one of them, to a Principal or to a request's context.
 // - Only modules/users/delete-me.ts calls liveForDeletion, the deletion's
 //   form of the function, which gives inactive memberships too.
 // - Only db/database.ts sets the transaction's company, actor, actor's kind
@@ -217,7 +217,7 @@ const TABLES: readonly { readonly name: string; readonly pattern: RegExp }[] = [
 ];
 
 /** The objects that only resolve.ts makes. */
-const MADE_IN_RESOLVE = "ResolvedMembership|LiveMembership|CompanyAccess";
+const MADE_IN_RESOLVE = "ResolvedMembership|LiveMembership|InvitationEntry|CompanyAccess";
 
 /** The types that a cast must not give a plain object. */
 const CAST_TARGETS = `${MADE_IN_RESOLVE}|Principal|RequestContext|CompanyContext`;

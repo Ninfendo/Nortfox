@@ -312,6 +312,9 @@ describe("the membership guard", () => {
       ["with the constructor", "const access = new CompanyAccess(token, membership, permissions);", "CompanyAccess"],
       ["with the membership's constructor", "const m = new ResolvedMembership(token, row, tx);", "ResolvedMembership"],
       ["with the deletion's constructor", "const m = new LiveMembership(token, row, tx);", "LiveMembership"],
+      ["to an invitation's entry", "const entry = row as InvitationEntry;", "InvitationEntry"],
+      ["with the invitation's constructor", "const entry = new InvitationEntry(token, row, tx);", "InvitationEntry"],
+      ["from the invitation's prototype", "const entry = Object.create(InvitationEntry.prototype);", "InvitationEntry"],
       ["from the prototype", "const access = Object.create(CompanyAccess.prototype);", "CompanyAccess"],
       ["by setting the prototype", "Object.setPrototypeOf(plain, ResolvedMembership . prototype);", "ResolvedMembership"],
     ])("fails %s", (_case, line, name) => {

@@ -30,7 +30,7 @@ export const PERMISSIONS = {
   "users:read":
     "Read the company's users: each member's status, admin level, idle logout, work contacts and programs. A program administrator sees only the programs they administer.",
   "users:admin":
-    "Run the company's users: activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, and remove a member.",
+    "Run the company's users: invite a person and send a new invitation, activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, disconnect a member's identity, and remove a member.",
   "programs:grant":
     "Grant, narrow, move and remove the members' programs, and set their Rapporter and Register/Övrigt rights. A program administrator does it only for the programs they administer.",
 } as const;

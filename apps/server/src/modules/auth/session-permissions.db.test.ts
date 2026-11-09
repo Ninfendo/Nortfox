@@ -12,19 +12,17 @@
 // No operation of slice 2c needs a catalogue permission yet, so the test-only
 // right checks (test/rights.ts) show whether a request holds one, beside
 // getMe's list. The company's owner changes the grants with assignProgram
-// and removeProgram. The members are invited and accept as the database
-// holds it, since the invitations come in the next step of this part.
+// and removeProgram. The members are invited with inviteUser and accept
+// with acceptInvitation, so the server's clock starts at the database's.
 
 import { fullPermissions, type Me } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { acceptedMember } from "../../../test/memberships.ts";
 import { rightPath, withRightChecks } from "../../../test/rights.ts";
 import {
   MINUTE,
-  addSignInIdentity,
   chooseCompany,
   expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
@@ -36,7 +34,7 @@ import {
   type SignInApp,
   type TestIdentity,
 } from "../../../test/sign-in.ts";
-import { apiCompany, calls, type ApiCompany } from "../../../test/users.ts";
+import { apiCompany, calls, newMember, type ApiCompany } from "../../../test/users.ts";
 import { tokenHash } from "../../auth/tokens.ts";
 
 /** The rights the checks of this file read. */
@@ -55,7 +53,7 @@ describe("a session's permissions", () => {
     app = await db.connect("app");
     owner = await db.connect("owner");
     pool = appPool(db, 4);
-    server = signInApp(pool.database, { clock: testClock(), options: withRightChecks(CHECKED) });
+    server = signInApp(pool.database, { clock: testClock(new Date()), options: withRightChecks(CHECKED) });
     company = await apiCompany(server, { app, owner });
   });
 
@@ -71,8 +69,7 @@ describe("a session's permissions", () => {
 
   /** A member of the company with Bokföring and "Full behörighet". */
   async function bookkeeper(): Promise<{ person: TestIdentity; membership: string }> {
-    const person = await addSignInIdentity(owner);
-    const membership = await acceptedMember(app, owner, company, person.id);
+    const { person, id: membership } = await newMember(server, { app, owner }, company);
     await assign(membership, "bookkeeping");
     return { person, membership };
   }
@@ -153,8 +150,7 @@ describe("a session's permissions", () => {
   });
 
   it("a permission given since the choice comes only when the session chooses the company again", async () => {
-    const person = await addSignInIdentity(owner);
-    const membership = await acceptedMember(app, owner, company, person.id);
+    const { person, id: membership } = await newMember(server, { app, owner }, company);
     await assign(membership, "read");
     const session = await sessionInCompany(person);
     expect(await statusOf(session, "vouchers.view")).toBe(200);

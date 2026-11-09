@@ -11,7 +11,7 @@ describe("REGISTRY", () => {
     expect(registryProblems(REGISTRY, Object.keys(PERMISSIONS))).toEqual([]);
   });
 
-  it("holds getHealth and getCompany, the browser's sign-in, the person's own operations, the companies, the catalogue, and the users and their programs", () => {
+  it("holds getHealth and getCompany, the browser's sign-in, the person's own operations, the companies, the catalogue, the users and their programs, and the invitations", () => {
     expect(
       REGISTRY.map((entry) => {
         const { permission, assistant, writes, list, session, company, personalOutput } = entry["x-nortfox"];
@@ -113,6 +113,49 @@ describe("REGISTRY", () => {
         "programs:grant",
         { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] },
       ],
+      [
+        "inviteUser",
+        "POST /v1/users",
+        "users:admin",
+        { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: ["/name", "/workEmail", "/workPhone"] },
+      ],
+      [
+        "resendInvitation",
+        "POST /v1/users/{memberId}/invitation",
+        "users:admin",
+        { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] },
+      ],
+      [
+        "disconnectUserIdentity",
+        "POST /v1/users/{memberId}/disconnect",
+        "users:admin",
+        { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: ["/name", "/workEmail", "/workPhone"] },
+      ],
+      [
+        "getInvitation",
+        "GET /v1/invitations/{token}",
+        "none",
+        { assistant: false, writes: false, list: false, session: "flow", company: "none", personalOutput: ["/name", "/email", "/inviterName"] },
+      ],
+      [
+        "acceptInvitation",
+        "POST /v1/invitations/{token}/accept",
+        "none",
+        {
+          assistant: false,
+          writes: true,
+          list: false,
+          session: "flow",
+          company: "none",
+          personalOutput: ["/user/name", "/user/email", "/membership/workEmail", "/membership/workPhone"],
+        },
+      ],
+      [
+        "leaveCompany",
+        "POST /v1/me/companies/{companyId}/leave",
+        "signed-in",
+        { assistant: false, writes: true, list: false, session: null, company: { input: "companyId" }, personalOutput: [] },
+      ],
     ]);
   });
 
@@ -146,6 +189,13 @@ describe("REGISTRY", () => {
       removeProgram: "Takes a program from a user of the company you work in.",
       moveProgram: "Moves a program from one user of the company you work in to another, narrowed first if you give a list of its rights.",
       updateUserRights: "Sets the Rapporter and Register/Övrigt rights of a user of the company you work in.",
+      inviteUser: "Invites a person to the company you work in, with a name and an e-mail address: the invitation goes to that address by mail.",
+      resendInvitation: "Sends a new invitation to a user of the company you work in who has not accepted theirs, and stops the old link.",
+      disconnectUserIdentity:
+        "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
+      getInvitation: "Reads an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
+      acceptInvitation: "Accepts an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
+      leaveCompany: "Leaves a company where you are an active member. Only a new invitation lets you back.",
     });
   });
 
@@ -163,7 +213,7 @@ describe("REGISTRY", () => {
       "users:read":
         "Read the company's users: each member's status, admin level, idle logout, work contacts and programs. A program administrator sees only the programs they administer.",
       "users:admin":
-        "Run the company's users: activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, and remove a member.",
+        "Run the company's users: invite a person and send a new invitation, activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, disconnect a member's identity, and remove a member.",
       "programs:grant":
         "Grant, narrow, move and remove the members' programs, and set their Rapporter and Register/Övrigt rights. A program administrator does it only for the programs they administer.",
     });

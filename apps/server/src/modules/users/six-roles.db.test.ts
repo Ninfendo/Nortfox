@@ -14,9 +14,8 @@
 // the admin role, with the same permissions (open point 1).
 //
 // The creator makes the company with createCompany. The other members are
-// invited and accept, as the database holds it, since inviteUser and
-// acceptInvitation come in the next step of this part, which then makes
-// them through the operations. The owner gives them their program with
+// invited with inviteUser and accept with acceptInvitation. The owner gives
+// them their program with
 // assignProgram and "Full behörighet", as "Tilldela program" preselects
 // it, or makes them system administrator with updateUser. The server's
 // clock starts at the database's, so a Revisor grant holds.
@@ -82,7 +81,7 @@ describe("the six roles in getMe", () => {
 
   /** A new person, invited to the company, who accepts. */
   function invited(): Promise<TestMember> {
-    return newMember({ app, owner }, company);
+    return newMember(server, { app, owner }, company);
   }
 
   /** The owner's call of an operation that answers JSON. */

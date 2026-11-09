@@ -54,6 +54,8 @@ const SCHEMAS: Readonly<Record<string, readonly string[]>> = {
   ProgramDefinition: ["key", "label", "lifetimeDays", "permissions"],
   RoleDefinition: ["key", "adminLevel", "program", "full"],
   PermissionCatalogue: ["roles", "programs", "groups", "permissions"],
+  Invitation: ["name", "email", "expiresAt", "companyName", "inviterName"],
+  InvitationAcceptance: ["user", "membership", "totpEnrolment"],
 };
 
 /**
@@ -139,6 +141,10 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
     ["Permission", "Permission.key", "Permission.group", "Permission.label", "Permission.view", "Permission.manualOnly", "PermissionGroupKey", "PermissionCatalogue"],
   ],
   ["Bokför (permission) / book (permission)", ["Permission.key"]],
+  [
+    "Inbjudan / invitation",
+    ["Invitation", "Invitation.name", "Invitation.email", "Invitation.expiresAt", "Invitation.companyName", "Invitation.inviterName", "InvitationAcceptance"],
+  ],
 ];
 
 interface DescribedSchema {

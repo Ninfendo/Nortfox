@@ -100,6 +100,10 @@ describe("no actor", () => {
       "removeProgram",
       "moveProgram",
       "updateUserRights",
+      "inviteUser",
+      "resendInvitation",
+      "disconnectUserIdentity",
+      "leaveCompany",
       "testBookVoucher",
       "testListAccounts",
     ]);
@@ -114,6 +118,9 @@ describe("no actor", () => {
       "removeProgram",
       "moveProgram",
       "updateUserRights",
+      "inviteUser",
+      "resendInvitation",
+      "disconnectUserIdentity",
       "testBookVoucher",
       "testListAccounts",
     ]);
@@ -137,6 +144,10 @@ describe("no actor", () => {
       ...writeLabels("/v1/users/{memberId}/programs/{program}", "DELETE"),
       ...writeLabels("/v1/users/{memberId}/programs/{program}/move"),
       ...writeLabels("/v1/users/{memberId}/rights", "PUT"),
+      ...writeLabels("/v1/users"),
+      ...writeLabels("/v1/users/{memberId}/invitation"),
+      ...writeLabels("/v1/users/{memberId}/disconnect"),
+      ...writeLabels("/v1/me/companies/{companyId}/leave"),
       ...writeLabels("/v1/test-vouchers"),
     ]);
   });
@@ -261,6 +272,10 @@ describe("no actor by MCP", () => {
       "removeProgram",
       "moveProgram",
       "updateUserRights",
+      "inviteUser",
+      "resendInvitation",
+      "disconnectUserIdentity",
+      "leaveCompany",
       "testBookVoucher",
       "testListAccounts",
     ]);

@@ -73,10 +73,16 @@ The server serves only what the registry holds. It refuses to start when a route
 | `removeProgram` | `DELETE /v1/users/{memberId}/programs/{program}` | none (204) | `programs:grant` | no |
 | `moveProgram` | `POST /v1/users/{memberId}/programs/{program}/move` | `ProgramGrant` | `programs:grant` | no |
 | `updateUserRights` | `PUT /v1/users/{memberId}/rights` | `UserRights`: `permissions` and `programs` | `programs:grant` | no |
+| `inviteUser` | `POST /v1/users` | `Member` (201), with the status `invited` | `users:admin` | no |
+| `resendInvitation` | `POST /v1/users/{memberId}/invitation` | none (204) | `users:admin` | no |
+| `disconnectUserIdentity` | `POST /v1/users/{memberId}/disconnect` | `Member`, with the status `invited` | `users:admin` | no |
+| `getInvitation` | `GET /v1/invitations/{token}` | `Invitation`: `name`, `email`, `expiresAt`, `companyName` and `inviterName` | `none` | no |
+| `acceptInvitation` | `POST /v1/invitations/{token}/accept` | `InvitationAcceptance`: `user`, `membership` and, for a new identity, `totpEnrolment` | `none` | no |
+| `leaveCompany` | `POST /v1/me/companies/{companyId}/leave` | none (204) | `signed-in` | no |
 
 `User` is a person: `id`, `name`, `email` and `language` (`sv` or `en`).
 
-`Membership` is the person in one company, Användare there: `id`, the member's id in the company, which the paths of `/v1/users` take as `memberId`; `companyId`; `userId`, the person's id, absent while the membership has no person; `status` (`invited`, `active`, `inactive`, `removed` or `left`), `adminLevel` (`owner` or `admin`, the system administrator's level, `SysAdmin`, absent for none), `idleTimeout` ("Utloggning efter inaktivitet": 15, 30, 60, 120 or 480 minutes, 120 by default), the work contacts `workEmail` and `workPhone`, and, as they are now, `roles` (The roles and the programs, below), `programs`, the member's program grants, each a `ProgramGrant`, and `programsAdministered`, each a `ProgramAdmin` with its `program`. `Member` is a membership as the user administration gives it, with the person's `name` (The users, below).
+`Membership` is the person in one company, Användare there: `id`, the member's id in the company, which the paths of `/v1/users` take as `memberId`; `companyId`; `userId`, the person's id, absent while the membership has no person; `status` (`invited`, `active`, `inactive`, `removed` or `left`), `adminLevel` (`owner` or `admin`, the system administrator's level, `SysAdmin`, absent for none), `idleTimeout` ("Utloggning efter inaktivitet": 15, 30, 60, 120 or 480 minutes, 120 by default), the work contacts `workEmail` and `workPhone`, and, as they are now, `roles` (The roles and the programs, below), `programs`, the member's program grants, each a `ProgramGrant`, and `programsAdministered`, each a `ProgramAdmin` with its `program`. `Member` is a membership as the user administration gives it, with the person's `name`, or for an invited member the name of their latest invitation (The users, below).
 
 `Company` is the company: `id`, `name`, `organizationNumber`, `databaseNumber`, and when they are set its postal address (`address`, `zipCode`, `city`, `countryCode`), its visiting address (`visitAddress`, `visitZipCode`, `visitCity`, `visitCountryCode`) and its contact details (`phone`, `email`). A country is its code in ISO 3166-1 alpha-2, two capital letters such as `SE`.
 
@@ -166,7 +172,7 @@ A system administrator runs the company's users; a program administrator reads t
 - `listUsers` lists the members in the order they were added, and `getUser` gives one. Each has the person's `name`, from the people of the company, which never give the personnummer or the mobile number; the status; the admin level; the idle logout; the work contacts; and the programs. A program administrator sees only the grants and the administration of the programs they administer, and the roles that those give. The admin level stays in view.
 - `updateUser` changes a member. `active` is Aktiv användare: `false` stops the member's work in the company, and their sessions there end at once, while their rights are kept; `true` restores them. An invited member has not accepted yet, so `active` gets 422 `user-invited` at `/active`. `adminLevel` `admin` makes the member a system administrator, and `null` makes them no longer one; only creating a company gives the owner's level, which `admin` keeps, and `owner` is a field problem. `programsAdministered` is the whole list of the programs the member administers. `idleTimeout` takes the five values, and a lower one holds at once for the member's sessions. The work contacts follow the rules of `updateMyMembership`. A system administrator's own raise of their idle logout holds for the session that made it from its next request.
 - `removeUser`, Ta bort användaren, removes a member: the membership stays with the status `removed`, which is final, its sessions end at once, and its work contacts are erased. Nobody removes themselves: that gets 422 `cannot-remove-yourself`. A removed person who is invited again gets a new membership.
-- A company always has an active system administrator. Removing, deactivating or demoting the last one gets 422 `last-system-administrator`, with the company's id in `data`. The server refuses it first, and the database refuses at the commit what a race got past that check, with the same answer: of two system administrators who remove each other at once, exactly one succeeds.
+- A company always has an active system administrator. Removing, deactivating, demoting or disconnecting the last one, and the last one leaving, get 422 `last-system-administrator`, with the company's id in `data`. The server refuses it first, and the database refuses at the commit what a race got past that check, with the same answer: of two system administrators who remove each other at once, or who leave at once, exactly one succeeds.
 
 The programs:
 
@@ -178,7 +184,24 @@ The programs:
 
 `listPermissions` gives any signed-in person the catalogue as the install holds it, `PermissionCatalogue`: the plan's six `roles`, each with the admin level or the program that makes it; the `programs`, each with its screen words, the days after which its grant ends (30 for Revisor) and its set, each right marked with whether Full behörighet holds it; the `groups`; and every permission, `Permission`, with its group, its screen words, `view` and `manualOnly`, each in the catalogue's order.
 
-The answers of `updateUser` hold a person's name and work contacts, so its keys are kept outside every company table (Writes and idempotency keys, below).
+The answers of `updateUser`, `inviteUser` and `disconnectUserIdentity` hold a person's name and work contacts, so their keys are kept outside every company table (Writes and idempotency keys, below).
+
+## The invitations
+
+A system administrator invites a person by e-mail, and the invitation's mail holds a link with a token, "Acceptera inbjudan". The link works once, for 14 days, and a newer invitation of the same member stops it, as does the member's removal. The database stamps who sent an invitation, when, to the millisecond, and its end, and keeps the hash of the link's token only; the token is in the mail alone. Every invitation, its acceptance and its stop are in the behandlingshistorik, with the name and the address it was sent to.
+
+- `inviteUser`, Lägg till användare, takes a name and an e-mail address, makes an invited member with that name, and sends the invitation to the address. An address that a member of the company has, as their identity's or their work e-mail address, or that an open invitation of the company goes to, in any letter case, gets 422 `already-member` at `/email`. Then `assignProgram` and `updateUser` can give the invited member programs and an admin level before anyone accepts.
+- `resendInvitation`, Skicka en ny inbjudan, sends an invited member a new invitation, to the name and the address of their latest one, for 14 days from now, and stops the old link. A member who is not invited gets 422 `user-not-invited`.
+- `disconnectUserIdentity` takes the identity from an active or inactive member, so it no longer reaches the company: the membership is invited again, with no person, its sessions end at once, and the old person's work contacts are erased. The member keeps the admin level, the idle logout and the programs, and a new invitation goes to the person's name and the member's work e-mail address. A new or an existing identity may accept it, and gets those rights. An invited member gets 422 `user-invited`. It is the way back for a person who lost their way in.
+- With no mail set up for the install ([deploy/README.md](../deploy/README.md)), each of the three gets 422 `mail-not-configured` before it reads or changes anything. A mail goes inside the request, before it commits: a mail that the mail server refuses makes the request answer 500 `internal-error`, and nothing changes.
+
+The invited person's side serves the browser's sign-in, so the MCP tools of both operations refuse every call:
+
+- `getInvitation` gives what the link's page shows: the name and the address the invitation was sent to, when the link stops working, and the company's and the sender's names as they were when it was sent.
+- `acceptInvitation` accepts the invitation once. With `newIdentity`, Skapa ett nytt NortFox ID, a new identity with that name and a password of 12 to 1024 characters takes the invitation's e-mail address; the answer gives its TOTP secret, as `completeSetup` does, and sets no session, so the person signs in next with the password and a code, which confirms the secret. Without `newIdentity`, Koppla ihop med befintligt NortFox ID, the identity of the browser's session accepts, and with no session the call gets 422 `sign-in-required`. Either way the member's work e-mail address becomes the invitation's, and the answer gives the person and the membership.
+- A link that is unknown, used, stopped or past its end gets one answer, 422 `invitation-link-invalid`, from both. Of two acceptances of one link at once, one succeeds. An address that another identity has gets 422 `email-taken`, also when two invitations to one address are accepted at once as new identities, and a person who is a member of the company already gets 422 `already-member`, also for two invitations of one company accepted at once. A refusal changes nothing, and the link works on.
+
+`leaveCompany`, Koppla bort användaren, is the person's own: they leave a company where they are an active member, the one in the path. The membership stays with the status `left`, which is final, its sessions end at once, and its work contacts are erased. Only a new invitation lets the person back, with a new membership. Any other company gets 422 `company-not-available` at `/companyId`, and so does a repeat of the leave with its key, since the person is no longer a member there.
 
 ## The roles and the programs
 
@@ -280,7 +303,14 @@ The registry keeps the names apart, so a pointer is never ambiguous. The same re
 | 422 | `setup-link-invalid` | The setup link is unknown, used, stopped by a newer link, or past its end. |
 | 422 | `company-not-available` | The person is no active member of the company that the input names, or it does not exist: the same answer for both. `pointer` names the field. |
 | 422 | `user-not-found` | The company has no invited, active or inactive member with the id that the input names: the same answer for a removed or a left member, one of another company and an id that is not there. `pointer` names the field. |
-| 422 | `user-invited` | `updateUser` set `active` for a member who has not accepted the invitation yet. |
+| 422 | `user-invited` | `updateUser` set `active`, or `disconnectUserIdentity` named a member, who has not accepted the invitation yet. |
+| 422 | `user-not-invited` | `resendInvitation` named a member who is not invited. |
+| 422 | `already-member` | `inviteUser`'s address is a member's of the company, or an open invitation's, or `acceptInvitation`'s person is a member of the company already. |
+| 422 | `mail-not-configured` | The install has no mail set up, so `inviteUser`, `resendInvitation` and `disconnectUserIdentity` send no invitation. |
+| 422 | `invitation-link-invalid` | The invitation's link is unknown, used, stopped by a newer invitation or the member's removal, or past its end. |
+| 422 | `sign-in-required` | `acceptInvitation` without `newIdentity` has no session to link. |
+| 422 | `email-taken` | Another identity has the e-mail address, in any letter case. `pointer` names the field when the input has it. |
+| 422 | `personal-identity-number-taken` | Another identity has the personnummer. `pointer` names the field when the input has it. The operations that set a personnummer come in a later part of slice 2c. |
 | 422 | `cannot-remove-yourself` | `removeUser` named the actor's own membership. |
 | 422 | `program-not-administered` | A program administrator asked for a program they do not administer. `data` names it. |
 | 422 | `program-not-granted` | The member holds no grant of the program. |
