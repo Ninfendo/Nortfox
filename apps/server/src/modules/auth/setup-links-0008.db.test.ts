@@ -87,10 +87,11 @@ describe("migration 0008 on an install set up before it", () => {
       await expectNoSecretsAtRest(db);
     }
     // Two used links beside one identity, as only the owner could leave them: neither is known to have made it.
-    const { owner } = await installBefore0008();
+    const { db, owner } = await installBefore0008();
     await addIdentity(owner);
     await owner.query("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, used_at) VALUES ($1, $2, $3, $2), ($4, $2, $3, $2)", [tokenHash(), T0, END, tokenHash()]);
     await upgrade(owner);
     expect(await linksOf(owner)).toEqual([]);
+    await expectNoSecretsAtRest(db);
   });
 });

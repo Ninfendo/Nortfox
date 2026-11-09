@@ -130,6 +130,7 @@ describe("the setup link", () => {
       [older],
     );
     expect(stopped.rows).toEqual([{ superseded: true, used: false }]);
+    await expectNoSecretsAtRest(db);
   });
 
   it("creates the first identity once, with its password and a pending TOTP secret, and refuses a second use, also in parallel", async () => {
@@ -163,6 +164,7 @@ describe("the setup link", () => {
     // The link made before refuses, and changes nothing.
     await expectRefusal(complete(app, link, later(T0, 7)), "install_not_empty", {});
     expect(await identityCount()).toBe(1);
+    await expectNoSecretsAtRest(db);
   });
 });
 
@@ -945,6 +947,7 @@ describe("the lookup functions", () => {
         FOREIGN_KEY_VIOLATION,
         /setup_tokens_replaces_identity_id_fkey/,
       );
+      await expectNoSecretsAtRest(db);
     });
 
     it("keeps a challenge's wrong attempts from 0 to 5 and its method a password's, a used TOTP step and a failure count above 0, and a session's end with its reason", async () => {
@@ -1066,6 +1069,7 @@ describe("the lookup functions", () => {
       }
       // The same value again is no change.
       await owner.query(`UPDATE ${table} SET ${column} = ${column} WHERE id = $1`, [id]);
+      await expectNoSecretsAtRest(db);
     });
 
     it("sets a stopped setup link's mark once, and never one on a link that was used", async () => {

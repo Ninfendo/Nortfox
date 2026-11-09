@@ -16,6 +16,7 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { INSUFFICIENT_PRIVILEGE, expectError, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { addIdentity, asPerson, later, tokenHash } from "../../../test/identities.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 
 /** The server's clock when the rows are made. */
 const T0 = new Date("2090-03-15T10:00:00.000Z");
@@ -97,6 +98,7 @@ describe("the purge of expired login rows", () => {
     expect(await left("access.setup_tokens")).toEqual([used, stopped].sort());
     await purge(later(T0, 365 * DAY));
     expect(await left("access.setup_tokens")).toEqual([used]);
+    await expectNoSecretsAtRest(db);
   });
 
   it("deletes a session 30 days after it ended, and one that never ended 30 days after its 12 hours", async () => {

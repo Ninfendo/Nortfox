@@ -7,11 +7,11 @@
 -- setup link made and it has never confirmed its secret. Using the new link
 -- replaces that identity: it is deleted, so it keeps no e-mail address,
 -- personnummer or mobile number; its password, its pending TOTP secret and
--- its open login challenges are deleted; and a new identity comes from the
--- new link's input, with a new pending secret. Once the identity has
--- confirmed its secret, nothing changes: the setup command makes no link,
--- and a link made before refuses (install_not_empty). See db/README.md, the
--- schema access.
+-- its open login challenges are deleted, also one that a password step
+-- opens at the same time; and a new identity comes from the new link's
+-- input, with a new pending secret. Once the identity has confirmed its
+-- secret, nothing changes: the setup command makes no link, and a link made
+-- before refuses (install_not_empty). See db/README.md, the schema access.
 
 -- The identities of the setup links -------------------------------------------
 --
@@ -119,17 +119,18 @@ $create$;
 -- since the link was made, it refuses (install_not_empty), and changes
 -- nothing. The link is used last, with the identity it made.
 --
--- It locks the identity's rows in the order a TOTP step does, its
--- challenges and then its secrets, and checks the identity again only after
--- the locks. So a TOTP step of the identity that runs at the same time
--- either confirms the secret first, and this refuses, or waits, and then
--- finds its challenge or its secret gone. The lock on the secrets is needed
--- on its own: a TOTP step can run on a challenge that a password step opened
--- while this waited, which the delete of the challenges does not see. The
--- purge takes the setup links' lock first too (below). The identity stays
--- the actor on what it did, as every deleted identity does. A challenge that
--- a password step opens at the same time names a deleted identity once this
--- commits, and the TOTP step refuses it.
+-- It locks the identity's row first, then its challenges and then its
+-- secrets, in the order a TOTP step locks the last two, and checks the
+-- identity again only after the locks. A password step opens a challenge
+-- under a share lock on the identity's row (open_challenge, below). So a
+-- password step that runs at the same time either commits its challenge
+-- first, and this waits for it and deletes it with the others, or waits for
+-- this, and then opens none. A TOTP step of the identity that runs at the
+-- same time either confirms the secret first, and this refuses, or waits,
+-- and then finds its challenge or its secret gone. The lock on the secrets
+-- also orders a transaction that confirms a secret with no challenge in its
+-- way. The purge takes the setup links' lock first too (below). The identity
+-- stays the actor on what it did, as every deleted identity does.
 CREATE OR REPLACE FUNCTION access.complete_setup(
   token_hash bytea, at timestamptz, person uuid, name text, email text, password_hash text, totp_secret_id uuid, totp_secret bytea
 ) RETURNS boolean
@@ -152,9 +153,9 @@ BEGIN
       PERFORM ledger.refuse('install_not_empty');
     END IF;
   ELSE
+    PERFORM FROM access.identities AS i WHERE i.id = replaced FOR NO KEY UPDATE;
     DELETE FROM access.login_challenges AS c WHERE c.identity_id = replaced;
     PERFORM FROM access.totp_secrets AS s WHERE s.identity_id = replaced FOR UPDATE;
-    PERFORM FROM access.identities AS i WHERE i.id = replaced FOR NO KEY UPDATE;
     IF access.unfinished_setup_identity() IS DISTINCT FROM replaced THEN
       PERFORM ledger.refuse('install_not_empty');
     END IF;
@@ -171,6 +172,25 @@ BEGIN
   RETURN true;
 END
 $complete$;
+
+-- Opens a login challenge after a right password, and gives its id, as
+-- 0006's does, but under a share lock on the identity's row. The lock waits
+-- for a transaction that changes the row, such as a use of a setup link that
+-- replaces the identity (above), and the status is read again once the lock
+-- is held. So it opens a challenge only for an identity that is still active
+-- then, and gives NULL otherwise. Two password steps share the lock, and a
+-- TOTP step takes none that conflicts with it.
+CREATE OR REPLACE FUNCTION access.open_challenge(token_hash bytea, person uuid, method text, device_hash bytea, at timestamptz, expires_at timestamptz) RETURNS uuid
+LANGUAGE sql SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+BEGIN ATOMIC
+  INSERT INTO access.login_challenges (token_hash, identity_id, method, device_hash, created_at, expires_at)
+  SELECT open_challenge.token_hash, i.id, open_challenge.method, open_challenge.device_hash, open_challenge.at, open_challenge.expires_at
+  FROM access.identities AS i
+  WHERE i.id = open_challenge.person AND i.status = 'active'
+  FOR SHARE OF i
+  RETURNING id;
+END;
 
 -- The purge, as 0007 made it, but for two things. It deletes a setup link at
 -- its end only when it was not used: a used link names the identity it made,
