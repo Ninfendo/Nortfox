@@ -18,7 +18,7 @@
 import { z } from "zod";
 import { personal } from "../fields.ts";
 import { NoBody, defineListOperation, defineOperation } from "../operation.ts";
-import { emailAddress } from "../address.ts";
+import { invitedAddress } from "../address.ts";
 import { noNul, singleLine, wellFormed } from "../text.ts";
 import { IdleTimeout, Membership, ProgramAdmin, ProgramGrant, WorkEmail, WorkPhone } from "./companies.ts";
 import { PermissionKey } from "./permissions.ts";
@@ -255,9 +255,10 @@ export const inviteUser = defineOperation({
     `${SENDS} An address that a member of the company has, or that an open invitation of the company goes to, gets 422 already-member.`,
   body: z.strictObject({
     name: z.string().min(1).max(200).check(noNul(), wellFormed(), singleLine()).meta({ description: "Namn: the invited person's name, on one line." }),
-    email: emailAddress().meta({
+    email: invitedAddress().meta({
       description:
-        "E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.",
+        "E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address. " +
+        "Its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ.",
     }),
   }),
   output: Member,

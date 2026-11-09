@@ -7,14 +7,18 @@
 // a control character and a control of the text's direction are refused,
 // with bad-format, in every field that takes an address. So is a domain that
 // a mail reaches under another name than the one written: one that IDNA's
-// mapping changes, an A-label, and one that ends in a number. A person's and a
-// company's name stand on one line: a line break, another control character
-// and a control of the text's direction are refused, with invalid-value, in
-// every field that takes one.
+// mapping changes, an A-label, and one that ends in a number. The owner's two
+// rules of 2026-11-09 come on top: an address that can become an identity's
+// (completeSetup, inviteUser and the work e-mail) holds no character whose
+// case fold is not its lower case, such as ß, ς or ſ, and an address that
+// NortFox sends mail to (inviteUser and the work e-mail) has a local part in
+// ASCII. A person's and a company's name stand on one line: a line break,
+// another control character and a control of the text's direction are
+// refused, with invalid-value, in every field that takes one.
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { MAILBOX, MAILBOX_PATTERN, emailAddress, writtenAsMailed } from "./address.ts";
+import { INVITED_PATTERN, MAILBOX, MAILBOX_PATTERN, emailAddress, foldsAsLowerCase, identityAddress, invitedAddress, writtenAsMailed } from "./address.ts";
 import { bodySchema } from "./operation.ts";
 import { completeSetup } from "./operations/auth.ts";
 import { createCompany, updateCompany, updateMyMembership } from "./operations/companies.ts";
@@ -30,18 +34,78 @@ function problemsOf(operation: Operation, body: unknown): string[][] {
   return result.success ? [] : fieldIssues(result.error.issues).map((issue) => [issue.code, issue.pointer]);
 }
 
-/** Addresses that are one mailbox. */
+/** Addresses that are one mailbox, with a local part in ASCII: every field that takes an address takes them. */
 const MAILBOXES = [
   "karin.lund@example.com",
   "Karin.Lund@Example.COM",
   "o'brien+fakturor@example.org",
   "a!#$%&'*+/=?^_`{|}~-z@example.com",
-  "åsa@exämple.test",
-  "pär.öberg@example.org",
-  "δοκιμή@παράδειγμα.example",
+  "karin@exämple.test",
+  "karin.lund@παράδειγμα.example",
   "x@sub-domain.example.com",
   "x@localhost",
   `${"a".repeat(64)}@example.com`,
+];
+
+/**
+ * Mailboxes with a character outside ASCII in the local part. An address
+ * that NortFox sends mail to may not have one (the owner's choice of
+ * 2026-11-09): inviteUser's and the work e-mail. completeSetup and the
+ * company's address take them.
+ */
+const WIDE_MAILBOXES = ["åsa@exämple.test", "pär.öberg@example.org", "δοκιμή@παράδειγμα.example", "\u{212A}arin@example.com"];
+
+/** The fields that take an address that NortFox may send mail to: an invitation's, and the work e-mail, which a disconnect invites. */
+const MAILED_FIELDS: readonly (readonly [string, (address: string) => string[][], string])[] = [
+  ["inviteUser", (email) => problemsOf(inviteUser, { name: "Karin Lund", email }), "/email"],
+  ["updateUser", (workEmail) => problemsOf(updateUser, { workEmail }), "/workEmail"],
+  ["updateMyMembership", (workEmail) => problemsOf(updateMyMembership, { workEmail }), "/workEmail"],
+];
+
+/** completeSetup's address, which becomes the first identity's: no mail goes to it in this part. */
+function setupProblems(email: string): string[][] {
+  return problemsOf(completeSetup, { name: "Alva Berg", email, password: "första-lösenordet-20" });
+}
+
+/**
+ * Addresses with a character whose case fold is not its lower case, also in
+ * NFC: casefold() makes ß, ẞ and ſ into s, ς into σ, µ into μ, a ligature
+ * into its letters, and a Cherokee letter into its capital. The identities'
+ * unique index and the sign-in fold an address so, while a mail program and
+ * IDNA2008 keep straße.example and strasse.example apart. So each would share
+ * its identity's place with another mailbox, and is refused wherever an
+ * address can become an identity's (the owner's choice of 2026-11-09).
+ */
+const FOLD_TWINS: readonly (readonly [string, string])[] = [
+  ["ß in the domain", "anna.lind@straße.example"],
+  ["ς in the domain", "anna.lind@παράδειγμας.example"],
+  ["ß in the local part", "anna.straße@example.com"],
+  ["the capital ẞ", "ANNA.STRA\u{1E9E}E@example.com"],
+  ["ς in the local part", "σοφίας@example.com"],
+  ["the long s", "\u{17F}ven.ek@example.com"],
+  ["the micro sign", "\u{B5}@example.com"],
+  ["a ligature", "\u{FB01}a.strand@example.com"],
+  ["a small Cherokee letter", "\u{AB70}@example.com"],
+  ["a capital Cherokee letter, whose fold is itself and whose lower case is the small one", "\u{13A0}@example.com"],
+  ["a Greek letter with ypogegrammeni", "\u{1FB3}@example.com"],
+  ["ŉ, whose fold is two characters", "\u{149}@example.com"],
+];
+
+/** Addresses whose every character folds as its lower case does, in NFC: an identity's address may be one of them. */
+const FOLDS_AS_LOWER = [
+  "anna.strasse@example.com",
+  "Anna.Lind@Example.COM",
+  "ΣΟΦΙΑ@example.com",
+  // A final capital sigma: the lower case of the whole text ends in ς, but the rule reads each character alone.
+  "ΟΔΥΣΣΕΥΣ@example.com",
+  "σοφια@example.com",
+  "åsa@exämple.test",
+  "A\u{30A}sa@example.com",
+  "\u{212A}arin@example.com",
+  "\u{130}lker@example.com",
+  "\u{131}pek@example.com",
+  "\u{390}rene@example.com",
+  "\u{3AA}\u{301}RENE@example.com",
 ];
 
 /** Strings that are not one mailbox, each of a kind that a mail program reads otherwise or that breaks the form. */
@@ -160,7 +224,7 @@ const NOT_NAMES = [
 ];
 
 describe("an e-mail address", () => {
-  it.each(MAILBOXES)("takes the mailbox %j", (address) => {
+  it.each([...MAILBOXES, ...WIDE_MAILBOXES])("takes the mailbox %j", (address) => {
     expect(MAILBOX.test(address)).toBe(true);
   });
 
@@ -172,7 +236,7 @@ describe("an e-mail address", () => {
     expect(emailAddress().safeParse(address).success).toBe(false);
   });
 
-  it.each(MAILBOXES)("takes %j, whose domain a mail reaches as it is written", (address) => {
+  it.each([...MAILBOXES, ...WIDE_MAILBOXES])("takes %j, whose domain a mail reaches as it is written", (address) => {
     expect(emailAddress().safeParse(address).success).toBe(true);
   });
 
@@ -227,6 +291,113 @@ describe("an e-mail address", () => {
       expect(problemsOf(updateCompany, { email: address })).toEqual([]);
       expect(problemsOf(completeSetup, { name: "Alva Berg", email: address, password: "första-lösenordet-20" })).toEqual([]);
     }
+  });
+});
+
+describe("the owner's rules for an address (2026-11-09)", () => {
+  describe("an address that can become an identity's holds no character whose case fold is not its lower case", () => {
+    it.each(FOLD_TWINS)("refuses %s with bad-format at completeSetup, inviteUser and the work e-mail, once each", (_case, address) => {
+      expect(MAILBOX.test(address)).toBe(true);
+      expect(foldsAsLowerCase(address)).toBe(false);
+      expect(setupProblems(address)).toEqual([["bad-format", "/email"]]);
+      for (const [operation, problems, pointer] of MAILED_FIELDS) {
+        expect(problems(address), operation).toEqual([["bad-format", pointer]]);
+      }
+      expect(identityAddress().safeParse(address).success).toBe(false);
+      expect(invitedAddress().safeParse(address).success).toBe(false);
+    });
+
+    it.each(FOLD_TWINS)("leaves the company's own address, which is no identity's and gets no mail, as it was: %s", (_case, address) => {
+      expect(emailAddress().safeParse(address).success).toBe(true);
+      expect(problemsOf(updateCompany, { email: address })).toEqual([]);
+    });
+
+    it.each(FOLDS_AS_LOWER)("takes %j, whose characters fold as their lower case does", (address) => {
+      expect(foldsAsLowerCase(address)).toBe(true);
+      expect(setupProblems(address)).toEqual([]);
+    });
+
+    it("says why, with the format email", () => {
+      const result = identityAddress().safeParse("anna.lind@straße.example", { reportInput: true });
+      expect(result.success).toBe(false);
+      const [issue] = result.success ? [] : fieldIssues(result.error.issues);
+      expect(issue?.code).toBe("bad-format");
+      expect(issue?.data).toEqual({ format: "email", value: "anna.lind@straße.example" });
+      expect(issue?.detail).toMatch(/case fold/);
+    });
+
+    it("gives an address that breaks two rules the problem of the first alone", () => {
+      // A local part of 65 and a soft hyphen in the domain: the stored form's problem, not the domain's beside it.
+      expect(problemsOf(updateCompany, { email: `${"a".repeat(65)}@ex\u{AD}ample.com` })).toEqual([["bad-format", "/email"]]);
+      // A local part outside ASCII with a fold twin in it: the rule of ASCII, not the fold's beside it.
+      const result = invitedAddress().safeParse("anna.straße@straße.example");
+      expect(result.success ? [] : fieldIssues(result.error.issues).map((issue) => issue.detail)).toEqual([expect.stringMatching(/ASCII/)]);
+      // A lone surrogate: wellFormed's invalid-value alone.
+      expect(problemsOf(inviteUser, { name: "Karin Lund", email: "k\uD800@straße.example" })).toEqual([["invalid-value", "/email"]]);
+    });
+
+    it("checks the NFC form, which the server stores", () => {
+      // ΐ decomposed folds to itself in NFC; ẞ written as a capital folds to ss either way.
+      expect(foldsAsLowerCase("\u{3B9}\u{308}\u{301}rene@example.com")).toBe(true);
+      expect(foldsAsLowerCase("\u{1FD3}rene@example.com")).toBe(true);
+      expect(foldsAsLowerCase("\u{3B1}\u{345}@example.com")).toBe(false);
+    });
+  });
+
+  describe("an address that NortFox sends mail to has a local part in ASCII", () => {
+    it.each(WIDE_MAILBOXES)("refuses %j with bad-format at inviteUser and the work e-mail", (address) => {
+      for (const [operation, problems, pointer] of MAILED_FIELDS) {
+        expect(problems(address), operation).toEqual([["bad-format", pointer]]);
+      }
+      expect(invitedAddress().safeParse(address).success).toBe(false);
+    });
+
+    it.each(WIDE_MAILBOXES)("still takes %j at completeSetup and as the company's address, where no mail goes in this part", (address) => {
+      expect(setupProblems(address)).toEqual([]);
+      expect(problemsOf(updateCompany, { email: address })).toEqual([]);
+    });
+
+    it("takes an internationalised domain, which nodemailer sends as its A-label", () => {
+      for (const address of ["karin@exämple.test", "karin.lund@παράδειγμα.example", "karin@bücher.example"]) {
+        for (const [operation, problems] of MAILED_FIELDS) {
+          expect(problems(address), operation).toEqual([]);
+        }
+      }
+    });
+
+    it("says why, with the format email", () => {
+      const result = invitedAddress().safeParse("åsa@example.com", { reportInput: true });
+      expect(result.success).toBe(false);
+      const [issue] = result.success ? [] : fieldIssues(result.error.issues);
+      expect(issue?.code).toBe("bad-format");
+      expect(issue?.data).toEqual({ format: "email", value: "åsa@example.com" });
+      expect(issue?.detail).toMatch(/ASCII/);
+    });
+
+    it("publishes the rule in the pattern of the fields, which every regex dialect reads", () => {
+      const pattern = String((z.toJSONSchema(invitedAddress()) as { pattern?: unknown }).pattern);
+      expect(pattern).toBe(INVITED_PATTERN);
+      expect(pattern).not.toMatch(/\(\?/);
+      expect(pattern).not.toMatch(/\\[uUpPdDwWsSbB]/);
+      expect(pattern.match(/\\./g)?.every((escape) => escape === "\\x")).toBe(true);
+      const unicode = new RegExp(pattern, "u");
+      const plain = new RegExp(pattern);
+      for (const address of [...MAILBOXES, ...WIDE_MAILBOXES, ...NOT_MAILBOXES]) {
+        const ascii = MAILBOX.test(address) && /^[\x21-\x7E]*$/.test(address.slice(0, address.lastIndexOf("@")));
+        expect(unicode.test(address), address).toBe(ascii);
+        expect(plain.test(address), address).toBe(ascii);
+      }
+      for (const [operation, schema] of [
+        ["inviteUser", bodySchema(inviteUser)],
+        ["updateUser", bodySchema(updateUser)],
+        ["updateMyMembership", bodySchema(updateMyMembership)],
+      ] as const) {
+        const properties = (z.toJSONSchema(schema ?? z.never(), { io: "input" }) as { properties?: Record<string, { pattern?: unknown }> }).properties ?? {};
+        expect(properties["email"]?.pattern ?? properties["workEmail"]?.pattern, operation).toBe(INVITED_PATTERN);
+      }
+      const setup = (z.toJSONSchema(bodySchema(completeSetup) ?? z.never(), { io: "input" }) as { properties?: Record<string, { pattern?: unknown }> }).properties ?? {};
+      expect(setup["email"]?.pattern).toBe(MAILBOX_PATTERN);
+    });
   });
 });
 

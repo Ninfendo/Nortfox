@@ -133,6 +133,7 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
     "access.end_other_sessions",
     "access.end_session",
     "access.find_login",
+    "access.folds_as_lower_case",
     "access.give_back_failure",
     "access.identifier_form",
     "access.install_key",

@@ -758,9 +758,14 @@ describe("the lookup functions", () => {
       // And ΐ, in NFC, in its capitals in NFC, and decomposed: one letter in canonical terms.
       const letters = ["a", "A", "s", "S", "ss", "ſ", "ß", "fi", "ﬁ", "st", "ﬆ", "σ", "ς", "Σ", "k", "K", String.fromCodePoint(0x212a), "\u0390", "\u03aa\u0301", "\u03b9\u0308\u0301"];
       const spelling = fc.array(fc.constantFrom(...letters), { minLength: 1, maxLength: 4 }).map((parts) => parts.join(""));
+      // An identity's own address holds none of the letters whose case fold is not their lower case (migration 0009,
+      // the owner's rule of 2026-11-09): ſ, ß, ﬁ, ﬆ and ς are only tried.
+      const storable = fc
+        .array(fc.constantFrom(...letters.filter((letter) => !["ſ", "ß", "ﬁ", "ﬆ", "ς"].includes(letter))), { minLength: 1, maxLength: 4 })
+        .map((parts) => parts.join(""));
       let run = 0;
       await fc.assert(
-        fc.asyncProperty(spelling, spelling, async (stored, tried) => {
+        fc.asyncProperty(storable, spelling, async (stored, tried) => {
           run += 1;
           const email = `${stored}.${String(run)}@example.com`;
           const other = `${tried}.${String(run)}@example.com`;

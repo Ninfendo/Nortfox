@@ -17,7 +17,7 @@ import {
   PROTOCOL_VERSION_META_KEY,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import { CATALOGUE_PERMISSIONS, MAILBOX_PATTERN } from "@nortfox/contract";
+import { CATALOGUE_PERMISSIONS, INVITED_PATTERN, MAILBOX_PATTERN } from "@nortfox/contract";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -108,6 +108,9 @@ const COUNTRY_INPUT = (description: string) => ({ description: `${description} n
 
 /** What an e-mail address must look like: RFC 6531's, idn-email, with the pattern of one mailbox (packages/contract/src/address.ts). */
 const EMAIL = { type: "string", maxLength: 254, format: "idn-email", pattern: MAILBOX_PATTERN };
+
+/** An address that NortFox sends mail to: its local part in ASCII (the owner's rule of 2026-11-09). */
+const INVITED_EMAIL = { ...EMAIL, pattern: INVITED_PATTERN };
 
 const COMPANY_SCHEMA = {
   type: "object",
@@ -271,7 +274,12 @@ const SESSION = {
   description: "The browser's session: the person it signed in, and the company it works in once one is chosen.",
 };
 
-const WORK_EMAIL = { ...EMAIL, description: "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away." };
+const WORK_EMAIL = {
+  ...INVITED_EMAIL,
+  description:
+    "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away. " +
+    "A disconnect sends the member's new invitation to it, so its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ.",
+};
 
 const WORK_PHONE = { anyOf: [{ type: "string", minLength: 1, maxLength: 50 }, { type: "null" }], description: "The work phone number in this company, or null for none." };
 
@@ -696,8 +704,10 @@ const INVITATION_TOOLS = [
       properties: {
         name: { type: "string", minLength: 1, maxLength: 200, description: "Namn: the invited person's name, on one line." },
         email: {
-          ...EMAIL,
-          description: "E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.",
+          ...INVITED_EMAIL,
+          description:
+            "E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address. " +
+            "Its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ.",
         },
         idempotencyKey: IDEMPOTENCY_KEY,
       },
@@ -822,7 +832,10 @@ const SIGN_IN_TOOLS = [
       properties: {
         token: { type: "string", pattern: "^nfu_[A-Za-z0-9_-]{43}$", description: "The setup link's token, which the install's setup command printed." },
         name: { type: "string", minLength: 1, maxLength: 200, description: "The person's name, on one line." },
-        email: { ...EMAIL, description: "The person's personal e-mail address, one mailbox." },
+        email: {
+          ...EMAIL,
+          description: "The person's personal e-mail address, one mailbox. No character of it has a case fold other than its lower case, such as ß, ς or ſ. Its local part may be in Unicode.",
+        },
         password: { type: "string", description: "The password: 12 to 1024 characters." },
       },
       required: ["token", "name", "email", "password"],

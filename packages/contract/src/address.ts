@@ -31,6 +31,22 @@
 // address. So a mail goes to the one mailbox that the server stores and
 // shows.
 //
+// The owner's two rules of 2026-11-09 come on top, where the issue says
+// nothing. An address that can become an identity's (identityAddress for
+// completeSetup, invitedAddress for inviteUser and the work e-mail, which a
+// disconnect invites) holds no character whose case fold is not its lower
+// case, in NFC (foldsAsLowerCase): ß, ẞ, ς, ſ, µ, the ligatures, the
+// Cherokee letters and the others that Unicode's data gives. The identities'
+// unique index and the sign-in fold an address with casefold(), which makes
+// straße.example into strasse.example, while IDNA2008 and a mail program
+// keep the two apart: such an address would share an identity's place with
+// another mailbox. An address that NortFox sends mail to (invitedAddress)
+// has a local part in ASCII (INVITED_PATTERN): a relay that does not offer
+// SMTPUTF8 must not take another (RFC 6531), and nodemailer sends it anyway.
+// Its domain may be internationalised: nodemailer sends it as its A-label.
+// The company's own address (emailAddress) keeps neither rule: it is no
+// identity's, and NortFox sends it no mail.
+//
 // The pattern (MAILBOX_PATTERN) is the server's check, and the API's
 // description and the tools' schemas publish it. It holds only the tokens
 // that every regex dialect reads, as JSON Schema asks (2020-12, section
@@ -114,6 +130,12 @@ export const MAILBOX_PATTERN = `^(${ATOM_CHARACTER}+[.])*${ATOM_CHARACTER}*${ATO
 /** One mailbox (MAILBOX_PATTERN), as the server checks it. */
 export const MAILBOX = new RegExp(MAILBOX_PATTERN, "u");
 
+/** One mailbox with a local part in ASCII, as the pattern of an address that NortFox sends mail to: atoms of atext alone, its one @, and a domain of labels. */
+export const INVITED_PATTERN = `^([${ATEXT}]+[.])*[${ATEXT}]*[${ATEXT_END}]@${LABEL}([.]${LABEL})*$`;
+
+/** One mailbox with a local part in ASCII (INVITED_PATTERN), as the server checks it. */
+const INVITED = new RegExp(INVITED_PATTERN, "u");
+
 /** The longest address: RFC 5321's path of 256 octets, less its angle brackets. */
 export const EMAIL_MAX = 254;
 
@@ -154,40 +176,119 @@ function storedFits(): z.core.$ZodCheck<string> {
   });
 }
 
-/** The check of an address's form in the form the server stores, NFC: one mailbox still, with a local part of at most 64 characters. An address that is no mailbox has MAILBOX's problem alone. */
-function storedAsMailbox(): z.core.$ZodCheck<string> {
-  return z.refine(
-    (address: string) => {
-      const stored = address.normalize("NFC");
-      return !MAILBOX.test(address) || (MAILBOX.test(stored) && Array.from(stored.slice(0, stored.lastIndexOf("@"))).length <= LOCAL_PART_MAX);
-    },
-    {
-      message: `does not have the format email: its local part holds at most ${String(LOCAL_PART_MAX)} characters, and it is one mailbox, also in NFC, the form the server stores.`,
-      params: { code: "bad-format", data: { format: "email" } },
-    },
+/** A character that case folding changes: Unicode's property Changes_When_Casefolded. */
+const CHANGES_WHEN_CASEFOLDED = /\p{Changes_When_Casefolded}/u;
+
+/**
+ * Whether every character of `address`, in NFC, the form the server stores,
+ * folds as its lower case does: its case fold, which casefold() gives under
+ * pg_unicode_fast, is its plain lower case. A character's fold is the fold
+ * of its lower case, so the two differ exactly when the lower case still
+ * changes when it is case-folded. That is so for ß, ẞ, ς, ſ, µ, the
+ * ligatures, the Cherokee letters, the Greek letters with a ypogegrammeni
+ * and the others that Unicode's data gives; never for Σ, the Kelvin sign, İ
+ * or the dotless i. The database's access.folds_as_lower_case finds the same
+ * characters from PostgreSQL's own data, for every code point
+ * (fold-twins.db.test.ts).
+ */
+export function foldsAsLowerCase(address: string): boolean {
+  return Array.from(address.normalize("NFC")).every((character) => !CHANGES_WHEN_CASEFOLDED.test(character.toLowerCase()));
+}
+
+/** A rule of an address's form beyond MAILBOX: whether an address keeps it, and what its problem says when it does not. */
+interface FormRule {
+  readonly holds: (address: string) => boolean;
+  readonly message: string;
+}
+
+/** The address in NFC, the form the server stores, is one mailbox still, with a local part of at most 64 characters. */
+const STORED_AS_MAILBOX: FormRule = {
+  holds: (address) => {
+    const stored = address.normalize("NFC");
+    return MAILBOX.test(stored) && Array.from(stored.slice(0, stored.lastIndexOf("@"))).length <= LOCAL_PART_MAX;
+  },
+  message: `does not have the format email: its local part holds at most ${String(LOCAL_PART_MAX)} characters, and it is one mailbox, also in NFC, the form the server stores.`,
+};
+
+/** The domain is written as it is mailed (writtenAsMailed). */
+const MAILED_AS_WRITTEN: FormRule = {
+  holds: (address) => writtenAsMailed(domainOf(address)),
+  message: "does not have the format email: a mail would reach its domain under another name, so its domain must be written as it is mailed, in Unicode or in ASCII, and not end in a number.",
+};
+
+/** The local part is in ASCII (INVITED_PATTERN): the owner's rule of 2026-11-09 for an address that NortFox sends mail to. */
+const LOCAL_PART_IN_ASCII: FormRule = {
+  holds: (address) => INVITED.test(address),
+  message:
+    "does not have the format email: NortFox sends mail to it, so its local part, before the @, is in ASCII, which a mail server takes also without SMTPUTF8. Its domain may be in Unicode.",
+};
+
+/** Every character folds as its lower case does (foldsAsLowerCase): the owner's rule of 2026-11-09 for an address that can become an identity's. */
+const FOLDS_AS_LOWER_CASE: FormRule = {
+  holds: foldsAsLowerCase,
+  message:
+    "does not have the format email: it holds a character whose case fold is not its lower case, such as ß, ς, ſ, µ or a ligature, so NortFox would take it for another address, which a mail reaches as another mailbox.",
+};
+
+/**
+ * The checks of the rules, in order, each refused with bad-format. An
+ * address has the problem of the first rule it breaks alone: an address that
+ * is no mailbox has MAILBOX's, a text with a lone surrogate has
+ * wellFormed's, and one that breaks a rule has none of the later ones.
+ */
+function formChecks(rules: readonly FormRule[]): z.core.$ZodCheck<string>[] {
+  return rules.map((rule, index) =>
+    z.refine(
+      (address: string) => !MAILBOX.test(address) || !address.isWellFormed() || rules.slice(0, index).some((earlier) => !earlier.holds(address)) || rule.holds(address),
+      {
+        message: rule.message,
+        params: { code: "bad-format", data: { format: "email" } },
+      },
+    ),
   );
 }
 
-/** The check of an address's domain: written as it is mailed (writtenAsMailed). An address that is no mailbox has MAILBOX's problem alone. */
-function mailedAsWritten(): z.core.$ZodCheck<string> {
-  return z.refine((address: string) => !MAILBOX.test(address) || writtenAsMailed(domainOf(address)), {
-    message: "does not have the format email: a mail would reach its domain under another name, so its domain must be written as it is mailed, in Unicode or in ASCII, and not end in a number.",
-    params: { code: "bad-format", data: { format: "email" } },
-  });
-}
-
-/**
- * An e-mail address that the server stores, looks up and may send mail to:
- * one mailbox (MAILBOX), mailed as it is written, at most 254 characters,
- * also in NFC. Its JSON Schema is RFC 6531's address, the format idn-email
- * (JSON Schema 2020-12's email is RFC 5321's, ASCII only), with
- * MAILBOX_PATTERN as its pattern, in the API's description and in the tools'
- * schemas alike.
- */
-export function emailAddress(): z.ZodEmail {
+/** An address of one mailbox, at most 254 characters, also in NFC, that keeps `rules`, with `pattern` as its published pattern. */
+function addressOf(pattern: string, rules: readonly FormRule[]): z.ZodEmail {
   return z
     .email({ pattern: MAILBOX })
     .max(EMAIL_MAX)
-    .check(noNul(), wellFormed(), storedFits(), storedAsMailbox(), mailedAsWritten())
-    .meta({ format: "idn-email", pattern: MAILBOX_PATTERN });
+    .check(noNul(), wellFormed(), storedFits(), ...formChecks(rules))
+    .meta({ format: "idn-email", pattern });
+}
+
+/**
+ * An e-mail address that the server stores and looks up: one mailbox
+ * (MAILBOX), mailed as it is written, at most 254 characters, also in NFC.
+ * Its JSON Schema is RFC 6531's address, the format idn-email (JSON Schema
+ * 2020-12's email is RFC 5321's, ASCII only), with MAILBOX_PATTERN as its
+ * pattern, in the API's description and in the tools' schemas alike. The
+ * company's own address is one: it is no identity's, and NortFox sends it no
+ * mail.
+ */
+export function emailAddress(): z.ZodEmail {
+  return addressOf(MAILBOX_PATTERN, [STORED_AS_MAILBOX, MAILED_AS_WRITTEN]);
+}
+
+/**
+ * An address that can become an identity's, which NortFox sends no mail to
+ * in this part: completeSetup's. An e-mail address (emailAddress) whose
+ * every character folds as its lower case does (foldsAsLowerCase), the
+ * owner's rule of 2026-11-09. Its local part may hold characters outside
+ * ASCII.
+ */
+export function identityAddress(): z.ZodEmail {
+  return addressOf(MAILBOX_PATTERN, [STORED_AS_MAILBOX, MAILED_AS_WRITTEN, FOLDS_AS_LOWER_CASE]);
+}
+
+/**
+ * An address that NortFox sends an invitation to, and that can become an
+ * identity's: inviteUser's, and the work e-mail, which a disconnect invites.
+ * An identity's address (identityAddress) with a local part in ASCII, the
+ * owner's rule of 2026-11-09, with INVITED_PATTERN as its published
+ * pattern. Its domain may be internationalised: nodemailer sends it as its
+ * A-label.
+ */
+export function invitedAddress(): z.ZodEmail {
+  return addressOf(INVITED_PATTERN, [LOCAL_PART_IN_ASCII, STORED_AS_MAILBOX, MAILED_AS_WRITTEN, FOLDS_AS_LOWER_CASE]);
 }

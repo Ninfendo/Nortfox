@@ -1,9 +1,10 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
 --
 -- 0009 the roles and the programs: the permission catalogue, the programs
--- granted to the members of a company, the program administrators, and the
--- people of a company. See db/README.md, the schema access, and decisions
--- 0002, 0008 and 0009 in docs/decisions/.
+-- granted to the members of a company, the program administrators, the
+-- people of a company, the invitations, and the fold of an address (the
+-- owner's rule of 2026-11-09). See db/README.md, the schema access, and
+-- decisions 0002, 0008 and 0009 in docs/decisions/.
 --
 -- The catalogue is install-wide and public: the programs, the groups, the
 -- permissions and each program's set, as the contract holds them
@@ -556,6 +557,40 @@ SELECT meta.hide_statistics('ledger.companies');
 ALTER TABLE ledger.companies ADD CONSTRAINT companies_name_one_line CHECK (name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]');
 ALTER TABLE access.identities ADD CONSTRAINT identities_name_one_line CHECK (name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]');
 
+-- The fold of an address -------------------------------------------------------------
+--
+-- The owner's rule of 2026-11-09: an address that can become an identity's
+-- holds no character whose case fold is not its lower case. The unique
+-- index of the identities, find_login and identifier_form fold an address
+-- with casefold() under pg_unicode_fast, which makes ß, ẞ and ſ into s, ς
+-- into σ, µ into μ, a ligature into its letters and a Cherokee letter into
+-- its capital; IDNA2008 and a mail program keep straße.example and
+-- strasse.example apart. So such an address would take another mailbox's
+-- identity, or tell its holder that the other has one. The check is each
+-- character of the address in NFC, alone, so the final sigma of lower() has
+-- no part in it: its fold, in NFC, is its lower case, in NFC. PostgreSQL's
+-- own Unicode data finds the characters, no list. It holds on an
+-- invitation's address, an identity's address and a work e-mail, which a
+-- disconnect invites, for every role; the API refuses the same first
+-- (packages/contract/src/address.ts, foldsAsLowerCase). The app runs it in
+-- the checks of its writes, so it may run it. An install that holds such an
+-- address already stops here, with the check's name, and keeps its
+-- migrations as they were: change the address first.
+CREATE FUNCTION access.folds_as_lower_case(address text) RETURNS boolean
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
+BEGIN ATOMIC
+  SELECT NOT EXISTS (
+    SELECT FROM string_to_table(normalize(folds_as_lower_case.address, NFC), NULL) AS c (ch)
+    WHERE normalize(casefold(c.ch COLLATE pg_catalog.pg_unicode_fast), NFC) <> normalize(lower(c.ch COLLATE pg_catalog.pg_unicode_fast), NFC)
+  );
+END;
+
+GRANT EXECUTE ON FUNCTION access.folds_as_lower_case(text) TO nortfox_app;
+
+ALTER TABLE access.identities ADD CONSTRAINT identities_email_folds_as_lower_case CHECK (access.folds_as_lower_case(email));
+ALTER TABLE access.membership_contacts ADD CONSTRAINT membership_contacts_work_email_folds_as_lower_case CHECK (access.folds_as_lower_case(work_email));
+
 -- The work e-mail address ------------------------------------------------------------
 --
 -- Every active and inactive membership has a work e-mail address, as the
@@ -598,7 +633,8 @@ CREATE TABLE access.invitations (
   membership_id uuid NOT NULL,
   name text NOT NULL CONSTRAINT invitations_name_length CHECK (char_length(name) BETWEEN 1 AND 200)
     CONSTRAINT invitations_name_one_line CHECK (name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]'),
-  email text NOT NULL CONSTRAINT invitations_email_length CHECK (char_length(email) BETWEEN 1 AND 254),
+  email text NOT NULL CONSTRAINT invitations_email_length CHECK (char_length(email) BETWEEN 1 AND 254)
+    CONSTRAINT invitations_email_folds_as_lower_case CHECK (access.folds_as_lower_case(email)),
   invited_by uuid NOT NULL,
   created_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,

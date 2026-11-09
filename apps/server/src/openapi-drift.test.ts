@@ -4,7 +4,7 @@
 // this test, and the build job's `pnpm openapi` with `git diff --exit-code`.
 // The client's own test does the same for src/generated.ts.
 
-import { IDEMPOTENCY_KEY_ARGUMENT, MAILBOX_PATTERN, REGISTRY, getHealth, toolInputSchema } from "@nortfox/contract";
+import { IDEMPOTENCY_KEY_ARGUMENT, INVITED_PATTERN, MAILBOX_PATTERN, REGISTRY, getHealth, toolInputSchema } from "@nortfox/contract";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { testListAccounts } from "../test/api.ts";
@@ -264,18 +264,19 @@ describe("the inputs in the API description and in the tools' schemas", () => {
   });
 
   it("describes every e-mail address that the API takes as RFC 6531's, idn-email, with its pattern, in both", () => {
+    // An address that NortFox sends mail to has its local part in ASCII (the owner's rule of 2026-11-09): its pattern says so.
     const fields = [
-      ["completeSetup", "email"],
-      ["updateMyMembership", "workEmail"],
-      ["updateCompany", "email"],
-      ["inviteUser", "email"],
-      ["updateUser", "workEmail"],
+      ["completeSetup", "email", MAILBOX_PATTERN],
+      ["updateMyMembership", "workEmail", INVITED_PATTERN],
+      ["updateCompany", "email", MAILBOX_PATTERN],
+      ["inviteUser", "email", INVITED_PATTERN],
+      ["updateUser", "workEmail", INVITED_PATTERN],
     ] as const;
-    for (const [operationId, field] of fields) {
+    for (const [operationId, field, pattern] of fields) {
       const operation = REGISTRY.find((each) => each.operationId === operationId);
       const tool = partsOf(operation === undefined ? {} : toolInputSchema(operation)).properties[field] ?? {};
       for (const schema of [tool, describedInput(operationId)[field] ?? {}]) {
-        expect(textForms(schema), `${operationId}.${field}`).toEqual([JSON.stringify({ format: "idn-email", pattern: MAILBOX_PATTERN })]);
+        expect(textForms(schema), `${operationId}.${field}`).toEqual([JSON.stringify({ format: "idn-email", pattern })]);
       }
     }
   });

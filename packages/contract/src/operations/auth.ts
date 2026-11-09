@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { NoBody, defineOperation } from "../operation.ts";
 import { newPassword } from "../password.ts";
-import { emailAddress } from "../address.ts";
+import { identityAddress } from "../address.ts";
 import { noNul, singleLine, wellFormed } from "../text.ts";
 import { User } from "./me.ts";
 
@@ -54,7 +54,9 @@ export const completeSetup = defineOperation({
   params: z.strictObject({ token: token("u", "The setup link's token, which the install's setup command printed.") }),
   body: z.strictObject({
     name: z.string().min(1).max(200).check(noNul(), wellFormed(), singleLine()).meta({ description: "The person's name, on one line." }),
-    email: emailAddress().meta({ description: "The person's personal e-mail address, one mailbox." }),
+    email: identityAddress().meta({
+      description: "The person's personal e-mail address, one mailbox. No character of it has a case fold other than its lower case, such as ß, ς or ſ. Its local part may be in Unicode.",
+    }),
     password: z.string().check(newPassword()).meta({ description: "The password: 12 to 1024 characters." }),
   }),
   output: SetupResult,

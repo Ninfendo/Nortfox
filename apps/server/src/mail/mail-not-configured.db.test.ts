@@ -13,6 +13,7 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool, type ProblemBody } from "../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../test/database.ts";
+import { asMember } from "../../test/memberships.ts";
 import { expectNoSecretsAtRestFromSignInApps, expectNoTokensFromSignInApps, jsonOf, signInApp, testClock, type SignInApp } from "../../test/sign-in.ts";
 import { apiCompany, calls, invite, newMember, sessionIn, type ApiCompany } from "../../test/users.ts";
 import { errorReport } from "../api/report.ts";
@@ -114,7 +115,7 @@ describe("an install with no mail set up", () => {
     expect(errorReport(withMail.reports.at(-1))).not.toContain("lena.fel@example.com");
   });
 
-  it.each(["kalle@intranet", "anna@example.c", "\u{1F600}@example.com", "anna\u2603berg@example.com", "o\u2019brien@example.com", "col\u00B7lecta@example.com"])("keeps the address %s out of the report when the mail server quotes it in its refusal", async (email) => {
+  it.each(["kalle@intranet", "anna@example.c"])("keeps the address %s out of the report when the mail server quotes it in its refusal", async (email) => {
     const before = await rows();
     withMail.mail.failNext(`Can't send mail - all recipients were rejected: 550 5.1.1 <${email}>: Recipient address rejected: User unknown in local recipient table`);
     const failed = await calls.inviteUser(withMail, company.session, { name: "Kalle Berg", email });
@@ -124,6 +125,26 @@ describe("an install with no mail set up", () => {
     expect(report).toContain("<[e-mail]>: Recipient address rejected");
     expect(report).not.toContain(email);
   });
+
+  // inviteUser refuses a local part outside ASCII (the owner's rule of 2026-11-09), but a work e-mail that came from
+  // the person's own address, as createCompany and migration 0009 copy it, can still hold one, and a disconnect mails it.
+  it.each(["\u{1F600}@example.com", "anna\u2603berg@example.com", "o\u2019brien@example.com", "col\u00B7lecta@example.com"])(
+    "keeps the address %s, whose local part is outside ASCII, out of the report when the mail server refuses a disconnect's mail to it",
+    async (email) => {
+      const refused = await calls.inviteUser(withMail, company.session, { name: "Kalle Berg", email });
+      expect((await jsonOf<ProblemBody>(refused, 400)).errors?.map((error) => [error.code, error.pointer])).toEqual([["bad-format", "/email"]]);
+      const member = await newMember(withMail, { app, owner }, company);
+      await asMember(app, company.id, company.asOwner, "UPDATE access.membership_contacts SET work_email = $2 WHERE membership_id = $1", [member.id, email]);
+      const before = await rows();
+      withMail.mail.failNext(`Can't send mail - all recipients were rejected: 550 5.1.1 <${email}>: Recipient address rejected: User unknown in local recipient table`);
+      const failed = await calls.disconnectUserIdentity(withMail, company.session, member.id);
+      expect(await jsonOf<ProblemBody>(failed, 500)).toMatchObject({ code: "internal-error" });
+      expect(await rows()).toEqual(before);
+      const report = errorReport(withMail.reports.at(-1));
+      expect(report).toContain("<[e-mail]>: Recipient address rejected");
+      expect(report).not.toContain(email);
+    },
+  );
 
   it("leaves no token in an answer and no secret at rest", async () => {
     expectNoTokensFromSignInApps();

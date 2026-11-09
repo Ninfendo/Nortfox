@@ -901,7 +901,7 @@ export interface Operations {
       readonly companyId: string;
     } & {
       /**
-       * The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away.
+       * The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away. A disconnect sends the member's new invitation to it, so its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ.
        */
       readonly workEmail?: string;
       /**
@@ -1017,7 +1017,7 @@ export interface Operations {
        */
       readonly name: string;
       /**
-       * The person's personal e-mail address, one mailbox.
+       * The person's personal e-mail address, one mailbox. No character of it has a case fold other than its lower case, such as ß, ς or ſ. Its local part may be in Unicode.
        */
       readonly email: string;
       /**
@@ -1088,7 +1088,7 @@ export interface Operations {
        */
       readonly name: string;
       /**
-       * E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address.
+       * E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address. Its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ.
        */
       readonly email: string;
     },
@@ -1176,7 +1176,7 @@ export interface Operations {
        */
       readonly idleTimeout?: 15 | 30 | 60 | 120 | 480;
       /**
-       * The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away.
+       * The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away. A disconnect sends the member's new invitation to it, so its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ.
        */
       readonly workEmail?: string;
       /**

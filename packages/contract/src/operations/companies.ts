@@ -14,7 +14,7 @@ import { ROLE_KEYS } from "../access/effective.ts";
 import { ADMIN_LEVELS } from "../access/permissions.ts";
 import { personal } from "../fields.ts";
 import { NoBody, defineListOperation, defineOperation } from "../operation.ts";
-import { emailAddress } from "../address.ts";
+import { emailAddress, invitedAddress } from "../address.ts";
 import { noNul, singleLine, wellFormed } from "../text.ts";
 
 /** An organisation number: ten digits with a hyphen after the sixth. */
@@ -174,9 +174,14 @@ export type ProgramAdmin = z.infer<typeof ProgramAdmin>;
 /**
  * A work e-mail address as a change takes it: required on the established
  * screen, so a change sets another one and never takes it away (null is
- * refused).
+ * refused). A disconnect invites it, so it keeps the rules of an
+ * invitation's address (invitedAddress).
  */
-export const WorkEmail = emailAddress().meta({ description: "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away." });
+export const WorkEmail = invitedAddress().meta({
+  description:
+    "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away. " +
+    "A disconnect sends the member's new invitation to it, so its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ.",
+});
 
 /** A work phone number as a change takes it: null takes it away. */
 export const WorkPhone = z
