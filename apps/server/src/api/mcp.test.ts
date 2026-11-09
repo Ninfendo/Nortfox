@@ -129,6 +129,20 @@ const IDLE_TIMEOUT = {
   description: "Utloggning efter inaktivitet, in whole minutes: 15, 30, 60, 120 (2 hours, the default) or 480 (8 hours).",
 };
 
+const PROGRAM = {
+  type: "string",
+  enum: ["bookkeeping", "approval-read", "read", "auditor"],
+  description: "A program: bookkeeping (Bokföring), approval-read (Bokföring - Attest & Läs), read (Läs) or auditor (Revisor).",
+};
+
+/** A time in ISO 8601 with Z, as z.iso.datetime() writes its schema. */
+const DATE_TIME = {
+  type: "string",
+  format: "date-time",
+  pattern:
+    "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+};
+
 const MEMBERSHIP = {
   type: "object",
   properties: {
@@ -139,10 +153,53 @@ const MEMBERSHIP = {
     idleTimeout: IDLE_TIMEOUT,
     workEmail: { type: "string", description: "The person's work e-mail address in this company, where its notices go. Absent when none is set." },
     workPhone: { type: "string", description: "The person's work phone number in this company. Absent when none is set." },
+    roles: {
+      type: "array",
+      items: {
+        type: "string",
+        enum: ["owner", "admin", "bookkeeper", "approver", "viewer", "auditor"],
+        description:
+          "One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor.",
+      },
+      description:
+        "The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended.",
+    },
+    programs: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          program: PROGRAM,
+          permissions: { type: "array", items: { type: "string" }, description: "The rights the grant holds, as the catalogue's permission keys, in the catalogue's order." },
+          full: { type: "boolean", description: "Full behörighet: whether the grant holds every right of its program's Full behörighet, which a grant gets by default." },
+          grantedAt: { ...DATE_TIME, description: "When the program was granted." },
+          expiresAt: {
+            description: "When the grant ends by itself, with no action by anyone: a Revisor grant 30 days after it was granted. From then on it gives nothing. Absent for a grant with no end.",
+            ...DATE_TIME,
+          },
+        },
+        required: ["program", "permissions", "full", "grantedAt"],
+        additionalProperties: false,
+        description: "Program: a program granted to a member, with the rights the grant holds.",
+      },
+      description: "The member's program grants as they are now, in the catalogue's order, also one that has ended.",
+    },
+    programsAdministered: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { program: PROGRAM },
+        required: ["program"],
+        additionalProperties: false,
+        description: "Programadministratör: the member grants, narrows and removes this program, and its Rapporter and Register/Övrigt rights.",
+      },
+      description: "The programs the member administers, in the catalogue's order.",
+    },
   },
-  required: ["companyId", "status", "idleTimeout"],
+  required: ["companyId", "status", "idleTimeout", "roles", "programs", "programsAdministered"],
   additionalProperties: false,
-  description: "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts.",
+  description:
+    "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered.",
 };
 
 const COMPANY_CHOICE = {
@@ -403,7 +460,9 @@ const SIGN_IN_TOOLS = [
         permissions: {
           type: "array",
           items: { type: "string" },
-          description: "The permissions the person holds in that company, in alphabetical order. Empty when the request works in no company.",
+          description:
+            "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, and the rights of the member's program grants. " +
+            "A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.",
         },
       },
       required: ["user", "twoStep", "permissions"],

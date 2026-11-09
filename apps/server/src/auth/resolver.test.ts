@@ -5,10 +5,29 @@
 // resolver drops a permission whose grant has ended, so a time-bound grant
 // ends in a session that began before, on the next request.
 // sessions.db.test.ts, idle-logout.db.test.ts and session-membership.db.test.ts
-// run the resolver on PostgreSQL.
+// run the resolver on PostgreSQL, and session-permissions.db.test.ts and
+// modules/users/auditor.db.test.ts the snapshot.
 
 import { describe, expect, it } from "vitest";
-import { livePermissions } from "./resolver.ts";
+import { livePermissions, permissionSnapshot } from "./resolver.ts";
+
+describe("permissionSnapshot", () => {
+  it("keeps each permission with its end as an ISO time, or null for no end", () => {
+    const end = new Date("2090-04-14T10:00:00.123Z");
+    expect(permissionSnapshot(new Map([["company:read", null], ["vouchers.view", end]]))).toEqual({ "company:read": null, "vouchers.view": "2090-04-14T10:00:00.123Z" });
+  });
+
+  it("is what livePermissions reads back: a permission holds until its end", () => {
+    const end = new Date("2090-04-14T10:00:00.123Z");
+    const snapshot = permissionSnapshot(new Map([["company:read", null], ["vouchers.view", end]]));
+    expect(livePermissions(snapshot, new Date(end.getTime() - 1))).toEqual(["company:read", "vouchers.view"]);
+    expect(livePermissions(snapshot, end)).toEqual(["company:read"]);
+  });
+
+  it("gives an empty snapshot for no permission", () => {
+    expect(permissionSnapshot(new Map())).toEqual({});
+  });
+});
 
 describe("livePermissions", () => {
   const AT = new Date("2090-03-15T10:00:00.000Z");

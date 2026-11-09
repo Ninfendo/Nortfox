@@ -39,7 +39,9 @@ export const Me = z
     company: Company.optional(),
     membership: Membership.optional(),
     permissions: z.array(z.string()).meta({
-      description: "The permissions the person holds in that company, in alphabetical order. Empty when the request works in no company.",
+      description:
+        "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, and the rights of the member's program grants. " +
+        "A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.",
     }),
   })
   .meta({ id: "Me", description: "The signed-in person, with their own login data, and the company the request works in with the person's membership and permissions there." });
@@ -55,7 +57,7 @@ export const getMe = defineOperation({
   summary: "Read yourself",
   description:
     "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. " +
-    "When the request works in a company, it gives that company too, with the person's membership and permissions there.",
+    "When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.",
   output: Me,
   permission: "signed-in",
   company: "current",

@@ -218,12 +218,12 @@ describe("the company choice", () => {
       user: { id: person.id, name: "Alva Berg", email: person.email, language: "sv" },
       twoStep: "new_device_90_days",
       company: await companyOf(alfa.id),
-      membership: { companyId: alfa.id, userId: person.id, status: "active", adminLevel: "owner", idleTimeout: 120 },
+      membership: { companyId: alfa.id, userId: person.id, status: "active", adminLevel: "owner", idleTimeout: 120, roles: ["owner"], programs: [], programsAdministered: [] },
       permissions: ["company:read"],
     });
     await chooseCompany(server, session, beta.id);
     const inBeta = await jsonOf(await getAs(server, session, "/v1/me"));
-    expect(inBeta["membership"]).toEqual({ companyId: beta.id, userId: person.id, status: "active", idleTimeout: 120 });
+    expect(inBeta["membership"]).toEqual({ companyId: beta.id, userId: person.id, status: "active", idleTimeout: 120, roles: [], programs: [], programsAdministered: [] });
     expect(inBeta["permissions"]).toEqual(["company:read"]);
   });
 

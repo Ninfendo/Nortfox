@@ -2,7 +2,9 @@
 
 // A membership that a request names is in its company: the one membership
 // function or the credential gave it. One the transaction's company does not
-// hold is a fault of the server, which throws and names the membership.
+// hold is a fault of the server, which throws and names the membership. An
+// invited membership holds no role and no program until the database gives
+// it some.
 // update-my-membership.db.test.ts and company-choice.db.test.ts read and
 // change memberships on PostgreSQL.
 
@@ -22,13 +24,24 @@ describe("readMembership", () => {
       work_email: null,
       work_phone: null,
     };
-    const answering: Queryable = { query: <Row extends QueryResultRow>() => Promise.resolve({ rows: [row] } as unknown as QueryResult<Row>) };
-    expect(await readMembership(answering, "4f3e2d1c-0b9a-4876-9543-210fedcba987")).toEqual({ companyId: row.company_id, status: "invited", idleTimeout: 120 });
+    // The membership's row first; its grants and the programs it administers then, none.
+    const answering: Queryable = {
+      query: <Row extends QueryResultRow>(statement: string) =>
+        Promise.resolve({ rows: statement.includes("access.memberships") ? [row] : [] } as unknown as QueryResult<Row>),
+    };
+    expect(await readMembership(answering, "4f3e2d1c-0b9a-4876-9543-210fedcba987", new Date("2090-03-15T10:00:00.000Z"))).toEqual({
+      companyId: row.company_id,
+      status: "invited",
+      idleTimeout: 120,
+      roles: [],
+      programs: [],
+      programsAdministered: [],
+    });
   });
 
   it("throws for a membership that the transaction's company does not hold", async () => {
     const empty: Queryable = { query: <Row extends QueryResultRow>() => Promise.resolve({ rows: [] } as unknown as QueryResult<Row>) };
-    await expect(readMembership(empty, "4f3e2d1c-0b9a-4876-9543-210fedcba987")).rejects.toThrow(
+    await expect(readMembership(empty, "4f3e2d1c-0b9a-4876-9543-210fedcba987", new Date("2090-03-15T10:00:00.000Z"))).rejects.toThrow(
       "The membership 4f3e2d1c-0b9a-4876-9543-210fedcba987 is not in the transaction's company.",
     );
   });

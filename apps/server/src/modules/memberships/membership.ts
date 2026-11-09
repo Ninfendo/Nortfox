@@ -4,11 +4,14 @@
 // their own (issue 12, "Users in a company" 8 and 9). The rows live in
 // access.memberships, a company table, and the work contacts in
 // access.membership_contacts, which keeps no history: a transaction reads
-// and changes them only in its own company, by row level security. Only this
-// module names the memberships' table (scripts/guards/membership.ts).
+// and changes them only in its own company, by row level security. The
+// membership's roles, program grants and administered programs come with it
+// (programs.ts). Only this module names the memberships' table
+// (scripts/guards/membership.ts).
 
-import type { AdminLevel, Membership } from "@nortfox/contract";
+import { rolesOf, type AdminLevel, type Membership } from "@nortfox/contract";
 import type { Queryable } from "../../db/database.ts";
+import { grantOutput, memberAccess, readPrograms } from "./programs.ts";
 
 interface MembershipRow {
   readonly company_id: string;
@@ -30,8 +33,13 @@ export async function addOwner(tx: Queryable, companyId: string, person: string)
   await tx.query("INSERT INTO access.memberships (company_id, user_id, status, admin_level) VALUES ($1, $2, 'active', 'owner')", [companyId, person]);
 }
 
-/** A membership of the transaction's company, with the work contacts. A membership that the request named and the database does not hold is a fault of the server. */
-export async function readMembership(tx: Queryable, membershipId: string): Promise<Membership> {
+/**
+ * A membership of the transaction's company, with the work contacts, its
+ * program grants and the programs it administers, and the roles it holds at
+ * `at`, as they are now. A membership that the request named and the
+ * database does not hold is a fault of the server.
+ */
+export async function readMembership(tx: Queryable, membershipId: string, at: Date): Promise<Membership> {
   const found = await tx.query<MembershipRow>(
     `SELECT m.company_id, m.user_id, m.status, m.admin_level, m.idle_timeout_minutes, c.work_email, c.work_phone
      FROM access.memberships AS m
@@ -43,6 +51,7 @@ export async function readMembership(tx: Queryable, membershipId: string): Promi
   if (row === undefined) {
     throw new Error(`The membership ${membershipId} is not in the transaction's company.`);
   }
+  const programs = await readPrograms(tx, membershipId);
   return {
     companyId: row.company_id,
     ...(row.user_id === null ? {} : { userId: row.user_id }),
@@ -51,6 +60,9 @@ export async function readMembership(tx: Queryable, membershipId: string): Promi
     idleTimeout: row.idle_timeout_minutes,
     ...(row.work_email === null ? {} : { workEmail: row.work_email }),
     ...(row.work_phone === null ? {} : { workPhone: row.work_phone }),
+    roles: rolesOf(memberAccess(row.admin_level, programs), at),
+    programs: programs.grants.map(grantOutput),
+    programsAdministered: programs.administered.map((program) => ({ program })),
   };
 }
 
@@ -91,7 +103,8 @@ export interface OwnChange {
 
 /**
  * Changes the person's own membership in the transaction's company, and
- * gives it, or gives nothing when the membership is no longer active. The
+ * gives it with its roles at `at`, or gives nothing when the membership is
+ * no longer active. The
  * idle time is the membership's own column, so its change is in the
  * behandlingshistorik. The work contacts are kept beside it, in a row that
  * holds no history, and that goes when neither is left.
@@ -102,7 +115,7 @@ export interface OwnChange {
  * the field it leaves out. A change that waited for a removal, a leave or a
  * deactivation finds the membership no longer active, and changes nothing.
  */
-export async function changeOwnMembership(tx: Queryable, membershipId: string, change: OwnChange): Promise<Membership | undefined> {
+export async function changeOwnMembership(tx: Queryable, membershipId: string, change: OwnChange, at: Date): Promise<Membership | undefined> {
   const locked = await tx.query("SELECT 1 FROM access.memberships WHERE id = $1 AND status = 'active' FOR NO KEY UPDATE", [membershipId]);
   if (locked.rows.length === 0) {
     return undefined;
@@ -111,7 +124,7 @@ export async function changeOwnMembership(tx: Queryable, membershipId: string, c
     await tx.query("UPDATE access.memberships SET idle_timeout_minutes = $2 WHERE id = $1 AND idle_timeout_minutes <> $2", [membershipId, change.idleTimeout]);
   }
   if (change.workEmail !== undefined || change.workPhone !== undefined) {
-    const before = await readMembership(tx, membershipId);
+    const before = await readMembership(tx, membershipId, at);
     const workEmail = change.workEmail === undefined ? (before.workEmail ?? null) : change.workEmail;
     const workPhone = change.workPhone === undefined ? (before.workPhone ?? null) : change.workPhone;
     if (workEmail === null && workPhone === null) {
@@ -124,5 +137,5 @@ export async function changeOwnMembership(tx: Queryable, membershipId: string, c
       );
     }
   }
-  return readMembership(tx, membershipId);
+  return readMembership(tx, membershipId, at);
 }

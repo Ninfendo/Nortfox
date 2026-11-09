@@ -15,12 +15,18 @@
 //    later waits for the commit, and then ends the session. So the session
 //    never keeps a membership that is not active.
 // 2. The session stores the company, the membership and the person's
-//    permissions there now (access.choose_company), and is seen now, under
-//    the membership's idle time, both as the held row gives them. The
-//    resolver checks the membership on every request, and the permissions
-//    hold until the session chooses a company again. A session that has
-//    ended since the resolver read it, such as by a logout at once, chooses
-//    nothing, and the call is answered as one with no actor (401).
+//    effective permissions there now (access.choose_company), and is seen
+//    now, under the membership's idle time. The admin level and the idle
+//    time are the held row's; the permissions also come from the
+//    membership's program grants and the programs it administers, each
+//    right with the end of the grant that gives it, or none. The resolver
+//    checks the membership on every request, and drops a right whose grant
+//    has ended, so a Revisor grant's end holds in the session too. The rest
+//    of the permissions hold until the session chooses a company again: a
+//    change of the grants reaches the session then (issue 12, "Roles, admin
+//    levels, programs and permissions" 12). A session that has ended since
+//    the resolver read it, such as by a logout at once, chooses nothing, and
+//    the call is answered as one with no actor (401).
 // 3. The person's recent companies get the choice.
 // 4. The company's behandlingshistorik gets the sign-in (choice 8: at each
 //    choice, also when switching), with the method, the second step, when
@@ -30,11 +36,13 @@
 // It answers the session as getSession does. The answer names the person, so
 // its idempotency key is kept outside every company table.
 
-import { platformPermissions, selectCompany } from "@nortfox/contract";
+import { effectivePermissions, selectCompany } from "@nortfox/contract";
 import { companyNotAvailable, credentialEnded, handlePerson, inputMembership, ok } from "../../api/operation.ts";
+import { permissionSnapshot } from "../../auth/resolver.ts";
 import { addEntry, signInEntryDetails } from "../audit/entries.ts";
 import { readCompany } from "../companies/get-company.ts";
 import { holdActive } from "../memberships/membership.ts";
+import { memberAccess, readPrograms } from "../memberships/programs.ts";
 import { readMe } from "../users/identity.ts";
 
 export const selectCompanyHandler = handlePerson(selectCompany, async ({ context, tx, company, request, now }) => {
@@ -45,7 +53,8 @@ export const selectCompanyHandler = handlePerson(selectCompany, async ({ context
   }
   const at = now();
   const { credential } = context;
-  const permissions = Object.fromEntries([...platformPermissions(held.adminLevel)].map((permission) => [permission, null]));
+  const programs = await readPrograms(tx, membership.membershipId);
+  const permissions = permissionSnapshot(effectivePermissions(memberAccess(held.adminLevel, programs), at));
   const chosen = await tx.query<{ chosen: boolean }>("SELECT access.choose_company($1, $2, $3, $4, $5, $6) AS chosen", [
     credential.sessionId,
     membership.companyId,

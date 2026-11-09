@@ -26,9 +26,12 @@ const SCHEMAS: Readonly<Record<string, readonly string[]>> = {
   Me: ["user", "personalIdentityNumber", "mobile", "twoStep", "company", "membership", "permissions"],
   Session: ["user", "company"],
   // Slice 2c, part 2: the companies and the memberships.
-  Membership: ["companyId", "userId", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone"],
+  Membership: ["companyId", "userId", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone", "roles", "programs", "programsAdministered"],
   CompanyChoice: ["company", "adminLevel"],
   RecentCompanies: ["companies"],
+  // Slice 2c, part 3: the roles and the programs.
+  ProgramGrant: ["program", "permissions", "full", "grantedAt", "expiresAt"],
+  ProgramAdmin: ["program"],
 };
 
 /**
@@ -40,6 +43,9 @@ const VALUES: Readonly<Record<string, readonly (string | number)[]>> = {
   SysAdmin: ["owner", "admin"],
   "Membership.status": ["invited", "active", "inactive", "removed", "left"],
   "Membership.idleTimeout": [15, 30, 60, 120, 480],
+  // Slice 2c, part 3.
+  Program: ["bookkeeping", "approval-read", "read", "auditor"],
+  Role: ["owner", "admin", "bookkeeper", "approver", "viewer", "auditor"],
 };
 
 /** The fields that hold a schema that a term names, as Schema.field, each with that schema. */
@@ -48,6 +54,9 @@ const REFERENCES: Readonly<Record<string, string>> = {
   "Session.company": "Company",
   "Membership.adminLevel": "SysAdmin",
   "CompanyChoice.adminLevel": "SysAdmin",
+  // Slice 2c, part 3.
+  "ProgramGrant.program": "Program",
+  "ProgramAdmin.program": "Program",
 };
 
 /**
@@ -74,6 +83,9 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
       "Membership.status",
       "Membership.workEmail",
       "Membership.workPhone",
+      "Membership.roles",
+      "Membership.programs",
+      "Membership.programsAdministered",
     ],
   ],
   ["NortFox ID / login identity", ["User", "Me"]],
@@ -81,6 +93,13 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
   ["Personnummer / personal identity number", ["Me.personalIdentityNumber"]],
   ["Systemadministratör / system administrator", ["SysAdmin", "Membership.adminLevel", "CompanyChoice.adminLevel"]],
   ["Utloggning efter inaktivitet / idle logout", ["Membership.idleTimeout"]],
+  ["(no screen word) / role", ["Role", "Membership.roles"]],
+  ["Programadministratör / program administrator", ["ProgramAdmin", "ProgramAdmin.program", "Membership.programsAdministered"]],
+  [
+    "Program / program",
+    ["Program", "ProgramGrant", "ProgramGrant.program", "ProgramGrant.permissions", "ProgramGrant.grantedAt", "ProgramGrant.expiresAt", "Membership.programs"],
+  ],
+  ["Full behörighet / full permission", ["ProgramGrant.full"]],
 ];
 
 interface DescribedSchema {

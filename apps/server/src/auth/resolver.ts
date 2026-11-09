@@ -97,6 +97,15 @@ function sessionToken(request: Request): string | undefined {
   return token !== undefined && tokenKind(token) === "session" ? token : undefined;
 }
 
+/**
+ * The snapshot a session stores of a member's effective permissions when it
+ * chooses the company: each permission with the end of what gives it, as an
+ * ISO time, or null for no end.
+ */
+export function permissionSnapshot(effective: ReadonlyMap<string, Date | null>): PermissionSnapshot {
+  return Object.fromEntries([...effective].map(([permission, end]) => [permission, end === null ? null : end.toISOString()]));
+}
+
 /** The permissions of a snapshot that still hold at `at`: each one with no end, or an end after `at`. */
 export function livePermissions(snapshot: PermissionSnapshot, at: Date): string[] {
   return Object.entries(snapshot)

@@ -91,13 +91,13 @@ export interface Me {
   readonly company?: Company;
   readonly membership?: Membership;
   /**
-   * The permissions the person holds in that company, in alphabetical order. Empty when the request works in no company.
+   * The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.
    */
   readonly permissions: readonly string[];
 }
 
 /**
- * Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts.
+ * Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered.
  */
 export interface Membership {
   /**
@@ -125,6 +125,18 @@ export interface Membership {
    * The person's work phone number in this company. Absent when none is set.
    */
   readonly workPhone?: string;
+  /**
+   * The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended.
+   */
+  readonly roles: readonly Role[];
+  /**
+   * The member's program grants as they are now, in the catalogue's order, also one that has ended.
+   */
+  readonly programs: readonly ProgramGrant[];
+  /**
+   * The programs the member administers, in the catalogue's order.
+   */
+  readonly programsAdministered: readonly ProgramAdmin[];
 }
 
 /**
@@ -184,6 +196,41 @@ export interface Problem {
 }
 
 /**
+ * A program: bookkeeping (Bokföring), approval-read (Bokföring - Attest & Läs), read (Läs) or auditor (Revisor).
+ */
+export type Program = "bookkeeping" | "approval-read" | "read" | "auditor";
+
+/**
+ * Programadministratör: the member grants, narrows and removes this program, and its Rapporter and Register/Övrigt rights.
+ */
+export interface ProgramAdmin {
+  readonly program: Program;
+}
+
+/**
+ * Program: a program granted to a member, with the rights the grant holds.
+ */
+export interface ProgramGrant {
+  readonly program: Program;
+  /**
+   * The rights the grant holds, as the catalogue's permission keys, in the catalogue's order.
+   */
+  readonly permissions: readonly string[];
+  /**
+   * Full behörighet: whether the grant holds every right of its program's Full behörighet, which a grant gets by default.
+   */
+  readonly full: boolean;
+  /**
+   * When the program was granted.
+   */
+  readonly grantedAt: string;
+  /**
+   * When the grant ends by itself, with no action by anyone: a Revisor grant 30 days after it was granted. From then on it gives nothing. Absent for a grant with no end.
+   */
+  readonly expiresAt?: string;
+}
+
+/**
  * The three companies the person chose last, where the person is still an active member.
  */
 export interface RecentCompanies {
@@ -192,6 +239,11 @@ export interface RecentCompanies {
    */
   readonly companies: readonly CompanyChoice[];
 }
+
+/**
+ * One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor.
+ */
+export type Role = "owner" | "admin" | "bookkeeper" | "approver" | "viewer" | "auditor";
 
 /**
  * The browser's session: the person it signed in, and the company it works in once one is chosen.
@@ -406,7 +458,7 @@ export interface Operations {
   /**
    * Read yourself
    *
-   * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership and permissions there.
+   * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.
    *
    * `GET /v1/me`
    *

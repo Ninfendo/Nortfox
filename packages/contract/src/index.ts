@@ -21,7 +21,15 @@ export type {
   Program,
   ProgramPermission,
 } from "./access/catalogue.ts";
-export { ADMIN_LEVELS, MEMBER_PERMISSIONS, SYSTEM_ADMINISTRATOR_PERMISSIONS, platformPermissions } from "./access/permissions.ts";
+export { ROLES, ROLE_KEYS, effectivePermissions, grantHolds, grantRights, rolesOf } from "./access/effective.ts";
+export type { GrantAccess, MemberAccess, Role, RoleDefinition } from "./access/effective.ts";
+export {
+  ADMIN_LEVELS,
+  MEMBER_PERMISSIONS,
+  PROGRAM_ADMINISTRATOR_PERMISSIONS,
+  SYSTEM_ADMINISTRATOR_PERMISSIONS,
+  platformPermissions,
+} from "./access/permissions.ts";
 export type { AdminLevel } from "./access/permissions.ts";
 export { assistantOperations } from "./assistant.ts";
 export {
@@ -81,7 +89,11 @@ export {
   IdleTimeout,
   MEMBERSHIP_STATUSES,
   Membership,
+  ProgramAdmin,
+  ProgramGrant,
+  ProgramKey,
   RecentCompanies,
+  RoleKey,
   SysAdmin,
   createCompany,
   getCompany,

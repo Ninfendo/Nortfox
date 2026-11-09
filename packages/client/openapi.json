@@ -301,7 +301,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The permissions the person holds in that company, in alphabetical order. Empty when the request works in no company."
+            "description": "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company."
           }
         },
         "required": [
@@ -357,15 +357,39 @@
           "workPhone": {
             "type": "string",
             "description": "The person's work phone number in this company. Absent when none is set."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "description": "The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended."
+          },
+          "programs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramGrant"
+            },
+            "description": "The member's program grants as they are now, in the catalogue's order, also one that has ended."
+          },
+          "programsAdministered": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramAdmin"
+            },
+            "description": "The programs the member administers, in the catalogue's order."
           }
         },
         "required": [
           "companyId",
           "status",
-          "idleTimeout"
+          "idleTimeout",
+          "roles",
+          "programs",
+          "programsAdministered"
         ],
         "additionalProperties": false,
-        "description": "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts."
+        "description": "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered."
       },
       "SysAdmin": {
         "type": "string",
@@ -374,6 +398,78 @@
           "admin"
         ],
         "description": "Systemadministratör: owner, the person who made the company, or admin, a member made system administrator later. Both hold the same rights, and neither gives work rights by itself."
+      },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "bookkeeper",
+          "approver",
+          "viewer",
+          "auditor"
+        ],
+        "description": "One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor."
+      },
+      "ProgramGrant": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "$ref": "#/components/schemas/Program"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The rights the grant holds, as the catalogue's permission keys, in the catalogue's order."
+          },
+          "full": {
+            "type": "boolean",
+            "description": "Full behörighet: whether the grant holds every right of its program's Full behörighet, which a grant gets by default."
+          },
+          "grantedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the program was granted."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the grant ends by itself, with no action by anyone: a Revisor grant 30 days after it was granted. From then on it gives nothing. Absent for a grant with no end."
+          }
+        },
+        "required": [
+          "program",
+          "permissions",
+          "full",
+          "grantedAt"
+        ],
+        "additionalProperties": false,
+        "description": "Program: a program granted to a member, with the rights the grant holds."
+      },
+      "Program": {
+        "type": "string",
+        "enum": [
+          "bookkeeping",
+          "approval-read",
+          "read",
+          "auditor"
+        ],
+        "description": "A program: bookkeeping (Bokföring), approval-read (Bokföring - Attest & Läs), read (Läs) or auditor (Revisor)."
+      },
+      "ProgramAdmin": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "$ref": "#/components/schemas/Program"
+          }
+        },
+        "required": [
+          "program"
+        ],
+        "additionalProperties": false,
+        "description": "Programadministratör: the member grants, narrows and removes this program, and its Rapporter and Register/Övrigt rights."
       },
       "CompanyChoice": {
         "type": "object",
@@ -1228,7 +1324,7 @@
           "me"
         ],
         "summary": "Read yourself",
-        "description": "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership and permissions there.",
+        "description": "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.",
         "x-nortfox": {
           "permission": "signed-in",
           "tool": "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; and the company you work in, with your membership and permissions there.",
@@ -1936,7 +2032,7 @@
         },
         "responses": {
           "200": {
-            "description": "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts.",
+            "description": "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered.",
             "content": {
               "application/json": {
                 "schema": {

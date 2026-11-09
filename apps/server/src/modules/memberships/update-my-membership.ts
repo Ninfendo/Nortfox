@@ -27,12 +27,13 @@ import { changeOwnMembership } from "./membership.ts";
 
 export const updateMyMembershipHandler = handlePerson(updateMyMembership, async ({ context, tx, company, now }, { body }) => {
   const membership = inputMembership(company);
-  const changed = await changeOwnMembership(tx, membership.membershipId, body);
+  const at = now();
+  const changed = await changeOwnMembership(tx, membership.membershipId, body, at);
   if (changed === undefined) {
     return companyNotAvailable(updateMyMembership);
   }
   if (body.idleTimeout !== undefined) {
-    await seeSession(tx, context.credential.sessionId, now(), changed.idleTimeout, membership.membershipId);
+    await seeSession(tx, context.credential.sessionId, at, changed.idleTimeout, membership.membershipId);
   }
   return ok(changed);
 });

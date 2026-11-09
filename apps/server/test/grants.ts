@@ -62,6 +62,21 @@ export async function changeGrant(
   return row;
 }
 
+/** When a grant of `company` was granted and when it ends, as the server reads them: to the millisecond. */
+export async function grantTimes(app: Client, company: Company, id: string): Promise<{ readonly grantedAt: Date; readonly expiresAt: Date | null }> {
+  const [row] = await asMember<{ granted_at: Date; expires_at: Date | null }>(
+    app,
+    company.id,
+    company.asOwner,
+    "SELECT granted_at, expires_at FROM access.program_grants WHERE id = $1",
+    [id],
+  );
+  if (row === undefined) {
+    throw new Error("The company holds no such grant.");
+  }
+  return { grantedAt: row.granted_at, expiresAt: row.expires_at };
+}
+
 /** Appoints a membership of `company` the administrator of `program`, as the owner, and gives the row's id. */
 export async function addProgramAdmin(app: Client, company: Company, membership: string, program: string): Promise<string> {
   const [row] = await asMember<{ id: string }>(

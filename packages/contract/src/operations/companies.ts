@@ -5,9 +5,12 @@
 // owner in the same transaction. The company list holds only the companies
 // where the person is an active member. A membership is Användare in one
 // company: its status, the system administrator's level, the idle logout,
-// and the person's work contacts there, which are personal data.
+// the person's work contacts there, which are personal data, and the roles,
+// the program grants and the programs administered.
 
 import { z } from "zod";
+import { PROGRAMS } from "../access/catalogue.ts";
+import { ROLE_KEYS } from "../access/effective.ts";
 import { ADMIN_LEVELS } from "../access/permissions.ts";
 import { personal } from "../fields.ts";
 import { defineListOperation, defineOperation } from "../operation.ts";
@@ -61,6 +64,40 @@ export const IdleTimeout = z.literal(IDLE_TIMEOUTS).meta({
 /** The statuses of a membership. */
 export const MEMBERSHIP_STATUSES = ["invited", "active", "inactive", "removed", "left"] as const;
 
+/** Program: a module with its permission set. The name ProgramKey keeps the catalogue's type Program free. */
+export const ProgramKey = z.enum(PROGRAMS).meta({
+  id: "Program",
+  description: "A program: bookkeeping (Bokföring), approval-read (Bokföring - Attest & Läs), read (Läs) or auditor (Revisor).",
+});
+
+/** One of the plan's six roles. The name RoleKey keeps the type Role free. */
+export const RoleKey = z.enum(ROLE_KEYS).meta({
+  id: "Role",
+  description:
+    "One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor.",
+});
+
+export const ProgramGrant = z
+  .strictObject({
+    program: ProgramKey,
+    permissions: z.array(z.string()).meta({ description: "The rights the grant holds, as the catalogue's permission keys, in the catalogue's order." }),
+    full: z.boolean().meta({ description: "Full behörighet: whether the grant holds every right of its program's Full behörighet, which a grant gets by default." }),
+    grantedAt: z.iso.datetime().meta({ description: "When the program was granted." }),
+    expiresAt: z.iso
+      .datetime()
+      .optional()
+      .meta({ description: "When the grant ends by itself, with no action by anyone: a Revisor grant 30 days after it was granted. From then on it gives nothing. Absent for a grant with no end." }),
+  })
+  .meta({ id: "ProgramGrant", description: "Program: a program granted to a member, with the rights the grant holds." });
+
+export type ProgramGrant = z.infer<typeof ProgramGrant>;
+
+export const ProgramAdmin = z
+  .strictObject({ program: ProgramKey })
+  .meta({ id: "ProgramAdmin", description: "Programadministratör: the member grants, narrows and removes this program, and its Rapporter and Register/Övrigt rights." });
+
+export type ProgramAdmin = z.infer<typeof ProgramAdmin>;
+
 export const Membership = z
   .strictObject({
     companyId: z.uuid().meta({ description: "The company's id." }),
@@ -70,10 +107,17 @@ export const Membership = z
     idleTimeout: IdleTimeout,
     workEmail: personal(z.string().meta({ description: "The person's work e-mail address in this company, where its notices go. Absent when none is set." })).optional(),
     workPhone: personal(z.string().meta({ description: "The person's work phone number in this company. Absent when none is set." })).optional(),
+    roles: z.array(RoleKey).meta({
+      description:
+        "The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended.",
+    }),
+    programs: z.array(ProgramGrant).meta({ description: "The member's program grants as they are now, in the catalogue's order, also one that has ended." }),
+    programsAdministered: z.array(ProgramAdmin).meta({ description: "The programs the member administers, in the catalogue's order." }),
   })
   .meta({
     id: "Membership",
-    description: "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts.",
+    description:
+      "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered.",
   });
 
 export type Membership = z.infer<typeof Membership>;

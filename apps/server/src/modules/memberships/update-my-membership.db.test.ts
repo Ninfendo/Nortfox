@@ -88,7 +88,7 @@ describe("updateMyMembership", () => {
   }
 
   it("changes one work contact and keeps the other, and null takes one away", async () => {
-    const base = { companyId: alfa.id, userId: person.id, status: "active", idleTimeout: 120 };
+    const base = { companyId: alfa.id, userId: person.id, status: "active", idleTimeout: 120, roles: [], programs: [], programsAdministered: [] };
     expect(await jsonOf<MembershipJson>(await change(alfa.id, { workEmail: "alva.berg@example.com" }))).toEqual({ ...base, workEmail: "alva.berg@example.com" });
     expect(await jsonOf<MembershipJson>(await change(alfa.id, { workPhone: "070-174 06 07" }))).toEqual({ ...base, workEmail: "alva.berg@example.com", workPhone: "070-174 06 07" });
     expect(await jsonOf<MembershipJson>(await change(alfa.id, { workEmail: null }))).toEqual({ ...base, workPhone: "070-174 06 07" });
@@ -115,6 +115,9 @@ describe("updateMyMembership", () => {
       status: "active",
       idleTimeout: 480,
       workEmail: "alva.beta@example.org",
+      roles: [],
+      programs: [],
+      programsAdministered: [],
     });
     const memberships = await superuser.query<{ id: string; idle_timeout_minutes: number }>(
       "SELECT id, idle_timeout_minutes FROM access.memberships WHERE company_id = $1 ORDER BY idle_timeout_minutes",
