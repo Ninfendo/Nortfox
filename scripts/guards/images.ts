@@ -27,7 +27,7 @@ const FROM = /^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?/i;
 const PINNED = /^[^\s@]+@sha256:[0-9a-f]{64}$/;
 
 /** A YAML value without its quotes and a comment after it. */
-function yamlValue(text: string): string {
+export function yamlValue(text: string): string {
   return text
     .replace(/\s+#.*$/, "")
     .trim()

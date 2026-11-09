@@ -9,6 +9,8 @@ Thank you for helping. Two documents come first:
 
 You need Node 24, 24.7 or later, for its Argon2id (see `.nvmrc`), and pnpm 12.16.1 (the version in `package.json`). The database tests also need PostgreSQL 18. Docker is the easy way to run it.
 
+The Node types, `@types/node` in the catalog in `pnpm-workspace.yaml`, keep Node's major, so the type check knows only the APIs that Node 24 has. `scripts/guards/node-types.ts` fails when their major differs from that of `.nvmrc`, of the engines range in `package.json` or of the server image, and Dependabot proposes no new major of them.
+
 ```sh
 pnpm install   # also points git at the hooks in .githooks
 pnpm db:test   # starts the test database in Docker
