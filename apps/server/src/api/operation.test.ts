@@ -467,13 +467,23 @@ describe("runOperation", () => {
       return { request_hash: hash, response_status: 201, response_body: { name: "Kassa" } };
     }
 
-    /** Answers each lookup of a key with the next of `lookups`, and the key's insert with a row, or with none when another stored it first. */
-    function keyAnswers(lookups: readonly (readonly QueryResultRow[])[], inserted = true): Answering {
+    /**
+     * Answers each lookup of a key in the company's keys with the next of
+     * `lookups`, each in the person's keys in the company, the company's other
+     * table, with the next of `others`, and the key's insert with a row, or
+     * with none when another stored it first.
+     */
+    function keyAnswers(lookups: readonly (readonly QueryResultRow[])[], inserted = true, others: readonly (readonly QueryResultRow[])[] = []): Answering {
       let lookup = 0;
+      let other = 0;
       return (text) => {
         if (/^SELECT\b[\s\S]*\bFROM ledger\.idempotency_keys\b/.test(text)) {
           lookup += 1;
           return lookups[lookup - 1] ?? [];
+        }
+        if (/^SELECT\b[\s\S]*\bFROM access\.idempotency_keys\b[\s\S]*\bkey_company_id = \$2\b/.test(text)) {
+          other += 1;
+          return others[other - 1] ?? [];
         }
         if (text.startsWith("INSERT INTO ledger.idempotency_keys")) {
           return inserted ? [{ id: KEY_ID }] : [];
@@ -483,7 +493,11 @@ describe("runOperation", () => {
     }
 
     function isLookup(query: { readonly text: string }): boolean {
-      return query.text.startsWith("SELECT");
+      return query.text.startsWith("SELECT") && query.text.includes("FROM ledger.idempotency_keys");
+    }
+
+    function isOtherLookup(query: { readonly text: string }): boolean {
+      return query.text.startsWith("SELECT") && query.text.includes("FROM access.idempotency_keys");
     }
 
     function isInsert(query: { readonly text: string }): boolean {
@@ -574,12 +588,26 @@ describe("runOperation", () => {
       expect(await runOperation(handler, writing({ name: "Kassa" }), runnerDeps(database))).toEqual({ ok: true, status: 201, output: { name: "Kassa" } });
       expect(calls).toEqual(["Kassa"]);
       expect(transactions).toEqual([{ mode: "write", settings: SETTINGS, ended: "commit" }]);
-      expect(queries.map((query) => [isLookup(query), isInsert(query), query.transaction])).toEqual([
-        [true, false, 0],
-        [false, true, 0],
+      expect(queries.map((query) => [isLookup(query), isOtherLookup(query), isInsert(query), query.transaction])).toEqual([
+        [true, false, false, 0],
+        [false, true, false, 0],
+        [false, false, true, 0],
       ]);
       expect(queries[0]?.values).toEqual([CONTEXT.personId, "k-1"]);
-      expect(queries[1]?.values).toEqual([COMPANY, "k-1", "testWrite", HASH, 201, '{"name":"Kassa"}']);
+      expect(queries[1]?.values).toEqual([CONTEXT.personId, COMPANY, "k-1"]);
+      expect(queries[2]?.values).toEqual([COMPANY, "k-1", "testWrite", HASH, 201, '{"name":"Kassa"}']);
+    });
+
+    it("refuses a key that the company's other table of keys holds for another write with idempotency-key-reused, and rolls back without running the handler", async () => {
+      const { database, transactions, queries } = recordingDatabase(keyAnswers([[]], true, [[stored(OTHER_HASH)]]));
+      const { handler, calls } = writer();
+      expect(await runOperation(handler, writing({ name: "Kassa" }), runnerDeps(database))).toEqual({
+        ok: false,
+        refusal: { kind: "idempotency-key-reused" },
+      });
+      expect(calls).toEqual([]);
+      expect(transactions.map((transaction) => transaction.ended)).toEqual(["rollback"]);
+      expect(queries.filter(isInsert)).toEqual([]);
     });
 
     it("replays the stored answer of the same request, and rolls back without running the handler", async () => {
@@ -672,6 +700,21 @@ describe("runOperation", () => {
       expect(await runOperation(handler, writing({ name: "Kassa" }), deps)).toEqual({ ok: true, status: 201, output: { name: "Kassa" } });
     });
 
+    it("lets a write whose handler takes a turn of its company wait for it before it asks the database, and hold it until its transaction has ended", async () => {
+      const { database, transactions } = recordingDatabase(keyAnswers([[]]));
+      const turn = { name: "test", alone: true };
+      const handler = handleData(write, (_call, input) => Promise.resolve(ok({ name: input.body.name })), { turn: () => turn });
+      const deps = runnerDeps(database);
+      const release = await deps.turns.take(COMPANY, turn);
+      const running = runOperation(handler, writing({ name: "Kassa" }), deps);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(transactions).toEqual([]);
+      release();
+      expect(await running).toEqual({ ok: true, status: 201, output: { name: "Kassa" } });
+      expect(transactions.map((transaction) => transaction.ended)).toEqual(["commit"]);
+      expect(deps.turns.size).toBe(0);
+    });
+
     it("lets the key go when the call ends: after its answer, its refusal and its throw", async () => {
       const { database } = recordingDatabase(keyAnswers([]));
       const deps = runnerDeps(database);
@@ -697,10 +740,11 @@ describe("runOperation", () => {
         { mode: "write", settings: SETTINGS, ended: "rollback" },
         { mode: "read", settings: SETTINGS, ended: "commit" },
       ]);
-      expect(queries.map((query) => [isLookup(query), query.transaction])).toEqual([
-        [true, 0],
-        [false, 0],
-        [true, 1],
+      expect(queries.map((query) => [isLookup(query), isOtherLookup(query), query.transaction])).toEqual([
+        [true, false, 0],
+        [false, true, 0],
+        [false, false, 0],
+        [true, false, 1],
       ]);
     });
 
@@ -1170,8 +1214,15 @@ describe("runOperation and a signed-in person's company", () => {
    * PostgreSQL does, the function's uuid parameter refuses a value that is
    * not a uuid.
    */
+  /**
+   * Answers the one membership function for `member`, each lookup of a key in
+   * the write's own table with the next of `lookups`, the first table that is
+   * looked up, and in the company's other table with none; and the key's
+   * insert with a row, or with none when another stored it first.
+   */
   function answers(member: string | undefined, lookups: readonly (readonly QueryResultRow[])[] = [], stored = true): Answering {
     let lookup = 0;
+    let own: string | undefined;
     return (text, values) => {
       if (text.includes("access.active_membership")) {
         if (text.includes("access.active_membership($1)") && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(values[0]))) {
@@ -1179,7 +1230,12 @@ describe("runOperation and a signed-in person's company", () => {
         }
         return member !== undefined && values[0] === member ? [membershipRow(member)] : [];
       }
-      if (/^SELECT\b[\s\S]*\.idempotency_keys\b/.test(text)) {
+      const table = /^SELECT\b[\s\S]*\bFROM (\w+\.idempotency_keys)\b/.exec(text)?.[1];
+      if (table !== undefined) {
+        own ??= table;
+        if (table !== own) {
+          return [];
+        }
         lookup += 1;
         return lookups[lookup - 1] ?? [];
       }
@@ -1237,6 +1293,7 @@ describe("runOperation and a signed-in person's company", () => {
     expect(company?.kind === "input" ? company.membership.companyId : undefined).toBe(COMPANY);
     expect(queries.filter((query) => query.text.includes("idempotency_keys")).map((query) => query.values)).toEqual([
       [PERSON.personId, COMPANY, "k-1"],
+      [PERSON.personId, "k-1"],
       ["k-1", "testChooseThing", requestHash(FINGERPRINT_KEY, "testChooseThing", {}, { companyId: COMPANY }), 200, JSON.stringify({ companyId: COMPANY, name: "Alva Berg" })],
     ]);
     expect(queries.find((query) => query.text.includes("idempotency_keys"))?.text).toContain("FROM access.idempotency_keys WHERE actor_id = $1 AND key_company_id = $2");
@@ -1248,6 +1305,7 @@ describe("runOperation and a signed-in person's company", () => {
     expect(await runOperation(handler, write(PERSON, undefined, "k-2", { companyId: COMPANY }), runnerDeps(database))).toMatchObject({ ok: true, status: 200 });
     expect(queries.filter((query) => query.text.includes("idempotency_keys")).map((query) => query.text.split(/\s+/).slice(0, 6).join(" "))).toEqual([
       "SELECT request_hash, response_status, response_body FROM ledger.idempotency_keys",
+      "SELECT request_hash, response_status, response_body FROM access.idempotency_keys",
       "INSERT INTO ledger.idempotency_keys (company_id, idempotency_key, operation_id,",
     ]);
   });

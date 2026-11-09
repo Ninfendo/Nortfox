@@ -4,12 +4,14 @@
 // gives is either a rule a request can break, answered with 422 and its own
 // code and facts, or a fault of the server, answered with 500. The table
 // says which for every reason, so a new reason does not compile until someone
-// decides.
+// decides. A unique violation (23505) is a rule's refusal only on the three
+// keys that a request can meet, by the constraint's name, and a fault on any
+// other.
 
 import { PROBLEM_CODES } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
 import { REFUSALS, codeOf, type RefusalReason } from "../db/refusals.ts";
-import { LEDGER_REFUSALS, ledgerRule } from "./ledger-refusals.ts";
+import { LEDGER_REFUSALS, UNIQUE_REFUSALS, ledgerRule } from "./ledger-refusals.ts";
 
 /** An error as PostgreSQL gives a refusal: the reason's SQLSTATE, the reason as the message, the facts as JSON in the detail. */
 function refusal(reason: RefusalReason, facts: Record<string, unknown> = {}): Error {
@@ -46,8 +48,8 @@ describe("the ledger's refusals", () => {
     }
   });
 
-  it("are rules for NF001 to NF022, period_outside_fiscal_year and fiscal_year_strands_rows", () => {
-    expect(RULES.map(codeOf)).toEqual([...Array.from({ length: 22 }, (_unused, index) => `NF${String(index + 1).padStart(3, "0")}`), "NF056", "NF057"]);
+  it("are rules for NF001 to NF024, period_outside_fiscal_year and fiscal_year_strands_rows", () => {
+    expect(RULES.map(codeOf)).toEqual([...Array.from({ length: 24 }, (_unused, index) => `NF${String(index + 1).padStart(3, "0")}`), "NF056", "NF057"]);
   });
 
   it.each(RULES)("answer %s with its code in kebab-case, which PROBLEM_CODES lists at 422, and a sentence", (reason) => {
@@ -62,8 +64,33 @@ describe("the ledger's refusals", () => {
 
   it("are every ledger code that PROBLEM_CODES lists, and no other", () => {
     const listed = Object.entries(PROBLEM_CODES)
-      // The surface's own 422, the sign-in's refusals and the company choice's are no rule of the ledger.
-      .filter(([code, status]) => status === 422 && !["idempotency-key-reused", "sign-in-failed", "setup-link-invalid", "company-not-available"].includes(code))
+      // The surface's own 422, the sign-in's refusals, the company choice's, the user administration's, the invitations' and the unique keys' are no rule of the ledger.
+      .filter(
+        ([code, status]) =>
+          status === 422 &&
+          ![
+            "idempotency-key-reused",
+            "sign-in-failed",
+            "setup-link-invalid",
+            "company-not-available",
+            "user-not-found",
+            "user-invited",
+            "cannot-remove-yourself",
+            "program-not-administered",
+            "program-not-granted",
+            "program-already-granted",
+            "not-in-grant",
+            "right-not-covered",
+            "user-not-invited",
+            "already-member",
+            "mail-not-configured",
+            "work-email-not-mailable",
+            "invitation-link-invalid",
+            "sign-in-required",
+            "email-taken",
+            "personal-identity-number-taken",
+          ].includes(code),
+      )
       .map(([code]) => code)
       .sort();
     expect(listed).toEqual(RULES.map((reason) => reason.replaceAll("_", "-")).sort());
@@ -113,6 +140,57 @@ describe("the ledger's refusals", () => {
     expect(ledgerRule(refusal("unbalanced", { debit: "92233720368547758070", credit: "0" }))?.data).toEqual({
       debit: { amount: "922337203685477580.70", currency: "SEK" },
       credit: { amount: "0.00", currency: "SEK" },
+    });
+  });
+
+  describe("a unique violation", () => {
+    /** An error as PostgreSQL gives a unique violation, with the constraint's name and a detail that holds the value. */
+    function duplicate(constraint: string | undefined): Error {
+      return Object.assign(new Error(`duplicate key value violates unique constraint "${String(constraint)}"`), {
+        code: "23505",
+        constraint,
+        detail: "Key (email)=(karin.lund@example.com) already exists.",
+      });
+    }
+
+    it("is email-taken on the identities' e-mail index, with the pointer when the operation has the field", () => {
+      expect(ledgerRule(duplicate("identities_email_key"), ["token", "name", "email", "password"])).toEqual({
+        code: "email-taken",
+        detail: "Another identity has this e-mail address, in any letter case.",
+        pointer: "/email",
+      });
+      expect(ledgerRule(duplicate("identities_email_key"), ["token", "newIdentity"])).toEqual({
+        code: "email-taken",
+        detail: "Another identity has this e-mail address, in any letter case.",
+      });
+      expect(ledgerRule(duplicate("identities_email_key"))).toEqual({ code: "email-taken", detail: "Another identity has this e-mail address, in any letter case." });
+    });
+
+    it("is personal-identity-number-taken on the personnummer's key", () => {
+      expect(ledgerRule(duplicate("identities_personal_identity_number_key"), ["personalIdentityNumber", "password"])).toEqual({
+        code: "personal-identity-number-taken",
+        detail: "Another identity has this personnummer.",
+        pointer: "/personalIdentityNumber",
+      });
+    });
+
+    it("is already-member on a person's one live membership in a company, which no field names", () => {
+      expect(ledgerRule(duplicate("memberships_one_live"), ["token"])).toEqual({ code: "already-member", detail: "The person is a member of the company already." });
+    });
+
+    it("gives each code at 422, and never the database's detail", () => {
+      for (const constraint of UNIQUE_REFUSALS.keys()) {
+        const rule = ledgerRule(duplicate(constraint), ["email"]);
+        expect(PROBLEM_CODES[rule?.code as keyof typeof PROBLEM_CODES], constraint).toBe(422);
+        expect(JSON.stringify(rule)).not.toContain("karin.lund@example.com");
+      }
+      expect([...UNIQUE_REFUSALS.keys()].sort()).toEqual(["identities_email_key", "identities_personal_identity_number_key", "memberships_one_live"]);
+    });
+
+    it("is a fault on any other key, or with no constraint's name", () => {
+      for (const constraint of ["program_grants_once", "invitation_links_once", "sessions_token_hash_key", "constructor", undefined]) {
+        expect(ledgerRule(duplicate(constraint), ["email"]), String(constraint)).toBeUndefined();
+      }
     });
   });
 

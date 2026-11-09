@@ -5,7 +5,8 @@
 //
 // - A rule that a request can break: NF001 to NF020, which later slices also
 //   answer with the established system's message, NF021 install_not_empty,
-//   NF022 last_system_administrator, and period_outside_fiscal_year and
+//   NF022 last_system_administrator, NF023 view_permission_missing, NF024
+//   not_in_program, and period_outside_fiscal_year and
 //   fiscal_year_strands_rows. The runner
 //   answers it as a rule's refusal, 422. Its code is the reason in kebab-case,
 //   and its facts are the database's with camelCase keys, as /v1 names its
@@ -21,8 +22,21 @@
 //   only from a clock set back during a booking, and a retry books it.
 //
 // The table says which for every reason, so a new reason does not compile
-// until someone decides. A plain 42501 and every other SQLSTATE are faults
-// too: ledgerRule gives nothing for them.
+// until someone decides.
+//
+// A unique violation (23505) is a rule's refusal on three keys (plan 2.21):
+// the identities' e-mail address in any letter case (email-taken) and
+// personnummer (personal-identity-number-taken), and a person's one live
+// membership in a company (already-member). The e-mail key is the only check
+// of a new identity's address in acceptInvitation, since the app reads no
+// other identity. Elsewhere a check of the server's comes first, and only a
+// race gets past it: completeSetup's of the install, for the e-mail key, and
+// the acceptance's of the person's memberships, for the membership key. Each
+// is found by the constraint's name, and the answer holds the field's
+// pointer when the operation has the field, and never the database's detail,
+// which holds the value. A unique violation on any other key is a fault, as
+// are a plain 42501 and every other SQLSTATE: ledgerRule gives nothing for
+// them.
 
 import { oreToMoney, type JsonValue } from "@nortfox/contract";
 import { readRefusal, type RefusalReason } from "../db/refusals.ts";
@@ -54,6 +68,8 @@ export const LEDGER_REFUSALS = {
   immutable_field: { rule: true, detail: "The field cannot be set or changed." },
   install_not_empty: { rule: true, detail: "The install has an identity already, so its setup is done." },
   last_system_administrator: { rule: true, detail: "A company needs at least one active system administrator." },
+  view_permission_missing: { rule: true, detail: "An action right needs the view right of its group." },
+  not_in_program: { rule: true, detail: "The program does not hold that right." },
   period_outside_fiscal_year: { rule: true, detail: "The period is not inside its fiscal year." },
   fiscal_year_strands_rows: { rule: true, detail: "The new dates would leave periods or vouchers outside the fiscal year." },
   actor_missing: { rule: false },
@@ -64,6 +80,37 @@ export const LEDGER_REFUSALS = {
   void_range_not_at_counter: { rule: false },
   read_committed_only: { rule: false },
 } as const satisfies Readonly<Record<RefusalReason, LedgerRefusal>>;
+
+/** How the API answers a unique violation on one key: its code, its sentence, and the field it is about, if the request names one. */
+export interface UniqueRefusal {
+  readonly code: string;
+  readonly detail: string;
+  readonly field?: string;
+}
+
+/** The unique keys that a request can meet, by the constraint's name. */
+export const UNIQUE_REFUSALS: ReadonlyMap<string, UniqueRefusal> = new Map<string, UniqueRefusal>([
+  ["identities_email_key", { code: "email-taken", detail: "Another identity has this e-mail address, in any letter case.", field: "email" }],
+  ["identities_personal_identity_number_key", { code: "personal-identity-number-taken", detail: "Another identity has this personnummer.", field: "personalIdentityNumber" }],
+  ["memberships_one_live", { code: "already-member", detail: "The person is a member of the company already." }],
+]);
+
+/** PostgreSQL's SQLSTATE of a unique violation. */
+const UNIQUE_VIOLATION = "23505";
+
+/** The rule's refusal of a unique violation on a key a request can meet, or undefined for any other error. */
+function uniqueRule(error: unknown, fields: readonly string[]): RuleRefusal | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+  const { code, constraint } = error as { readonly code?: unknown; readonly constraint?: unknown };
+  const entry = typeof constraint === "string" ? UNIQUE_REFUSALS.get(constraint) : undefined;
+  if (code !== UNIQUE_VIOLATION || entry === undefined) {
+    return undefined;
+  }
+  const field = entry.field !== undefined && fields.includes(entry.field) ? entry.field : undefined;
+  return field === undefined ? { code: entry.code, detail: entry.detail } : { code: entry.code, detail: entry.detail, pointer: `/${field}` };
+}
 
 /** A database name in camelCase, as /v1 names its fields: end_date is endDate. */
 function camelCase(name: string): string {
@@ -84,12 +131,14 @@ function camelKeys(value: unknown): JsonValue {
 /**
  * The rule's refusal in an error from the database, or undefined when the
  * error is a fault of the server: a reason of the server's own faults, a
- * plain 42501, any other SQLSTATE, or no database error at all.
+ * unique violation on a key that no request can meet, a plain 42501, any
+ * other SQLSTATE, or no database error at all. `fields` are the names of
+ * the operation's input, for a unique violation's pointer.
  */
-export function ledgerRule(error: unknown): RuleRefusal | undefined {
+export function ledgerRule(error: unknown, fields: readonly string[] = []): RuleRefusal | undefined {
   const refusal = readRefusal(error);
   if (refusal === undefined) {
-    return undefined;
+    return uniqueRule(error, fields);
   }
   const entry: LedgerRefusal = LEDGER_REFUSALS[refusal.reason];
   if (!entry.rule) {

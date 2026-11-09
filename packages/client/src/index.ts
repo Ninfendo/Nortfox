@@ -3,8 +3,35 @@
 import { createOperations, type Operations } from "./generated.ts";
 import { createSend, type ClientOptions } from "./runtime.ts";
 
-export type { Company, CompanyChoice, FieldProblem, Health, Me, Membership, PasswordSignIn, Problem, RecentCompanies, Session, SetupResult, TotpEnrolment, User, Operations } from "./generated.ts";
-export type { SysAdmin } from "./generated.ts";
+export type {
+  Company,
+  CompanyChoice,
+  CompanySummary,
+  FieldProblem,
+  Health,
+  Invitation,
+  InvitationAcceptance,
+  Me,
+  Member,
+  Membership,
+  PasswordSignIn,
+  Permission,
+  PermissionCatalogue,
+  PermissionGroup,
+  Problem,
+  ProgramAdmin,
+  ProgramDefinition,
+  ProgramGrant,
+  RecentCompanies,
+  RoleDefinition,
+  Session,
+  SetupResult,
+  TotpEnrolment,
+  User,
+  UserRights,
+  Operations
+} from "./generated.ts";
+export type { PermissionGroupKey, PermissionKey, Program, RightKey, Role, SysAdmin } from "./generated.ts";
 export { ApiError } from "./runtime.ts";
 export type { CallOptions, ClientOptions, FetchFunction, WriteOptions } from "./runtime.ts";
 

@@ -24,6 +24,18 @@ export interface ArgumentsFixture {
   readonly challenge: () => Promise<{ readonly challenge: string; readonly code: string }>;
   /** A company that `person` owns, made as the app does. */
   readonly companyOf: (person: TestIdentity) => Promise<string>;
+  /**
+   * A member of the company that companyOf made last for `person`, another
+   * person, made as the app does, holding `program` when one is given: the
+   * member's id.
+   */
+  readonly memberOf: (person: TestIdentity, program?: string) => Promise<string>;
+  /** An invited member of the company that companyOf made last for `person`, whom `person` invited: the member's id. */
+  readonly invitedOf: (person: TestIdentity) => Promise<string>;
+  /** The token of a live invitation link, of a new invitation to a company of another person. */
+  readonly invitationToken: () => Promise<string>;
+  /** A company where `person` is an active member beside its owner, made as the app does. */
+  readonly joinedCompanyOf: (person: TestIdentity) => Promise<string>;
 }
 
 /** The arguments of an operation, from the fixture and, for a signed-in operation, the person whose session calls it. */
@@ -57,6 +69,27 @@ export const OPERATION_ARGUMENTS: Readonly<Record<string, ArgumentsOf>> = {
   listRecentCompanies: none,
   selectCompany: async (fixture, actor) => ({ companyId: await fixture.companyOf(actorOf(actor)), idempotencyKey: "choose-the-company" }),
   updateMyMembership: async (fixture, actor) => ({ companyId: await fixture.companyOf(actorOf(actor)), idleTimeout: 60, idempotencyKey: "change-my-membership" }),
+  updateCompany: () => Promise.resolve({ name: "Testbolaget Lambda AB", city: "Lund", idempotencyKey: "change-the-company" }),
+  listPermissions: none,
+  listUsers: none,
+  getUser: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)) }),
+  updateUser: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)), idleTimeout: 60, idempotencyKey: "change-the-user" }),
+  removeUser: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)), idempotencyKey: "remove-the-user" }),
+  assignProgram: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)), program: "read", full: true, idempotencyKey: "grant-the-program" }),
+  removeProgram: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor), "read"), program: "read", idempotencyKey: "remove-the-program" }),
+  moveProgram: async (fixture, actor) => ({
+    memberId: await fixture.memberOf(actorOf(actor), "read"),
+    program: "read",
+    targetMemberId: await fixture.memberOf(actorOf(actor)),
+    idempotencyKey: "move-the-program",
+  }),
+  updateUserRights: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor), "read"), permissions: ["reports.vat"], idempotencyKey: "set-the-rights" }),
+  inviteUser: () => Promise.resolve({ name: "Klara Ny", email: "klara.ny@example.com", idempotencyKey: "invite-the-user" }),
+  resendInvitation: async (fixture, actor) => ({ memberId: await fixture.invitedOf(actorOf(actor)), idempotencyKey: "invite-again" }),
+  disconnectUserIdentity: async (fixture, actor) => ({ memberId: await fixture.memberOf(actorOf(actor)), idempotencyKey: "disconnect-the-user" }),
+  getInvitation: async (fixture) => ({ token: await fixture.invitationToken() }),
+  acceptInvitation: async (fixture) => ({ token: await fixture.invitationToken(), newIdentity: { name: "Sixten Ny", password: "sixtens-lösenord" } }),
+  leaveCompany: async (fixture, actor) => ({ companyId: await fixture.joinedCompanyOf(actorOf(actor)), idempotencyKey: "leave-the-company" }),
 };
 
 /** A REST request of `operation` from its flat input: the path parameters in the path, the query, the body and the key. */

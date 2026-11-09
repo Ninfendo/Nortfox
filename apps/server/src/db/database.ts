@@ -17,7 +17,8 @@
 //   changed: the database keeps the transaction's first actor and channel,
 //   and refuses another (a lookup sets its person once, later, with actAs).
 //   The company is set at the start, or once later, from the one function's
-//   answer or for a company the work makes (enter and inNewCompany, below).
+//   answer, from a live invitation link to accept it, or for a company the
+//   work makes (enter and inNewCompany, below).
 //   They end with the transaction, so a pooled connection never carries them
 //   on: after it, PostgreSQL gives '', which the database reads as unset.
 // - A read runs at REPEATABLE READ READ ONLY, so a page and its total come
@@ -36,7 +37,9 @@
 // - A person's transaction (person) is a read or a write as the person, in
 //   no company at first. It may set its company once: with enter, from a
 //   membership that the one membership function gave in it, to its person,
-//   as for a request whose input names its company; or with inNewCompany,
+//   as for a request whose input names its company, or from a live
+//   invitation link that the database gave in it, to its person, who accepts
+//   the invitation (modules/memberships/resolve.ts); or with inNewCompany,
 //   for the company that the work makes, whose id the layer picks, so no
 //   caller can name an existing company there. The company is set while
 //   that work runs and unset after it.
@@ -54,7 +57,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Pool, type ClientConfig, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
-import { CompanyAccess, ResolvedMembership } from "../modules/memberships/resolve.ts";
+import { CompanyAccess, InvitationEntry, ResolvedMembership } from "../modules/memberships/resolve.ts";
 
 /** The kinds of actor the database knows. */
 export type ActorKind = "user" | "system" | "integration";
@@ -144,11 +147,12 @@ export type LookupWork<T> = (tx: LookupQueryable) => Promise<Ending<T>>;
 export interface PersonQueryable extends Queryable {
   /**
    * Sets the transaction's company from a membership that the one
-   * membership function gave in this transaction, to the person it acts as
+   * membership function gave in this transaction, or from a live invitation
+   * link that the database gave in it, to the person it acts as
    * (modules/memberships/resolve.ts). Anything else, and a company set
    * before, throws before any statement.
    */
-  enter(membership: ResolvedMembership): Promise<void>;
+  enter(membership: ResolvedMembership | InvitationEntry): Promise<void>;
   /**
    * Picks a new company's id, sets it as the transaction's company while
    * `work` runs, and sets no company again after it: the company that the
@@ -263,15 +267,16 @@ const COMPANY_SET = "The transaction works in a company already. It sets its com
 /**
  * A person's transaction over `tx`, which starts in no company: its queries,
  * and one company, entered from a membership that the one function gave in
- * it, or made by the work.
+ * it, or from a live invitation link that the database gave in it, to accept
+ * the invitation, or made by the work.
  */
 function personOver(tx: Queryable, settings: PersonSettings): PersonQueryable {
   let companySet = false;
   const person: PersonQueryable = {
     query: (text, values) => tx.query(text, values),
     enter: async (membership) => {
-      // The membership must be this module's object, made in this transaction, for its person.
-      if (!(membership instanceof ResolvedMembership) || !membership.resolvedIn(person)) {
+      // The membership or the link must be the memberships module's object, made in this transaction, for its person.
+      if (!(membership instanceof ResolvedMembership || membership instanceof InvitationEntry) || !membership.resolvedIn(person)) {
         throw new Error(NOT_RESOLVED_HERE);
       }
       if (membership.personId !== settings.actorId) {

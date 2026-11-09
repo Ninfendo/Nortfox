@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// What the sign-in tests share: an app with the server's session resolver
-// and a clock the test moves, identities with a real password hash and a
-// real sealed TOTP secret, the steps of a sign-in as a browser sends them,
-// and the cookies an answer sets. Every value is made up: the addresses are
-// at example.com, and a personnummer comes only from the fixture guard's
-// list. The passwords are hashed at the tests' small cost (test/api.ts),
-// unless a test asks for the production cost.
+// What the sign-in tests share: an app with the server's session resolver,
+// a clock the test moves and a fake mail sink, identities with a real
+// password hash and a real sealed TOTP secret, the steps of a sign-in as a
+// browser sends them, and the cookies an answer sets. Every value is made
+// up: the addresses are at example.com, and a personnummer comes only from
+// the fixture guard's list. The passwords are hashed at the tests' small
+// cost (test/api.ts), unless a test asks for the production cost.
 
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,13 +15,15 @@ import { expect } from "vitest";
 import { buildTestApp, gate, testPasswords, TEST_INSTALL_KEY, TEST_NOW, type Gate, type ProblemBody } from "./api.ts";
 import type { TestDatabase } from "./database.ts";
 import { addIdentity, addPassword, someEmail } from "./identities.ts";
+import { FakeMailSink, testMail } from "./mail.ts";
 import { expectNoSecretsAtRest, expectNoTokensButChallenges, type SecretsInClear } from "./secrets.ts";
+import type { ContextResolver } from "../src/api/context.ts";
 import type { AppOptions, ServerApp } from "../src/app.ts";
 import { sessionResolver } from "../src/auth/resolver.ts";
 import { seal } from "../src/auth/secret-box.ts";
 import { base32Decode, newTotpSecret, totpCode } from "../src/auth/totp.ts";
 import type { PasswordHasher } from "../src/auth/password.ts";
-import type { Database, TransactionSettings } from "../src/db/database.ts";
+import type { Database, Ending, TransactionSettings } from "../src/db/database.ts";
 
 /** The install's own origin in the sign-in tests: the one a browser sends. */
 export const TEST_ORIGIN = "https://nortfox.example";
@@ -55,6 +57,8 @@ export function testClock(start: Date = TEST_NOW): TestClock {
 export interface SignInApp {
   readonly app: ServerApp;
   readonly clock: TestClock;
+  /** The fake mail sink that the app's mail goes to: empty, and unused, for an app with no mail set up. */
+  readonly mail: FakeMailSink;
   /** Every error the app reported, for the secret scan. */
   readonly reports: unknown[];
   /** The body of every answer that send gave, as text, for the secret scan. */
@@ -69,6 +73,28 @@ export interface SignInAppOptions {
   readonly clock?: TestClock;
   readonly passwords?: PasswordHasher;
   readonly options?: Partial<AppOptions>;
+  /** The install's mail: a fake sink of its own by default, or none set up. */
+  readonly mail?: "none";
+  /** "on": /mcp takes a session's token as a bearer token, and gives its principal (sessionsOnMcp). */
+  readonly mcpSessions?: "on";
+}
+
+/**
+ * The resolver of `resolve` on /v1, and on /mcp too, for the tests that send
+ * one principal through both surfaces, until MCP's OAuth comes in a later
+ * part of slice 2c: on /mcp, a bearer token that is a session's token gives
+ * that session's principal, as `resolve` gives it on /v1 for the session
+ * cookie. The server's own resolver never reads a session on /mcp, and the
+ * part that brings MCP's tokens replaces this with real ones.
+ */
+export function sessionsOnMcp(resolve: ContextResolver): ContextResolver {
+  return (request, surface) => {
+    if (surface === "rest") {
+      return resolve(request, surface);
+    }
+    const token = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
+    return token === undefined ? Promise.resolve(undefined) : resolve(new Request(request.url, { headers: cookieHeader({ session: token }) }), "rest");
+  };
 }
 
 /** Every sign-in app that the test file made, for the secret scan at its end. */
@@ -113,7 +139,23 @@ export async function expectNoSecretsAtRestFromSignInApps(db: TestDatabase, secr
   });
 }
 
-/** The fields of a JSON body that are secrets in clear: its password and its code, when it has them. */
+/** Keeps each password and code of a JSON value, at any depth, such as a new identity's password. */
+function keepSecretsOf(value: unknown, sent: SignInApp["sent"]): void {
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
+  for (const [name, item] of Object.entries(value)) {
+    if (name === "password" && typeof item === "string") {
+      sent.passwords.push(item);
+    } else if (name === "code" && typeof item === "string") {
+      sent.codes.push(item);
+    } else {
+      keepSecretsOf(item, sent);
+    }
+  }
+}
+
+/** The fields of a JSON body that are secrets in clear: its passwords and its codes, when it has them. */
 function keepSecrets(body: unknown, sent: SignInApp["sent"]): void {
   if (typeof body !== "string") {
     return;
@@ -124,13 +166,7 @@ function keepSecrets(body: unknown, sent: SignInApp["sent"]): void {
   } catch {
     return;
   }
-  const { password, code } = typeof parsed === "object" && parsed !== null ? (parsed as { password?: unknown; code?: unknown }) : {};
-  if (typeof password === "string") {
-    sent.passwords.push(password);
-  }
-  if (typeof code === "string") {
-    sent.codes.push(code);
-  }
+  keepSecretsOf(parsed, sent);
 }
 
 export function signInApp(database: Database, options: SignInAppOptions = {}): SignInApp {
@@ -138,18 +174,22 @@ export function signInApp(database: Database, options: SignInAppOptions = {}): S
   const reports: unknown[] = [];
   const bodies: string[] = [];
   const sent: SignInApp["sent"] = { passwords: [], codes: [] };
+  const mail = new FakeMailSink();
+  const sessions = sessionResolver({ database, now: clock.now });
   const app = buildTestApp({
     database,
-    resolve: sessionResolver({ database, now: clock.now }),
+    resolve: options.mcpSessions === "on" ? sessionsOnMcp(sessions) : sessions,
     now: clock.now,
     allowedOrigins: [TEST_ORIGIN],
     passwordHasher: options.passwords ?? testPasswords(),
     report: (error) => reports.push(error),
+    ...(options.mail === "none" ? {} : { mail: testMail(mail) }),
     ...options.options,
   });
   const server: SignInApp = {
     app,
     clock,
+    mail,
     reports,
     bodies,
     sent,
@@ -350,10 +390,10 @@ export async function signIn(app: SignInApp, identity: TestIdentity, browser: Br
 }
 
 /**
- * A database whose next write that `holds` picks waits at a gate until the
- * test opens it: at its start, before its work runs, or before its commit,
- * after its work, with its row locks held. Every other transaction runs as
- * it is.
+ * A database whose next write that `holds` picks, a write of a company or a
+ * person's write, waits at a gate until the test opens it: at its start,
+ * before its work runs, or before its commit, after its work, with its row
+ * locks held. Every other transaction runs as it is.
  */
 export function holdingWrites(
   database: Database,
@@ -367,22 +407,26 @@ export function holdingWrites(
     armed &&= !picked;
     return picked;
   };
+  /** The work, held at the gate when `settings` are picked. */
+  const heldWork =
+    <Q, T>(settings: TransactionSettings, work: (tx: Q) => Promise<Ending<T>>) =>
+    async (tx: Q): Promise<Ending<T>> => {
+      const picked = picks(settings);
+      if (picked && where === "start") {
+        await held.pass();
+      }
+      const ending = await work(tx);
+      if (picked && where === "commit") {
+        await held.pass();
+      }
+      return ending;
+    };
   return {
     gate: held,
     database: {
       ...database,
-      write: (settings, work) =>
-        database.write(settings, async (tx) => {
-          const picked = picks(settings);
-          if (picked && where === "start") {
-            await held.pass();
-          }
-          const ending = await work(tx);
-          if (picked && where === "commit") {
-            await held.pass();
-          }
-          return ending;
-        }),
+      write: (settings, work) => database.write(settings, heldWork(settings, work)),
+      person: (mode, settings, work) => database.person(mode, settings, mode === "write" ? heldWork(settings, work) : work),
     },
   };
 }
@@ -397,6 +441,38 @@ export async function untilSomeoneWaitsForLock(observer: Client): Promise<void> 
     await delay(10);
   }
   throw new Error("No backend ever waited for a lock.");
+}
+
+/**
+ * The answer of `call`, when it comes before any backend of the test's
+ * database waits for a lock; or "waited" when one waits first, and the call
+ * still runs. `observer` logs in as the role whose backends it watches.
+ */
+export async function answeredWithoutWaiting<T>(observer: Client, call: Promise<T>): Promise<T | "waited"> {
+  const state = { settled: false };
+  const watched = call.finally(() => {
+    state.settled = true;
+  });
+  // A call that throws later, after the test moved on, is the test's own to await.
+  void watched.catch(() => undefined);
+  for (let attempt = 0; attempt < 1000 && !state.settled; attempt += 1) {
+    const found = await observer.query("SELECT 1 FROM pg_catalog.pg_stat_activity WHERE datname = pg_catalog.current_database() AND wait_event_type = 'Lock'");
+    if ((found.rowCount ?? 0) > 0) {
+      return "waited";
+    }
+    await delay(10);
+  }
+  return watched;
+}
+
+/**
+ * The answer of `call` when it comes within `ms`, or "no answer" while it
+ * still runs, as a call does that waits for a turn or for a connection of
+ * the pool. The call runs on either way, and is the test's own to await.
+ */
+export async function answeredWithin<T>(call: Promise<T>, ms: number): Promise<T | "no answer"> {
+  void call.catch(() => undefined);
+  return Promise.race([call, delay(ms).then(() => "no answer" as const)]);
 }
 
 /** Reads `path` with the browser's session cookie, as the web app does. */

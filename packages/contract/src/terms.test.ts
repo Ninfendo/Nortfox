@@ -19,16 +19,45 @@ const GLOSSARY = new URL("../../../docs/glossary.md", import.meta.url);
 
 /** The schemas that the terms name, each with its fields in their order. */
 const SCHEMAS: Readonly<Record<string, readonly string[]>> = {
-  // Slice 2b.
-  Company: ["id", "name", "organizationNumber", "databaseNumber"],
+  // Slice 2b, and the addresses and contact details of slice 2c, part 3.
+  Company: [
+    "id",
+    "name",
+    "organizationNumber",
+    "databaseNumber",
+    "address",
+    "zipCode",
+    "city",
+    "countryCode",
+    "visitAddress",
+    "visitZipCode",
+    "visitCity",
+    "visitCountryCode",
+    "phone",
+    "email",
+  ],
   // Slice 2c, part 1: the login identity.
   User: ["id", "name", "email", "language"],
   Me: ["user", "personalIdentityNumber", "mobile", "twoStep", "company", "membership", "permissions"],
   Session: ["user", "company"],
   // Slice 2c, part 2: the companies and the memberships.
-  Membership: ["companyId", "userId", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone"],
+  Membership: ["id", "companyId", "userId", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone", "roles", "programs", "programsAdministered"],
   CompanyChoice: ["company", "adminLevel"],
+  // Slice 2c, part 3: the company as the company lists give it.
+  CompanySummary: ["id", "name", "organizationNumber", "databaseNumber"],
   RecentCompanies: ["companies"],
+  // Slice 2c, part 3: the roles and the programs.
+  ProgramGrant: ["program", "permissions", "full", "grantedAt", "expiresAt"],
+  ProgramAdmin: ["program"],
+  Member: ["id", "companyId", "userId", "name", "status", "adminLevel", "idleTimeout", "workEmail", "workPhone", "roles", "programs", "programsAdministered"],
+  UserRights: ["permissions", "programs"],
+  Permission: ["key", "group", "label", "view", "manualOnly"],
+  PermissionGroup: ["key", "kind", "label"],
+  ProgramDefinition: ["key", "label", "lifetimeDays", "permissions"],
+  RoleDefinition: ["key", "adminLevel", "program", "full"],
+  PermissionCatalogue: ["roles", "programs", "groups", "permissions"],
+  Invitation: ["name", "email", "expiresAt", "companyName", "inviterName"],
+  InvitationAcceptance: ["user", "membership", "totpEnrolment"],
 };
 
 /**
@@ -40,6 +69,10 @@ const VALUES: Readonly<Record<string, readonly (string | number)[]>> = {
   SysAdmin: ["owner", "admin"],
   "Membership.status": ["invited", "active", "inactive", "removed", "left"],
   "Membership.idleTimeout": [15, 30, 60, 120, 480],
+  // Slice 2c, part 3.
+  Program: ["bookkeeping", "approval-read", "read", "auditor"],
+  Role: ["owner", "admin", "bookkeeper", "approver", "viewer", "auditor"],
+  PermissionGroupKey: ["vouchers", "supplier-invoices", "reports", "register"],
 };
 
 /** The fields that hold a schema that a term names, as Schema.field, each with that schema. */
@@ -48,6 +81,17 @@ const REFERENCES: Readonly<Record<string, string>> = {
   "Session.company": "Company",
   "Membership.adminLevel": "SysAdmin",
   "CompanyChoice.adminLevel": "SysAdmin",
+  "CompanyChoice.company": "CompanySummary",
+  // Slice 2c, part 3.
+  "ProgramGrant.program": "Program",
+  "ProgramAdmin.program": "Program",
+  "Member.adminLevel": "SysAdmin",
+  "Permission.group": "PermissionGroupKey",
+  "PermissionGroup.key": "PermissionGroupKey",
+  "ProgramDefinition.key": "Program",
+  "RoleDefinition.key": "Role",
+  "RoleDefinition.adminLevel": "SysAdmin",
+  "RoleDefinition.program": "Program",
 };
 
 /**
@@ -57,7 +101,7 @@ const REFERENCES: Readonly<Record<string, string>> = {
  * name in backticks, a field by its own name.
  */
 const TERMS: readonly (readonly [string, readonly string[]])[] = [
-  ["Företag / company", ["Company"]],
+  ["Företag / company", ["Company", "CompanySummary"]],
   ["Organisationsnummer / organisation number", ["Company.organizationNumber"]],
   ["(no screen word) / tenant id", ["Company.databaseNumber"]],
   [
@@ -69,11 +113,18 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
       "User.email",
       "User.language",
       "Membership",
+      "Membership.id",
       "Membership.companyId",
       "Membership.userId",
       "Membership.status",
       "Membership.workEmail",
       "Membership.workPhone",
+      "Membership.roles",
+      "Membership.programs",
+      "Membership.programsAdministered",
+      "Member",
+      "Member.id",
+      "Member.name",
     ],
   ],
   ["NortFox ID / login identity", ["User", "Me"]],
@@ -81,6 +132,22 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
   ["Personnummer / personal identity number", ["Me.personalIdentityNumber"]],
   ["Systemadministratör / system administrator", ["SysAdmin", "Membership.adminLevel", "CompanyChoice.adminLevel"]],
   ["Utloggning efter inaktivitet / idle logout", ["Membership.idleTimeout"]],
+  ["(no screen word) / role", ["Role", "Membership.roles"]],
+  ["Programadministratör / program administrator", ["ProgramAdmin", "ProgramAdmin.program", "Membership.programsAdministered"]],
+  [
+    "Program / program",
+    ["Program", "ProgramGrant", "ProgramGrant.program", "ProgramGrant.permissions", "ProgramGrant.grantedAt", "ProgramGrant.expiresAt", "Membership.programs"],
+  ],
+  ["Full behörighet / full permission", ["ProgramGrant.full"]],
+  [
+    "Behörighet / permission",
+    ["Permission", "Permission.key", "Permission.group", "Permission.label", "Permission.view", "Permission.manualOnly", "PermissionGroupKey", "PermissionCatalogue"],
+  ],
+  ["Bokför (permission) / book (permission)", ["Permission.key"]],
+  [
+    "Inbjudan / invitation",
+    ["Invitation", "Invitation.name", "Invitation.email", "Invitation.expiresAt", "Invitation.companyName", "Invitation.inviterName", "InvitationAcceptance"],
+  ],
 ];
 
 interface DescribedSchema {

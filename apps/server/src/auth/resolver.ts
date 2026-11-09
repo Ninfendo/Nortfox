@@ -30,7 +30,8 @@
 // past its idle time never comes back when the idle time is raised. Past it
 // the session ends with the reason idle. An ended session gives nothing from
 // then on. The permissions are the session's snapshot of when it chose the
-// company, less a permission whose grant has ended. A request moves the
+// company, less a permission whose grant has ended, and so are the programs
+// that a program administrator reaches. A request moves the
 // session's last sight on when it is a minute old or more, so a session is
 // not written on every request, and also when the idle time in force is not
 // the one the session was last seen under, so a raise made elsewhere holds
@@ -45,6 +46,7 @@
 // nothing; a request that another request moved on, or moved to another
 // company, is judged as it is now. A session runs as its user (decision 2).
 
+import { PROGRAMS, type Program } from "@nortfox/contract";
 import type { ContextResolver, Principal, SecondStep, SignInMethod } from "../api/context.ts";
 import { commit, type Database, type LookupQueryable, type Queryable } from "../db/database.ts";
 import { resolveActive, type CompanyAccess } from "../modules/memberships/resolve.ts";
@@ -69,8 +71,16 @@ export interface SessionResolverOptions {
   readonly now: () => Date;
 }
 
-/** The session's snapshot of the permissions it chose the company with: each permission, and the end of the grant that gives it, or null. */
+/**
+ * The session's snapshot of the permissions it chose the company with: each
+ * permission, and the end of the grant that gives it, or null; and, for a
+ * program administrator, each program they administered then, as
+ * administers:<program>, with null.
+ */
 export type PermissionSnapshot = Readonly<Record<string, string | null>>;
+
+/** The start of a snapshot's key that names a program the member administers, not a permission. */
+export const ADMINISTERS = "administers:";
 
 /** A live session as access.session_by_token and access.lock_session give it: its company, membership and permissions all three, or none (sessions_company_whole). */
 type SessionRow = {
@@ -97,11 +107,29 @@ function sessionToken(request: Request): string | undefined {
   return token !== undefined && tokenKind(token) === "session" ? token : undefined;
 }
 
+/**
+ * The snapshot a session stores of a member's effective permissions when it
+ * chooses the company: each permission with the end of what gives it, as an
+ * ISO time, or null for no end.
+ */
+export function permissionSnapshot(effective: ReadonlyMap<string, Date | null>, administered: readonly Program[] = []): PermissionSnapshot {
+  return Object.fromEntries([
+    ...[...effective].map(([permission, end]) => [permission, end === null ? null : end.toISOString()] as const),
+    ...administered.map((program) => [`${ADMINISTERS}${program}`, null] as const),
+  ]);
+}
+
 /** The permissions of a snapshot that still hold at `at`: each one with no end, or an end after `at`. */
 export function livePermissions(snapshot: PermissionSnapshot, at: Date): string[] {
   return Object.entries(snapshot)
-    .filter(([, end]) => end === null || at.getTime() < Date.parse(end))
+    .filter(([permission, end]) => !permission.startsWith(ADMINISTERS) && (end === null || at.getTime() < Date.parse(end)))
     .map(([permission]) => permission);
+}
+
+/** The programs a snapshot's member administered when the session chose the company. */
+export function administeredPrograms(snapshot: PermissionSnapshot): Program[] {
+  const keys = new Set(Object.keys(snapshot));
+  return PROGRAMS.filter((program) => keys.has(`${ADMINISTERS}${program}`));
 }
 
 /**
@@ -152,7 +180,7 @@ async function sessionCompany(tx: LookupQueryable, session: SessionRow, at: Date
   if (membership?.membershipId !== session.current_membership_id) {
     return { end: "membership" };
   }
-  return { company: membership.access(livePermissions(session.permissions, at)), idleMinutes: membership.idleTimeoutMinutes };
+  return { company: membership.access(livePermissions(session.permissions, at), administeredPrograms(session.permissions)), idleMinutes: membership.idleTimeoutMinutes };
 }
 
 /** What a request makes of its session: the session's end with its reason, or its company and the idle time in force, and whether the request is noted. */

@@ -32,8 +32,16 @@
 //   which belongs to no company. A write in a company whose answer holds a
 //   person's contact data (personalOutput) keeps its key in
 //   access.idempotency_keys too, with the company, so that data never reaches
-//   a company table and its behandlingshistorik. A refused or failed write
-//   stores nothing, so a retry with the key runs again.
+//   a company table and its behandlingshistorik. So does a write whose input
+//   names its company and whose answer has no body, leaveCompany: its own
+//   success makes the person no member there, so its repeat reads the key
+//   before any company is set (operation.ts). A write in a company looks its
+//   key up in both of the company's tables, its own first, so a key that
+//   one write of the company used is another request for any other write
+//   there, whichever table keeps it. The two tables have no unique key in
+//   common: the key in flight, whose scope is the company for both, keeps
+//   two such writes of one process apart. A refused or failed write stores
+//   nothing, so a retry with the key runs again.
 // - A write that runs before sign-in takes no key: there is no actor to keep
 //   it for.
 

@@ -1,6 +1,6 @@
 # 2. The ledger law lives in PostgreSQL
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: vouchers and the period lock follow the established system's behaviour, and the migrations are not an owner path.
+Status: accepted, 2026-11-01. Amended 2026-11-02: vouchers and the period lock follow the established system's behaviour, and the migrations are not an owner path. Amended 2026-11-09, in slice 2c: no permission gets past these rules.
 
 ## Context
 
@@ -56,6 +56,7 @@ The law lives in the SQL migrations. They are not an owner path ([plan, section 
 ## Consequences
 
 - No client, script or bug can break the rules through the role the server uses.
+- No permission gets past the rules either. The permissions of slice 2c decide which operations a member may call, and the rules hold for every actor whatever it holds: a member who holds every permission and a system administrator get the same refusals as anyone (`apps/server/src/modules/users/ledger-rules-hold.db.test.ts`).
 - The rules live in SQL migrations and are tested in real PostgreSQL, as the app role.
 - Some rules exist twice, in the engine and in SQL. One set of test cases runs against both.
 - Only a restore records a void range, through the restore tool, as the owner role (see [decision 7](0007-self-hosting-and-backups.md)). The app role cannot record one, so no bug in the server can make a gap that the database accepts.

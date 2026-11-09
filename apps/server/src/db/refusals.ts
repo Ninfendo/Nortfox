@@ -32,6 +32,8 @@ export const REFUSALS = [
   { reason: "immutable_field", code: "NF020" },
   { reason: "install_not_empty", code: "NF021" },
   { reason: "last_system_administrator", code: "NF022" },
+  { reason: "view_permission_missing", code: "NF023" },
+  { reason: "not_in_program", code: "NF024" },
   { reason: "actor_missing", code: "NF050" },
   { reason: "append_only", code: "NF051" },
   { reason: "internal_only", code: "NF052" },

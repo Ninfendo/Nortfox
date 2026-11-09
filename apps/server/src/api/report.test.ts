@@ -56,6 +56,12 @@ describe("scrubbing a text", () => {
     ["an address with letters beyond ASCII in its domain", "failed for anna@räkning.example.org and Åsa.Nilsson@ekonomi.exämpel.example.com now", "failed for [e-mail] and [e-mail] now"],
     ["an address in Greek letters, and one written decomposed", "for \u0390rene@example.com and A\u030asa@example.com.", "for [e-mail] and [e-mail]."],
     ["an address with every symbol that a local part may hold", "for a!b#c$d%e&f'g*h+i/j=k?l^m_n`o{p|q}r~s-t@example.org", "for [e-mail]"],
+    [
+      "an address whose domain is one label, ends in one letter or ends in a number, as a mail server quotes it",
+      "Can't send mail - all recipients were rejected: 550 5.1.1 <kalle@intranet>: Recipient address rejected; anna@example.c and anna@example.123 too",
+      "Can't send mail - all recipients were rejected: 550 5.1.1 <[e-mail]>: Recipient address rejected; [e-mail] and [e-mail] too",
+    ],
+    ["an address with a slash inside its local part", "for a/b@localhost.", "for [e-mail]."],
   ])("takes out %s", (_case, text, scrubbed) => {
     expect(scrub(text)).toBe(scrubbed);
   });
@@ -144,7 +150,9 @@ describe("the default reporter", () => {
 
   it("is what createApp reports a failed request with, when the caller gives no reporter", async () => {
     const written = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const database = { ...untouchedDatabase(), read: () => Promise.reject(databaseError()) };
+    // A check violation of the personnummer's form, whose detail holds the failing row, is a fault of the server. A unique violation of the personnummer is a rule, answered with 422 (ledger-refusals.ts).
+    const fault = Object.assign(databaseError(), { code: "23514", constraint: "identities_personal_identity_number_form" });
+    const database = { ...untouchedDatabase(), read: () => Promise.reject(fault) };
     const { hono } = createApp({
       version: TEST_VERSION,
       resolve: testResolver({ t: await principalOf("0d1c2b3a-4958-4a6b-8c7d-9e0f1a2b3c4d", { kind: "user", permissions: ["company:read"] }) }),
@@ -156,7 +164,7 @@ describe("the default reporter", () => {
     expect(response.status).toBe(500);
     const lines = written.mock.calls.map((call) => call.map(String).join(" "));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("code 23505");
+    expect(lines[0]).toContain("code 23514");
     expect(lines[0]).not.toContain("19900101-2385");
     expect(lines[0]).not.toContain("anna.lind");
   });

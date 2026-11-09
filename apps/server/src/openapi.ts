@@ -36,7 +36,21 @@ export function openApiDocument(registry: readonly Operation[], version: string)
   return describer.getOpenAPI31Document(documentConfig(version));
 }
 
-/** The API description as the committed file holds it: two-space JSON. */
+/**
+ * A character that shows as nothing, as a space or as a control, such as
+ * the line separator, a control of the text's direction or a zero-width
+ * space, which the pattern of an address holds. The file writes each as a
+ * JSON escape, so a reader of the file, and of its diff, sees it. The white
+ * space of JSON between its tokens is a line feed or a space, and stays.
+ */
+const UNSEEN = /(?![\n ])[\p{C}\p{Z}\p{Default_Ignorable_Code_Point}]/gu;
+
+/** A character as JSON escapes, one for each UTF-16 code unit. */
+function escaped(character: string): string {
+  return Array.from({ length: character.length }, (_, index) => `\\u${character.charCodeAt(index).toString(16).padStart(4, "0")}`).join("");
+}
+
+/** The API description as the committed file holds it: two-space JSON, with each character that shows as nothing as a JSON escape (UNSEEN). */
 export function renderOpenApi(registry: readonly Operation[], version: string): string {
-  return `${JSON.stringify(openApiDocument(registry, version), null, 2)}\n`;
+  return `${JSON.stringify(openApiDocument(registry, version), null, 2).replace(UNSEEN, escaped)}\n`;
 }

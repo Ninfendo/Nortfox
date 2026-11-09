@@ -66,6 +66,8 @@ describe("the company choice", () => {
   let session: string;
   let alfa: Company;
   let beta: Company;
+  /** The person's membership in Beta, where they are no system administrator. */
+  let betaMembership: string;
   /** The companies the person is no active member of: inactive, removed, left, invited by address only, and never a member. */
   let others: Readonly<Record<string, string>>;
 
@@ -82,7 +84,7 @@ describe("the company choice", () => {
     const made = await addCompanyWithOwner(app, as, { name: "Testbolaget Alfa AB", organizationNumber: "556000-0167" });
     alfa = { ...made, id: made.row.company_id, asOwner: as };
     beta = await aCompany(app, "Testbolaget Beta AB");
-    await addMembership(app, owner, beta, { user: person.id });
+    betaMembership = await addMembership(app, owner, beta, { user: person.id });
     const gamma = await aCompany(app, "Testbolaget Gamma AB");
     await changeMembership(app, gamma, await addMembership(app, owner, gamma, { user: person.id }), "status = 'inactive'");
     const delta = await aCompany(app, "Testbolaget Delta AB");
@@ -218,12 +220,13 @@ describe("the company choice", () => {
       user: { id: person.id, name: "Alva Berg", email: person.email, language: "sv" },
       twoStep: "new_device_90_days",
       company: await companyOf(alfa.id),
-      membership: { companyId: alfa.id, userId: person.id, status: "active", adminLevel: "owner", idleTimeout: 120 },
-      permissions: ["company:read"],
+      membership: { id: alfa.membership, companyId: alfa.id, userId: person.id, status: "active", adminLevel: "owner", idleTimeout: 120, roles: ["owner"], programs: [], programsAdministered: [] },
+      // The owner is a system administrator there.
+      permissions: ["company:read", "company:update", "programs:grant", "users:admin", "users:read"],
     });
     await chooseCompany(server, session, beta.id);
     const inBeta = await jsonOf(await getAs(server, session, "/v1/me"));
-    expect(inBeta["membership"]).toEqual({ companyId: beta.id, userId: person.id, status: "active", idleTimeout: 120 });
+    expect(inBeta["membership"]).toEqual({ id: betaMembership, companyId: beta.id, userId: person.id, status: "active", idleTimeout: 120, roles: [], programs: [], programsAdministered: [] });
     expect(inBeta["permissions"]).toEqual(["company:read"]);
   });
 

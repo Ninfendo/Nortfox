@@ -14,10 +14,14 @@
 // - and its cause, the same way, five deep at most.
 //
 // It never holds a detail, a where, a hint, an internal query or a
-// statement's parameters. It takes every token (nf?_...), every
-// personnummer form (8 or 6 digits, then 4, with or without a hyphen or a
-// plus) and every e-mail address, in any script, out of what it keeps. A thrown value that is
-// not an Error is reported by its type only.
+// statement's parameters. It takes every e-mail address that the API takes,
+// of any character that the contract's check takes, every token (nf?_...)
+// and every personnummer form (8 or 6 digits, then 4, with or without a
+// hyphen or a plus) out of what it keeps. The addresses go first, so an
+// address that holds a token's or a personnummer's form goes whole. A thrown
+// value that is not an Error is reported by its type only.
+
+import { ATEXT, ATEXT_END, WIDE } from "@nortfox/contract";
 
 /** NortFox's tokens, and any cut piece of one. */
 const TOKEN = /nf[a-z]_[A-Za-z0-9_-]*/g;
@@ -25,16 +29,32 @@ const TOKEN = /nf[a-z]_[A-Za-z0-9_-]*/g;
 /** A personnummer, a coordination number or an organisation number, in any of its forms, not inside a longer run of digits. */
 const IDENTITY_NUMBER = /(?<![0-9])(?:[0-9]{8}|[0-9]{6})[-+]?[0-9]{4}(?![0-9])/g;
 
-/**
- * An e-mail address: a local part, @, and a domain that ends in a name of letters. The local part holds letters,
- * marks and digits of any script (RFC 6531), dots, and every symbol that RFC 5322 lets an atom hold. The domain's
- * labels hold letters, marks, digits and hyphens, so an internationalised domain is one too.
- */
-const EMAIL = /[\p{L}\p{M}\p{N}.!#$%&'*+/=?^_`{|}~-]+@[\p{L}\p{M}\p{N}-]+(?:\.[\p{L}\p{M}\p{N}-]+)*\.[\p{L}\p{M}]{2,}/gu;
+/** A character of an address's local part, as the contract takes it (packages/contract/src/address.ts): RFC 5322's atext, a dot, or a character outside ASCII that is no space, control or control of the text's direction. */
+const LOCAL_CHARACTER = `(?:[.${ATEXT}]|${WIDE})`;
 
-/** The text with every token, personnummer form and e-mail address taken out. */
+/** The last character of a local part: not a slash, as no address the API takes ends its local part in one. */
+const LOCAL_END = `(?:[.${ATEXT_END}]|${WIDE})`;
+
+/** A character of a domain's label: a letter, a digit or a hyphen of ASCII, or a character outside ASCII that the local part may hold. */
+const DOMAIN_CHARACTER = `(?:[A-Za-z0-9-]|${WIDE})`;
+
+/**
+ * An e-mail address, as every address that the API takes is one: a local
+ * part, @, and a domain of one label or more, each of the characters that
+ * the contract takes there, in any script, symbols too. The local part does
+ * not end in a slash, so a package's path, /@scope, stays as it is. A domain
+ * of one label, such as intranet, or with a last label of one letter is one
+ * too. A domain of digits and dots alone, such as a package's version
+ * (pkg@2.1.5), is not one, and no address the API takes has one.
+ */
+const EMAIL = new RegExp(
+  `${LOCAL_CHARACTER}*${LOCAL_END}@(?=(?:${DOMAIN_CHARACTER}|\\.)*?(?![0-9])${DOMAIN_CHARACTER})${DOMAIN_CHARACTER}+(?:\\.${DOMAIN_CHARACTER}+)*`,
+  "gu",
+);
+
+/** The text with every e-mail address, token and personnummer form taken out, the addresses first. */
 export function scrub(text: string): string {
-  return text.replace(TOKEN, "[token]").replace(IDENTITY_NUMBER, "[personnummer]").replace(EMAIL, "[e-mail]");
+  return text.replace(EMAIL, "[e-mail]").replace(TOKEN, "[token]").replace(IDENTITY_NUMBER, "[personnummer]");
 }
 
 /** The fields of an error that the report names, when each is a plain text. */

@@ -14,7 +14,8 @@ import { Pool } from "pg";
 import { z } from "zod";
 import type { CompanyAccess, ContextResolver, Principal, PrincipalKind } from "../src/api/context.ts";
 import { KeysInFlight } from "../src/api/idempotency.ts";
-import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps } from "../src/api/operation.ts";
+import { CompanyTurns } from "../src/api/turns.ts";
+import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps, type Services } from "../src/api/operation.ts";
 import { assertV1Routes } from "../src/api/route-guard.ts";
 import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
 import { InstallKey } from "../src/auth/install-key.ts";
@@ -235,18 +236,24 @@ export function testHandlers(controls: BookingControls = bookingControls(), vers
   return [...serverHandlers(version), testBookVoucherHandler(controls), testListAccountsHandler];
 }
 
+/** The services of a handler that a test calls directly: the passwords at the tests' small cost, the test install key, and no mail. */
+export function testServices(): Services {
+  return { passwords: testPasswords(), installKey: TEST_INSTALL_KEY, mail: undefined };
+}
+
 /** The clock of the runner in a test that calls it directly. */
 export const TEST_NOW = new Date("2090-03-15T10:00:00.000Z");
 
-/** What the runner needs, for a test that calls it directly: the database, the cursor key, the fingerprint key, a set of keys in flight of its own and a fixed clock. */
+/** What the runner needs, for a test that calls it directly: the database, the cursor key, the fingerprint key, a set of keys in flight and of turns of its own, and a fixed clock. */
 export function runnerDeps(database: Database): RunnerDeps {
   return {
     database,
     cursorKey: CURSOR_KEY,
     fingerprintKey: FINGERPRINT_KEY,
     keysInFlight: new KeysInFlight(),
+    turns: new CompanyTurns(),
     now: () => TEST_NOW,
-    services: { passwords: testPasswords(), installKey: TEST_INSTALL_KEY },
+    services: testServices(),
   };
 }
 
@@ -355,6 +362,32 @@ export function appPool(db: TestDatabase, max: number): AppPool {
   const pool = new Pool({ ...connectionConfig(urlOf("nortfox_app", db.name)), max });
   const errors: Error[] = [];
   return { pool, database: databaseOver(pool, (error) => errors.push(error)), errors };
+}
+
+/**
+ * A pool of the app's connections whose first statement that `statement`
+ * matches waits at the gate before it is sent, in the middle of its
+ * transaction: so a test runs other requests to their commit between two
+ * statements of one request.
+ */
+export function appPoolHolding(db: TestDatabase, max: number, statement: RegExp): AppPool & { readonly gate: Gate } {
+  const pool = new Pool({ ...connectionConfig(urlOf("nortfox_app", db.name)), max });
+  const held = gate();
+  let armed = true;
+  pool.on("connect", (client) => {
+    const query = client.query.bind(client) as (text: unknown, values?: unknown) => Promise<unknown>;
+    Object.assign(client, {
+      query: async (text: unknown, values?: unknown): Promise<unknown> => {
+        if (armed && typeof text === "string" && statement.test(text)) {
+          armed = false;
+          await held.pass();
+        }
+        return query(text, values);
+      },
+    });
+  });
+  const errors: Error[] = [];
+  return { pool, database: databaseOver(pool, (error) => errors.push(error)), errors, gate: held };
 }
 
 /** The test app: the test registry and handlers, the passwords at the tests' small cost, and the routes checked as startServer checks them. */

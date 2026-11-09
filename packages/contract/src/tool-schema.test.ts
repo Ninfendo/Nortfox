@@ -178,9 +178,14 @@ describe("toolInputSchema", () => {
 
 describe("toolOutputSchema", () => {
   it("is the company for getCompany", () => {
+    const text = (description: string): { readonly type: "string"; readonly description: string } => ({ type: "string", description: `${description} Absent when it is not set.` });
+    const country = (description: string): { readonly type: "string"; readonly pattern: string; readonly description: string } => ({
+      ...text(description),
+      pattern: "^[A-Z]{2}$",
+    });
     expect(toolOutputSchema(getCompany)).toEqual({
       type: "object",
-      description: "A company: its id, name, organisation number and tenant id.",
+      description: "A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.",
       properties: {
         id: { ...UUID, description: "The company's id." },
         name: { type: "string", description: "The company's name." },
@@ -196,6 +201,16 @@ describe("toolOutputSchema", () => {
           maximum: 2147483647,
           description: "The company's number for programs, its tenant id. It never changes.",
         },
+        address: text("Adress: the postal address's street or box line."),
+        zipCode: text("Postnummer: the postal address's postal code."),
+        city: text("Ort: the postal address's town."),
+        countryCode: country("Land: the postal address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE."),
+        visitAddress: text("Besöksadress: the visiting address's street."),
+        visitZipCode: text("The visiting address's postal code."),
+        visitCity: text("The visiting address's town."),
+        visitCountryCode: country("The visiting address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE."),
+        phone: text("Telefon: the company's phone number."),
+        email: text("E-post: the company's e-mail address."),
       },
       required: ["id", "name", "organizationNumber", "databaseNumber"],
       additionalProperties: false,

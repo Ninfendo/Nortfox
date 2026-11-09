@@ -10,11 +10,11 @@
 // actor itself, by name or by a SET, RESET or DO statement, also with a name
 // over several lines or a line continuation, through a JS escape or right
 // after one, or after a SQL line comment that an escaped line break ends, a
-// name in SQL's Unicode escapes, a second caller of the deletion's form,
-// code that names a test's path, also by its bare name, and a manifest that
-// maps imports, points outside the source or names a test. It reads a
-// test-named file that the build ships. The catalog's half is
-// apps/server/src/modules/memberships/one-function.db.test.ts.
+// name in SQL's Unicode escapes, a second caller of the deletion's form or
+// of the invitation's entry, code that names a test's path, also by its bare
+// name, and a manifest that maps imports, points outside the source or names
+// a test. It reads a test-named file that the build ships. The catalog's
+// half is apps/server/src/modules/memberships/one-function.db.test.ts.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,7 @@ import { gitText, nulList } from "../names/git.ts";
 import {
   DATABASE,
   DELETE_ME,
+  INVITATION_LINK,
   MANIFESTS,
   MEMBERSHIPS_MODULE,
   RESOLVE,
@@ -99,6 +100,8 @@ const SETS_SETTINGS = `sets the transaction's company, actor or channel itself (
 const UNICODE_ESCAPES = "writes a name or a text in SQL's Unicode escapes (U&), which hide a name from this guard. Write it as it is.";
 
 const SECOND_DELETION_CALLER = `calls liveForDeletion, which only ${DELETE_ME} calls.`;
+
+const SECOND_ENTRY_CALLER = `calls invitationEntry, which only ${INVITATION_LINK} calls, to accept an invitation.`;
 
 function importsTest(specifier: string): string {
   return `names a test or a test helper (${specifier}). The guard does not read the tests, so code that the server runs never loads one.`;
@@ -312,6 +315,9 @@ describe("the membership guard", () => {
       ["with the constructor", "const access = new CompanyAccess(token, membership, permissions);", "CompanyAccess"],
       ["with the membership's constructor", "const m = new ResolvedMembership(token, row, tx);", "ResolvedMembership"],
       ["with the deletion's constructor", "const m = new LiveMembership(token, row, tx);", "LiveMembership"],
+      ["to an invitation's entry", "const entry = row as InvitationEntry;", "InvitationEntry"],
+      ["with the invitation's constructor", "const entry = new InvitationEntry(token, row, tx);", "InvitationEntry"],
+      ["from the invitation's prototype", "const entry = Object.create(InvitationEntry.prototype);", "InvitationEntry"],
       ["from the prototype", "const access = Object.create(CompanyAccess.prototype);", "CompanyAccess"],
       ["by setting the prototype", "Object.setPrototypeOf(plain, ResolvedMembership . prototype);", "ResolvedMembership"],
     ])("fails %s", (_case, line, name) => {
@@ -713,6 +719,26 @@ describe("the membership guard", () => {
 
     it("lets deleteMe call it", () => {
       expect(problemsWith(DELETE_ME, "import { liveForDeletion } from '../memberships/resolve.ts';", "const live = await liveForDeletion(tx);")).toEqual([]);
+    });
+  });
+
+  describe("a second caller of the invitation's entry", () => {
+    it("fails invitationEntry anywhere but in the acceptance and resolve.ts, also in the memberships module", () => {
+      const peek = "apps/server/src/modules/companies/peek.ts";
+      expect(
+        problemsWith(
+          peek,
+          "import { invitationEntry } from '../memberships/resolve.ts';",
+          "const entry = await invitationEntry(tx, hash, at); await tx.enter(entry); return tx.query('SELECT * FROM ledger.vouchers');",
+        ),
+      ).toEqual([`${peek}:1: ${SECOND_ENTRY_CALLER}`, `${peek}:2: ${SECOND_ENTRY_CALLER}`]);
+      expect(problemsWith(`${MEMBERSHIPS_MODULE}leave-company.ts`, "const entry = await invitationEntry(tx, hash, at);")).toEqual([
+        `${MEMBERSHIPS_MODULE}leave-company.ts:1: ${SECOND_ENTRY_CALLER}`,
+      ]);
+    });
+
+    it("lets the acceptance call it", () => {
+      expect(problemsWith(INVITATION_LINK, "import { invitationEntry } from './resolve.ts';", "const entry = await invitationEntry(tx, linkHash, at);")).toEqual([]);
     });
   });
 });

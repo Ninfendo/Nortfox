@@ -9,8 +9,9 @@
 
 import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
+import type { Program } from "@nortfox/contract";
 import type { Queryable } from "../../db/database.ts";
-import { CompanyAccess, ResolvedMembership, activeMemberships, resolveActive, type MembershipRow } from "./resolve.ts";
+import { CompanyAccess, InvitationEntry, ResolvedMembership, activeMemberships, invitationEntry, resolveActive, type MembershipRow } from "./resolve.ts";
 
 const COMPANY = "0b7c9d2e-4f61-4a8b-9c3d-2e1f0a9b8c7d";
 const PERSON = "6c5b4a39-2817-4f6e-8d5c-4b3a29180f7e";
@@ -115,16 +116,28 @@ describe("activeMemberships", () => {
 });
 
 describe("a company access", () => {
-  it("is made from a membership, with the membership's company and admin level and its own copy of the permissions", async () => {
+  it("is made from a membership, with the membership's company and admin level and its own copy of the permissions and the programs administered", async () => {
     const membership = await membershipOf({ ...ROW, admin_level: "admin" });
     const given = new Set(["company:read"]);
-    const access = membership.access(given);
+    const programs = new Set<Program>(["read"]);
+    const access = membership.access(given, programs);
     expect(access).toBeInstanceOf(CompanyAccess);
-    expect(fieldsOf(access)).toEqual({ companyId: COMPANY, membershipId: ROW.membership_id, personId: PERSON, adminLevel: "admin", permissions: ["company:read"] });
+    expect(fieldsOf(access)).toEqual({
+      companyId: COMPANY,
+      membershipId: ROW.membership_id,
+      personId: PERSON,
+      adminLevel: "admin",
+      permissions: ["company:read"],
+      programsAdministered: ["read"],
+    });
     given.add("test:write");
+    programs.add("auditor");
     expect(access.permissions).toEqual(["company:read"]);
-    // Each permission once, in order.
+    expect(access.programsAdministered).toEqual(["read"]);
+    // Each permission once, in order, and each program once, in the catalogue's order; none by default.
     expect(membership.access(["test:write", "company:read", "test:write"]).permissions).toEqual(["company:read", "test:write"]);
+    expect(membership.access([], ["auditor", "bookkeeping", "auditor"]).programsAdministered).toEqual(["bookkeeping", "auditor"]);
+    expect(membership.access([]).programsAdministered).toEqual([]);
   });
 
   it("and the membership never change", async () => {
@@ -142,6 +155,7 @@ describe("a company access", () => {
       (access.permissions as string[]).push("test:write");
     }).toThrow(TypeError);
     expect(access.permissions).toEqual(["company:read"]);
+    expect(Object.isFrozen(access.programsAdministered)).toBe(true);
   });
 });
 
@@ -151,11 +165,48 @@ describe("the constructors", () => {
     expect(() => new ResolvedMembership(Symbol("made by resolve.ts"), ROW, answering([]))).toThrow(
       new Error("Only modules/memberships/resolve.ts makes a ResolvedMembership, from the one membership function's answer."),
     );
-    expect(() => new CompanyAccess(Symbol("made by resolve.ts"), membership, ["company:read"])).toThrow(
+    expect(() => new CompanyAccess(Symbol("made by resolve.ts"), membership, ["company:read"], [])).toThrow(
       new Error("Only modules/memberships/resolve.ts makes a CompanyAccess, from a membership that the one membership function gave."),
     );
     expect(() => {
       Reflect.construct(CompanyAccess, [undefined, membership, []]);
     }).toThrow(Error);
+  });
+});
+
+describe("an invitation's entry", () => {
+  const LINK = {
+    invited_company_id: COMPANY,
+    invitation_id: "3a2b1c0d-9e8f-4a7b-8c6d-5e4f3a2b1c0d",
+    email: "karin.lund@example.com",
+    person_id: PERSON,
+  };
+
+  /** A transaction that answers every query with `rows`. */
+  function links(rows: readonly unknown[]): Queryable {
+    return { query: <Row extends QueryResultRow>() => Promise.resolve({ rows } as unknown as QueryResult<Row>) };
+  }
+
+  it("is made from a live link, for the transaction's person, and knows the transaction it was read in", async () => {
+    const tx = links([LINK]);
+    const entry = await invitationEntry(tx, Buffer.alloc(32), new Date("2090-03-15T10:00:00.000Z"));
+    expect(entry).toBeInstanceOf(InvitationEntry);
+    expect([entry?.personId, entry?.companyId, entry?.invitationId, entry?.email]).toEqual([PERSON, COMPANY, LINK.invitation_id, LINK.email]);
+    expect(entry?.resolvedIn(tx)).toBe(true);
+    expect(entry?.resolvedIn(links([LINK]))).toBe(false);
+    expect(Object.isFrozen(entry)).toBe(true);
+  });
+
+  it("is nothing for a link that is not live", async () => {
+    expect(await invitationEntry(links([]), Buffer.alloc(32), new Date("2090-03-15T10:00:00.000Z"))).toBeUndefined();
+  });
+
+  it("is refused to every caller but resolve.ts, and with no person", async () => {
+    expect(() => new InvitationEntry(Symbol("made by resolve.ts"), LINK, links([]))).toThrow(
+      new Error("Only modules/memberships/resolve.ts makes an InvitationEntry, from a live invitation link that the database gave."),
+    );
+    await expect(invitationEntry(links([{ ...LINK, person_id: null }]), Buffer.alloc(32), new Date("2090-03-15T10:00:00.000Z"))).rejects.toThrow(
+      "An invitation link is accepted by a person, and the transaction acts as none.",
+    );
   });
 });

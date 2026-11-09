@@ -63,15 +63,23 @@ describe("the table guard", () => {
     expect(await guardedRelations(owner)).toEqual([
       "access.account_events",
       "access.attempt_counters",
+      "access.catalogue_groups",
+      "access.catalogue_permissions",
+      "access.catalogue_program_permissions",
+      "access.catalogue_programs",
       "access.events",
       "access.idempotency_keys",
       "access.identities",
       "access.install_keys",
+      "access.invitation_links",
+      "access.invitations",
       "access.known_devices",
       "access.login_challenges",
       "access.membership_contacts",
       "access.memberships",
       "access.password_credentials",
+      "access.program_admins",
+      "access.program_grants",
       "access.recent_companies",
       "access.sessions",
       "access.setup_tokens",
@@ -553,9 +561,14 @@ describe("the table guard", () => {
       expect([...INSTALL_TABLES.keys()].sort()).toEqual([
         "access.account_events",
         "access.attempt_counters",
+        "access.catalogue_groups",
+        "access.catalogue_permissions",
+        "access.catalogue_program_permissions",
+        "access.catalogue_programs",
         "access.idempotency_keys",
         "access.identities",
         "access.install_keys",
+        "access.invitation_links",
         "access.known_devices",
         "access.login_challenges",
         "access.membership_contacts",
@@ -577,6 +590,9 @@ describe("the table guard", () => {
         column: "contact_company_id",
         commands: ["SELECT", "INSERT", "UPDATE", "DELETE"],
       });
+      for (const table of ["access.catalogue_programs", "access.catalogue_groups", "access.catalogue_permissions", "access.catalogue_program_permissions"]) {
+        expect(INSTALL_TABLES.get(table), table).toMatchObject({ class: "public" });
+      }
     });
 
     it("passes an install-wide table of each class that has everything, and the migrated tables only with their list", async () => {

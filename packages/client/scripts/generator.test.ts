@@ -217,7 +217,7 @@ describe("generateClient", () => {
     );
   });
 
-  it("writes a union, such as a nullable field, and an enum of numbers", () => {
+  it("writes a union, such as a nullable field, an enum of numbers and an enum that takes null", () => {
     const source = generateClient(
       documentWith({
         Change: {
@@ -226,6 +226,7 @@ describe("generateClient", () => {
             email: { anyOf: [{ type: "string", format: "email" }, { type: "null" }], description: "The address, or null for none." },
             minutes: { type: "number", enum: [15, 30, 60] },
             ids: { type: "array", items: { anyOf: [{ type: "string" }, { type: "integer" }] } },
+            level: { type: ["string", "null"], enum: ["admin", null] },
           },
           required: ["minutes"],
           additionalProperties: false,
@@ -233,7 +234,7 @@ describe("generateClient", () => {
       }),
     );
     expect(source).toContain(
-      "export interface Change {\n  /**\n   * The address, or null for none.\n   */\n  readonly email?: string | null;\n  readonly minutes: 15 | 30 | 60;\n  readonly ids?: readonly (string | number)[];\n}",
+      "export interface Change {\n  /**\n   * The address, or null for none.\n   */\n  readonly email?: string | null;\n  readonly minutes: 15 | 30 | 60;\n  readonly ids?: readonly (string | number)[];\n  readonly level?: \"admin\" | null;\n}",
     );
   });
 
@@ -468,7 +469,7 @@ describe("generateClient", () => {
     [documentWith({ Bad: { $ref: "#/definitions/X" } }), "components.schemas.Bad.$ref must point into #/components/schemas/."],
     [documentWith({ Bad: { $ref: "#/components/schemas/no-good" } }), 'components.schemas.Bad.$ref "no-good" is not a TypeScript identifier.'],
     [documentWith({ Bad: { const: null } }), "components.schemas.Bad.const may only hold strings, numbers or booleans."],
-    [documentWith({ Bad: { enum: [1, Number.NaN] } }), "components.schemas.Bad.enum[1] may only hold strings, numbers or booleans."],
+    [documentWith({ Bad: { enum: [1, Number.NaN] } }), "components.schemas.Bad.enum[1] may only hold strings, numbers, booleans or null."],
     [documentWith({ Bad: { anyOf: [] } }), "components.schemas.Bad.anyOf must be a list with at least one schema."],
     [documentWith({ Bad: { anyOf: { type: "string" } } }), "components.schemas.Bad.anyOf must be a list with at least one schema."],
     [documentWith({ Bad: { anyOf: [{ type: "string" }, {}] } }), "components.schemas.Bad.anyOf[1] needs a type, a $ref, a const or an enum."],

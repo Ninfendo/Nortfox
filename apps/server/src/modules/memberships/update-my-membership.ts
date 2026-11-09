@@ -6,7 +6,8 @@
 // asked the one membership function for the company that the path names,
 // and entered it: a company where the person is no active member is refused
 // before this runs. A membership that stops being active while the call
-// waits for its row gets the same refusal. The contract takes only the five
+// waits for its row gets the same refusal, and so does one that another
+// person holds by then, after a disconnect. The contract takes only the five
 // idle times of the established screen, and the database holds the same.
 // The answer holds the work contacts, which are personal data, so its
 // idempotency key is kept outside every company table.
@@ -27,12 +28,13 @@ import { changeOwnMembership } from "./membership.ts";
 
 export const updateMyMembershipHandler = handlePerson(updateMyMembership, async ({ context, tx, company, now }, { body }) => {
   const membership = inputMembership(company);
-  const changed = await changeOwnMembership(tx, membership.membershipId, body);
+  const at = now();
+  const changed = await changeOwnMembership(tx, membership.membershipId, membership.personId, body, at);
   if (changed === undefined) {
     return companyNotAvailable(updateMyMembership);
   }
   if (body.idleTimeout !== undefined) {
-    await seeSession(tx, context.credential.sessionId, now(), changed.idleTimeout, membership.membershipId);
+    await seeSession(tx, context.credential.sessionId, at, changed.idleTimeout, membership.membershipId);
   }
   return ok(changed);
 });

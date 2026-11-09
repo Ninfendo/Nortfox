@@ -14,7 +14,7 @@
 //   database.
 // - none: runs before there is an actor, such as a sign-in. Anyone may call
 //   it. Its handler gets the database and opens its own transactions, the
-//   services (the password wrapper and the install secret), the request's
+//   services (the password wrapper, the install secret and the mail), the request's
 //   facts, the clock, the queue for work after the answer, and the principal
 //   when the request has one. It takes no idempotency key.
 // - person: a signed-in person's operation. One transaction as the person,
@@ -26,7 +26,8 @@
 // - person-list: a signed-in person's list, in no company. Its cursors are
 //   the person's own.
 // - data and list: an operation with a permission, in the credential's
-//   company. One transaction in that company.
+//   company. One transaction in that company, with the clock and the
+//   services, such as the install's mail.
 //
 // The runner's steps, in this order:
 //
@@ -49,16 +50,25 @@
 //    transaction of the runner's, and its output is checked.
 // 5. A write with a key: the key in flight. A running request of the actor
 //    that holds the key gives 409, before the pool is asked for a connection.
+//    Then a write whose handler takes a turn of its company, such as
+//    inviteUser, waits for it in this process (turns.ts), still before the
+//    pool is asked, and holds it until its transaction has ended.
 // 6. One transaction (db/database.ts): in the credential's company for an
 //    operation with a permission, as the person in the company of its source
 //    for a person's operation, with the actor, its kind and the channel. A
 //    company that the input names comes first: where the person has no
 //    active membership, also one that does not exist, the call gets 422
-//    company-not-available and rolls back. A read runs at REPEATABLE READ
+//    company-not-available and rolls back; but a write whose answer is
+//    empty, such as leaveCompany, which its own success makes the person no
+//    member of, gives the answer of its key there first, from the person's
+//    keys. A read runs at REPEATABLE READ
 //    READ ONLY, a write at READ COMMITTED. A write with a key looks the key
 //    up first: in the company's keys; in the person's, for a write in no
 //    company or in a new one; or in the person's in the company, for a write
-//    whose answer holds a person's contact data (keysFor). The same
+//    whose answer holds a person's contact data, and for one that names its
+//    company and answers with no body (keysFor). A write in a company reads
+//    both of the company's tables of keys, so a key that another write of
+//    the company used gives 422 whichever table keeps it. The same
 //    request's key replays its first answer, another request's gives 422,
 //    and both roll back. Then the handler runs. A read handler adds no
 //    company condition of its own: row level security keeps it to the
@@ -126,6 +136,8 @@ import type { CompanyContext, Principal, RequestContext } from "./context.ts";
 import { readCursor, signCursor, type CursorScope } from "./cursor.ts";
 import { checkKey, companyKeys, personCompanyKeys, personKeys, requestHash, type KeyCheck, type KeyStore, type KeysInFlight, type StoredAnswer } from "./idempotency.ts";
 import { ledgerRule } from "./ledger-refusals.ts";
+import type { CompanyTurns, Turn } from "./turns.ts";
+import type { InstallMail } from "../mail/mailer.ts";
 
 /** A handler's refusal by a rule: a stable code, a sentence, and the field and facts when it has them. */
 export interface RuleRefusal {
@@ -228,12 +240,14 @@ export interface RequestFacts {
   readonly device?: string;
 }
 
-/** What the server's own handlers use besides the database: the password wrapper and the install secret. */
+/** What the server's own handlers use besides the database: the password wrapper, the install secret and the install's mail. */
 export interface Services {
   /** The one wrapper of passwords (auth/password.ts). */
   readonly passwords: PasswordHasher;
   /** The install secret, which seals the TOTP secrets and keys the HMACs (auth/install-key.ts). */
   readonly installKey: InstallKey;
+  /** The install's mail, or undefined when the install has none set up (mail/mailer.ts). */
+  readonly mail: InstallMail | undefined;
 }
 
 /** What a handler of an operation that runs before sign-in gets besides its input. It opens its own transactions. */
@@ -308,6 +322,10 @@ export interface DataCall {
   readonly context: CompanyContext;
   /** The request's transaction, in the company. */
   readonly tx: Queryable;
+  /** The server's clock. */
+  readonly now: () => Date;
+  /** What the server's own handlers use besides the database, such as the install's mail. */
+  readonly services: Services;
 }
 
 /** The page a list's handler reads: at most `limit` items, after the item whose sort key is `after`. */
@@ -348,11 +366,23 @@ export interface NoneHandler {
   readonly run: (call: NoneCall, input: AnyInput) => Promise<Answer<unknown>>;
 }
 
+/**
+ * What a handler of a write in a company may say besides its run: the turn
+ * of the company that its input makes it take (turns.ts), when it takes one
+ * of the database's turns, so it waits for it before it asks the pool for a
+ * connection.
+ */
+export interface WriteOptions<In> {
+  readonly turn?: (input: In) => Turn | undefined;
+}
+
 /** The handler of a signed-in person's operation, in the person's transaction. */
 export interface PersonHandler {
   readonly kind: "person";
   readonly operation: Operation;
   readonly run: (call: PersonCall, input: AnyInput) => Promise<Answer<unknown>>;
+  /** The turn of the company that its input names, or of the credential's, that the call takes. */
+  readonly turn?: ((input: AnyInput) => Turn | undefined) | undefined;
 }
 
 /** The handler of an operation that reads or writes data, in the request's transaction. */
@@ -360,6 +390,8 @@ export interface DataHandler {
   readonly kind: "data";
   readonly operation: Operation;
   readonly run: (call: DataCall, input: AnyInput) => Promise<Answer<unknown>>;
+  /** The turn of the credential's company that the call takes. */
+  readonly turn?: ((input: AnyInput) => Turn | undefined) | undefined;
 }
 
 /** The handler of a list: it reads one page in the request's transaction. */
@@ -424,9 +456,13 @@ export function handleNone<Op extends Operation>(operation: Op, run: (call: None
 }
 
 /** The handler of a signed-in person's operation that is not a list. */
-export function handlePerson<Op extends Operation>(operation: Op, run: (call: PersonCall, input: InputOf<Op>) => Promise<Answer<OutputOf<Op>>>): PersonHandler {
+export function handlePerson<Op extends Operation>(
+  operation: Op,
+  run: (call: PersonCall, input: InputOf<Op>) => Promise<Answer<OutputOf<Op>>>,
+  options: WriteOptions<InputOf<Op>> = {},
+): PersonHandler {
   expectKind(operation, "person");
-  return { kind: "person", operation, run: run as unknown as PersonHandler["run"] };
+  return { kind: "person", operation, run: run as unknown as PersonHandler["run"], turn: options.turn as PersonHandler["turn"] };
 }
 
 /** The handler of a signed-in person's list. */
@@ -442,9 +478,10 @@ export function handlePersonList<Op extends Operation>(
 export function handleData<Op extends Operation>(
   operation: Op,
   run: (call: DataCall, input: InputOf<Op>) => Promise<Answer<OutputOf<Op>>>,
+  options: WriteOptions<InputOf<Op>> = {},
 ): DataHandler {
   expectKind(operation, "data");
-  return { kind: "data", operation, run: run as unknown as DataHandler["run"] };
+  return { kind: "data", operation, run: run as unknown as DataHandler["run"], turn: options.turn as DataHandler["turn"] };
 }
 
 /** The handler of a list. */
@@ -518,6 +555,8 @@ export interface RunnerDeps {
   readonly fingerprintKey: Uint8Array;
   /** The idempotency keys of the writes that run now in this process. */
   readonly keysInFlight: KeysInFlight;
+  /** The turns of the companies' writes in this process (turns.ts). */
+  readonly turns: CompanyTurns;
   /** The server's clock. */
   readonly now: () => Date;
   /** What the handlers of the operations that run before sign-in use. */
@@ -675,19 +714,26 @@ function wirePage(page: PageResult<unknown>, scope: CursorScope, key: Uint8Array
   return next === undefined ? { items, total } : { items, total, nextCursor: signCursor(key, scope, next) };
 }
 
+/** The names of an operation's flat input: its path parameters, its query's fields and its body's. */
+function inputFields(operation: Operation): string[] {
+  return [paramsSchema(operation), querySchema(operation), bodySchema(operation)].flatMap((schema) => (schema === undefined ? [] : Object.keys(schema.shape)));
+}
+
 /**
- * Runs a transaction, and gives a refusal of the ledger that is a rule a
- * request can break as the rule's refusal. A password wrapper whose queue is
- * full gives server-busy. Every other error is thrown again.
+ * Runs a transaction of `operation`, and gives a refusal of the ledger that
+ * is a rule a request can break as the rule's refusal, with the field's
+ * pointer for a unique violation of a field that the input names. A password
+ * wrapper whose queue is full gives server-busy. Every other error is thrown
+ * again.
  */
-async function answered<T>(transaction: () => Promise<T>): Promise<T | Outcome> {
+async function answered<T>(operation: Operation, transaction: () => Promise<T>): Promise<T | Outcome> {
   try {
     return await transaction();
   } catch (error) {
     if (error instanceof ServerBusy) {
       return refuse({ kind: "server-busy", retryAfterSeconds: error.retryAfterSeconds });
     }
-    const rule = ledgerRule(error);
+    const rule = ledgerRule(error, inputFields(operation));
     if (rule === undefined) {
       throw error;
     }
@@ -714,13 +760,35 @@ type Run = () => Promise<Answer<unknown>>;
  * credential's, the one the input names or a new one, and then runs `work`
  * with the transaction and the handler's run in it. When the company cannot
  * be set, as for a company the input names where the person is no active
- * member, the transaction rolls back and gives that refusal instead.
+ * member, the transaction rolls back and gives that refusal instead, or what
+ * `unavailable` gives in that transaction, before any company is set: a
+ * keyed write's stored answer (runKeyedWrite).
  */
-type Frame = <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>) => Promise<T | Outcome>;
+type Frame = <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>, unavailable?: (tx: Queryable) => Promise<Outcome | undefined>) => Promise<T | Outcome>;
 
 /** The frame of transactions whose settings name their company, or none. */
 function settingsFrame(settings: TransactionSettings, run: (tx: Queryable) => Promise<Answer<unknown>>, deps: RunnerDeps): Frame {
   return (mode, work) => (mode === "write" ? deps.database.write(settings, (tx) => work(tx, () => run(tx))) : deps.database.read(settings, (tx) => work(tx, () => run(tx))));
+}
+
+/**
+ * The frame of a call whose handler takes a turn of `companyId` for its
+ * input (turns.ts): each transaction waits for the turn in this process
+ * before it asks the pool for a connection, and lets it go when it has
+ * ended. A call that takes no turn keeps its frame.
+ */
+function inTurn(turn: Turn | undefined, companyId: string, frame: Frame, deps: RunnerDeps): Frame {
+  if (turn === undefined) {
+    return frame;
+  }
+  return async <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>, unavailable?: (tx: Queryable) => Promise<Outcome | undefined>) => {
+    const release = await deps.turns.take(companyId, turn);
+    try {
+      return await frame(mode, work, unavailable);
+    } finally {
+      release();
+    }
+  };
 }
 
 /** What a keyed write needs besides its work. */
@@ -729,9 +797,24 @@ interface KeyedWrite {
   readonly actorId: string;
   readonly input: AnyInput;
   readonly key: string;
+  /** Where the write keeps its key. */
   readonly store: KeyStore;
+  /** The company's other table of keys, for a write in a company: its lookup there reads it too, so one key never serves two writes of the company. */
+  readonly other?: KeyStore | undefined;
   /** Opens the write's transactions. */
   readonly frame: Frame;
+}
+
+/**
+ * Whether a keyed write gives its stored answer also where the person no
+ * longer reaches the company that its input names: a write whose answer is
+ * empty, such as leaveCompany's, which its own success makes the person no
+ * member of. Its answer tells nothing of the company, and its key is kept
+ * with the person (keysFor). A write whose answer holds the company's data
+ * is refused there, as any call that names the company is.
+ */
+function replaysWhereUnavailable(operation: Operation): boolean {
+  return isCompanyInput(operation["x-nortfox"].company) && [202, 204].includes(successStatus(operation));
 }
 
 /**
@@ -741,7 +824,7 @@ interface KeyedWrite {
  * it commits.
  */
 async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outcome> {
-  const { operation, actorId, input, key, store, frame } = write;
+  const { operation, actorId, input, key, store, other, frame } = write;
   const release = deps.keysInFlight.claim(store.scope, actorId, key);
   if (release === undefined) {
     return refuse({ kind: "idempotency-key-in-use" });
@@ -749,20 +832,29 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
   try {
     const params = paramsSchema(operation) === undefined ? undefined : input.params;
     const hash = requestHash(deps.fingerprintKey, operation.operationId, input.query, input.body, params);
-    const first = await answered(() =>
-      frame("write", async (tx, run): Promise<Ending<Outcome | typeof STORED_FIRST_ELSEWHERE>> => {
-        const stored = await store.find(tx, actorId, key);
-        if (stored !== undefined) {
-          return rollBack(replay(stored, hash));
-        }
-        const answer = await run();
-        if (!answer.ok) {
-          return rollBack(refusedBy(operation, answer.refusal));
-        }
-        const outcome = success(operation, answer) as Extract<Outcome, { readonly ok: true }>;
-        const kept = await store.store(tx, { key, operationId: operation.operationId, hash, status: outcome.status, body: outcome.output });
-        return kept ? commit(outcome) : rollBack(STORED_FIRST_ELSEWHERE);
-      }),
+    // The write's own table; in a company, the other table too. Where the person no longer reaches the company, the own table alone.
+    const storedAnswer = async (tx: Queryable, everywhere = true): Promise<Outcome | undefined> => {
+      const stored = (await store.find(tx, actorId, key)) ?? (everywhere && other !== undefined ? await other.find(tx, actorId, key) : undefined);
+      return stored === undefined ? undefined : replay(stored, hash);
+    };
+    const first = await answered(operation, () =>
+      frame(
+        "write",
+        async (tx, run): Promise<Ending<Outcome | typeof STORED_FIRST_ELSEWHERE>> => {
+          const stored = await storedAnswer(tx);
+          if (stored !== undefined) {
+            return rollBack(stored);
+          }
+          const answer = await run();
+          if (!answer.ok) {
+            return rollBack(refusedBy(operation, answer.refusal));
+          }
+          const outcome = success(operation, answer) as Extract<Outcome, { readonly ok: true }>;
+          const kept = await store.store(tx, { key, operationId: operation.operationId, hash, status: outcome.status, body: outcome.output });
+          return kept ? commit(outcome) : rollBack(STORED_FIRST_ELSEWHERE);
+        },
+        replaysWhereUnavailable(operation) ? (tx) => storedAnswer(tx, false) : undefined,
+      ),
     );
     if (first !== STORED_FIRST_ELSEWHERE) {
       return first;
@@ -779,15 +871,28 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
   }
 }
 
+/** Where a keyed write keeps its key, and the company's other table of keys, which its lookup reads too. */
+interface KeyStores {
+  readonly store: KeyStore;
+  readonly other?: KeyStore;
+}
+
 /**
  * Where a write in a company keeps its key: in the company's keys, unless
  * its answer holds a person's contact data (personalOutput), whose key is
  * kept outside every company table, so the answer never reaches the
- * company's history. A write in no company, or in a company it makes, keeps
- * its key per person (personKeys).
+ * company's history; or unless it gives its answer again where the person
+ * no longer reaches the company (replaysWhereUnavailable), whose key the
+ * person reads without entering the company. Those two keep it with the
+ * person, in the company. Either way the other table is the write's other,
+ * so a key is one write's in the company, whichever table keeps it. A write
+ * in no company, or in a company it makes, keeps its key per person
+ * (personKeys).
  */
-function keysFor(operation: Operation, companyId: string): KeyStore {
-  return operation["x-nortfox"].personalOutput.length > 0 ? personCompanyKeys(companyId) : companyKeys(companyId);
+function keysFor(operation: Operation, companyId: string): KeyStores {
+  const company = companyKeys(companyId);
+  const person = personCompanyKeys(companyId);
+  return operation["x-nortfox"].personalOutput.length > 0 || replaysWhereUnavailable(operation) ? { store: person, other: company } : { store: company, other: person };
 }
 
 /** Runs a call in its frame: a keyed write, or one transaction, a write for an operation that writes and a read for any other. */
@@ -795,7 +900,7 @@ function runFramed(operation: Operation, frame: Frame, keyed: Omit<KeyedWrite, "
   if (keyed !== undefined) {
     return runKeyedWrite({ ...keyed, operation, frame }, deps);
   }
-  return answered(() => frame(operation["x-nortfox"].writes ? "write" : "read", async (_tx, run) => ending(operation, await run())));
+  return answered(operation, () => frame(operation["x-nortfox"].writes ? "write" : "read", async (_tx, run) => ending(operation, await run())));
 }
 
 /** The queue of a call whose surface gave none: work after the answer is then a fault of the server. */
@@ -831,7 +936,7 @@ async function runNone(handler: NoneHandler, call: OperationCall, input: AnyInpu
     now: deps.now,
     later,
   };
-  return answered(async () => {
+  return answered(handler.operation, async () => {
     const answer = await handler.run(noneCall, input);
     return answer.ok ? success(handler.operation, answer) : refusedBy(handler.operation, answer.refusal);
   });
@@ -874,14 +979,18 @@ export function companyNotAvailable(operation: Operation): Answer<never> {
  * transaction, in which the one membership function gives the person's
  * active membership there, and the transaction enters its company. A company
  * where the person has none, also one that does not exist, gives the same
- * refusal, before the key is looked up and before the handler runs.
+ * refusal, before the company's key is looked up and before the handler
+ * runs; but a write that replays there gives the answer that the person's
+ * key holds (replaysWhereUnavailable), read before any company is set.
  */
 function inputFrame(settings: PersonSettings, field: string, companyId: unknown, run: (tx: Queryable, membership: ResolvedMembership) => Promise<Answer<unknown>>, deps: RunnerDeps): Frame {
-  return <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>) =>
+  return <T>(mode: Mode, work: (tx: Queryable, run: Run) => Promise<Ending<T>>, unavailable?: (tx: Queryable) => Promise<Outcome | undefined>) =>
     deps.database.person(mode, settings, async (tx): Promise<Ending<T | Outcome>> => {
-      const membership = typeof companyId === "string" && UUID.test(companyId) ? await resolveActive(tx, companyId) : undefined;
+      const named = typeof companyId === "string" && UUID.test(companyId);
+      const membership = named ? await resolveActive(tx, companyId) : undefined;
       if (membership === undefined) {
-        return rollBack(ruleOf(notAvailable(field)));
+        const kept = named && unavailable !== undefined ? await unavailable(tx) : undefined;
+        return rollBack(kept ?? ruleOf(notAvailable(field)));
       }
       await tx.enter(membership);
       return work(tx, () => run(tx, membership));
@@ -906,22 +1015,24 @@ function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCa
   const source = operation["x-nortfox"].company;
   const person: PersonSettings = { actorId: context.personId, actorKind: context.actorKind, channel: context.channel };
   const runIn = (tx: Queryable, company: PersonCompany): Promise<Answer<unknown>> => handler.run({ context, tx, company, request, now: deps.now, later }, input);
-  const keyed = (store: KeyStore): Omit<KeyedWrite, "operation" | "frame"> | undefined =>
-    key === undefined ? undefined : { actorId: context.personId, input, key, store };
+  const keyed = (stores: KeyStores): Omit<KeyedWrite, "operation" | "frame"> | undefined =>
+    key === undefined ? undefined : { actorId: context.personId, input, key, ...stores };
   if (isCompanyInput(source)) {
     const companyId = inputValue(input, source.input);
     const frame = inputFrame(person, source.input, companyId, (tx, membership) => runIn(tx, { kind: "input", membership }), deps);
-    return runFramed(operation, frame, keyed(keysFor(operation, String(companyId))), deps);
+    // The company's id in lower case, as a credential's is, so one company has one turn. The turn comes before the membership's check, which ends a call where the person has none at once, so such a call holds it only that long.
+    return runFramed(operation, inTurn(handler.turn?.(input), String(companyId).toLowerCase(), frame, deps), keyed(keysFor(operation, String(companyId))), deps);
   }
   if (source === "new") {
-    return runFramed(operation, newCompanyFrame(person, (tx, companyId) => runIn(tx, { kind: "new", companyId }), deps), keyed(personKeys), deps);
+    return runFramed(operation, newCompanyFrame(person, (tx, companyId) => runIn(tx, { kind: "new", companyId }), deps), keyed({ store: personKeys }), deps);
   }
   const access = source === "current" ? context.company : undefined;
   if (access !== undefined) {
     const settings: CompanySettings = { ...person, company: access };
-    return runFramed(operation, settingsFrame(settings, (tx) => runIn(tx, { kind: "current", access }), deps), keyed(keysFor(operation, access.companyId)), deps);
+    const frame = inTurn(handler.turn?.(input), access.companyId, settingsFrame(settings, (tx) => runIn(tx, { kind: "current", access }), deps), deps);
+    return runFramed(operation, frame, keyed(keysFor(operation, access.companyId)), deps);
   }
-  return runFramed(operation, settingsFrame(person, (tx) => runIn(tx, { kind: "none" }), deps), keyed(personKeys), deps);
+  return runFramed(operation, settingsFrame(person, (tx) => runIn(tx, { kind: "none" }), deps), keyed({ store: personKeys }), deps);
 }
 
 /**
@@ -960,13 +1071,13 @@ function runData(handler: DataHandler | ListHandler, context: CompanyContext, re
       return Promise.resolve(refuse({ kind: "invalid", problems: page.problems }));
     }
     const listed = async (tx: Queryable): Promise<Answer<unknown>> => {
-      const answer = await handler.run({ context, tx, page: page.value }, input);
+      const answer = await handler.run({ context, tx, now: deps.now, services: deps.services, page: page.value }, input);
       return answer.ok ? ok(wirePage(answer.output, scope, deps.cursorKey)) : answer;
     };
     return runFramed(operation, settingsFrame(settings, listed, deps), undefined, deps);
   }
-  const frame = settingsFrame(settings, (tx) => handler.run({ context, tx }, input), deps);
-  const keyed = key === undefined ? undefined : { actorId: context.personId, input, key, store: keysFor(operation, context.company.companyId) };
+  const frame = inTurn(handler.turn?.(input), context.company.companyId, settingsFrame(settings, (tx) => handler.run({ context, tx, now: deps.now, services: deps.services }, input), deps), deps);
+  const keyed = key === undefined ? undefined : { actorId: context.personId, input, key, ...keysFor(operation, context.company.companyId) };
   return runFramed(operation, frame, keyed, deps);
 }
 

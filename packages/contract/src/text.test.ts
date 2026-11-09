@@ -45,6 +45,8 @@ describe("a stored text", () => {
       ),
     ).toEqual([
       ["invalid-value", "/name"],
+      // A control character is not in an address's form either (address.ts).
+      ["bad-format", "/email"],
       ["invalid-value", "/email"],
     ]);
   });
@@ -55,7 +57,10 @@ describe("a stored text", () => {
     expect(problemsOf(bodySchema(createCompany) ?? z.never(), { name: "Testbolaget \u0000 AB", organizationNumber: "556677-1234" })).toEqual([nul("/name")]);
     expect(problemsOf(querySchema(listCompanies) ?? z.never(), { query: "Alfa\u0000" })).toEqual([nul("/query")]);
     expect(problemsOf(bodySchema(updateMyMembership) ?? z.never(), { workPhone: "070-174 06 07\u0000" })).toEqual([nul("/workPhone")]);
-    expect(problemsOf(bodySchema(updateMyMembership) ?? z.never(), { workEmail: "a\u0000@example.com" })).toEqual([nul("/workEmail")]);
+    expect(problemsOf(bodySchema(updateMyMembership) ?? z.never(), { workEmail: "a\u0000@example.com" })).toEqual([
+      ["bad-format", "/workEmail", "The field /workEmail does not have the format email."],
+      nul("/workEmail"),
+    ]);
   });
 
   it("refuses a lone surrogate anywhere in it, as invalid-value, and takes a pair and every other text", () => {

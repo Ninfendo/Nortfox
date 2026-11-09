@@ -5,7 +5,8 @@
 // it gives the transaction's person's active membership in a company, or
 // every one, as memberships that only it can make. A lookup enters a company
 // only with a membership that the function gave in that lookup, to the
-// person it acts as, and only once (tx.enter). These run on PostgreSQL as
+// person it acts as, and only once (tx.enter), and so with an invitation's
+// entry, read from a live link in that transaction. These run on PostgreSQL as
 // nortfox_app, through the server's own database layer.
 
 import { randomUUID } from "node:crypto";
@@ -13,11 +14,11 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool } from "../../../test/api.ts";
 import { failureOf, freshDatabase, type TestDatabase } from "../../../test/database.ts";
-import { addIdentity, deleteIdentity } from "../../../test/identities.ts";
+import { addIdentity, deleteIdentity, tokenHash } from "../../../test/identities.ts";
 import { addCompanyWithOwner } from "../../../test/ledger.ts";
-import { aCompany, addMembership, changeMembership, membershipIn, type Company } from "../../../test/memberships.ts";
+import { aCompany, addMembership, asMember, changeMembership, membershipIn, type Company } from "../../../test/memberships.ts";
 import { commit, type PersonSettings, type Queryable } from "../../db/database.ts";
-import { ResolvedMembership, activeMemberships, resolveActive } from "./resolve.ts";
+import { ResolvedMembership, activeMemberships, invitationEntry, resolveActive, type InvitationEntry } from "./resolve.ts";
 
 /** What the transaction holds of the company and the actor, "" when unset. */
 async function settingsOf(tx: Queryable): Promise<{ company: string; actor: string; kind: string }> {
@@ -44,6 +45,14 @@ function present(membership: ResolvedMembership | undefined): ResolvedMembership
     throw new Error("The one membership function gave no membership.");
   }
   return membership;
+}
+
+/** The entry of a live invitation link, which a test expects the database to give. */
+function presentEntry(entry: InvitationEntry | undefined): InvitationEntry {
+  if (entry === undefined) {
+    throw new Error("The database gave no live invitation link.");
+  }
+  return entry;
 }
 
 /** The companies whose rows the transaction reads, from the companies and from the memberships. */
@@ -305,6 +314,40 @@ describe("the one membership function in the server", () => {
         another: new Error("tx.enter takes a membership of the person the transaction acts as."),
         settings: { company: "", actor: beta.owner, kind: "user" },
       });
+    });
+
+    it("enters an invitation's company only with an entry of a live link that it read itself, for its person, and once", async () => {
+      // A live link of an invitation of Beta, as its owner makes them.
+      const member = await addMembership(app, owner, beta, { status: "invited" });
+      const [invitation] = await asMember<{ id: string }>(
+        app,
+        beta.id,
+        beta.asOwner,
+        "INSERT INTO access.invitations (company_id, membership_id, name, email) VALUES ($1, $2, 'Karin Lund', 'karin.lund@example.com') RETURNING id",
+        [beta.id, member],
+      );
+      const hash = tokenHash();
+      await asMember(app, beta.id, beta.asOwner, "SELECT access.issue_invitation_link($1, $2, 'Testbolaget Beta AB', 'Bo Beta', pg_catalog.clock_timestamp())", [hash, invitation?.id]);
+      const at = new Date();
+      const outside = await pool.database.read(asThePerson(), async (tx) => commit(await invitationEntry(tx, hash, at)));
+      const refused = await pool.database.person("write", asThePerson(), async (tx) => {
+        const earlier = await failureOf(tx.enter(presentEntry(outside)));
+        await tx.query("SELECT pg_catalog.set_config('nortfox.actor_id', $1, true)", [beta.owner]);
+        const another = await failureOf(tx.enter(presentEntry(await invitationEntry(tx, hash, at))));
+        return commit({ earlier, another, settings: await settingsOf(tx) });
+      });
+      expect(refused).toEqual({
+        earlier: new Error("tx.enter takes only a membership that the one membership function gave in this transaction (modules/memberships/resolve.ts)."),
+        another: new Error("tx.enter takes a membership of the person the transaction acts as."),
+        settings: { company: "", actor: beta.owner, kind: "user" },
+      });
+      const entered = await pool.database.person("write", asThePerson(), async (tx) => {
+        const entry = presentEntry(await invitationEntry(tx, hash, at));
+        await tx.enter(entry);
+        const again = await failureOf(tx.enter(entry));
+        return commit({ again, settings: await settingsOf(tx) });
+      });
+      expect(entered).toEqual({ again: SET_ALREADY, settings: { company: beta.id, actor: person, kind: "user" } });
     });
 
     it("works in a new company while the work runs, with an id it picks, and in none before and after", async () => {

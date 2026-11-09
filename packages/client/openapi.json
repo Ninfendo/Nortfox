@@ -152,6 +152,48 @@
             "minimum": 1,
             "maximum": 2147483647,
             "description": "The company's number for programs, its tenant id. It never changes."
+          },
+          "address": {
+            "type": "string",
+            "description": "Adress: the postal address's street or box line. Absent when it is not set."
+          },
+          "zipCode": {
+            "type": "string",
+            "description": "Postnummer: the postal address's postal code. Absent when it is not set."
+          },
+          "city": {
+            "type": "string",
+            "description": "Ort: the postal address's town. Absent when it is not set."
+          },
+          "countryCode": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$",
+            "description": "Land: the postal address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE. Absent when it is not set."
+          },
+          "visitAddress": {
+            "type": "string",
+            "description": "Besöksadress: the visiting address's street. Absent when it is not set."
+          },
+          "visitZipCode": {
+            "type": "string",
+            "description": "The visiting address's postal code. Absent when it is not set."
+          },
+          "visitCity": {
+            "type": "string",
+            "description": "The visiting address's town. Absent when it is not set."
+          },
+          "visitCountryCode": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$",
+            "description": "The visiting address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE. Absent when it is not set."
+          },
+          "phone": {
+            "type": "string",
+            "description": "Telefon: the company's phone number. Absent when it is not set."
+          },
+          "email": {
+            "type": "string",
+            "description": "E-post: the company's e-mail address. Absent when it is not set."
           }
         },
         "required": [
@@ -161,7 +203,7 @@
           "databaseNumber"
         ],
         "additionalProperties": false,
-        "description": "A company: its id, name, organisation number and tenant id."
+        "description": "A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set."
       },
       "SetupResult": {
         "type": "object",
@@ -301,7 +343,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The permissions the person holds in that company, in alphabetical order. Empty when the request works in no company."
+            "description": "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company."
           }
         },
         "required": [
@@ -315,6 +357,11 @@
       "Membership": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The membership's id: the member's id in the company, which the paths of /v1/users take as memberId."
+          },
           "companyId": {
             "type": "string",
             "format": "uuid",
@@ -352,20 +399,45 @@
           },
           "workEmail": {
             "type": "string",
-            "description": "The person's work e-mail address in this company, where its notices go. Absent when none is set."
+            "description": "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. An invited member has one only when updateUser gave it, and accepting the invitation sets it to the invitation's address. A removed, a left or a disconnected member has none."
           },
           "workPhone": {
             "type": "string",
             "description": "The person's work phone number in this company. Absent when none is set."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "description": "The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended."
+          },
+          "programs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramGrant"
+            },
+            "description": "The member's program grants as they are now, in the catalogue's order, also one that has ended."
+          },
+          "programsAdministered": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramAdmin"
+            },
+            "description": "The programs the member administers, in the catalogue's order."
           }
         },
         "required": [
+          "id",
           "companyId",
           "status",
-          "idleTimeout"
+          "idleTimeout",
+          "roles",
+          "programs",
+          "programsAdministered"
         ],
         "additionalProperties": false,
-        "description": "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts."
+        "description": "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered."
       },
       "SysAdmin": {
         "type": "string",
@@ -375,11 +447,83 @@
         ],
         "description": "Systemadministratör: owner, the person who made the company, or admin, a member made system administrator later. Both hold the same rights, and neither gives work rights by itself."
       },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "bookkeeper",
+          "approver",
+          "viewer",
+          "auditor"
+        ],
+        "description": "One of the plan's six roles: owner or admin, a system administrator's level; bookkeeper, Bokföring with Full behörighet; approver, Bokföring - Attest & Läs; viewer, Läs; auditor, Revisor."
+      },
+      "ProgramGrant": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "$ref": "#/components/schemas/Program"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The rights the grant holds, as the catalogue's permission keys, in the catalogue's order."
+          },
+          "full": {
+            "type": "boolean",
+            "description": "Full behörighet: whether the grant holds every right of its program's Full behörighet, which a grant gets by default."
+          },
+          "grantedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the program was granted."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the grant ends by itself, with no action by anyone: a Revisor grant 30 days after it was granted. From then on it gives nothing. Absent for a grant with no end."
+          }
+        },
+        "required": [
+          "program",
+          "permissions",
+          "full",
+          "grantedAt"
+        ],
+        "additionalProperties": false,
+        "description": "Program: a program granted to a member, with the rights the grant holds."
+      },
+      "Program": {
+        "type": "string",
+        "enum": [
+          "bookkeeping",
+          "approval-read",
+          "read",
+          "auditor"
+        ],
+        "description": "A program: bookkeeping (Bokföring), approval-read (Bokföring - Attest & Läs), read (Läs) or auditor (Revisor)."
+      },
+      "ProgramAdmin": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "$ref": "#/components/schemas/Program"
+          }
+        },
+        "required": [
+          "program"
+        ],
+        "additionalProperties": false,
+        "description": "Programadministratör: the member grants, narrows and removes this program, and its Rapporter and Register/Övrigt rights."
+      },
       "CompanyChoice": {
         "type": "object",
         "properties": {
           "company": {
-            "$ref": "#/components/schemas/Company"
+            "$ref": "#/components/schemas/CompanySummary"
           },
           "adminLevel": {
             "$ref": "#/components/schemas/SysAdmin"
@@ -390,6 +534,39 @@
         ],
         "additionalProperties": false,
         "description": "A company where the person is an active member, with the person's system administrator's level there when they have one."
+      },
+      "CompanySummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The company's id."
+          },
+          "name": {
+            "type": "string",
+            "description": "The company's name."
+          },
+          "organizationNumber": {
+            "type": "string",
+            "pattern": "^[0-9]{6}-[0-9]{4}$",
+            "description": "The organisation number: ten digits with a hyphen after the sixth. For a sole trader it is the owner's personal identity number."
+          },
+          "databaseNumber": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "The company's number for programs, its tenant id. It never changes."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "organizationNumber",
+          "databaseNumber"
+        ],
+        "additionalProperties": false,
+        "description": "A company as the company lists give it: its id, name, organisation number and tenant id. getCompany gives its addresses and contact details."
       },
       "RecentCompanies": {
         "type": "object",
@@ -408,6 +585,462 @@
         ],
         "additionalProperties": false,
         "description": "The three companies the person chose last, where the person is still an active member."
+      },
+      "PermissionCatalogue": {
+        "type": "object",
+        "properties": {
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleDefinition"
+            },
+            "description": "The plan's six roles, in their order."
+          },
+          "programs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramDefinition"
+            },
+            "description": "The programs, in the catalogue's order."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PermissionGroup"
+            },
+            "description": "The groups, in the catalogue's order."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Permission"
+            },
+            "description": "Every permission, in the catalogue's order."
+          }
+        },
+        "required": [
+          "roles",
+          "programs",
+          "groups",
+          "permissions"
+        ],
+        "additionalProperties": false,
+        "description": "The permission catalogue: the roles, the programs with their sets, the groups and the permissions, in order."
+      },
+      "RoleDefinition": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "adminLevel": {
+            "$ref": "#/components/schemas/SysAdmin"
+          },
+          "program": {
+            "$ref": "#/components/schemas/Program"
+          },
+          "full": {
+            "type": "boolean",
+            "description": "For a program's role: whether only a grant with Full behörighet makes it, as for bookkeeper."
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "additionalProperties": false,
+        "description": "One of the plan's six roles, as a set in this model: owner and admin by the admin level that adminLevel names; the other four by a grant of the program that program names, with Full behörighet when full is true."
+      },
+      "ProgramDefinition": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/Program"
+          },
+          "label": {
+            "type": "string",
+            "description": "The program's words on the screen, such as Bokföring."
+          },
+          "lifetimeDays": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The days after which a grant of the program ends by itself: 30 for Revisor. Absent for a program whose grant has no end."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "$ref": "#/components/schemas/PermissionKey"
+                },
+                "full": {
+                  "type": "boolean",
+                  "description": "Whether Full behörighet holds it. A permission that it does not hold is only switched on by hand."
+                }
+              },
+              "required": [
+                "key",
+                "full"
+              ],
+              "additionalProperties": false
+            },
+            "description": "The program's set: every permission a grant of it may hold, in the catalogue's order."
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "permissions"
+        ],
+        "additionalProperties": false,
+        "description": "Program: a program of the catalogue, with its screen words, its end, and its set."
+      },
+      "PermissionKey": {
+        "type": "string",
+        "enum": [
+          "vouchers.view",
+          "vouchers.book",
+          "vouchers.delete",
+          "vouchers.alter",
+          "vouchers.accrue",
+          "vouchers.created-by",
+          "vouchers.cash-register",
+          "vouchers.receipts",
+          "vouchers.accruals",
+          "vouchers.run-accruals-vouchers",
+          "vouchers.run-accruals-supplier-invoices",
+          "vouchers.run-accruals-customer-invoices",
+          "vouchers.reconcile",
+          "vouchers.delete-bank-transactions",
+          "vouchers.search-amount",
+          "vouchers.settings",
+          "vouchers.lock-period",
+          "vouchers.approve-own-series",
+          "vouchers.see-all-series",
+          "supplier-invoices.view",
+          "supplier-invoices.save",
+          "supplier-invoices.book",
+          "supplier-invoices.void",
+          "supplier-invoices.payment-file",
+          "supplier-invoices.undo-payment-file",
+          "supplier-invoices.accrue",
+          "supplier-invoices.delete-attachments",
+          "supplier-invoices.created-by",
+          "supplier-invoices.inbox",
+          "supplier-invoices.send-for-interpretation",
+          "supplier-invoices.disbursements",
+          "supplier-invoices.settings",
+          "reports.balance-sheet",
+          "reports.deleted-vouchers",
+          "reports.general-ledger",
+          "reports.opening-balance",
+          "reports.account-analysis",
+          "reports.liquidity",
+          "reports.vat",
+          "reports.accruals",
+          "reports.periodic-summary",
+          "reports.project-accounting",
+          "reports.budget",
+          "reports.income-statement",
+          "reports.income-statement-12-months",
+          "reports.income-statement-advanced",
+          "reports.system-documentation",
+          "reports.voucher-list",
+          "reports.show-struck-rows",
+          "reports.processing-history",
+          "reports.supplier-invoices",
+          "reports.supplier-statistics",
+          "reports.supplier-ledger",
+          "reports.supplier-due-list",
+          "register.suppliers",
+          "register.chart-of-accounts",
+          "register.cost-centres",
+          "register.projects",
+          "register.sie-export",
+          "register.sie-import",
+          "register.export-files",
+          "register.anonymise-fiscal-year",
+          "register.removed-users",
+          "register.delete-processing-history"
+        ],
+        "description": "A permission of the catalogue, by its key, such as vouchers.view (Verifikationer) or vouchers.book (Bokför)."
+      },
+      "PermissionGroup": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/PermissionGroupKey"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "program",
+              "reports",
+              "register"
+            ],
+            "description": "program, for a Bokföring group of a program's own rights; reports, for Rapporter; or register, for Register/Övrigt."
+          },
+          "label": {
+            "type": "string",
+            "description": "The group's words on the screen, such as Verifikationer."
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "label"
+        ],
+        "additionalProperties": false,
+        "description": "A group of permissions, with its kind and its screen words."
+      },
+      "PermissionGroupKey": {
+        "type": "string",
+        "enum": [
+          "vouchers",
+          "supplier-invoices",
+          "reports",
+          "register"
+        ],
+        "description": "A group of the catalogue, by its key: vouchers (Verifikationer), supplier-invoices (Leverantörsfakturor), reports (Rapporter) or register (Register/Övrigt)."
+      },
+      "Permission": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/PermissionKey"
+          },
+          "group": {
+            "$ref": "#/components/schemas/PermissionGroupKey"
+          },
+          "label": {
+            "type": "string",
+            "description": "The permission's words on the screen, such as Bokför."
+          },
+          "view": {
+            "type": "boolean",
+            "description": "Whether it is its group's view right, which every other permission of the group needs."
+          },
+          "manualOnly": {
+            "type": "boolean",
+            "description": "Whether it is only switched on by hand: Full behörighet never holds it."
+          }
+        },
+        "required": [
+          "key",
+          "group",
+          "label",
+          "view",
+          "manualOnly"
+        ],
+        "additionalProperties": false,
+        "description": "Behörighet: a permission of the catalogue, with its group, its screen words and its marks."
+      },
+      "Member": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The membership's id: the member's id in the company, which the paths of /v1/users take as memberId."
+          },
+          "companyId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The company's id."
+          },
+          "userId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The person's id. Absent while the membership is invited."
+          },
+          "name": {
+            "type": "string",
+            "description": "The person's name; for an invited member, the name the latest invitation was sent to. Absent for an invited member with no invitation."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "invited",
+              "active",
+              "inactive",
+              "removed",
+              "left"
+            ],
+            "description": "invited, active, inactive, removed or left."
+          },
+          "adminLevel": {
+            "$ref": "#/components/schemas/SysAdmin"
+          },
+          "idleTimeout": {
+            "type": "integer",
+            "enum": [
+              15,
+              30,
+              60,
+              120,
+              480
+            ],
+            "description": "Utloggning efter inaktivitet, in whole minutes: 15, 30, 60, 120 (2 hours, the default) or 480 (8 hours)."
+          },
+          "workEmail": {
+            "type": "string",
+            "description": "The person's work e-mail address in this company, where its notices go. Every active and inactive member has one. An invited member has one only when updateUser gave it, and accepting the invitation sets it to the invitation's address. A removed, a left or a disconnected member has none."
+          },
+          "workPhone": {
+            "type": "string",
+            "description": "The person's work phone number in this company. Absent when none is set."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "description": "The roles the member holds now, in the roles' order: owner or admin by the admin level, bookkeeper by a Bokföring grant with Full behörighet, and approver, viewer and auditor by a grant of their program that has not ended."
+          },
+          "programs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramGrant"
+            },
+            "description": "The member's program grants as they are now, in the catalogue's order, also one that has ended."
+          },
+          "programsAdministered": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramAdmin"
+            },
+            "description": "The programs the member administers, in the catalogue's order."
+          }
+        },
+        "required": [
+          "id",
+          "companyId",
+          "status",
+          "idleTimeout",
+          "roles",
+          "programs",
+          "programsAdministered"
+        ],
+        "additionalProperties": false,
+        "description": "Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. A program administrator sees only the grants and the administration of the programs they administer, and the roles those give."
+      },
+      "UserRights": {
+        "type": "object",
+        "properties": {
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The member's Rapporter and Register/Övrigt rights, as the grants hold them now, in the catalogue's order."
+          },
+          "programs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgramGrant"
+            },
+            "description": "The member's grants as they are now, in the catalogue's order."
+          }
+        },
+        "required": [
+          "permissions",
+          "programs"
+        ],
+        "additionalProperties": false,
+        "description": "A member's Rapporter and Register/Övrigt rights, and the program grants that hold them."
+      },
+      "RightKey": {
+        "type": "string",
+        "enum": [
+          "reports.balance-sheet",
+          "reports.deleted-vouchers",
+          "reports.general-ledger",
+          "reports.opening-balance",
+          "reports.account-analysis",
+          "reports.liquidity",
+          "reports.vat",
+          "reports.accruals",
+          "reports.periodic-summary",
+          "reports.project-accounting",
+          "reports.budget",
+          "reports.income-statement",
+          "reports.income-statement-12-months",
+          "reports.income-statement-advanced",
+          "reports.system-documentation",
+          "reports.voucher-list",
+          "reports.show-struck-rows",
+          "reports.processing-history",
+          "reports.supplier-invoices",
+          "reports.supplier-statistics",
+          "reports.supplier-ledger",
+          "reports.supplier-due-list",
+          "register.suppliers",
+          "register.chart-of-accounts",
+          "register.cost-centres",
+          "register.projects",
+          "register.sie-export",
+          "register.sie-import",
+          "register.export-files",
+          "register.anonymise-fiscal-year",
+          "register.removed-users",
+          "register.delete-processing-history"
+        ],
+        "description": "A Rapporter or Register/Övrigt right of the catalogue, by its key, such as reports.vat (Momsrapport) or register.sie-export (Sie-export). A right of a program's own group, such as vouchers.view, is not one."
+      },
+      "Invitation": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name the invitation was sent to."
+          },
+          "email": {
+            "type": "string",
+            "description": "The e-mail address the invitation was sent to. A new identity takes it as its e-mail address."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the link stops working: 14 days after the invitation was sent."
+          },
+          "companyName": {
+            "type": "string",
+            "description": "The name of the company the invitation is to, as it was when the invitation was sent."
+          },
+          "inviterName": {
+            "type": "string",
+            "description": "The name of the system administrator who sent the invitation, as it was then."
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "expiresAt",
+          "companyName",
+          "inviterName"
+        ],
+        "additionalProperties": false,
+        "description": "Inbjudan: an invitation to a company, as its link shows it. The link works once, for 14 days, and a newer invitation of the same member stops it."
+      },
+      "InvitationAcceptance": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/Membership"
+          },
+          "totpEnrolment": {
+            "$ref": "#/components/schemas/TotpEnrolment"
+          }
+        },
+        "required": [
+          "user",
+          "membership"
+        ],
+        "additionalProperties": false,
+        "description": "An accepted invitation: the person who now holds the membership, and the membership. For a new identity, also its TOTP secret, which no answer gives again: the person signs in next, with the password and a code. The TOTP enrolment is absent when the signed-in identity accepted."
       }
     },
     "parameters": {}
@@ -472,10 +1105,10 @@
           "companies"
         ],
         "summary": "Read the company",
-        "description": "Gives the company the request works in: its id, name, organisation number and tenant id. The company comes from the request's credential.",
+        "description": "Gives the company the request works in: its id, name, organisation number and tenant id, and its postal and visiting addresses and its phone number and e-mail address when they are set. The company comes from the request's credential.",
         "x-nortfox": {
           "permission": "company:read",
-          "tool": "Gives the company you work in: its id, name, organisation number and database number. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
+          "tool": "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
           "assistant": true,
           "writes": false,
           "list": false,
@@ -490,7 +1123,7 @@
         ],
         "responses": {
           "200": {
-            "description": "A company: its id, name, organisation number and tenant id.",
+            "description": "A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.",
             "content": {
               "application/json": {
                 "schema": {
@@ -529,6 +1162,250 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateCompany",
+        "tags": [
+          "companies"
+        ],
+        "summary": "Change the company",
+        "description": "Changes the request's company: its name, its postal and visiting addresses, and its phone number and e-mail address. A field left out stays as it is, and null takes an address field or a contact detail away. The organisation number never changes, so the operation does not take it.",
+        "x-nortfox": {
+          "permission": "company:update",
+          "tool": "Changes the company you work in: its name, its addresses, its phone number and its e-mail address. Its organisation number never changes.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "The company's name, on one line."
+                  },
+                  "address": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Adress: the postal address's street or box line. null takes it away."
+                  },
+                  "zipCode": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 20,
+                    "description": "Postnummer: the postal address's postal code. null takes it away."
+                  },
+                  "city": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Ort: the postal address's town. null takes it away."
+                  },
+                  "countryCode": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^[A-Z]{2}$",
+                    "description": "Land: the postal address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE. null takes it away."
+                  },
+                  "visitAddress": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Besöksadress: the visiting address's street. null takes it away."
+                  },
+                  "visitZipCode": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 20,
+                    "description": "The visiting address's postal code. null takes it away."
+                  },
+                  "visitCity": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "The visiting address's town. null takes it away."
+                  },
+                  "visitCountryCode": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "pattern": "^[A-Z]{2}$",
+                    "description": "The visiting address's country, as its code in ISO 3166-1 alpha-2, two capital letters such as SE. null takes it away."
+                  },
+                  "phone": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 50,
+                    "description": "Telefon: the company's phone number. null takes it away."
+                  },
+                  "email": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 254,
+                    "format": "idn-email",
+                    "pattern": "^(([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069])+[.])*([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069])*([A-Za-z0-9!#$%&'*+=?^_`{|}~-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069])@([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?([.]([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?)*$",
+                    "description": "E-post: the company's e-mail address. null takes it away."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Company"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -595,13 +1472,14 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "description": "The person's name."
+                    "description": "The person's name, on one line."
                   },
                   "email": {
                     "type": "string",
                     "maxLength": 254,
-                    "format": "email",
-                    "description": "The person's personal e-mail address."
+                    "format": "idn-email",
+                    "pattern": "^(([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069])+[.])*([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069])*([A-Za-z0-9!#$%&'*+=?^_`{|}~-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069])@([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?([.]([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?)*$",
+                    "description": "The person's personal e-mail address, one mailbox. No character of it has a case fold other than its lower case, such as ß, ς or ſ. Its local part may be in Unicode."
                   },
                   "password": {
                     "type": "string",
@@ -1228,7 +2106,7 @@
           "me"
         ],
         "summary": "Read yourself",
-        "description": "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership and permissions there.",
+        "description": "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.",
         "x-nortfox": {
           "permission": "signed-in",
           "tool": "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; and the company you work in, with your membership and permissions there.",
@@ -1350,7 +2228,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200,
-                    "description": "The company's name."
+                    "description": "The company's name, on one line."
                   },
                   "organizationNumber": {
                     "type": "string",
@@ -1369,7 +2247,7 @@
         },
         "responses": {
           "201": {
-            "description": "A company: its id, name, organisation number and tenant id.",
+            "description": "A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1847,7 +2725,7 @@
           "me"
         ],
         "summary": "Change your membership",
-        "description": "Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is, and null takes a work contact away.",
+        "description": "Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away.",
         "x-nortfox": {
           "permission": "signed-in",
           "tool": "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
@@ -1900,13 +2778,11 @@
                 "type": "object",
                 "properties": {
                   "workEmail": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
+                    "type": "string",
                     "maxLength": 254,
-                    "format": "email",
-                    "description": "The work e-mail address in this company, or null for none."
+                    "format": "idn-email",
+                    "pattern": "^([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+[.])*[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]*[A-Za-z0-9!#$%&'*+=?^_`{|}~-]@([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?([.]([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?)*$",
+                    "description": "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away. A disconnect sends the member's new invitation to it, so its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ."
                   },
                   "workPhone": {
                     "type": [
@@ -1936,7 +2812,7 @@
         },
         "responses": {
           "200": {
-            "description": "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout and the work contacts.",
+            "description": "Användare in one company: a person's membership there, with its status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2005,6 +2881,2213 @@
           },
           "415": {
             "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/permissions": {
+      "get": {
+        "operationId": "listPermissions",
+        "tags": [
+          "users"
+        ],
+        "summary": "List the permissions",
+        "description": "Gives the permission catalogue as the install holds it: the plan's six roles, the programs with each one's set and what Full behörighet holds, the groups, and every permission, each in the catalogue's order, with its view and manual-only marks.",
+        "x-nortfox": {
+          "permission": "signed-in",
+          "tool": "Gives the permission catalogue: the roles, the programs with their sets, the groups and every permission in order, with the view and manual-only marks.",
+          "assistant": false,
+          "writes": false,
+          "list": false,
+          "session": null,
+          "company": "none",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The permission catalogue: the roles, the programs with their sets, the groups and the permissions, in order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionCatalogue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users": {
+      "get": {
+        "operationId": "listUsers",
+        "tags": [
+          "users"
+        ],
+        "summary": "List the users",
+        "description": "Lists the company's invited, active and inactive members, in the order they were added, each with the person's name, the status, the admin level, the idle logout, the work contacts and the programs. A program administrator sees only the programs they administer.",
+        "x-nortfox": {
+          "permission": "users:read",
+          "tool": "Lists the users of the company you work in, with their status, admin level and programs. A program administrator sees only the programs they administer.",
+          "assistant": false,
+          "writes": false,
+          "list": true,
+          "session": null,
+          "company": "credential",
+          "personalOutput": [
+            "/items/*/name",
+            "/items/*/workEmail",
+            "/items/*/workPhone"
+          ]
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "description": "How many items a page holds: from 1 to 500. Any other whole number gives 100."
+            },
+            "required": false,
+            "description": "How many items a page holds: from 1 to 500. Any other whole number gives 100.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Where the page starts: the nextCursor of the page before. Leave it out for the first page."
+            },
+            "required": false,
+            "description": "Where the page starts: the nextCursor of the page before. Leave it out for the first page.",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of the list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Member"
+                      },
+                      "description": "The items of this page, in the list's order."
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "description": "Where the next page starts. It is absent on the last page."
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "How many items the whole list holds."
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "total"
+                  ],
+                  "additionalProperties": false,
+                  "description": "A page of the list."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "inviteUser",
+        "tags": [
+          "users"
+        ],
+        "summary": "Invite a user",
+        "description": "Lägg till användare: makes an invited member of the company, with a name and an e-mail address, and sends the invitation to that address. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An address that a member of the company has, or that an open invitation of the company goes to, gets 422 already-member.",
+        "x-nortfox": {
+          "permission": "users:admin",
+          "tool": "Invites a person to the company you work in, with a name and an e-mail address: the invitation goes to that address by mail.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": [
+            "/name",
+            "/workEmail",
+            "/workPhone"
+          ]
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Namn: the invited person's name, on one line."
+                  },
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "format": "idn-email",
+                    "pattern": "^([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+[.])*[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]*[A-Za-z0-9!#$%&'*+=?^_`{|}~-]@([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?([.]([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?)*$",
+                    "description": "E-postadress: where the invitation goes, one mailbox. A new identity that accepts takes it as its e-mail address, and the member takes it as the work e-mail address. Its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ."
+                  }
+                },
+                "required": [
+                  "name",
+                  "email"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Member"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{memberId}": {
+      "get": {
+        "operationId": "getUser",
+        "tags": [
+          "users"
+        ],
+        "summary": "Read a user",
+        "description": "Gives one invited, active or inactive member of the company, as listUsers gives it. Any other id, also one of a removed or a left member, gets 422 user-not-found.",
+        "x-nortfox": {
+          "permission": "users:read",
+          "tool": "Gives one user of the company you work in, by the member's id.",
+          "assistant": false,
+          "writes": false,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": [
+            "/name",
+            "/workEmail",
+            "/workPhone"
+          ]
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Member"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateUser",
+        "tags": [
+          "users"
+        ],
+        "summary": "Change a user",
+        "description": "Changes a member of the company: Aktiv användare, the system administrator's level, the programs the member administers, the idle logout and the work contacts. A field left out stays as it is. adminLevel admin makes the member a system administrator, and null makes them no longer one; only creating a company gives the owner's level, which admin keeps. The work e-mail address is required, so null is refused for it. The company always keeps an active system administrator.",
+        "x-nortfox": {
+          "permission": "users:admin",
+          "tool": "Changes a user of the company you work in: whether they are active, their system administrator's level, the programs they administer, their idle logout and their work contacts.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": [
+            "/name",
+            "/workEmail",
+            "/workPhone"
+          ]
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "active": {
+                    "type": "boolean",
+                    "description": "Aktiv användare: true lets the member work in the company, false stops it, and keeps their rights. An invited member has not accepted yet, and takes neither."
+                  },
+                  "adminLevel": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "admin",
+                      null
+                    ],
+                    "description": "admin makes the member a system administrator, or keeps the level of one; null makes them no longer one. Only creating a company gives the owner's level."
+                  },
+                  "programsAdministered": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ProgramAdmin"
+                    },
+                    "maxItems": 4,
+                    "description": "Every program the member administers, Programadministratör: the list replaces the one there was."
+                  },
+                  "idleTimeout": {
+                    "type": "integer",
+                    "enum": [
+                      15,
+                      30,
+                      60,
+                      120,
+                      480
+                    ],
+                    "description": "Utloggning efter inaktivitet, in whole minutes: 15, 30, 60, 120 (2 hours, the default) or 480 (8 hours)."
+                  },
+                  "workEmail": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "format": "idn-email",
+                    "pattern": "^([A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+[.])*[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]*[A-Za-z0-9!#$%&'*+=?^_`{|}~-]@([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?([.]([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])(([A-Za-z0-9-]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef])*([A-Za-z0-9]|[^\\x00-\\xA0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069。\\xAD\u115f-\u1160\u200b\u2060-\u2064\u3164\uff00-\uffef]))?)*$",
+                    "description": "The work e-mail address in this company. It is required, so null is refused: it can be changed but not taken away. A disconnect sends the member's new invitation to it, so its local part, before the @, is in ASCII, and no character of it has a case fold other than its lower case, such as ß, ς or ſ."
+                  },
+                  "workPhone": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 50,
+                    "description": "The work phone number in this company, or null for none."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Member"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeUser",
+        "tags": [
+          "users"
+        ],
+        "summary": "Remove a user",
+        "description": "Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, and its sessions end. The member's work contacts are erased. The company always keeps an active system administrator.",
+        "x-nortfox": {
+          "permission": "users:admin",
+          "tool": "Removes a user from the company you work in. You cannot remove yourself.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. The answer has no body."
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{memberId}/programs/{program}": {
+      "put": {
+        "operationId": "assignProgram",
+        "tags": [
+          "users"
+        ],
+        "summary": "Grant a program",
+        "description": "Tilldela program: grants the program to a member, with Full behörighet (full: true), or with a list of its rights. For a member who holds the program, the list replaces the grant's, which keeps its time and its end; a grant that has ended is granted again. A program administrator grants only the programs they administer.",
+        "x-nortfox": {
+          "permission": "programs:grant",
+          "tool": "Grants a program to a user of the company you work in, with Full behörighet or with a list of its rights.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "bookkeeping",
+                "approval-read",
+                "read",
+                "auditor"
+              ],
+              "description": "The program: bookkeeping, approval-read, read or auditor."
+            },
+            "required": true,
+            "description": "The program: bookkeeping, approval-read, read or auditor.",
+            "name": "program",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "full": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ],
+                    "description": "Full behörighet: every right of the program's Full behörighet."
+                  },
+                  "permissions": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/PermissionKey"
+                    },
+                    "maxItems": 64,
+                    "description": "The rights the grant holds: the program's own, its Rapporter and its Register/Övrigt rights, as the catalogue's keys."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Program: a program granted to a member, with the rights the grant holds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProgramGrant"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeProgram",
+        "tags": [
+          "users"
+        ],
+        "summary": "Remove a program",
+        "description": "Ta bort program: takes the program's grant from a member. A program administrator removes only the programs they administer.",
+        "x-nortfox": {
+          "permission": "programs:grant",
+          "tool": "Takes a program from a user of the company you work in.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "bookkeeping",
+                "approval-read",
+                "read",
+                "auditor"
+              ],
+              "description": "The program: bookkeeping, approval-read, read or auditor."
+            },
+            "required": true,
+            "description": "The program: bookkeeping, approval-read, read or auditor.",
+            "name": "program",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. The answer has no body."
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{memberId}/programs/{program}/move": {
+      "post": {
+        "operationId": "moveProgram",
+        "tags": [
+          "users"
+        ],
+        "summary": "Move a program",
+        "description": "Flytta program: gives a member's grant of the program to another member, who must not hold the program, and takes it from the first. The grant keeps its time and its end. With permissions, it is narrowed first: the list holds only rights the grant holds. A program administrator moves only the programs they administer.",
+        "x-nortfox": {
+          "permission": "programs:grant",
+          "tool": "Moves a program from one user of the company you work in to another, narrowed first if you give a list of its rights.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "bookkeeping",
+                "approval-read",
+                "read",
+                "auditor"
+              ],
+              "description": "The program: bookkeeping, approval-read, read or auditor."
+            },
+            "required": true,
+            "description": "The program: bookkeeping, approval-read, read or auditor.",
+            "name": "program",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "targetMemberId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "The member who gets the grant, by the membership's id."
+                  },
+                  "permissions": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/PermissionKey"
+                    },
+                    "maxItems": 64,
+                    "description": "The rights the grant holds: the program's own, its Rapporter and its Register/Övrigt rights, as the catalogue's keys."
+                  }
+                },
+                "required": [
+                  "targetMemberId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Program: a program granted to a member, with the rights the grant holds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProgramGrant"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{memberId}/rights": {
+      "put": {
+        "operationId": "updateUserRights",
+        "tags": [
+          "users"
+        ],
+        "summary": "Change a user's rights",
+        "description": "Anpassa Rapporter and Anpassa Register/Övrigt: sets a member's Rapporter and Register/Övrigt rights, the whole list. Each of the member's grants holds those its program covers, and keeps its own rights. A right that no grant of the member covers is refused. A program administrator sets them only in the grants of the programs they administer.",
+        "x-nortfox": {
+          "permission": "programs:grant",
+          "tool": "Sets the Rapporter and Register/Övrigt rights of a user of the company you work in.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "permissions": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/RightKey"
+                    },
+                    "maxItems": 32,
+                    "description": "Every Rapporter and Register/Övrigt right the member is to hold, as the catalogue's keys. A right of a program's own is refused."
+                  }
+                },
+                "required": [
+                  "permissions"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A member's Rapporter and Register/Övrigt rights, and the program grants that hold them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserRights"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{memberId}/invitation": {
+      "post": {
+        "operationId": "resendInvitation",
+        "tags": [
+          "users"
+        ],
+        "summary": "Send a new invitation",
+        "description": "Skicka en ny inbjudan: sends an invited member a new invitation, to the name and the e-mail address of their latest one. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. A member who is not invited gets 422 user-not-invited.",
+        "x-nortfox": {
+          "permission": "users:admin",
+          "tool": "Sends a new invitation to a user of the company you work in who has not accepted theirs, and stops the old link.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. The answer has no body."
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{memberId}/disconnect": {
+      "post": {
+        "operationId": "disconnectUserIdentity",
+        "tags": [
+          "users"
+        ],
+        "summary": "Disconnect a user's identity",
+        "description": "Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. The company always keeps an active system administrator.",
+        "x-nortfox": {
+          "permission": "users:admin",
+          "tool": "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": "credential",
+          "personalOutput": [
+            "/name",
+            "/workEmail",
+            "/workPhone"
+          ]
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's id: the membership's id, Membership.id."
+            },
+            "required": true,
+            "description": "The member's id: the membership's id, Membership.id.",
+            "name": "memberId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Användare: a member of the company, by the membership's id, with the person's name, the status, the system administrator's level, the idle logout, the work contacts, the roles, the program grants and the programs administered. A program administrator sees only the grants and the administration of the programs they administer, and the roles those give.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Member"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/invitations/{token}": {
+      "get": {
+        "operationId": "getInvitation",
+        "tags": [
+          "invitations"
+        ],
+        "summary": "Read an invitation",
+        "description": "Gives the invitation that a link holds: the name and the e-mail address it was sent to, the company, who sent it, and when the link stops working. A link that is unknown, used, stopped by a newer invitation or past its 14 days gets one answer, 422 invitation-link-invalid.",
+        "x-nortfox": {
+          "permission": "none",
+          "tool": "Reads an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
+          "assistant": false,
+          "writes": false,
+          "list": false,
+          "session": "flow",
+          "company": "none",
+          "personalOutput": [
+            "/name",
+            "/email",
+            "/inviterName"
+          ]
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^nfi_[A-Za-z0-9_-]{43}$",
+              "description": "The invitation link's token, from the invitation's mail."
+            },
+            "required": true,
+            "description": "The invitation link's token, from the invitation's mail.",
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inbjudan: an invitation to a company, as its link shows it. The link works once, for 14 days, and a newer invitation of the same member stops it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invitation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: its Origin is another site's, not the install's own (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts: wait the seconds that Retry-After gives before the next one.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server checks as many passwords as it can at once: send the request again after the seconds that Retry-After gives.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/invitations/{token}/accept": {
+      "post": {
+        "operationId": "acceptInvitation",
+        "tags": [
+          "invitations"
+        ],
+        "summary": "Accept an invitation",
+        "description": "Accepts the invitation that a link holds, once. With newIdentity, Skapa ett nytt NortFox ID: a new identity with that name and a password of 12 to 1024 characters, which takes the invitation's e-mail address; the answer gives its TOTP secret, and sets no session, so the person signs in next with the password and a code. Without it, Koppla ihop med befintligt NortFox ID: the identity of the browser's session accepts, and with no session the call gets 422 sign-in-required. The member's work e-mail address becomes the invitation's. A link that is unknown, used, stopped by a newer invitation or past its 14 days gets one answer, 422 invitation-link-invalid. An e-mail address that another identity has gets 422 email-taken, and a person who is a member of the company already gets 422 already-member.",
+        "x-nortfox": {
+          "permission": "none",
+          "tool": "Accepts an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": "flow",
+          "company": "none",
+          "personalOutput": [
+            "/user/name",
+            "/user/email",
+            "/membership/workEmail",
+            "/membership/workPhone"
+          ]
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^nfi_[A-Za-z0-9_-]{43}$",
+              "description": "The invitation link's token, from the invitation's mail."
+            },
+            "required": true,
+            "description": "The invitation link's token, from the invitation's mail.",
+            "name": "token",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "newIdentity": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "The person's name, on one line."
+                      },
+                      "password": {
+                        "type": "string",
+                        "description": "The password: 12 to 1024 characters."
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "password"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Skapa ett nytt NortFox ID: the new identity's name and password. It takes the invitation's e-mail address. Left out, Koppla ihop med befintligt NortFox ID: the signed-in person accepts."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An accepted invitation: the person who now holds the membership, and the membership. For a new identity, also its TOTP secret, which no answer gives again: the person signs in next, with the password and a code. The TOTP enrolment is absent when the signed-in identity accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationAcceptance"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed); or its Origin is another site's, not the install's own (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 1 MiB.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not application/json.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A rule refused the request, or a write's idempotency key belongs to another request.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts: wait the seconds that Retry-After gives before the next one.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server failed. The answer holds no detail of the error.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server checks as many passwords as it can at once: send the request again after the seconds that Retry-After gives.",
+            "headers": {
+              "Retry-After": {
+                "description": "The whole seconds to wait before the next attempt.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/companies/{companyId}/leave": {
+      "post": {
+        "operationId": "leaveCompany",
+        "tags": [
+          "me"
+        ],
+        "summary": "Leave a company",
+        "description": "The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave.",
+        "x-nortfox": {
+          "permission": "signed-in",
+          "tool": "Leaves a company where you are an active member. Only a new invitation lets you back.",
+          "assistant": false,
+          "writes": true,
+          "list": false,
+          "session": null,
+          "company": {
+            "input": "companyId"
+          },
+          "personalOutput": []
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The company's id."
+            },
+            "required": true,
+            "description": "The company's id.",
+            "name": "companyId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^(\"[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255}\"|[\\x21\\x23-\\x5b\\x5d-\\x7e]{1,255})$",
+              "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too."
+            },
+            "required": true,
+            "description": "A key you choose for this write, 1 to 255 characters of visible ASCII without \" and \\. Send the same key with the same input again, and you get the first answer back instead of a second write. The draft's quoted form, \"key\", is taken too.",
+            "name": "Idempotency-Key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. The answer has no body."
+          },
+          "400": {
+            "description": "The request does not fit the operation. Each field problem names its field.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No actor: the request carries no credential that names one.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\".",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with the same idempotency key is still running.",
             "content": {
               "application/problem+json": {
                 "schema": {

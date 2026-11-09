@@ -14,7 +14,8 @@
 // cross-site check and /mcp's Origin check take the same list. The install
 // secret gives the key of each write's request fingerprint, and the sign-in
 // seals each TOTP secret with it. The one password wrapper hashes and checks
-// every password, at most as many at once as the host has cores.
+// every password, at most as many at once as the host has cores. The
+// install's mail, when it has one set up, sends the invitations.
 //
 // An error that the server did not expect goes to the reporter. The default
 // one logs only what api/report.ts lets through: never a database error's
@@ -25,6 +26,7 @@ import { Hono } from "hono";
 import { AfterAnswerQueue } from "./api/after-answer.ts";
 import type { ContextResolver } from "./api/context.ts";
 import { KeysInFlight } from "./api/idempotency.ts";
+import { CompanyTurns } from "./api/turns.ts";
 import type { Handler } from "./api/operation.ts";
 import { mountMcp } from "./api/mcp.ts";
 import { internalError, notFound } from "./api/problem.ts";
@@ -34,6 +36,7 @@ import type { InstallKey } from "./auth/install-key.ts";
 import { allowedOrigins } from "./auth/origin.ts";
 import { PasswordHasher } from "./auth/password.ts";
 import type { Database } from "./db/database.ts";
+import type { InstallMail } from "./mail/mailer.ts";
 import { serverHandlers } from "./handlers.ts";
 import { openApiDocument } from "./openapi.ts";
 
@@ -71,6 +74,12 @@ export interface AppOptions {
    * that is not a browser, is served.
    */
   readonly allowedOrigins?: readonly string[];
+  /**
+   * The install's mail: the mailer and the origin its links start with. By
+   * default none, and the operations that send a mail refuse with
+   * mail-not-configured.
+   */
+  readonly mail?: InstallMail;
 }
 
 /** The app as the server serves it: the Hono app, the registry it serves under /v1, and the work it runs after its answers. */
@@ -136,8 +145,9 @@ export function createApp(options: AppOptions): ServerApp {
     cursorKey: options.cursorKey,
     fingerprintKey: options.installKey.key("idempotency-fingerprint v1"),
     keysInFlight: new KeysInFlight(),
+    turns: new CompanyTurns(),
     now: options.now ?? systemClock,
-    services: { passwords: options.passwordHasher ?? new PasswordHasher(), installKey: options.installKey },
+    services: { passwords: options.passwordHasher ?? new PasswordHasher(), installKey: options.installKey, mail: options.mail },
     report,
     afterAnswer,
     allowedOrigins: allowedOrigins(options.allowedOrigins ?? []),

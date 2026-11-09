@@ -8,8 +8,10 @@
 // a key that does not open it (auth/install-key.ts). The install's public
 // origin is the one browser origin that /v1 and /mcp allow. The resolver
 // reads the browser's session cookie on /v1 (auth/resolver.ts), and the
-// passwords are hashed at the production cost (auth/password.ts). Every 10
-// minutes the server purges the login rows that have passed. A list's
+// passwords are hashed at the production cost (auth/password.ts). The
+// install's mail goes through its SMTP server, when it has one set up
+// (mail/smtp.ts). Every 10 minutes the server purges the login rows that
+// have passed. A list's
 // cursors are signed with a key made at start, so a cursor lasts as long as
 // the process. Every error is logged through the safe report
 // (api/report.ts), a failed start too, which exits with 1. A stop (SIGINT or
@@ -26,6 +28,7 @@ import { sessionResolver } from "./auth/resolver.ts";
 import { serverConfig } from "./config.ts";
 import { configFromEnvironment } from "./db/connect.ts";
 import { createDatabase, type Database } from "./db/database.ts";
+import { smtpMailer } from "./mail/smtp.ts";
 import { startPurgeTimer, type PurgeTimer } from "./modules/auth/purge.ts";
 import { parsePort, startServer, type RunningServer } from "./start.ts";
 import { readServerVersion } from "./version.ts";
@@ -46,6 +49,7 @@ async function start(database: Database, config: ReturnType<typeof serverConfig>
     passwordHasher: new PasswordHasher(),
     now: systemClock,
     report: reportSafely,
+    ...(config.smtp === undefined ? {} : { mail: { mailer: smtpMailer(config.smtp), publicOrigin: config.publicOrigin } }),
   });
   const server = await startServer({ app, port: parsePort(process.env["PORT"]) });
   return { server, purge: startPurgeTimer({ database, now: systemClock, report: reportSafely }) };

@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import * as contract from "../index.ts";
 import { PERMISSIONS } from "../operation.ts";
-import { ADMIN_LEVELS, MEMBER_PERMISSIONS, SYSTEM_ADMINISTRATOR_PERMISSIONS, platformPermissions } from "./permissions.ts";
+import { ADMIN_LEVELS, MEMBER_PERMISSIONS, PROGRAM_ADMINISTRATOR_PERMISSIONS, SYSTEM_ADMINISTRATOR_PERMISSIONS, platformPermissions } from "./permissions.ts";
 
 describe("the platform permissions", () => {
   it("gives a member with no admin level exactly the member's own: reading the company", () => {
@@ -28,10 +28,16 @@ describe("the platform permissions", () => {
     expect(platformPermissions("owner")).toEqual(platformPermissions("admin"));
   });
 
-  it("gives a system administrator nothing beyond the member's own until its operations come", () => {
-    // updateCompany, the user administration and the program grants bring
-    // their permissions later in slice 2c, and this list with them.
-    expect(SYSTEM_ADMINISTRATOR_PERMISSIONS).toEqual([]);
+  it("gives a system administrator the company's details, its users and their programs, and no work right", () => {
+    expect(SYSTEM_ADMINISTRATOR_PERMISSIONS).toEqual(["company:update", "users:read", "users:admin", "programs:grant"]);
+    expect([...platformPermissions("owner")]).toEqual(["company:read", "company:update", "users:read", "users:admin", "programs:grant"]);
+  });
+
+  it("gives a program administrator the users to read and the programs to grant, and never what runs the users or the company", () => {
+    // effective.ts adds it for a member who administers a program; the handlers keep them to those programs.
+    expect(PROGRAM_ADMINISTRATOR_PERMISSIONS).toEqual(["users:read", "programs:grant"]);
+    expect(PROGRAM_ADMINISTRATOR_PERMISSIONS).not.toContain("users:admin");
+    expect(PROGRAM_ADMINISTRATOR_PERMISSIONS).not.toContain("company:update");
   });
 
   it("names only permissions on the contract's list, each once, in one list only", () => {
@@ -39,6 +45,15 @@ describe("the platform permissions", () => {
     expect(new Set(named).size).toBe(named.length);
     for (const permission of named) {
       expect(Object.keys(PERMISSIONS)).toContain(permission);
+    }
+  });
+
+  it("gives a program administrator only permissions on the contract's list, each once, none of a member's own", () => {
+    // A system administrator may hold the same: both run users, each in their reach.
+    expect(new Set(PROGRAM_ADMINISTRATOR_PERMISSIONS).size).toBe(PROGRAM_ADMINISTRATOR_PERMISSIONS.length);
+    for (const permission of PROGRAM_ADMINISTRATOR_PERMISSIONS) {
+      expect(Object.keys(PERMISSIONS)).toContain(permission);
+      expect(MEMBER_PERMISSIONS).not.toContain(permission);
     }
   });
 
@@ -54,6 +69,7 @@ describe("the platform permissions", () => {
     expect(contract.ADMIN_LEVELS).toBe(ADMIN_LEVELS);
     expect(contract.MEMBER_PERMISSIONS).toBe(MEMBER_PERMISSIONS);
     expect(contract.SYSTEM_ADMINISTRATOR_PERMISSIONS).toBe(SYSTEM_ADMINISTRATOR_PERMISSIONS);
+    expect(contract.PROGRAM_ADMINISTRATOR_PERMISSIONS).toBe(PROGRAM_ADMINISTRATOR_PERMISSIONS);
     expect(contract.platformPermissions).toBe(platformPermissions);
   });
 });

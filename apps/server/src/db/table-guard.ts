@@ -222,6 +222,22 @@ export const INSTALL_TABLES: ReadonlyMap<string, InstallTable> = new Map<string,
       why: "A member's work e-mail and phone in one company are profile data, which an identity's deletion erases, so they keep no history. The app reads and writes only its company's.",
     },
   ],
+  [
+    "access.catalogue_programs",
+    { class: "public", why: "The programs of the permission catalogue are the same for every company. The app reads them, and only a migration writes them." },
+  ],
+  [
+    "access.catalogue_groups",
+    { class: "public", why: "The groups of the permission catalogue are the same for every company. The app reads them, and only a migration writes them." },
+  ],
+  [
+    "access.catalogue_permissions",
+    { class: "public", why: "The permissions of the catalogue are the same for every company. The app reads them, and only a migration writes them." },
+  ],
+  [
+    "access.catalogue_program_permissions",
+    { class: "public", why: "Each program's set of permissions is the same for every company. The app reads it, and only a migration writes it." },
+  ],
   ["access.password_credentials", { class: "secret", why: "It holds each identity's password hash. Only the lookup functions read it." }],
   ["access.totp_secrets", { class: "secret", why: "It holds each identity's sealed TOTP secrets. Only the lookup functions read it." }],
   ["access.known_devices", { class: "secret", why: "It holds the hashes of the device cookies. Only the lookup functions read it." }],
@@ -230,6 +246,10 @@ export const INSTALL_TABLES: ReadonlyMap<string, InstallTable> = new Map<string,
   ["access.setup_tokens", { class: "secret", why: "It holds the hashes of the setup links. Only the lookup functions read it." }],
   ["access.attempt_counters", { class: "secret", why: "It counts each account's failed guesses. Only the lookup functions read it." }],
   ["access.install_keys", { class: "secret", why: "It holds the install key's check value of each key id. Only the lookup functions read it." }],
+  [
+    "access.invitation_links",
+    { class: "secret", why: "It holds the hashes of the invitation links, with what a link's page shows before anyone accepts. Only the lookup functions read it." },
+  ],
 ]);
 
 /** The owner's one policy on every install-wide table: every row, which the lookup functions read and write through. */
