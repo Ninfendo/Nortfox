@@ -18,11 +18,14 @@
 // of every change, and refuses the owner's level on an update; the server
 // refuses the last one's removal, deactivation, demotion, disconnect and
 // leave first, with the same answer, after it took the company's turn of its
-// administrators (hasOtherAdministrator).
+// administrators (hasOtherAdministrator). Each such change has waited for the
+// same turn in this process first (ADMINISTRATORS_TURN, api/turns.ts), before
+// it asked the pool for a connection.
 
 import { rolesOf, type AdminLevel, type JsonValue, type Member, type Program } from "@nortfox/contract";
 import { LEDGER_REFUSALS } from "../../api/ledger-refusals.ts";
 import { refused, type Answer, type PageRequest, type PageResult } from "../../api/operation.ts";
+import type { Turn } from "../../api/turns.ts";
 import type { Queryable } from "../../db/database.ts";
 import { grantOutput, memberAccess, readProgramsOf, type MembershipPrograms } from "./programs.ts";
 
@@ -168,6 +171,18 @@ export async function holdMembers(tx: Queryable, ids: readonly string[]): Promis
 export async function holdMember(tx: Queryable, id: string): Promise<HeldMember | undefined> {
   return (await holdMembers(tx, [id])).get(id);
 }
+
+/**
+ * The company's turn of its administrators in this process (api/turns.ts),
+ * which a write takes before it asks the pool for a connection: alone for a
+ * disconnect, and with the others for a removal, a deactivation, a demotion
+ * and a leave. So a write that waits for the turn, such as one behind a
+ * disconnect that sends its mail, holds no connection.
+ */
+export const ADMINISTRATORS_TURN = {
+  alone: { name: "administrators", alone: true },
+  shared: { name: "administrators", alone: false },
+} as const satisfies Readonly<Record<string, Turn>>;
 
 /**
  * Whether the company has an active system administrator besides `member`.

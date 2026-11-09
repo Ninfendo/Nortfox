@@ -87,7 +87,12 @@ describe("an install with no mail set up", () => {
   });
 
   it("refuses before the request's own checks, so it tells nothing about a member", async () => {
-    expect(await jsonOf<ProblemBody>(await calls.resendInvitation(without, session, "00000000-0000-4000-8000-000000000000"), 422)).toEqual(NOT_CONFIGURED);
+    const unknown = "00000000-0000-4000-8000-000000000000";
+    const invited = await invite(withMail, company.session, "ivan.inbjuden@example.com", "Ivan Inbjuden");
+    expect(await jsonOf<ProblemBody>(await calls.resendInvitation(without, session, unknown), 422)).toEqual(NOT_CONFIGURED);
+    // disconnectUserIdentity refuses before user-not-found, user-invited and last-system-administrator.
+    expect(await jsonOf<ProblemBody>(await calls.disconnectUserIdentity(without, session, unknown), 422)).toEqual(NOT_CONFIGURED);
+    expect(await jsonOf<ProblemBody>(await calls.disconnectUserIdentity(without, session, invited.id), 422)).toEqual(NOT_CONFIGURED);
     expect(await jsonOf<ProblemBody>(await calls.disconnectUserIdentity(without, session, company.membership), 422)).toEqual(NOT_CONFIGURED);
     // inviteUser refuses before it reads the addresses: a member's, and an open invitation's in another letter case, get the same answer as any other.
     await invite(withMail, company.session, "olle.oppen@example.com", "Olle Öppen");
@@ -109,7 +114,7 @@ describe("an install with no mail set up", () => {
     expect(errorReport(withMail.reports.at(-1))).not.toContain("lena.fel@example.com");
   });
 
-  it.each(["kalle@intranet", "anna@example.c"])("keeps the address %s out of the report when the mail server quotes it in its refusal", async (email) => {
+  it.each(["kalle@intranet", "anna@example.c", "\u{1F600}@example.com", "anna\u2603berg@example.com", "o\u2019brien@example.com", "col\u00B7lecta@example.com"])("keeps the address %s out of the report when the mail server quotes it in its refusal", async (email) => {
     const before = await rows();
     withMail.mail.failNext(`Can't send mail - all recipients were rejected: 550 5.1.1 <${email}>: Recipient address rejected: User unknown in local recipient table`);
     const failed = await calls.inviteUser(withMail, company.session, { name: "Kalle Berg", email });

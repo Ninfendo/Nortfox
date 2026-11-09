@@ -333,8 +333,10 @@ describe("the shapes of slice 2c on /v1", () => {
       expect(response.status).toBe(204);
       expect(await response.text()).toBe("");
       expect(response.headers.get("content-type")).toBeNull();
+      // The key is looked up in the company's keys, then in the person's keys in the company, and stored in the first.
       expect(shapes.database.queries.map((query) => query.values)).toEqual([
         [SHAPE_TOKENS.reader.personId, "k-1"],
+        [SHAPE_TOKENS.reader.personId, COMPANY, "k-1"],
         [COMPANY, "k-1", "testRemoveThing", requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: THING }), 204, "{}"],
       ]);
     });

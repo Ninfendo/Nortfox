@@ -11,6 +11,7 @@
 // mail alone. Only this module names the memberships' table and the people
 // of a company (scripts/guards/membership.ts).
 
+import type { Turn } from "../../api/turns.ts";
 import { newToken, tokenHash } from "../../auth/tokens.ts";
 import type { Queryable } from "../../db/database.ts";
 
@@ -21,10 +22,19 @@ export interface InvitationTo {
 }
 
 /**
+ * The company's turn of its invitations in this process (api/turns.ts),
+ * which inviteUser takes before it asks the pool for a connection: so an
+ * invitation that waits for another holds no connection.
+ */
+export const INVITATIONS_TURN: Turn = { name: "invitations", alone: true };
+
+/**
  * Takes the transaction's company's turn of its invitations until the
  * transaction ends (access.take_invitations_turn): a second invitation of
  * the company waits for the first's commit. It is not the company's row, so
- * no other change of the company waits for the invitation's mail.
+ * no other change of the company waits for the invitation's mail. In this
+ * process the invitation has waited for INVITATIONS_TURN first, so it waits
+ * here only for an invitation of another process.
  */
 export async function takeInvitationsTurn(tx: Queryable): Promise<void> {
   await tx.query("SELECT access.take_invitations_turn()");

@@ -11,8 +11,12 @@
 // control character and no control of the text's direction: no display
 // name, comment, group or list of addresses, which a mail program would
 // read in it. A quoted local part and an address literal are not taken. The
-// local part holds at most 64 characters, the domain at most 255, and the
-// address at most 254.
+// local part holds at most 64 characters, and the address at most 254.
+//
+// The server stores an invitation's and a new identity's address in NFC,
+// which can be longer than the text sent, and can change a character: U+0958
+// is two characters in NFC, and U+037E is a semicolon. So the form, the
+// local part's 64 and the address's 254 hold for the NFC form too.
 //
 // The domain is written as a mail is sent to it (writtenAsMailed). A mail
 // program maps a domain by IDNA's UTS 46 before it sends, as nodemailer, the
@@ -26,27 +30,59 @@
 // a domain that ends in a number, which the URL Standard reads as an IPv4
 // address. So a mail goes to the one mailbox that the server stores and
 // shows.
+//
+// The pattern (MAILBOX_PATTERN) is the server's check, and the API's
+// description and the tools' schemas publish it. It holds only the tokens
+// that every regex dialect reads, as JSON Schema asks (2020-12, section
+// 6.4): classes, ranges, quantifiers, plain groups, alternation and the two
+// anchors. A character up to U+00FF is the escape \xHH, and any other
+// stands as itself, since no escape of it is read by ECMA-262, RE2 and
+// Python alike. So the pattern has no lookahead, and the lengths are the
+// checks' own.
 
 import { domainToASCII, domainToUnicode } from "node:url";
 import { z } from "zod";
 import { noNul, wellFormed } from "./text.ts";
 
-/** RFC 5322's atext: the ASCII characters of an atom. */
-const ATEXT = "A-Za-z0-9!#$%&'*+/=?^_`{|}~\\-";
+/** A character in the pattern: \xHH up to U+00FF, which every dialect reads, and any other as itself. */
+function character(codePoint: number): string {
+  return codePoint <= 0xff ? `\\x${codePoint.toString(16).toUpperCase().padStart(2, "0")}` : String.fromCodePoint(codePoint);
+}
+
+/** The characters from `from` to `to` in a class, or the one character `from`. */
+function range(from: number, to = from): string {
+  return from === to ? character(from) : `${character(from)}-${character(to)}`;
+}
+
+/** RFC 5322's atext: the ASCII characters of an atom. The hyphen stands last, so it needs no escape. */
+export const ATEXT = "A-Za-z0-9!#$%&'*+/=?^_`{|}~-";
 
 /** RFC 5322's atext but the slash: the last character of a local part. */
-const ATEXT_END = "A-Za-z0-9!#$%&'*+=?^_`{|}~\\-";
+export const ATEXT_END = "A-Za-z0-9!#$%&'*+=?^_`{|}~-";
 
 /**
- * A character outside ASCII that an address may hold: not a C1 control
+ * The characters outside ASCII that an address never holds: a C1 control
  * character, a space or a separator (Unicode's Z, and U+FEFF), or a control
- * of the text's direction. Written with escapes only, and no property class,
- * so a client of any regex dialect reads the pattern in the API's
- * description and in the tools' schemas.
+ * of the text's direction. ASCII is in the set too, so its negation is the
+ * characters outside ASCII that an address may hold.
  */
-const WIDE_SET = "\\x00-\\x9F\\xA0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF\\u061C\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069";
+const WIDE_SET = [
+  range(0x00, 0xa0),
+  range(0x1680),
+  range(0x2000, 0x200a),
+  range(0x2028, 0x2029),
+  range(0x202f),
+  range(0x205f),
+  range(0x3000),
+  range(0xfeff),
+  range(0x061c),
+  range(0x200e, 0x200f),
+  range(0x202a, 0x202e),
+  range(0x2066, 0x2069),
+].join("");
 
-const WIDE = `[^${WIDE_SET}]`;
+/** A character outside ASCII that an address may hold. */
+export const WIDE = `[^${WIDE_SET}]`;
 
 /**
  * A character outside ASCII that a domain may hold: WIDE, but not one that
@@ -58,45 +94,83 @@ const WIDE = `[^${WIDE_SET}]`;
  * as a variation selector that it drops, which the pattern leaves alone, as
  * a mark that joins the character before it.
  */
-const DOMAIN_WIDE = `[^${WIDE_SET}\\u3002\\u00AD\\u115F\\u1160\\u200B\\u2060-\\u2064\\u3164\\uFF00-\\uFFEF]`;
+const DOMAIN_WIDE = `[^${WIDE_SET}${[range(0x3002), range(0xad), range(0x115f, 0x1160), range(0x200b), range(0x2060, 0x2064), range(0x3164), range(0xff00, 0xffef)].join("")}]`;
 
 /** A character of a local part's atom. */
-const ATOM_CHARACTER = `(?:[${ATEXT}]|${WIDE})`;
+const ATOM_CHARACTER = `([${ATEXT}]|${WIDE})`;
 
 /** The last character of a local part: not a slash. */
-const ATOM_END = `(?:[${ATEXT_END}]|${WIDE})`;
+const ATOM_END = `([${ATEXT_END}]|${WIDE})`;
 
 /** A letter or a digit of a domain's label, or a character outside ASCII. */
-const LABEL_END = `(?:[A-Za-z0-9]|${DOMAIN_WIDE})`;
+const LABEL_END = `([A-Za-z0-9]|${DOMAIN_WIDE})`;
 
 /** A domain's label: no hyphen at its start or end. */
-const LABEL = `${LABEL_END}(?:(?:[A-Za-z0-9-]|${DOMAIN_WIDE})*${LABEL_END})?`;
+const LABEL = `${LABEL_END}(([A-Za-z0-9-]|${DOMAIN_WIDE})*${LABEL_END})?`;
 
-/** One mailbox: a dot-atom with no slash at its end, its one @, and a domain of labels. */
-export const MAILBOX = new RegExp(`^(?=[^@]{1,64}@)(?:${ATOM_CHARACTER}+\\.)*${ATOM_CHARACTER}*${ATOM_END}@(?=[^@]{1,255}$)${LABEL}(?:\\.${LABEL})*$`, "u");
+/** One mailbox, as the pattern of the API's description and of the tools' schemas: a dot-atom with no slash at its end, its one @, and a domain of labels. */
+export const MAILBOX_PATTERN = `^(${ATOM_CHARACTER}+[.])*${ATOM_CHARACTER}*${ATOM_END}@${LABEL}([.]${LABEL})*$`;
+
+/** One mailbox (MAILBOX_PATTERN), as the server checks it. */
+export const MAILBOX = new RegExp(MAILBOX_PATTERN, "u");
 
 /** The longest address: RFC 5321's path of 256 octets, less its angle brackets. */
 export const EMAIL_MAX = 254;
 
+/** The longest local part, RFC 5321's 64. */
+const LOCAL_PART_MAX = 64;
+
+/** A label of a domain that is an A-label, in any letter case. */
+const A_LABEL = /(?:^|\.)xn--/i;
+
 /**
- * Whether a mail is sent to `domain` as it is written: the mapping of IDNA's
- * UTS 46, node:url's domainToASCII, which nodemailer makes before it sends,
- * and back again gives the domain's own labels, in lower case; and its last
- * label is not a number. An A-label (xn--) maps back to its U-label, which
- * is not what is written, so it is refused too.
+ * Whether a mail is sent to `domain` as it is written: no label of it is an
+ * A-label (xn--), whose U-label is the same domain written otherwise; its
+ * last label is not a number; and the mapping of IDNA's UTS 46, node:url's
+ * domainToASCII, which nodemailer makes before it sends, and back again
+ * gives the domain's own labels, in lower case. The A-label is a rule of its
+ * own, since how the mapping reads one whose Punycode does not decode
+ * differs between Node releases.
  */
 export function writtenAsMailed(domain: string): boolean {
   const written = domain.toLowerCase().normalize("NFC");
-  if (/(?:^|\.)[0-9]+$/.test(written)) {
+  if (A_LABEL.test(written) || /(?:^|\.)[0-9]+$/.test(written)) {
     return false;
   }
   const ascii = domainToASCII(domain);
   return ascii !== "" && domainToUnicode(ascii) === written;
 }
 
+/** The domain of a mailbox: the text after its last @. */
+function domainOf(address: string): string {
+  return address.slice(address.lastIndexOf("@") + 1);
+}
+
+/** The check of an address's length in the form the server stores, NFC: at most 254 characters. One that is longer as it is sent has the length's own problem alone. */
+function storedFits(): z.core.$ZodCheck<string> {
+  return z.refine((address: string) => address.length > EMAIL_MAX || address.normalize("NFC").length <= EMAIL_MAX, {
+    message: `must be at most ${String(EMAIL_MAX)} characters long, also in NFC, the form the server stores.`,
+    params: { code: "too-long", data: { maximum: EMAIL_MAX } },
+  });
+}
+
+/** The check of an address's form in the form the server stores, NFC: one mailbox still, with a local part of at most 64 characters. An address that is no mailbox has MAILBOX's problem alone. */
+function storedAsMailbox(): z.core.$ZodCheck<string> {
+  return z.refine(
+    (address: string) => {
+      const stored = address.normalize("NFC");
+      return !MAILBOX.test(address) || (MAILBOX.test(stored) && Array.from(stored.slice(0, stored.lastIndexOf("@"))).length <= LOCAL_PART_MAX);
+    },
+    {
+      message: `does not have the format email: its local part holds at most ${String(LOCAL_PART_MAX)} characters, and it is one mailbox, also in NFC, the form the server stores.`,
+      params: { code: "bad-format", data: { format: "email" } },
+    },
+  );
+}
+
 /** The check of an address's domain: written as it is mailed (writtenAsMailed). An address that is no mailbox has MAILBOX's problem alone. */
 function mailedAsWritten(): z.core.$ZodCheck<string> {
-  return z.refine((address: string) => !MAILBOX.test(address) || writtenAsMailed(address.slice(address.lastIndexOf("@") + 1)), {
+  return z.refine((address: string) => !MAILBOX.test(address) || writtenAsMailed(domainOf(address)), {
     message: "does not have the format email: a mail would reach its domain under another name, so its domain must be written as it is mailed, in Unicode or in ASCII, and not end in a number.",
     params: { code: "bad-format", data: { format: "email" } },
   });
@@ -104,11 +178,16 @@ function mailedAsWritten(): z.core.$ZodCheck<string> {
 
 /**
  * An e-mail address that the server stores, looks up and may send mail to:
- * one mailbox (MAILBOX), mailed as it is written, at most 254 characters.
- * Its JSON Schema is RFC 6531's address, the format idn-email (JSON Schema
- * 2020-12's email is RFC 5321's, ASCII only), with MAILBOX as its pattern,
- * in the API's description and in the tools' schemas alike.
+ * one mailbox (MAILBOX), mailed as it is written, at most 254 characters,
+ * also in NFC. Its JSON Schema is RFC 6531's address, the format idn-email
+ * (JSON Schema 2020-12's email is RFC 5321's, ASCII only), with
+ * MAILBOX_PATTERN as its pattern, in the API's description and in the tools'
+ * schemas alike.
  */
 export function emailAddress(): z.ZodEmail {
-  return z.email({ pattern: MAILBOX }).max(EMAIL_MAX).check(noNul(), wellFormed(), mailedAsWritten()).meta({ format: "idn-email", pattern: MAILBOX.source });
+  return z
+    .email({ pattern: MAILBOX })
+    .max(EMAIL_MAX)
+    .check(noNul(), wellFormed(), storedFits(), storedAsMailbox(), mailedAsWritten())
+    .meta({ format: "idn-email", pattern: MAILBOX_PATTERN });
 }

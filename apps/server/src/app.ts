@@ -26,6 +26,7 @@ import { Hono } from "hono";
 import { AfterAnswerQueue } from "./api/after-answer.ts";
 import type { ContextResolver } from "./api/context.ts";
 import { KeysInFlight } from "./api/idempotency.ts";
+import { CompanyTurns } from "./api/turns.ts";
 import type { Handler } from "./api/operation.ts";
 import { mountMcp } from "./api/mcp.ts";
 import { internalError, notFound } from "./api/problem.ts";
@@ -144,6 +145,7 @@ export function createApp(options: AppOptions): ServerApp {
     cursorKey: options.cursorKey,
     fingerprintKey: options.installKey.key("idempotency-fingerprint v1"),
     keysInFlight: new KeysInFlight(),
+    turns: new CompanyTurns(),
     now: options.now ?? systemClock,
     services: { passwords: options.passwordHasher ?? new PasswordHasher(), installKey: options.installKey, mail: options.mail },
     report,

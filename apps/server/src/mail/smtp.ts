@@ -13,17 +13,37 @@
 //   is set when the URL names a user, and only then. With a password, smtp
 //   needs STARTTLS: the password never goes over a connection in clear.
 // - NORTFOX_MAIL_FROM: the sender, as nortfox@mail.example or as
-//   NortFox <nortfox@mail.example>.
+//   NortFox <nortfox@mail.example>: one mailbox, which nodemailer's own
+//   address parser reads as one, with no group, an address that the API
+//   would take, and a name on one line. nodemailer gets it as a name and an
+//   address, so it never reads the text again.
 //
 // With none of the three set, the install has no mailer. A setting that is
 // missing or wrong stops the start, with a message that says what to set and
 // never holds the password. A mail goes inside its request, before the
 // request commits: a send that fails throws, so nothing changes, and the
 // server waits at most a few seconds for a mail server that does not answer.
+//
+// A mail program decodes an RFC 2047 encoded-word, =?charset?B?...?=, in a
+// subject. nodemailer encodes a subject that holds a character outside
+// ASCII, and sends any other as it is, so a name in an ASCII subject that is
+// written as an encoded-word would show another text, such as a line break
+// or a control of the text's direction, which no name holds. So the mailer
+// encodes a subject that holds =? itself, whole, and a mail program shows
+// the subject that the server wrote.
 
+import { NOT_IN_A_NAME, emailAddress } from "@nortfox/contract";
 import nodemailer, { type SMTPTransportOptions, type Transporter } from "nodemailer";
+import addressparser from "nodemailer/lib/addressparser";
+import { encodeWord } from "nodemailer/lib/mime-funcs";
 import type { Environment } from "../db/connect.ts";
 import type { MailMessage, Mailer } from "./mailer.ts";
+
+/** The sender of every mail: a name, which may be empty, and one address. */
+export interface Sender {
+  readonly name: string;
+  readonly address: string;
+}
 
 /** The install's SMTP settings, after their checks. */
 export interface SmtpSettings {
@@ -36,10 +56,10 @@ export interface SmtpSettings {
   /** The user's password, from its file. */
   readonly password?: string;
   /** The sender of every mail. */
-  readonly from: string;
+  readonly from: Sender;
 }
 
-/** The sender: an address, or a name and an address in angle brackets. */
+/** The sender's form: an address, or a name and an address in angle brackets. */
 const FROM = /^(?:[^<>@\s]+@[^<>@\s]+\.[^<>@\s]+|[^<>@]+\s<[^<>@\s]+@[^<>@\s]+\.[^<>@\s]+>)$/u;
 
 /** The default port of each protocol. */
@@ -80,6 +100,20 @@ function serverOf(text: string): Pick<SmtpSettings, "protocol" | "host" | "port"
   };
 }
 
+/**
+ * The sender in NORTFOX_MAIL_FROM, after its checks: the form FROM, which
+ * nodemailer's address parser reads as one mailbox, with no group, whose
+ * address the API would take and whose name stands on one line. Throws on
+ * any that fails.
+ */
+function senderOf(text: string): Sender {
+  const [mailbox, ...more] = FROM.test(text) ? addressparser(text) : [];
+  if (mailbox?.address === undefined || more.length > 0 || !emailAddress().safeParse(mailbox.address).success || NOT_IN_A_NAME.test(mailbox.name)) {
+    throw new Error("NORTFOX_MAIL_FROM must be one e-mail address, or a name and one address in angle brackets, such as NortFox <nortfox@mail.example>.");
+  }
+  return { name: mailbox.name, address: mailbox.address };
+}
+
 /** The password in its file: the file's text without the line end after it. */
 function passwordIn(path: string, readFile: (path: string) => string): string {
   let text: string;
@@ -113,9 +147,7 @@ export function smtpSettingsOf(env: Environment, readFile: (path: string) => str
   if (from === undefined) {
     throw new Error("NORTFOX_MAIL_FROM is not set. Set it to the sender of the install's mail, such as NortFox <nortfox@mail.example>.");
   }
-  if (!FROM.test(from)) {
-    throw new Error("NORTFOX_MAIL_FROM must be an e-mail address, or a name and an address in angle brackets, such as NortFox <nortfox@mail.example>.");
-  }
+  const sender = senderOf(from);
   const server = serverOf(url);
   if (passwordFile !== undefined && server.user === undefined) {
     throw new Error("NORTFOX_SMTP_PASSWORD_FILE is set, but NORTFOX_SMTP_URL names no user. Put the user name before the host, as smtp://nortfox@mail.example:587.");
@@ -126,7 +158,7 @@ export function smtpSettingsOf(env: Environment, readFile: (path: string) => str
       "NORTFOX_SMTP_URL names a user, but NORTFOX_SMTP_PASSWORD_FILE is not set. Set it to the file that holds the user's password, or take the user name out of the URL.",
     );
   }
-  return { ...server, ...(passwordFile === undefined ? {} : { password: passwordIn(passwordFile, readFile) }), from };
+  return { ...server, ...(passwordFile === undefined ? {} : { password: passwordIn(passwordFile, readFile) }), from: sender };
 }
 
 /** How long the server waits for a mail server: to connect, for its greeting, and for each answer. */
@@ -145,19 +177,34 @@ export function smtpTransportOptions(settings: SmtpSettings): SMTPTransportOptio
   };
 }
 
+/**
+ * A subject as nodemailer sends it: as it is, which nodemailer encodes when
+ * it holds a character outside ASCII; or, when it holds =?, the form of an
+ * encoded-word, as B encoded-words of its whole text, which nodemailer
+ * folds and sends as they are.
+ */
+function subjectOf(subject: string): { readonly subject: string } | { readonly headers: { readonly Subject: { readonly prepared: true; readonly foldLines: true; readonly value: string } } } {
+  return subject.includes("=?") ? { headers: { Subject: { prepared: true, foldLines: true, value: encodeWord(subject, "B", 52) } } } : { subject };
+}
+
 /** A mailer over a nodemailer transport, from one sender. */
 export class SmtpMailer implements Mailer {
   readonly #transport: Pick<Transporter, "sendMail">;
-  readonly #from: string;
+  readonly #from: Sender;
 
-  constructor(transport: Pick<Transporter, "sendMail">, from: string) {
+  constructor(transport: Pick<Transporter, "sendMail">, from: Sender) {
     this.#transport = transport;
     this.#from = from;
   }
 
   async send(message: MailMessage): Promise<void> {
-    // An address as an object, which nodemailer never reads as a list of addresses or as a name and an address.
-    await this.#transport.sendMail({ from: this.#from, to: { name: "", address: message.to }, subject: message.subject, text: message.text });
+    // Each address as an object, which nodemailer never reads as a list of addresses or as a name and an address.
+    await this.#transport.sendMail({
+      from: { name: this.#from.name, address: this.#from.address },
+      to: { name: "", address: message.to },
+      ...subjectOf(message.subject),
+      text: message.text,
+    });
   }
 }
 

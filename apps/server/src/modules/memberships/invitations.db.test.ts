@@ -12,6 +12,7 @@
 // e-mail becomes the invitation's address either way. A bearer token links
 // nothing: part 4 adds that case to this file.
 
+import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, type AppPool, type ProblemBody } from "../../../test/api.ts";
@@ -22,6 +23,7 @@ import {
   DAY,
   MINUTE,
   addSignInIdentity,
+  answeredWithin,
   answeredWithoutWaiting,
   challengeOf,
   chooseCompany,
@@ -73,6 +75,9 @@ function invalid(errors: ProblemBody["errors"]): ProblemBody {
   };
 }
 
+/** The connections of the test server's pool. */
+const POOL_SIZE = 6;
+
 /** The TOTP secret of an answer's otpauth URI. */
 function secretOf(acceptance: Acceptance): Buffer {
   const secret = base32Decode(new URL(acceptance.totpEnrolment?.otpauthUri ?? "otpauth://totp/none").searchParams.get("secret") ?? "");
@@ -96,7 +101,7 @@ describe("invitations", () => {
     app = await db.connect("app");
     owner = await db.connect("owner");
     superuser = await db.admin();
-    pool = appPool(db, 6);
+    pool = appPool(db, POOL_SIZE);
     // The database stamps an invitation's time with its own clock, so the server's starts at the same time.
     server = signInApp(pool.database, { clock: testClock(new Date()) });
     company = await apiCompany(server, { app, owner });
@@ -295,6 +300,26 @@ describe("invitations", () => {
       expect(server.mail.to("petra.langsam@example.com")).toHaveLength(1);
     });
 
+    it("lets another company's requests through while the company's invitations wait for one that sends its mail, however many they are", async () => {
+      const other = await apiCompany(server, { app, owner }, "Testbolaget Beta AB");
+      // The first invitation holds the company's turn, and waits for a slow mail server before its commit.
+      const held = server.mail.holdNext();
+      const first = calls.inviteUser(server, company.session, { name: "Petra Först", email: "petra.forst@example.com" });
+      await held.reached;
+      // As many invitations of the company as the pool has connections wait for the turn.
+      const burst = Array.from({ length: POOL_SIZE }, (_, index) => calls.inviteUser(server, company.session, { name: "Bo Skur", email: `bo.skur.${String(index)}@example.com` }));
+      let read: Response | "no answer";
+      try {
+        await delay(500);
+        read = await answeredWithin(getAs(server, other.session, "/v1/company"), 5_000);
+      } finally {
+        held.open();
+      }
+      expect(read === "no answer" ? read : read.status).toBe(200);
+      expect((await first).status).toBe(201);
+      expect((await Promise.all(burst)).map((answer) => answer.status)).toEqual(Array.from({ length: POOL_SIZE }, () => 201));
+    });
+
     it("keeps its answer for a repeat with its key, and sends no second mail", async () => {
       const key = "invite-maja-once";
       const first = await jsonOf<{ id: string }>(await calls.inviteUser(server, company.session, { name: "Maja Ek", email: "maja.ek@example.com" }, key), 201);
@@ -304,6 +329,27 @@ describe("invitations", () => {
       // The answer holds the name, so its key is kept outside every company table.
       const kept = await superuser.query("SELECT 1 FROM ledger.idempotency_keys WHERE idempotency_key = $1", [key]);
       expect(kept.rows).toEqual([]);
+    });
+
+    it("refuses a key that another write of the company used, whichever table keeps it, and sends no second mail", async () => {
+      const reused = { code: "idempotency-key-reused" };
+      // The invitation's key is kept with the person, in the company; resendInvitation's and updateCompany's in the company's keys.
+      const first = "one-key-two-writes";
+      const { id } = await jsonOf<{ id: string }>(await calls.inviteUser(server, company.session, { name: "Ines Nyckel", email: "ines.nyckel@example.com" }, first), 201);
+      const mails = server.mail.messages.length;
+      expect(await jsonOf<ProblemBody>(await calls.resendInvitation(server, company.session, id, first), 422)).toMatchObject(reused);
+      expect(await jsonOf<ProblemBody>(await writeAs(server, company.session, "PATCH", "/v1/company", { city: "Lund" }, { key: first }), 422)).toMatchObject(reused);
+      expect(server.mail.messages).toHaveLength(mails);
+      expect(await invitationsOf(id)).toHaveLength(1);
+      // And the other way: a key of the company's keys, then an invitation with it.
+      const second = "one-key-company-first";
+      expect((await writeAs(server, company.session, "PATCH", "/v1/company", { city: "Malmö" }, { key: second })).status).toBe(200);
+      expect(await jsonOf<ProblemBody>(await calls.inviteUser(server, company.session, { name: "Ivar Nyckel", email: "ivar.nyckel@example.com" }, second), 422)).toMatchObject(reused);
+      expect(await jsonOf<ProblemBody>(await calls.disconnectUserIdentity(server, company.session, id, second), 422)).toMatchObject(reused);
+      expect(server.mail.to("ivar.nyckel@example.com")).toEqual([]);
+      expect(server.mail.messages).toHaveLength(mails);
+      const members = await superuser.query("SELECT 1 FROM access.invitations WHERE email = 'ivar.nyckel@example.com'");
+      expect(members.rows).toEqual([]);
     });
   });
 

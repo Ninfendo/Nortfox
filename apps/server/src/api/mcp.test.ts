@@ -17,7 +17,7 @@ import {
   PROTOCOL_VERSION_META_KEY,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import { CATALOGUE_PERMISSIONS, MAILBOX } from "@nortfox/contract";
+import { CATALOGUE_PERMISSIONS, MAILBOX_PATTERN } from "@nortfox/contract";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -107,7 +107,7 @@ const DETAIL_INPUT = (description: string, maxLength: number) => ({ description:
 const COUNTRY_INPUT = (description: string) => ({ description: `${description} null takes it away.`, anyOf: [{ type: "string", pattern: "^[A-Z]{2}$" }, { type: "null" }] });
 
 /** What an e-mail address must look like: RFC 6531's, idn-email, with the pattern of one mailbox (packages/contract/src/address.ts). */
-const EMAIL = { type: "string", maxLength: 254, format: "idn-email", pattern: MAILBOX.source };
+const EMAIL = { type: "string", maxLength: 254, format: "idn-email", pattern: MAILBOX_PATTERN };
 
 const COMPANY_SCHEMA = {
   type: "object",

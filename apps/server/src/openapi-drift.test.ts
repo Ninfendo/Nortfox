@@ -4,7 +4,7 @@
 // this test, and the build job's `pnpm openapi` with `git diff --exit-code`.
 // The client's own test does the same for src/generated.ts.
 
-import { IDEMPOTENCY_KEY_ARGUMENT, MAILBOX, REGISTRY, getHealth, toolInputSchema } from "@nortfox/contract";
+import { IDEMPOTENCY_KEY_ARGUMENT, MAILBOX_PATTERN, REGISTRY, getHealth, toolInputSchema } from "@nortfox/contract";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { testListAccounts } from "../test/api.ts";
@@ -21,6 +21,16 @@ describe("packages/client/openapi.json", () => {
   it("matches the registry", () => {
     const drift = openApiDrift(committed, renderOpenApi(REGISTRY, readServerVersion()));
     expect(drift, drift).toBeUndefined();
+  });
+
+  it("writes every character that shows as nothing, a space or a control as a JSON escape, so the file shows each as it is", () => {
+    const rendered = renderOpenApi(REGISTRY, readServerVersion());
+    expect(rendered.match(/(?![\n ])[\p{C}\p{Z}\p{Default_Ignorable_Code_Point}]/gu) ?? []).toEqual([]);
+    // The pattern of an address holds such characters, as JSON escapes in the file.
+    expect(rendered).toContain("\\u2028");
+    expect(rendered).toContain("\\u202e");
+    expect(JSON.parse(rendered)).toEqual(JSON.parse(JSON.stringify(openApiDocument(REGISTRY, readServerVersion()))));
+    expect(renderOpenApi([getHealth], "0.0.0")).toBe(`${JSON.stringify(openApiDocument([getHealth], "0.0.0"), null, 2)}\n`);
   });
 
   it("shows a changed registry as drift", () => {
@@ -265,7 +275,7 @@ describe("the inputs in the API description and in the tools' schemas", () => {
       const operation = REGISTRY.find((each) => each.operationId === operationId);
       const tool = partsOf(operation === undefined ? {} : toolInputSchema(operation)).properties[field] ?? {};
       for (const schema of [tool, describedInput(operationId)[field] ?? {}]) {
-        expect(textForms(schema), `${operationId}.${field}`).toEqual([JSON.stringify({ format: "idn-email", pattern: MAILBOX.source })]);
+        expect(textForms(schema), `${operationId}.${field}`).toEqual([JSON.stringify({ format: "idn-email", pattern: MAILBOX_PATTERN })]);
       }
     }
   });

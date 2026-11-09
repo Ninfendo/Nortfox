@@ -465,6 +465,16 @@ export async function answeredWithoutWaiting<T>(observer: Client, call: Promise<
   return watched;
 }
 
+/**
+ * The answer of `call` when it comes within `ms`, or "no answer" while it
+ * still runs, as a call does that waits for a turn or for a connection of
+ * the pool. The call runs on either way, and is the test's own to await.
+ */
+export async function answeredWithin<T>(call: Promise<T>, ms: number): Promise<T | "no answer"> {
+  void call.catch(() => undefined);
+  return Promise.race([call, delay(ms).then(() => "no answer" as const)]);
+}
+
 /** Reads `path` with the browser's session cookie, as the web app does. */
 export function getAs(app: SignInApp, session: string, path: string, browser: Omit<Browser, "cookies"> = {}): Promise<Response> {
   return sendAsBrowser(app, "GET", path, { ...browser, cookies: { session } });

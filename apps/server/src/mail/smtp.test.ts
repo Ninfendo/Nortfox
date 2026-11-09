@@ -57,7 +57,7 @@ describe("the SMTP settings", () => {
       port: 2525,
       user: "nortfox",
       password: PASSWORD,
-      from: "NortFox <nortfox@mail.example>",
+      from: { name: "NortFox", address: "nortfox@mail.example" },
     });
     expect(smtpSettingsOf({ ...ALL, NORTFOX_SMTP_PASSWORD_FILE: "/run/secrets/smtp-password" }, files(`${PASSWORD}\r\n`))?.password).toBe(PASSWORD);
     expect(smtpSettingsOf({ ...ALL, NORTFOX_SMTP_PASSWORD_FILE: "/run/secrets/smtp-password" }, files(PASSWORD))?.password).toBe(PASSWORD);
@@ -68,7 +68,7 @@ describe("the SMTP settings", () => {
       protocol: "smtp:",
       host: "mail.example",
       port: 587,
-      from: "nortfox@mail.example",
+      from: { name: "", address: "nortfox@mail.example" },
     });
     expect(
       smtpSettingsOf({ NORTFOX_SMTP_URL: "smtps://n%40x@mail.example/", NORTFOX_SMTP_PASSWORD_FILE: "/run/secrets/smtp-password", NORTFOX_MAIL_FROM: "nortfox@mail.example" }, files()),
@@ -78,7 +78,18 @@ describe("the SMTP settings", () => {
       port: 465,
       user: "n@x",
       password: PASSWORD,
-      from: "nortfox@mail.example",
+      from: { name: "", address: "nortfox@mail.example" },
+    });
+  });
+
+  it("take a sender's name in double quotes, with a comma, as nodemailer's parser reads it", () => {
+    expect(smtpSettingsOf({ ...ALL, NORTFOX_MAIL_FROM: '"NortFox, Testbolaget Alfa AB" <nortfox@mail.example>' }, files())?.from).toEqual({
+      name: "NortFox, Testbolaget Alfa AB",
+      address: "nortfox@mail.example",
+    });
+    expect(smtpSettingsOf({ ...ALL, NORTFOX_MAIL_FROM: "\u00C5sa p\u00E5 NortFox <nortfox@mail.example>" }, files())?.from).toEqual({
+      name: "\u00C5sa p\u00E5 NortFox",
+      address: "nortfox@mail.example",
     });
   });
 
@@ -86,8 +97,14 @@ describe("the SMTP settings", () => {
     ["no URL beside another setting", { NORTFOX_MAIL_FROM: "nortfox@mail.example" }, "NORTFOX_SMTP_URL is not set, but another mail setting is."],
     ["no URL beside the password's file", { NORTFOX_SMTP_PASSWORD_FILE: "/run/secrets/smtp-password" }, "NORTFOX_SMTP_URL is not set, but another mail setting is."],
     ["no sender", { NORTFOX_SMTP_URL: "smtp://mail.example" }, "NORTFOX_MAIL_FROM is not set."],
-    ["a sender that is no address", { ...ALL, NORTFOX_MAIL_FROM: "NortFox" }, "NORTFOX_MAIL_FROM must be an e-mail address"],
-    ["a sender with a name and no brackets", { ...ALL, NORTFOX_MAIL_FROM: "NortFox nortfox@mail.example" }, "NORTFOX_MAIL_FROM must be an e-mail address"],
+    ["a sender that is no address", { ...ALL, NORTFOX_MAIL_FROM: "NortFox" }, "NORTFOX_MAIL_FROM must be one e-mail address"],
+    ["a sender with a name and no brackets", { ...ALL, NORTFOX_MAIL_FROM: "NortFox nortfox@mail.example" }, "NORTFOX_MAIL_FROM must be one e-mail address"],
+    ["a sender that nodemailer reads as two addresses", { ...ALL, NORTFOX_MAIL_FROM: "a,b@mail.example" }, "NORTFOX_MAIL_FROM must be one e-mail address"],
+    ["a sender with a quote that is never closed", { ...ALL, NORTFOX_MAIL_FROM: '"NortFox <nortfox@mail.example>' }, "NORTFOX_MAIL_FROM must be one e-mail address"],
+    ["a sender that nodemailer reads as a group", { ...ALL, NORTFOX_MAIL_FROM: "NortFox: <nortfox@mail.example>" }, "NORTFOX_MAIL_FROM must be one e-mail address"],
+    ["a sender of two mailboxes", { ...ALL, NORTFOX_MAIL_FROM: "NortFox <nortfox@mail.example>, Other <other@mail.example>" }, "NORTFOX_MAIL_FROM must be one e-mail address"],
+    ["a sender whose address the API would not take", { ...ALL, NORTFOX_MAIL_FROM: "NortFox <nort\u202Efox@mail.example>" }, "NORTFOX_MAIL_FROM must be one e-mail address"],
+    ["a sender whose name turns its text around", { ...ALL, NORTFOX_MAIL_FROM: "Nort\u202EFox <nortfox@mail.example>" }, "NORTFOX_MAIL_FROM must be one e-mail address"],
     ["a URL that is no URL", { ...ALL, NORTFOX_SMTP_URL: "mail.example:587" }, "NORTFOX_SMTP_URL must start with smtp:// or smtps://."],
     ["a URL of no form at all", { ...ALL, NORTFOX_SMTP_URL: "smtp://[" }, "NORTFOX_SMTP_URL is not a URL."],
     ["another protocol", { ...ALL, NORTFOX_SMTP_URL: "https://mail.example" }, "NORTFOX_SMTP_URL must start with smtp:// or smtps://."],
@@ -116,7 +133,7 @@ describe("the SMTP settings", () => {
 describe("the SMTP transport", () => {
   it("needs STARTTLS for a password over smtp, takes TLS from the start over smtps, and waits a few seconds at most", () => {
     const timeouts = { connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 30_000 };
-    expect(smtpTransportOptions({ protocol: "smtp:", host: "mail.example", port: 587, user: "nortfox", password: PASSWORD, from: "nortfox@mail.example" })).toEqual({
+    expect(smtpTransportOptions({ protocol: "smtp:", host: "mail.example", port: 587, user: "nortfox", password: PASSWORD, from: { name: "", address: "nortfox@mail.example" } })).toEqual({
       host: "mail.example",
       port: 587,
       secure: false,
@@ -124,7 +141,7 @@ describe("the SMTP transport", () => {
       ...timeouts,
       auth: { user: "nortfox", pass: PASSWORD },
     });
-    expect(smtpTransportOptions({ protocol: "smtps:", host: "mail.example", port: 465, user: "nortfox", password: PASSWORD, from: "nortfox@mail.example" })).toEqual({
+    expect(smtpTransportOptions({ protocol: "smtps:", host: "mail.example", port: 465, user: "nortfox", password: PASSWORD, from: { name: "", address: "nortfox@mail.example" } })).toEqual({
       host: "mail.example",
       port: 465,
       secure: true,
@@ -132,7 +149,7 @@ describe("the SMTP transport", () => {
       ...timeouts,
       auth: { user: "nortfox", pass: PASSWORD },
     });
-    expect(smtpTransportOptions({ protocol: "smtp:", host: "mail.example", port: 25, from: "nortfox@mail.example" })).toEqual({
+    expect(smtpTransportOptions({ protocol: "smtp:", host: "mail.example", port: 25, from: { name: "", address: "nortfox@mail.example" } })).toEqual({
       host: "mail.example",
       port: 25,
       secure: false,
@@ -142,7 +159,7 @@ describe("the SMTP transport", () => {
   });
 
   it("makes a mailer of the settings, which connects only when a mail goes", () => {
-    expect(smtpMailer({ protocol: "smtp:", host: "mail.example", port: 587, from: "nortfox@mail.example" })).toBeInstanceOf(SmtpMailer);
+    expect(smtpMailer({ protocol: "smtp:", host: "mail.example", port: 587, from: { name: "", address: "nortfox@mail.example" } })).toBeInstanceOf(SmtpMailer);
   });
 });
 
@@ -158,7 +175,7 @@ describe("the SMTP mailer", () => {
           return info;
         },
       },
-      "NortFox <nortfox@mail.example>",
+      { name: "NortFox", address: "nortfox@mail.example" },
     );
     await mailer.send({ to: "karin.lund@example.com", subject: "Inbjudan till Testbolaget Alfa AB i NortFox", text: "Hej Karin Lund!" });
     expect(sent).toEqual([
@@ -168,6 +185,26 @@ describe("the SMTP mailer", () => {
         subject: "Inbjudan till Testbolaget Alfa AB i NortFox",
         text: "Hej Karin Lund!",
       }),
+    ]);
+  });
+
+  it("sends from the sender of the settings, as nodemailer's parser read it, and from no other address", async () => {
+    const sent: { from: unknown; envelope: unknown }[] = [];
+    const json = nodemailer.createTransport({ jsonTransport: true });
+    const settings = smtpSettingsOf({ ...ALL, NORTFOX_MAIL_FROM: '"NortFox, Testbolaget Alfa AB" <nortfox@mail.example>' }, files());
+    const mailer = new SmtpMailer(
+      {
+        sendMail: async (mail) => {
+          const info = await json.sendMail(mail);
+          sent.push({ from: (JSON.parse(info.message) as { from: unknown }).from, envelope: info.envelope });
+          return info;
+        },
+      },
+      settings?.from ?? { name: "", address: "" },
+    );
+    await mailer.send({ to: "karin.lund@example.com", subject: "s", text: "t" });
+    expect(sent).toEqual([
+      { from: { address: "nortfox@mail.example", name: "NortFox, Testbolaget Alfa AB" }, envelope: { from: "nortfox@mail.example", to: ["karin.lund@example.com"] } },
     ]);
   });
 
@@ -182,7 +219,7 @@ describe("the SMTP mailer", () => {
           return info;
         },
       },
-      "nortfox@mail.example",
+      { name: "", address: "nortfox@mail.example" },
     );
     // The API takes no such address (address.ts); the mailer never reads one as two, or as a name and another address.
     await mailer.send({ to: "a,b@evil.example", subject: "s", text: "t" });
@@ -205,7 +242,7 @@ describe("the SMTP mailer", () => {
           return info;
         },
       },
-      "nortfox@mail.example",
+      { name: "", address: "nortfox@mail.example" },
     );
     const labels = ["example", "Example", "exämple", "EXÄMPLE", "παράδειγμα", "bücher", "straße", "com", "test", "localhost", "ex\u00ADample", "\uFF45xample", "xn--bcher-kva", "\uFB01le", "42"];
     const address = fc.array(fc.constantFrom(...labels), { minLength: 1, maxLength: 3 }).map((parts) => `karin.lund@${parts.join(".")}`);
@@ -231,7 +268,7 @@ describe("the SMTP mailer", () => {
   });
 
   it("throws when the mail server refuses", async () => {
-    const mailer = new SmtpMailer({ sendMail: () => Promise.reject(new Error("550 refused")) }, "nortfox@mail.example");
+    const mailer = new SmtpMailer({ sendMail: () => Promise.reject(new Error("550 refused")) }, { name: "", address: "nortfox@mail.example" });
     await expect(mailer.send({ to: "karin.lund@example.com", subject: "s", text: "t" })).rejects.toThrow("550 refused");
   });
 });

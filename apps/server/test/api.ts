@@ -14,6 +14,7 @@ import { Pool } from "pg";
 import { z } from "zod";
 import type { CompanyAccess, ContextResolver, Principal, PrincipalKind } from "../src/api/context.ts";
 import { KeysInFlight } from "../src/api/idempotency.ts";
+import { CompanyTurns } from "../src/api/turns.ts";
 import { handleData, handleList, ok, refused, type Handler, type OutputOf, type RunnerDeps, type Services } from "../src/api/operation.ts";
 import { assertV1Routes } from "../src/api/route-guard.ts";
 import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
@@ -243,13 +244,14 @@ export function testServices(): Services {
 /** The clock of the runner in a test that calls it directly. */
 export const TEST_NOW = new Date("2090-03-15T10:00:00.000Z");
 
-/** What the runner needs, for a test that calls it directly: the database, the cursor key, the fingerprint key, a set of keys in flight of its own and a fixed clock. */
+/** What the runner needs, for a test that calls it directly: the database, the cursor key, the fingerprint key, a set of keys in flight and of turns of its own, and a fixed clock. */
 export function runnerDeps(database: Database): RunnerDeps {
   return {
     database,
     cursorKey: CURSOR_KEY,
     fingerprintKey: FINGERPRINT_KEY,
     keysInFlight: new KeysInFlight(),
+    turns: new CompanyTurns(),
     now: () => TEST_NOW,
     services: testServices(),
   };

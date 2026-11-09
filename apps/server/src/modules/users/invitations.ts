@@ -11,7 +11,9 @@
 //   It takes the company's turn of its invitations first, so two invitations
 //   of one company take turns, and the second of two to one address at once
 //   finds the first's and is refused too. The turn is not the company's row,
-//   so no other change of the company waits for the mail.
+//   so no other change of the company waits for the mail, and an invitation
+//   waits for it in this process before it asks the pool for a connection,
+//   so no other company's request waits for it either.
 // - resendInvitation, "Skicka en ny inbjudan": a new invitation of an
 //   invited member, to their latest one's name and address. The database
 //   stops the old one and its link.
@@ -34,8 +36,8 @@ import { handleData, ok, refused, type RuleRefusal } from "../../api/operation.t
 import type { Queryable } from "../../db/database.ts";
 import { MAIL_NOT_CONFIGURED, type InstallMail } from "../../mail/mailer.ts";
 import { invitationLink, invitationMail } from "../../mail/texts.ts";
-import { addInvitation, addInvitedMember, addressInCompany, latestInvitation, takeInvitationsTurn, type InvitationTo } from "../memberships/invitations.ts";
-import { disconnectMember, hasOtherAdministrator, heldMemberNow, holdMember, lastAdministrator, takesAdministrator } from "../memberships/members.ts";
+import { INVITATIONS_TURN, addInvitation, addInvitedMember, addressInCompany, latestInvitation, takeInvitationsTurn, type InvitationTo } from "../memberships/invitations.ts";
+import { ADMINISTRATORS_TURN, disconnectMember, hasOtherAdministrator, heldMemberNow, holdMember, lastAdministrator, takesAdministrator } from "../memberships/members.ts";
 import { userNotFound } from "./users.ts";
 
 const ALREADY_MEMBER: RuleRefusal = {
@@ -80,7 +82,7 @@ export const inviteUserHandler = handleData(inviteUser, async ({ context, tx, no
   const at = now();
   await sendInvitation(tx, mail, companyId, id, { name: body.name, email }, at);
   return ok(await heldMemberNow(tx, { id }, at));
-});
+}, { turn: () => INVITATIONS_TURN });
 
 export const resendInvitationHandler = handleData(resendInvitation, async ({ context, tx, now, services }, { params }) => {
   const { mail } = services;
@@ -119,4 +121,4 @@ export const disconnectUserIdentityHandler = handleData(disconnectUserIdentity, 
   const at = now();
   await sendInvitation(tx, mail, context.company.companyId, member.id, to, at);
   return ok(await heldMemberNow(tx, member, at));
-});
+}, { turn: () => ADMINISTRATORS_TURN.alone });

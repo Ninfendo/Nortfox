@@ -28,7 +28,18 @@ import { getUser, listUsers, removeUser, updateUser } from "@nortfox/contract";
 import { handleData, handleList, ok, refused, type Answer } from "../../api/operation.ts";
 import { seeSession } from "../../auth/resolver.ts";
 import { setWorkContacts } from "../memberships/membership.ts";
-import { hasOtherAdministrator, heldMemberNow, holdMember, lastAdministrator, memberPage, readMember, removeMember, takesAdministrator, writeMember } from "../memberships/members.ts";
+import {
+  ADMINISTRATORS_TURN,
+  hasOtherAdministrator,
+  heldMemberNow,
+  holdMember,
+  lastAdministrator,
+  memberPage,
+  readMember,
+  removeMember,
+  takesAdministrator,
+  writeMember,
+} from "../memberships/members.ts";
 import { setAdministered } from "../memberships/programs.ts";
 import { reachOf } from "./reach.ts";
 
@@ -79,6 +90,9 @@ export const updateUserHandler = handleData(updateUser, async ({ context, tx, no
   }
   // updateUser needs users:admin, which only a system administrator holds: they see every program.
   return ok(await heldMemberNow(tx, member, at));
+}, {
+  // A demotion and a deactivation may take an administrator away, so they take the administrators' turn; no other change does.
+  turn: ({ body }) => (body.adminLevel === null || body.active === false ? ADMINISTRATORS_TURN.shared : undefined),
 });
 
 export const removeUserHandler = handleData(removeUser, async ({ context, tx }, { params }) => {
@@ -94,4 +108,4 @@ export const removeUserHandler = handleData(removeUser, async ({ context, tx }, 
   }
   await removeMember(tx, member);
   return ok({});
-});
+}, { turn: () => ADMINISTRATORS_TURN.shared });

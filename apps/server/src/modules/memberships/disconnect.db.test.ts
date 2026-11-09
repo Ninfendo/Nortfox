@@ -14,6 +14,7 @@
 // disconnect, and that runs on after the next person has accepted, reaches
 // nothing of the next person's.
 
+import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, appPoolHolding, type AppPool, type ProblemBody } from "../../../test/api.ts";
@@ -21,6 +22,7 @@ import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import {
   MINUTE,
   addSignInIdentity,
+  answeredWithin,
   answeredWithoutWaiting,
   chooseCompany,
   expectNoSecretsAtRestFromSignInApps,
@@ -36,6 +38,9 @@ import {
 } from "../../../test/sign-in.ts";
 import { apiCompany, calls, joinWith, newMember, sessionIn, type ApiCompany, type TestMember } from "../../../test/users.ts";
 
+/** The connections of the test server's pool. */
+const POOL_SIZE = 4;
+
 describe("disconnecting a member's identity", () => {
   let db: TestDatabase;
   let app: Client;
@@ -50,7 +55,7 @@ describe("disconnecting a member's identity", () => {
     app = await db.connect("app");
     owner = await db.connect("owner");
     superuser = await db.admin();
-    pool = appPool(db, 4);
+    pool = appPool(db, POOL_SIZE);
     server = signInApp(pool.database, { clock: testClock(new Date()) });
     company = await apiCompany(server, { app, owner });
   });
@@ -185,9 +190,9 @@ describe("disconnecting a member's identity", () => {
     await held.reached;
     // The owner leaves from another session meanwhile, which would leave the company with no system administrator.
     const leave = calls.leaveCompany(server, leaving, beta.id);
-    const early = await answeredWithoutWaiting(superuser, leave);
+    const early = await answeredWithin(leave, 500);
     held.open();
-    expect(early).toBe("waited");
+    expect(early).toBe("no answer");
     expect((await disconnecting).status).toBe(200);
     expect(await jsonOf<ProblemBody>(await leave, 422)).toMatchObject({ code: "last-system-administrator" });
     expect(await rowOf(beta.membership)).toMatchObject({ status: "active", admin_level: "owner" });
@@ -213,6 +218,29 @@ describe("disconnecting a member's identity", () => {
     expect(await jsonOf<ProblemBody>(await disconnecting, 422)).toMatchObject({ code: "last-system-administrator" });
     expect(server.mail.messages).toHaveLength(mails);
     expect(await rowOf(admin.id)).toMatchObject({ status: "active", user_id: admin.person.id, admin_level: "admin" });
+  });
+
+  it("lets another company's requests through while the changes of the company's administrators wait for a disconnect that sends its mail, however many they are", async () => {
+    const { beta, admin } = await twoAdministrators();
+    const other = await newMember(server, { app, owner }, beta);
+    expect((await calls.updateUser(server, beta.session, other.id, { adminLevel: "admin" })).status).toBe(200);
+    // The owner disconnects the admin, which takes the administrators' turn alone, and waits for a slow mail server before the commit.
+    const held = server.mail.holdNext();
+    const disconnecting = calls.disconnectUserIdentity(server, beta.session, admin.id);
+    await held.reached;
+    // As many demotions of the other admin as the pool has connections wait for the turn.
+    const burst = Array.from({ length: POOL_SIZE }, () => calls.updateUser(server, beta.session, other.id, { adminLevel: null }));
+    let read: Response | "no answer";
+    try {
+      await delay(500);
+      read = await answeredWithin(getAs(server, company.session, "/v1/company"), 5_000);
+    } finally {
+      held.open();
+    }
+    expect(read === "no answer" ? read : read.status).toBe(200);
+    expect((await disconnecting).status).toBe(200);
+    expect((await Promise.all(burst)).map((answer) => answer.status)).toEqual(Array.from({ length: POOL_SIZE }, () => 200));
+    expect(await rowOf(other.id)).toMatchObject({ status: "active", admin_level: null });
   });
 
   it("disconnects an inactive member", async () => {

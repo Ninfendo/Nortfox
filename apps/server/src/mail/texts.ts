@@ -9,7 +9,9 @@
 // words. Each name it holds stands on one line too: the API takes no name
 // with a line break or another control character, and the text puts a space
 // for any that comes, so no name adds a line to the mail or turns its text
-// around.
+// around. A name written as an RFC 2047 encoded-word, which a mail program
+// decodes in a subject, holds none of them either: the mailer encodes such a
+// subject whole, so it is shown as it is written (smtp.ts).
 
 import { NOT_IN_A_NAME } from "@nortfox/contract";
 import type { MailMessage } from "./mailer.ts";

@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { MAILBOX, emailAddress, writtenAsMailed } from "./address.ts";
+import { MAILBOX, MAILBOX_PATTERN, emailAddress, writtenAsMailed } from "./address.ts";
 import { bodySchema } from "./operation.ts";
 import { completeSetup } from "./operations/auth.ts";
 import { createCompany, updateCompany, updateMyMembership } from "./operations/companies.ts";
@@ -80,7 +80,6 @@ const NOT_MAILBOXES = [
   "x@y@example.org",
   "@example.org",
   "x@",
-  `${"a".repeat(65)}@example.com`,
   // A local part that ends in a slash: no mailbox has one, and a log reads it as a package's path (/@scope).
   "a/@example.org",
   "a.b/@example.org",
@@ -117,6 +116,24 @@ const NOT_AS_MAILED = [
   "anna.lind@192.0.2.1",
   "anna.lind@10.3.1",
   "anna.lind@example.0x1f",
+];
+
+/** A domain of 189 characters, so an address with a local part of 64 is 254 long. */
+const LONG_DOMAIN = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(49)}.example.com`;
+
+/**
+ * Addresses that fit as they are sent, but not in the form the server
+ * stores, NFC, under which U+0958 is two characters and U+037E is a
+ * semicolon: each would break a length check of the database, or be no
+ * mailbox, after the contract took it.
+ */
+const NOT_AS_STORED: readonly (readonly [string, string, readonly string[]])[] = [
+  ["a local part of 64 that NFC makes 128, in an address of 254 that NFC makes 318", `${"\u0958".repeat(64)}@${LONG_DOMAIN}`, ["too-long", "bad-format"]],
+  ["an address of 254 whose domain NFC makes one longer", `${"a".repeat(62)}@\u0958.${LONG_DOMAIN}`, ["too-long"]],
+  ["a local part of 33 that NFC makes 66", `${"\u0958".repeat(33)}@example.com`, ["bad-format"]],
+  ["a local part of 65", `${"a".repeat(65)}@example.com`, ["bad-format"]],
+  ["an address of 255 as it is sent, which the length's own check refuses", `${"a".repeat(63)}@\u{0958}.${LONG_DOMAIN}`, ["too-long"]],
+  ["a local part that NFC gives a semicolon", "anna\u037Elind@example.com", ["bad-format"]],
 ];
 
 /** Names that stand on one line. */
@@ -179,6 +196,22 @@ describe("an e-mail address", () => {
     }
   });
 
+  it.each(NOT_AS_STORED)("refuses %s, as its NFC form is checked, in every field that takes one", (_case, address, codes) => {
+    expect(emailAddress().safeParse(address).success).toBe(false);
+    const at = (pointer: string): string[][] => codes.map((code) => [code, pointer]);
+    expect(problemsOf(inviteUser, { name: "Karin Lund", email: address })).toEqual(at("/email"));
+    expect(problemsOf(updateUser, { workEmail: address })).toEqual(at("/workEmail"));
+    expect(problemsOf(updateMyMembership, { workEmail: address })).toEqual(at("/workEmail"));
+    expect(problemsOf(updateCompany, { email: address })).toEqual(at("/email"));
+    expect(problemsOf(completeSetup, { name: "Alva Berg", email: address, password: "första-lösenordet-20" })).toEqual(at("/email"));
+  });
+
+  it("takes the longest address whose NFC form is as long", () => {
+    expect(emailAddress().safeParse(`${"a".repeat(64)}@${LONG_DOMAIN}`).success).toBe(true);
+    expect(emailAddress().safeParse(`${"\u00E4".repeat(64)}@${LONG_DOMAIN}`).success).toBe(true);
+    expect(emailAddress().safeParse(`${"a\u0308".repeat(32)}@example.com`).success).toBe(true);
+  });
+
   it("is the form of every address the API takes, refused with bad-format at its pointer", () => {
     for (const address of NOT_MAILBOXES) {
       expect(problemsOf(inviteUser, { name: "Karin Lund", email: address })).toContainEqual(["bad-format", "/email"]);
@@ -193,6 +226,29 @@ describe("an e-mail address", () => {
       expect(problemsOf(updateMyMembership, { workEmail: address })).toEqual([]);
       expect(problemsOf(updateCompany, { email: address })).toEqual([]);
       expect(problemsOf(completeSetup, { name: "Alva Berg", email: address, password: "första-lösenordet-20" })).toEqual([]);
+    }
+  });
+});
+
+describe("the pattern of an address in the API's description and the tools' schemas", () => {
+  it("holds only tokens that every regex dialect reads: no lookaround, no group of another kind, no \\u escape and no property class", () => {
+    const published = (z.toJSONSchema(emailAddress()) as { pattern?: unknown }).pattern;
+    expect(typeof published).toBe("string");
+    const pattern = String(published);
+    expect(pattern).toBe(MAILBOX_PATTERN);
+    expect(pattern).not.toMatch(/\(\?/);
+    expect(pattern).not.toMatch(/\\[uUpPdDwWsSbB]/);
+    expect(pattern).not.toMatch(/\\x\{/);
+    // The one escape is \xHH: a dot and a hyphen stand where they need none.
+    expect(pattern.match(/\\./g)?.every((escape) => escape === "\\x")).toBe(true);
+  });
+
+  it("is the server's own check, and reads the same without the u flag", () => {
+    expect(MAILBOX.source).toBe(new RegExp(MAILBOX_PATTERN, "u").source);
+    expect(MAILBOX.flags).toBe("u");
+    const plain = new RegExp(MAILBOX_PATTERN);
+    for (const address of [...MAILBOXES, ...NOT_MAILBOXES]) {
+      expect(plain.test(address), address).toBe(MAILBOX.test(address));
     }
   });
 });

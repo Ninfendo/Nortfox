@@ -16,7 +16,7 @@
 
 import { leaveCompany } from "@nortfox/contract";
 import { companyNotAvailable, handlePerson, inputMembership, ok } from "../../api/operation.ts";
-import { hasOtherAdministrator, holdMember, lastAdministrator, leaveMember, takesAdministrator } from "./members.ts";
+import { ADMINISTRATORS_TURN, hasOtherAdministrator, holdMember, lastAdministrator, leaveMember, takesAdministrator } from "./members.ts";
 
 export const leaveCompanyHandler = handlePerson(leaveCompany, async ({ tx, company }) => {
   const membership = inputMembership(company);
@@ -29,4 +29,4 @@ export const leaveCompanyHandler = handlePerson(leaveCompany, async ({ tx, compa
   }
   await leaveMember(tx, member);
   return ok({});
-});
+}, { turn: () => ADMINISTRATORS_TURN.shared });

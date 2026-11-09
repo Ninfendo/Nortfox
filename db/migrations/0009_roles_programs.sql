@@ -899,11 +899,15 @@ TO nortfox_app;
 --   the authority (keep_system_administrator, 0007).
 --
 -- No role but the owner may take an advisory lock (db/database.sql): the app
--- takes these through the functions alone, in the transaction's company.
--- Holding one only delays that company's invitations or changes of its
--- administrators, as holding its row would, which the app may too. Two
--- companies whose ids hash alike share a turn, which costs only a wait. A
--- transaction that works in no company takes none and is refused.
+-- takes these through the functions alone, in the transaction's company. A
+-- write that waits here holds a connection of the server's pool, so the
+-- server makes each such write wait for the same turn in its own process
+-- first, before it asks the pool for a connection
+-- (apps/server/src/api/turns.ts): a burst of one company's invitations never
+-- takes the pool from the other companies. Here a write waits only for one
+-- of another process. Two companies whose ids hash alike share a turn, which
+-- costs only a wait. A transaction that works in no company takes none and
+-- is refused.
 CREATE FUNCTION access.take_invitations_turn() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
