@@ -2,8 +2,9 @@
 
 // The purge of part 1's install-wide rows (db/README.md, the schema
 // access). The server calls access.purge_expired with its own clock every
-// ten minutes. It deletes what has passed: login challenges and setup links
-// past their end, sessions that ended more than 30 days ago or began more
+// ten minutes. It deletes what has passed: login challenges and unused setup
+// links past their end (a used link stays: it names the identity it made),
+// sessions that ended more than 30 days ago or began more
 // than 30 days and 12 hours ago, attempt counters whose hour has passed and
 // whose lock has ended, a person's idempotency keys 24 hours after they were
 // stored, and the account events past the 100 latest of each identity, but
@@ -15,6 +16,7 @@ import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { INSUFFICIENT_PRIVILEGE, expectError, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { addIdentity, asPerson, later, tokenHash } from "../../../test/identities.ts";
+import { expectNoSecretsAtRest } from "../../../test/secrets.ts";
 
 /** The server's clock when the rows are made. */
 const T0 = new Date("2090-03-15T10:00:00.000Z");
@@ -75,6 +77,28 @@ describe("the purge of expired login rows", () => {
     await purge(later(T0, 28 * DAY));
     expect(await left("access.login_challenges")).toEqual([]);
     expect(await left("access.setup_tokens")).toEqual([]);
+  });
+
+  it("keeps a used setup link past its end, since it names the identity it made, and the one it replaced", async () => {
+    const [made, replaced] = [await addIdentity(owner), await addIdentity(owner)];
+    const used = await insert("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, used_at, identity_id, replaces_identity_id) VALUES ($1, $2, $3, $2, $4, $5)", [
+      tokenHash(),
+      T0,
+      later(T0, 20),
+      made,
+      replaced,
+    ]);
+    const stopped = await insert("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at, superseded_at, replaces_identity_id) VALUES ($1, $2, $3, $2, $4)", [
+      tokenHash(),
+      T0,
+      later(T0, 20),
+      replaced,
+    ]);
+    await purge(later(T0, 19));
+    expect(await left("access.setup_tokens")).toEqual([used, stopped].sort());
+    await purge(later(T0, 365 * DAY));
+    expect(await left("access.setup_tokens")).toEqual([used]);
+    await expectNoSecretsAtRest(db);
   });
 
   it("deletes a session 30 days after it ended, and one that never ended 30 days after its 12 hours", async () => {

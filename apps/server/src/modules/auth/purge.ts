@@ -2,13 +2,15 @@
 
 // The purge (db/README.md, the schema access): every 10 minutes, the server
 // runs access.purge_expired with its own clock, which deletes the login rows
-// that have passed: challenges and setup links at their end, ended sessions
-// after 30 days, attempt counters after their window, a person's
-// idempotency keys after 24 hours, and the account events past the 100
-// latest of each identity. One run at a time, in a transaction of its own. A
-// run that fails goes to the reporter, and the next one still runs. The
-// timer does not keep the process alive, and stop() waits for a run that
-// has begun.
+// that have passed: challenges, and unused setup links, at their end (a used
+// link stays: it names the identity it made), ended sessions after 30 days,
+// attempt counters after their window, a person's idempotency keys after 24
+// hours, and the account events past the 100 latest of each identity. It
+// takes the setup links' lock first, as the setup functions do, so it and a
+// setup link's use take turns. One run at a time, in a transaction of its
+// own. A run that fails goes to the reporter, and the next one still runs.
+// The timer does not keep the process alive, and stop() waits for a run
+// that has begun.
 
 import { commit, type Database } from "../../db/database.ts";
 

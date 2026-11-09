@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The setup command: prints the setup link of an empty install, then exits
-// (setup.ts; deploy/README.md). It connects as nortfox_app, with the
+// The setup command: prints the setup link of an empty install, or a new
+// one that replaces an unfinished first identity whose answer was lost, then
+// exits (setup.ts; deploy/README.md). It connects as nortfox_app, with the
 // server's own settings: NORTFOX_DATABASE_URL, NORTFOX_DATABASE_PASSWORD_FILE
 // and NORTFOX_PUBLIC_ORIGIN. It only wires the tested parts together, like
 // main.ts. The link is printed to the operator, who keeps it to themselves.

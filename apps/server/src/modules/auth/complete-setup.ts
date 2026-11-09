@@ -13,11 +13,15 @@
 // uses at once take the link's lock in turn, so one makes the identity. A
 // link that is unknown, used, stopped by a newer one or past its 28 days
 // gets one answer, 422 setup-link-invalid. An install that has an identity
-// refuses, 422 install-not-empty.
+// refuses, 422 install-not-empty, but for one case (issue 54): a link that
+// the setup command made while the install's only identity, which a setup
+// link made, never confirmed its TOTP secret. Its use replaces that identity
+// in the same transaction (db/README.md, access.complete_setup), while it
+// still has not confirmed its secret.
 //
 // The answer gives the new TOTP secret, and sets no session: the person
 // signs in next, with the password and the secret's first code, which makes
-// it active.
+// it active. It is the only copy of the secret; no answer gives it again.
 
 import { randomUUID } from "node:crypto";
 import { completeSetup } from "@nortfox/contract";

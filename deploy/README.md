@@ -132,9 +132,13 @@ node apps/server/dist/setup-main.js
 pnpm --filter @nortfox/server setup-link
 ```
 
-It prints a link to the install's own origin, such as `https://nortfox.example/v1/setup/nfu_...`. The link works once, for 28 days, and a newer link stops the older one. On an install that has an identity, the command makes no link and says so: every other person is invited. Keep the link to yourself, as you would a password: whoever uses it first becomes the install's first person. The database keeps only its hash.
+It prints a link to the install's own origin, such as `https://nortfox.example/v1/setup/nfu_...`. The link works once, for 28 days, and a newer link stops the older one. On an install that has an identity, the command makes no link and says so: every other person is invited. There is one exception, below: a first answer that was lost. Keep the link to yourself, as you would a password: whoever uses it first becomes the install's first person. The database keeps only its hash.
 
 Send the link a `POST` with a JSON body that holds the person's `name`, `email` and `password`, of 12 to 1024 characters. The answer holds the person's TOTP secret as an `otpauth` URI: add it to an authenticator app. The answer sets no session. Then sign in with the e-mail address, the password and the app's code ([docs/api.md](../docs/api.md), Signing in).
+
+**When the first answer was lost.** The answer is the only copy of the TOTP secret. When it is lost before the secret is in an authenticator app, for example because the connection dropped, the first identity cannot pass the TOTP step, and the link works no more. Run the setup command again. While the install's only identity is the one the setup link made, and nobody has signed in with it, the command makes a new link and says that using it replaces that identity. Use the new link as the first, with the same e-mail address or another, and a password. The old identity is deleted, with its password and its TOTP secret, and the new answer holds a new secret. Keep that answer until the secret is in the app. You can do this as often as you need. Once someone has signed in with the identity, which confirms its secret, the command makes no new link, and a link made before refuses.
+
+The server keeps each used setup link, so it can tell the identity a setup link made from every other. Before migration 0008 the purge deleted a used link at its end, 28 days after the command made it. An install set up before 0008 keeps its used link when it still has it, and then the way out works for it too. Without that link, the command makes no new link.
 
 The server purges the login rows that have passed every 10 minutes ([db/README.md](../db/README.md)).
 

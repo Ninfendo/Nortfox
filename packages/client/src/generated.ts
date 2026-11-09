@@ -512,7 +512,7 @@ export interface Operations {
   /**
    * Make the first identity
    *
-   * Makes the install's first identity from its setup link, with a name, an e-mail address and a password of 12 to 1024 characters. The link works once, for 28 days, on an install with no identity, and a newer link stops it. The answer gives the new TOTP secret. It sets no session: the person signs in next, with the password and a code.
+   * Makes the install's first identity from its setup link, with a name, an e-mail address and a password of 12 to 1024 characters. The link works once, for 28 days, on an install with no identity, and a newer link stops it. A link that the setup command made while the install's only identity never confirmed its TOTP secret replaces that identity instead. The answer gives the new TOTP secret, and no answer gives it again. It sets no session: the person signs in next, with the password and a code.
    *
    * `POST /v1/setup/{token}`
    *
