@@ -12,6 +12,13 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    # @types/node keeps the major of Node, the one runtime. With the types of
+    # a later major, code that calls an API that Node 24 lacks passes the type
+    # check and fails on the server. The types move to a new major by hand, in
+    # the PR that moves Node (scripts/guards/node-types.ts).
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       npm:
         patterns: ["*"]
