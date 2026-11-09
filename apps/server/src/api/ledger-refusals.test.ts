@@ -84,6 +84,7 @@ describe("the ledger's refusals", () => {
             "user-not-invited",
             "already-member",
             "mail-not-configured",
+            "work-email-not-mailable",
             "invitation-link-invalid",
             "sign-in-required",
             "email-taken",

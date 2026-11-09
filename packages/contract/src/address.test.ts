@@ -18,7 +18,7 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { INVITED_PATTERN, MAILBOX, MAILBOX_PATTERN, emailAddress, foldsAsLowerCase, identityAddress, invitedAddress, writtenAsMailed } from "./address.ts";
+import { INVITED_PATTERN, MAILBOX, MAILBOX_PATTERN, emailAddress, foldsAsLowerCase, identityAddress, invitedAddress, localPartInAscii, writtenAsMailed } from "./address.ts";
 import { bodySchema } from "./operation.ts";
 import { completeSetup } from "./operations/auth.ts";
 import { createCompany, updateCompany, updateMyMembership } from "./operations/companies.ts";
@@ -62,19 +62,25 @@ const MAILED_FIELDS: readonly (readonly [string, (address: string) => string[][]
   ["updateMyMembership", (workEmail) => problemsOf(updateMyMembership, { workEmail }), "/workEmail"],
 ];
 
-/** completeSetup's address, which becomes the first identity's: no mail goes to it in this part. */
+/**
+ * completeSetup's address, which becomes the first identity's. It may have a
+ * local part outside ASCII: no mail goes to it in this part, since a
+ * disconnect refuses createCompany's copy of it as the owner's work e-mail
+ * when it has one (localPartInAscii).
+ */
 function setupProblems(email: string): string[][] {
   return problemsOf(completeSetup, { name: "Alva Berg", email, password: "första-lösenordet-20" });
 }
 
 /**
  * Addresses with a character whose case fold is not its lower case, also in
- * NFC: casefold() makes ß, ẞ and ſ into s, ς into σ, µ into μ, a ligature
- * into its letters, and a Cherokee letter into its capital. The identities'
- * unique index and the sign-in fold an address so, while a mail program and
- * IDNA2008 keep straße.example and strasse.example apart. So each would share
- * its identity's place with another mailbox, and is refused wherever an
- * address can become an identity's (the owner's choice of 2026-11-09).
+ * NFC: casefold() makes ß and ẞ into ss, ſ into s, ς into σ, µ into μ, a
+ * ligature into its letters, and a Cherokee letter into its capital. The
+ * identities' unique index and the sign-in fold an address so, while a mail
+ * program and IDNA2008 keep straße.example and strasse.example apart. So
+ * each would share its identity's place with another mailbox, and is refused
+ * wherever an address can become an identity's (the owner's choice of
+ * 2026-11-09).
  */
 const FOLD_TWINS: readonly (readonly [string, string])[] = [
   ["ß in the domain", "anna.lind@straße.example"],
@@ -352,7 +358,7 @@ describe("the owner's rules for an address (2026-11-09)", () => {
       expect(invitedAddress().safeParse(address).success).toBe(false);
     });
 
-    it.each(WIDE_MAILBOXES)("still takes %j at completeSetup and as the company's address, where no mail goes in this part", (address) => {
+    it.each(WIDE_MAILBOXES)("still takes %j at completeSetup and as the company's address, which get no mail of their own in this part", (address) => {
       expect(setupProblems(address)).toEqual([]);
       expect(problemsOf(updateCompany, { email: address })).toEqual([]);
     });
@@ -362,6 +368,15 @@ describe("the owner's rules for an address (2026-11-09)", () => {
         for (const [operation, problems] of MAILED_FIELDS) {
           expect(problems(address), operation).toEqual([]);
         }
+      }
+    });
+
+    it("gives the disconnect's check of a stored work e-mail, localPartInAscii, the fields' answer", () => {
+      for (const address of WIDE_MAILBOXES) {
+        expect(localPartInAscii(address), address).toBe(false);
+      }
+      for (const address of [...MAILBOXES, "karin@bücher.example"]) {
+        expect(localPartInAscii(address), address).toBe(true);
       }
     });
 

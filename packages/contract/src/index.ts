@@ -148,7 +148,7 @@ export {
 } from "./password.ts";
 export { isPersonal, personal, personalPointers } from "./fields.ts";
 export { NOT_IN_A_NAME } from "./text.ts";
-export { ATEXT, ATEXT_END, EMAIL_MAX, INVITED_PATTERN, MAILBOX, MAILBOX_PATTERN, WIDE, emailAddress, foldsAsLowerCase, identityAddress, invitedAddress } from "./address.ts";
+export { ATEXT, ATEXT_END, EMAIL_MAX, INVITED_PATTERN, MAILBOX, MAILBOX_PATTERN, WIDE, emailAddress, foldsAsLowerCase, identityAddress, invitedAddress, localPartInAscii } from "./address.ts";
 export { FIELD_PROBLEM_CODES, FieldProblem, PROBLEM_CODES, Problem, fieldIssues, jsonPointer } from "./problem.ts";
 export type { FieldIssue, FieldProblemCode, JsonValue, ProblemCode } from "./problem.ts";
 export { REGISTRY } from "./registry.ts";

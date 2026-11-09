@@ -295,7 +295,9 @@ export const disconnectUserIdentity = defineOperation({
     "Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, " +
     "to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, " +
     "and is invited again; their sessions end, and their work contacts are erased. " +
-    `${SENDS} An invited member gets 422 user-invited. The company always keeps an active system administrator.`,
+    `${SENDS} An invited member gets 422 user-invited. ` +
+    "A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. " +
+    "The company always keeps an active system administrator.",
   params: MemberPath,
   output: Member,
   permission: "users:admin",

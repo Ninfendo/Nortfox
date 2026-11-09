@@ -15,15 +15,20 @@
 //   relay without SMTPUTF8 must not take another (RFC 6531): inviteUser's
 //   address and the work e-mail refuse one, 400 bad-format. Its domain may be
 //   internationalised: nodemailer sends it as its A-label. completeSetup
-//   still takes such a local part, since no mail goes to it in this part.
+//   still takes such a local part. createCompany copies it into the owner's
+//   work e-mail, as migration 0009 filled the work e-mail, so
+//   disconnectUserIdentity refuses such a work e-mail, 422
+//   work-email-not-mailable, sends no mail and changes nothing. So no mail
+//   goes to such a local part in this part.
 //
 // The sign-in keeps folding: a known identity signs in with its address in
 // any letter case, also with ß for ss.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { appPool, problemIn, type AppPool } from "../../../test/api.ts";
+import { appPool, problemIn, type AppPool, type ProblemBody } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
+import { asMember } from "../../../test/memberships.ts";
 import {
   TEST_ORIGIN,
   addSignInIdentity,
@@ -37,8 +42,10 @@ import {
   testClock,
   writeAs,
   type SignInApp,
+  type TestIdentity,
 } from "../../../test/sign-in.ts";
-import { apiCompany, calls, newMember, type ApiCompany } from "../../../test/users.ts";
+import { apiCompany, calls, newMember, sessionIn, type ApiCompany } from "../../../test/users.ts";
+import { base32Decode } from "../../auth/totp.ts";
 import { createSetupLink } from "../../setup.ts";
 
 /** Addresses with a character whose case fold is not its lower case, each with an ASCII local part or not. */
@@ -55,9 +62,40 @@ const FOLD_TWINS = [
 /** Addresses with a character outside ASCII in the local part, and none whose fold is not its lower case. */
 const WIDE_LOCAL_PARTS = ["kärin.lund@example.com", "åsa.lind@exämple.test", "\u{212A}arin.lund@example.com"];
 
+/** More local parts outside ASCII: a symbol, an emoji and punctuation. */
+const SYMBOL_LOCAL_PARTS = ["\u{1F600}@example.com", "anna☃berg@example.com", "o’brien@example.com", "col·lecta@example.com"];
+
 /** The one field problem of an address that the rules refuse. */
 function badFormatAt(pointer: string): unknown {
   return [{ code: "bad-format", detail: expect.stringContaining(`The field ${pointer} does not have the format email`) as unknown, pointer, data: { format: "email" } }];
+}
+
+/** A disconnect's refusal of a work e-mail whose local part is outside ASCII. */
+const NOT_MAILABLE: ProblemBody = {
+  type: "about:blank",
+  title: "Unprocessable Content",
+  status: 422,
+  detail:
+    "The member's work e-mail address has its local part, before the @, outside ASCII, so NortFox sends no invitation to it. Set a work e-mail address with its local part in ASCII with updateUser first.",
+  code: "work-email-not-mailable",
+  pointer: "/memberId",
+};
+
+/** Every row that a refused disconnect could have changed. */
+async function rowsOf(superuser: Client): Promise<string> {
+  const found = await superuser.query<{ rows: string }>(
+    `SELECT pg_catalog.jsonb_build_array(
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.memberships AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.invitations AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.invitation_links AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.contact_company_id, t.membership_id) FROM access.membership_contacts AS t),
+       (SELECT pg_catalog.jsonb_agg(t ORDER BY t.id) FROM access.sessions AS t WHERE t.ended_at IS NOT NULL),
+       (SELECT count(*) FROM audit.history),
+       (SELECT count(*) FROM ledger.idempotency_keys),
+       (SELECT count(*) FROM access.idempotency_keys)
+     )::text AS rows`,
+  );
+  return found.rows[0]?.rows ?? "";
 }
 
 describe("the owner's rules for an e-mail address, by the API", () => {
@@ -135,6 +173,23 @@ describe("the owner's rules for an e-mail address, by the API", () => {
     expect(changed.workEmail).toBe("alva.arbete@exämple.test");
   });
 
+  it("disconnectUserIdentity refuses a work e-mail whose local part is outside ASCII, which createCompany's copy can hold, mails nothing and changes nothing", async () => {
+    const member = await newMember(server, { app, owner }, company);
+    for (const workEmail of [...WIDE_LOCAL_PARTS, ...SYMBOL_LOCAL_PARTS]) {
+      // As createCompany copies the person's own address, and as migration 0009 filled the work e-mail.
+      await asMember(app, company.id, company.asOwner, "UPDATE access.membership_contacts SET work_email = $2 WHERE membership_id = $1", [member.id, workEmail]);
+      const before = await rowsOf(superuser);
+      const mails = server.mail.messages.length;
+      expect(await jsonOf<ProblemBody>(await calls.disconnectUserIdentity(server, company.session, member.id), 422), workEmail).toEqual(NOT_MAILABLE);
+      expect(await rowsOf(superuser), workEmail).toEqual(before);
+      expect(server.mail.messages, workEmail).toHaveLength(mails);
+    }
+    // The way on that the refusal names: a work e-mail in ASCII before the @, set with updateUser. The disconnect then mails it.
+    expect((await calls.updateUser(server, company.session, member.id, { workEmail: "karin.arbete@exämple.test" })).status).toBe(200);
+    expect((await calls.disconnectUserIdentity(server, company.session, member.id)).status).toBe(200);
+    expect(server.mail.to("karin.arbete@exämple.test")).toHaveLength(1);
+  });
+
   it("signs a known identity in with its address in any letter case, also with ß for ss, as before", async () => {
     const person = await addSignInIdentity(owner, { email: "anna.strasse@example.com" });
     for (const identifier of ["anna.strasse@example.com", "ANNA.STRASSE@EXAMPLE.COM", "Anna.Straße@Example.com", "anna.\u{17F}tra\u{DF}e@example.com"]) {
@@ -180,5 +235,58 @@ describe("the owner's rules for the first identity's address, by completeSetup",
       201,
     );
     expect(made.user.email).toBe("åsa.lind@exämple.test");
+  });
+});
+
+describe("the owner's rule of ASCII at a disconnect of the first identity, whose address completeSetup took", () => {
+  let db: TestDatabase;
+  let app: Client;
+  let owner: Client;
+  let superuser: Client;
+  let pool: AppPool;
+  let server: SignInApp;
+
+  beforeAll(async () => {
+    db = await freshDatabase();
+    app = await db.connect("app");
+    owner = await db.connect("owner");
+    superuser = await db.admin();
+    pool = appPool(db, 4);
+    server = signInApp(pool.database, { clock: testClock(new Date()) });
+  });
+
+  afterAll(async () => {
+    await pool.pool.end();
+    await db.close();
+  });
+
+  it("refuses to disconnect the owner while their work e-mail, createCompany's copy of their address, has a local part outside ASCII, and mails nothing", async () => {
+    const password = "första-lösenordet-20";
+    const link = await createSetupLink(pool.database, TEST_ORIGIN, server.clock.now());
+    const path = `/v1/setup/${new URL(link.url).pathname.split("/").at(-1) ?? ""}`;
+    const made = await jsonOf<{ user: { id: string; email: string }; totpEnrolment: { otpauthUri: string } }>(
+      await postAsBrowser(server, path, { name: "Åsa Lind", email: "åsa.lind@exämple.test", password }),
+      201,
+    );
+    const totpSecret = base32Decode(new URL(made.totpEnrolment.otpauthUri).searchParams.get("secret") ?? "") ?? Buffer.alloc(0);
+    const first: TestIdentity = { id: made.user.id, email: made.user.email, password, totpSecret };
+    const company = await apiCompany(server, { app, owner }, "Testbolaget Alfa AB", first);
+    const contacts = await superuser.query<{ work_email: string }>("SELECT work_email FROM access.membership_contacts WHERE membership_id = $1", [company.membership]);
+    expect(contacts.rows).toEqual([{ work_email: "åsa.lind@exämple.test" }]);
+    // A second system administrator disconnects the owner.
+    const admin = await newMember(server, { app, owner }, company);
+    expect((await calls.updateUser(server, company.session, admin.id, { adminLevel: "admin" })).status).toBe(200);
+    const session = await sessionIn(server, admin.person, company.id);
+    const before = await rowsOf(superuser);
+    const mails = server.mail.messages.length;
+    expect(await jsonOf<ProblemBody>(await calls.disconnectUserIdentity(server, session, company.membership), 422)).toEqual(NOT_MAILABLE);
+    expect(await rowsOf(superuser)).toEqual(before);
+    expect(server.mail.messages).toHaveLength(mails);
+    // With a work e-mail in ASCII before the @, the disconnect and a resend mail that address alone.
+    expect((await calls.updateUser(server, session, company.membership, { workEmail: "asa.lind@exämple.test" })).status).toBe(200);
+    expect((await calls.disconnectUserIdentity(server, session, company.membership)).status).toBe(200);
+    expect((await calls.resendInvitation(server, session, company.membership)).status).toBe(204);
+    expect(server.mail.to("asa.lind@exämple.test")).toHaveLength(2);
+    expect(server.mail.to("åsa.lind@exämple.test")).toEqual([]);
   });
 });

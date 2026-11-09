@@ -44,8 +44,12 @@
 // has a local part in ASCII (INVITED_PATTERN): a relay that does not offer
 // SMTPUTF8 must not take another (RFC 6531), and nodemailer sends it anyway.
 // Its domain may be internationalised: nodemailer sends it as its A-label.
-// The company's own address (emailAddress) keeps neither rule: it is no
-// identity's, and NortFox sends it no mail.
+// completeSetup's address may have another local part: no mail goes to the
+// person's own address in this part. createCompany copies it into the
+// owner's work e-mail as it is, so a disconnect checks the work e-mail with
+// localPartInAscii before it mails it. The company's own address
+// (emailAddress) keeps neither rule: it is no identity's, and NortFox sends
+// it no mail.
 //
 // The pattern (MAILBOX_PATTERN) is the server's check, and the API's
 // description and the tools' schemas publish it. It holds only the tokens
@@ -136,6 +140,17 @@ export const INVITED_PATTERN = `^([${ATEXT}]+[.])*[${ATEXT}]*[${ATEXT_END}]@${LA
 /** One mailbox with a local part in ASCII (INVITED_PATTERN), as the server checks it. */
 const INVITED = new RegExp(INVITED_PATTERN, "u");
 
+/**
+ * Whether NortFox may send mail to `address`, one mailbox: its local part is
+ * in ASCII (INVITED_PATTERN), the owner's rule of 2026-11-09. The fields of
+ * an address that NortFox mails keep it (invitedAddress), and a disconnect
+ * checks a stored work e-mail with it before it changes anything, since
+ * createCompany's copy of the person's own address can hold another.
+ */
+export function localPartInAscii(address: string): boolean {
+  return INVITED.test(address);
+}
+
 /** The longest address: RFC 5321's path of 256 octets, less its angle brackets. */
 export const EMAIL_MAX = 254;
 
@@ -218,7 +233,7 @@ const MAILED_AS_WRITTEN: FormRule = {
 
 /** The local part is in ASCII (INVITED_PATTERN): the owner's rule of 2026-11-09 for an address that NortFox sends mail to. */
 const LOCAL_PART_IN_ASCII: FormRule = {
-  holds: (address) => INVITED.test(address),
+  holds: localPartInAscii,
   message:
     "does not have the format email: NortFox sends mail to it, so its local part, before the @, is in ASCII, which a mail server takes also without SMTPUTF8. Its domain may be in Unicode.",
 };
@@ -271,11 +286,13 @@ export function emailAddress(): z.ZodEmail {
 }
 
 /**
- * An address that can become an identity's, which NortFox sends no mail to
- * in this part: completeSetup's. An e-mail address (emailAddress) whose
- * every character folds as its lower case does (foldsAsLowerCase), the
- * owner's rule of 2026-11-09. Its local part may hold characters outside
- * ASCII.
+ * An address that can become an identity's: completeSetup's. An e-mail
+ * address (emailAddress) whose every character folds as its lower case does
+ * (foldsAsLowerCase), the owner's rule of 2026-11-09. Its local part may hold
+ * characters outside ASCII: no mail goes to the person's own address in this
+ * part. createCompany copies it into the owner's work e-mail, and a
+ * disconnect refuses that copy when its local part is outside ASCII
+ * (localPartInAscii).
  */
 export function identityAddress(): z.ZodEmail {
   return addressOf(MAILBOX_PATTERN, [STORED_AS_MAILBOX, MAILED_AS_WRITTEN, FOLDS_AS_LOWER_CASE]);

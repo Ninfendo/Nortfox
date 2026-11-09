@@ -23,7 +23,12 @@
 //   keeps the admin level and the programs, and the company its last active
 //   system administrator: the check takes the administrators' turn alone, so
 //   a change that takes another one away commits first or waits for the
-//   disconnect, and the one of the two that loses sends no mail.
+//   disconnect, and the one of the two that loses sends no mail. A work
+//   e-mail with its local part outside ASCII is refused before anything
+//   changes (work-email-not-mailable), the owner's rule of 2026-11-09:
+//   createCompany's copy of the person's own address, and 0009's fill, can
+//   hold one, which the fields refuse. So no invitation holds such an
+//   address, and resendInvitation never mails one either.
 //
 // With no mail set up for the install, each is refused first, with 422
 // mail-not-configured, before it reads or changes anything: the setting is
@@ -31,13 +36,13 @@
 // inviteUser and disconnectUserIdentity hold the member's name, so their
 // keys are kept outside every company table.
 
-import { disconnectUserIdentity, inviteUser, resendInvitation } from "@nortfox/contract";
+import { disconnectUserIdentity, inviteUser, localPartInAscii, resendInvitation } from "@nortfox/contract";
 import { handleData, ok, refused, type RuleRefusal } from "../../api/operation.ts";
 import type { Queryable } from "../../db/database.ts";
 import { MAIL_NOT_CONFIGURED, type InstallMail } from "../../mail/mailer.ts";
 import { invitationLink, invitationMail } from "../../mail/texts.ts";
 import { INVITATIONS_TURN, addInvitation, addInvitedMember, addressInCompany, latestInvitation, takeInvitationsTurn, type InvitationTo } from "../memberships/invitations.ts";
-import { ADMINISTRATORS_TURN, disconnectMember, hasOtherAdministrator, heldMemberNow, holdMember, lastAdministrator, takesAdministrator } from "../memberships/members.ts";
+import { ADMINISTRATORS_TURN, disconnectMember, hasOtherAdministrator, heldMemberNow, holdMember, invitedAgain, lastAdministrator, takesAdministrator } from "../memberships/members.ts";
 import { userNotFound } from "./users.ts";
 
 const ALREADY_MEMBER: RuleRefusal = {
@@ -55,6 +60,13 @@ const NOT_INVITED: RuleRefusal = {
 const NO_IDENTITY: RuleRefusal = {
   code: "user-invited",
   detail: "The member has not accepted the invitation yet, so no identity is connected.",
+  pointer: "/memberId",
+};
+
+const WORK_EMAIL_NOT_MAILABLE: RuleRefusal = {
+  code: "work-email-not-mailable",
+  detail:
+    "The member's work e-mail address has its local part, before the @, outside ASCII, so NortFox sends no invitation to it. Set a work e-mail address with its local part in ASCII with updateUser first.",
   pointer: "/memberId",
 };
 
@@ -117,7 +129,12 @@ export const disconnectUserIdentityHandler = handleData(disconnectUserIdentity, 
   if (takesAdministrator(member, { status: "invited", adminLevel: member.adminLevel }) && !(await hasOtherAdministrator(tx, member, "alone"))) {
     return lastAdministrator(member);
   }
-  const to = await disconnectMember(tx, member);
+  const to = await invitedAgain(tx, member);
+  // The owner's rule of 2026-11-09: NortFox mails only a local part in ASCII. createCompany's copy of the person's own address, and 0009's fill, can hold another.
+  if (!localPartInAscii(to.email)) {
+    return refused(WORK_EMAIL_NOT_MAILABLE);
+  }
+  await disconnectMember(tx, member);
   const at = now();
   await sendInvitation(tx, mail, context.company.companyId, member.id, to, at);
   return ok(await heldMemberNow(tx, member, at));

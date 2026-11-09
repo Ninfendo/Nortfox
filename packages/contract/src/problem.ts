@@ -131,6 +131,7 @@ export const PROBLEM_CODES = {
   "user-not-invited": 422,
   "already-member": 422,
   "mail-not-configured": 422,
+  "work-email-not-mailable": 422,
   "invitation-link-invalid": 422,
   "sign-in-required": 422,
   "email-taken": 422,

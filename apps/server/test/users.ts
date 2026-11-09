@@ -49,9 +49,9 @@ export async function sessionIn(server: SignInApp, person: TestIdentity, company
   return session;
 }
 
-/** A new person makes a company with createCompany, and chooses it. */
-export async function apiCompany(server: SignInApp, clients: Clients, name = "Testbolaget Alfa AB"): Promise<ApiCompany> {
-  const creator = await addSignInIdentity(clients.owner);
+/** A new person, or `person`, makes a company with createCompany, and chooses it. */
+export async function apiCompany(server: SignInApp, clients: Clients, name = "Testbolaget Alfa AB", person?: TestIdentity): Promise<ApiCompany> {
+  const creator = person ?? (await addSignInIdentity(clients.owner));
   server.clock.advance(MINUTE);
   const signedIn = await signIn(server, creator);
   const made = await jsonOf<{ id: string; name: string; organizationNumber: string; databaseNumber: number }>(

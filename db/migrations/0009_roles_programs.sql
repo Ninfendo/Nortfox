@@ -562,10 +562,10 @@ ALTER TABLE access.identities ADD CONSTRAINT identities_name_one_line CHECK (nam
 -- The owner's rule of 2026-11-09: an address that can become an identity's
 -- holds no character whose case fold is not its lower case. The unique
 -- index of the identities, find_login and identifier_form fold an address
--- with casefold() under pg_unicode_fast, which makes ß, ẞ and ſ into s, ς
--- into σ, µ into μ, a ligature into its letters and a Cherokee letter into
--- its capital; IDNA2008 and a mail program keep straße.example and
--- strasse.example apart. So such an address would take another mailbox's
+-- with casefold() under pg_unicode_fast, which makes ß and ẞ into ss, ſ
+-- into s, ς into σ, µ into μ, a ligature into its letters and a Cherokee
+-- letter into its capital; IDNA2008 and a mail program keep straße.example
+-- and strasse.example apart. So such an address would take another mailbox's
 -- identity, or tell its holder that the other has one. The check is each
 -- character of the address in NFC, alone, so the final sigma of lower() has
 -- no part in it: its fold, in NFC, is its lower case, in NFC. PostgreSQL's

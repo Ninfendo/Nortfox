@@ -249,16 +249,12 @@ export async function removeMember(tx: Queryable, member: HeldMember): Promise<v
 }
 
 /**
- * Disconnects a held active or inactive member's identity: the membership
- * is invited again, with no person, in one update, which the
- * behandlingshistorik holds, and keeps its admin level, its idle time and
- * its programs. The database ends its sessions. The old person's work
- * contacts are erased. Gives whom the new invitation goes to: the person's
- * name, and the member's work e-mail address, read before it is erased.
- * Every active and inactive member has a work e-mail, so a member without
- * one is a fault of the server.
+ * Whom a disconnect of a held active or inactive member invites again: the
+ * person's name, and the member's work e-mail address, read before the
+ * disconnect erases it. Every active and inactive member has a work e-mail,
+ * so a member without one is a fault of the server.
  */
-export async function disconnectMember(tx: Queryable, member: HeldMember): Promise<{ readonly name: string; readonly email: string }> {
+export async function invitedAgain(tx: Queryable, member: HeldMember): Promise<{ readonly name: string; readonly email: string }> {
   const found = await tx.query<{ name: string; email: string }>(
     `SELECT p.name, c.work_email AS email FROM access.company_people($1) AS p
      JOIN access.membership_contacts AS c ON c.contact_company_id = $2 AND c.membership_id = $3
@@ -269,9 +265,20 @@ export async function disconnectMember(tx: Queryable, member: HeldMember): Promi
   if (to === undefined) {
     throw new Error(`The member ${member.id} has no person with a work e-mail address in the company to invite again.`);
   }
+  return to;
+}
+
+/**
+ * Disconnects a held active or inactive member's identity: the membership
+ * is invited again, with no person, in one update, which the
+ * behandlingshistorik holds, and keeps its admin level, its idle time and
+ * its programs. The database ends its sessions. The old person's work
+ * contacts are erased, so the caller reads whom to invite first
+ * (invitedAgain).
+ */
+export async function disconnectMember(tx: Queryable, member: HeldMember): Promise<void> {
   await tx.query("UPDATE access.memberships SET status = 'invited', user_id = NULL WHERE id = $1", [member.id]);
   await tx.query("DELETE FROM access.membership_contacts WHERE contact_company_id = $1 AND membership_id = $2", [member.companyId, member.id]);
-  return to;
 }
 
 /**

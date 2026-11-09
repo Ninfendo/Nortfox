@@ -11,7 +11,7 @@ import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 import type { Queryable } from "../../db/database.ts";
 import { addInvitation } from "./invitations.ts";
-import { disconnectMember } from "./members.ts";
+import { invitedAgain } from "./members.ts";
 
 /** A transaction that answers each statement with the rows of the first text it holds, and none for any other. */
 function answering(rows: Readonly<Record<string, readonly unknown[]>>): Queryable {
@@ -54,7 +54,7 @@ describe("a disconnect", () => {
       adminLevel: null,
       idleTimeoutMinutes: 120,
     } as const;
-    await expect(disconnectMember(tx, member)).rejects.toThrow(
+    await expect(invitedAgain(tx, member)).rejects.toThrow(
       "The member 4f3e2d1c-0b9a-4876-9543-210fedcba987 has no person with a work e-mail address in the company to invite again.",
     );
     expect(statements).toHaveLength(1);
