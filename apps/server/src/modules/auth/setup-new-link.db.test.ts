@@ -11,7 +11,8 @@
 // new 201. Once the identity has confirmed its secret, nothing changes: the
 // command makes no link, and a link made before refuses with
 // install-not-empty. The same holds while the install has another identity,
-// but one that an earlier setup link replaced. I1 holds: a link works once,
+// but one that an earlier setup link replaced, and once the unfinished
+// identity is deleted another way. I1 holds: a link works once,
 // and a newer link stops an older one. The races run through the API against
 // real PostgreSQL, in parallel sessions of the app's pool, the purge's among
 // them: the old identity's password step and its TOTP step against the use,
@@ -406,6 +407,21 @@ describe("a new setup link once the first identity confirmed its TOTP secret, or
     ]);
     expect(await loginRowsOf(install, person.id)).toEqual({ passwords: 1, totpSecrets: ["pending"], challenges: 0, sessions: 0, devices: 0 });
     await signIn(install.server, person);
+    await scanned(install);
+  });
+
+  it("is not made once the setup link's own unfinished identity is deleted another way, and a link made before refuses", async () => {
+    const install = await emptyInstall();
+    const person = await firstIdentity(install);
+    const before = await newLink(install);
+    expect(before.replaces).toBe(true);
+    // Deleted as the person, as a later part could: a deleted identity is no unfinished one, and no link replaces it.
+    const app = await install.db.connect("app");
+    await deleteIdentity(app, person.id);
+    await expect(newLink(install)).rejects.toThrow(NO_LINK);
+    expect(await problemIn(await complete(install.server, before.token, { password: SECOND_PASSWORD }))).toEqual(INSTALL_NOT_EMPTY);
+    expect((await identitiesOf(install)).map((row) => [row.id, row.status])).toEqual([[person.id, "deleted"]]);
+    expect((await linksOf(install)).map((link) => link.used)).toEqual([true, false]);
     await scanned(install);
   });
 

@@ -10,7 +10,10 @@
 // once. The times are the server's clock, which the server passes in, so a
 // test moves it. The set-once columns never change once they are set. The
 // setup functions take the setup links' table lock, and the key check the
-// install keys', so two at once come one after the other. A setup link made
+// install keys', so two at once come one after the other. The setup
+// functions run at READ COMMITTED only (read_committed_only): at REPEATABLE
+// READ or SERIALIZABLE their checks would read the snapshot from before the
+// lock, and leave two live links and two first identities. A setup link made
 // while the first identity never confirmed its TOTP secret replaces that
 // identity (setup-new-link.db.test.ts has the whole flow and its races).
 
@@ -28,7 +31,9 @@ import {
   expectError,
   expectRefusal,
   freshDatabase,
+  inTransaction,
   untilWaitingForLock,
+  type IsolationLevel,
   type TestDatabase,
 } from "../../../test/database.ts";
 import {
@@ -399,6 +404,95 @@ describe("the table locks of the setup links and the install keys", () => {
     await expectRefusal(Promise.reject("error" in refused ? (refused.error as Error) : new Error("The second use made an identity.")), "install_not_empty", {});
     expect(await identityCount()).toBe(1);
   });
+});
+
+describe("the isolation level of the setup functions", () => {
+  const END = later(T0, 28 * 24 * 60);
+  const SNAPSHOT_LEVELS = ["repeatable read", "serializable"] as const satisfies readonly IsolationLevel[];
+  const CREATE = "SELECT link_id FROM access.create_setup_token($1, $2, $3)";
+  const COMPLETE = "SELECT access.complete_setup($1, $2, $3, 'Alva Berg', $4, $5, $6, $7) AS done";
+
+  /** The input of a link's use at `at`. */
+  function use(link: Buffer, at: Date): unknown[] {
+    return [link, at, randomUUID(), someEmail(), phcString(), randomUUID(), sealedSecret()];
+  }
+
+  /** An empty install of its own, with two connections as the app and one as the owner. */
+  async function install(): Promise<{ db: TestDatabase; app: Client; other: Client; owner: Client }> {
+    const db = await freshDatabase();
+    return { db, app: await db.connect("app"), other: await db.connect("app"), owner: await db.connect("owner") };
+  }
+
+  async function liveLinks(owner: Client): Promise<Buffer[]> {
+    const found = await owner.query<{ token_hash: Buffer }>("SELECT token_hash FROM access.setup_tokens WHERE used_at IS NULL AND superseded_at IS NULL");
+    return found.rows.map((row) => row.token_hash);
+  }
+
+  async function identityCount(owner: Client): Promise<number> {
+    return (await owner.query("SELECT 1 FROM access.identities")).rowCount ?? 0;
+  }
+
+  it("refuses to make or use a setup link at REPEATABLE READ and SERIALIZABLE, with the level, and changes nothing", async () => {
+    const { db, app, owner } = await install();
+    try {
+      const at = (isolation: IsolationLevel, sql: string, params: readonly unknown[]): Promise<unknown> =>
+        inTransaction(app, { channel: "rest", isolation }, () => app.query(sql, [...params]));
+      const link = tokenHash();
+      await anonymously(app, CREATE, [link, T0, END]);
+      for (const isolation of SNAPSHOT_LEVELS) {
+        await expectRefusal(at(isolation, CREATE, [tokenHash(), later(T0, 1), END]), "read_committed_only", { isolation });
+        await expectRefusal(at(isolation, COMPLETE, use(link, later(T0, 1))), "read_committed_only", { isolation });
+      }
+      expect(await liveLinks(owner)).toEqual([link]);
+      expect(await identityCount(owner)).toBe(0);
+      // READ UNCOMMITTED is READ COMMITTED in PostgreSQL, and both functions work at it.
+      const newer = tokenHash();
+      await at("read uncommitted", CREATE, [newer, later(T0, 2), END]);
+      expect(await liveLinks(owner)).toEqual([newer]);
+      await at("read uncommitted", COMPLETE, use(newer, later(T0, 3)));
+      expect(await identityCount(owner)).toBe(1);
+      await expectNoSecretsAtRest(db);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it.each(SNAPSHOT_LEVELS)(
+    "leaves no second live link and no second first identity when a transaction at %s took its snapshot before the other's call",
+    async (isolation) => {
+      const { db, app, other, owner } = await install();
+      try {
+        /** Runs `sql` in a transaction at the level whose snapshot was taken before `meanwhile` committed, and commits it. */
+        async function afterSnapshot(meanwhile: () => Promise<unknown>, sql: string, params: readonly unknown[]): Promise<void> {
+          await begin(app, { channel: "rest", isolation });
+          try {
+            await app.query("SELECT 1");
+            await meanwhile();
+            await expectRefusal(app.query(sql, [...params]), "read_committed_only", { isolation });
+          } finally {
+            // COMMIT ends a failed transaction too, with a rollback.
+            await app.query("COMMIT");
+          }
+        }
+        const [made, late] = [tokenHash(), tokenHash()];
+        await afterSnapshot(() => anonymously(other, CREATE, [made, T0, END]), CREATE, [late, later(T0, 1), END]);
+        expect(await liveLinks(owner)).toEqual([made]);
+        // A second live link, as only the owner could leave it now.
+        await owner.query("INSERT INTO access.setup_tokens (token_hash, created_at, expires_at) VALUES ($1, $2, $3)", [late, T0, END]);
+        await afterSnapshot(
+          async () => {
+            expect(await first(anonymously(other, COMPLETE, use(made, later(T0, 2))))).toEqual({ done: true });
+          },
+          COMPLETE,
+          use(late, later(T0, 2)),
+        );
+        expect(await identityCount(owner)).toBe(1);
+        await expectNoSecretsAtRest(db);
+      } finally {
+        await db.close();
+      }
+    },
+  );
 });
 
 describe("the lookup functions", () => {
@@ -1086,6 +1180,7 @@ describe("the lookup functions", () => {
         });
       }
       await expectError(owner.query("UPDATE access.setup_tokens SET used_at = $2 WHERE id = $1", [stopped.rows[0]?.id, T0]), CHECK_VIOLATION, /setup_tokens_used_or_superseded/);
+      await expectNoSecretsAtRest(db);
     });
   });
 });

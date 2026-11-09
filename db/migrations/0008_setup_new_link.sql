@@ -11,7 +11,8 @@
 -- opens at the same time; and a new identity comes from the new link's
 -- input, with a new pending secret. Once the identity has confirmed its
 -- secret, nothing changes: the setup command makes no link, and a link made
--- before refuses (install_not_empty). See db/README.md, the schema access.
+-- before refuses (install_not_empty). Both setup functions now run at READ
+-- COMMITTED only (read_committed_only). See db/README.md, the schema access.
 
 -- The identities of the setup links -------------------------------------------
 --
@@ -79,8 +80,12 @@ END;
 -- (above), and the link names it; otherwise it refuses (install_not_empty).
 -- It takes the setup links' table lock, as complete_setup does, so the two
 -- never overlap: the install has at most one live link, and no identity
--- comes between the check and the link. It takes the place of 0006's, which
--- gave the id alone.
+-- comes between the check and the link. Both run at READ COMMITTED only
+-- (read_committed_only, as the ledger's writes): at REPEATABLE READ and
+-- SERIALIZABLE their checks would read the transaction's snapshot from
+-- before the lock, and miss a link or an identity that another transaction
+-- committed while they waited. It takes the place of 0006's, which gave the
+-- id alone.
 DROP FUNCTION access.create_setup_token(bytea, timestamptz, timestamptz);
 CREATE FUNCTION access.create_setup_token(token_hash bytea, at timestamptz, expires_at timestamptz)
 RETURNS TABLE (link_id uuid, replaces_identity boolean)
@@ -91,6 +96,7 @@ DECLARE
   replaced uuid;
   made uuid;
 BEGIN
+  PERFORM ledger.assert_read_committed();
   LOCK TABLE access.setup_tokens IN SHARE ROW EXCLUSIVE MODE;
   IF EXISTS (SELECT FROM access.identities) THEN
     replaced := access.unfinished_setup_identity();
@@ -117,7 +123,8 @@ $create$;
 -- and marks it deleted, with no e-mail address, personnummer or mobile
 -- number. Otherwise, such as when the identity has confirmed its secret
 -- since the link was made, it refuses (install_not_empty), and changes
--- nothing. The link is used last, with the identity it made.
+-- nothing. The link is used last, with the identity it made. It runs at
+-- READ COMMITTED only, as create_setup_token does (above).
 --
 -- It locks the identity's row first, then its challenges and then its
 -- secrets, in the order a TOTP step locks the last two, and checks the
@@ -141,6 +148,7 @@ DECLARE
   link uuid;
   replaced uuid;
 BEGIN
+  PERFORM ledger.assert_read_committed();
   LOCK TABLE access.setup_tokens IN SHARE ROW EXCLUSIVE MODE;
   SELECT t.id, t.replaces_identity_id INTO link, replaced
   FROM access.setup_tokens AS t
