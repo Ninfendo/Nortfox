@@ -17,6 +17,7 @@ import type { TestDatabase } from "./database.ts";
 import { addIdentity, addPassword, someEmail } from "./identities.ts";
 import { FakeMailSink, testMail } from "./mail.ts";
 import { expectNoSecretsAtRest, expectNoTokensButChallenges, type SecretsInClear } from "./secrets.ts";
+import type { ContextResolver } from "../src/api/context.ts";
 import type { AppOptions, ServerApp } from "../src/app.ts";
 import { sessionResolver } from "../src/auth/resolver.ts";
 import { seal } from "../src/auth/secret-box.ts";
@@ -74,6 +75,26 @@ export interface SignInAppOptions {
   readonly options?: Partial<AppOptions>;
   /** The install's mail: a fake sink of its own by default, or none set up. */
   readonly mail?: "none";
+  /** "on": /mcp takes a session's token as a bearer token, and gives its principal (sessionsOnMcp). */
+  readonly mcpSessions?: "on";
+}
+
+/**
+ * The resolver of `resolve` on /v1, and on /mcp too, for the tests that send
+ * one principal through both surfaces, until MCP's OAuth comes in a later
+ * part of slice 2c: on /mcp, a bearer token that is a session's token gives
+ * that session's principal, as `resolve` gives it on /v1 for the session
+ * cookie. The server's own resolver never reads a session on /mcp, and the
+ * part that brings MCP's tokens replaces this with real ones.
+ */
+export function sessionsOnMcp(resolve: ContextResolver): ContextResolver {
+  return (request, surface) => {
+    if (surface === "rest") {
+      return resolve(request, surface);
+    }
+    const token = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
+    return token === undefined ? Promise.resolve(undefined) : resolve(new Request(request.url, { headers: cookieHeader({ session: token }) }), "rest");
+  };
 }
 
 /** Every sign-in app that the test file made, for the secret scan at its end. */
@@ -154,9 +175,10 @@ export function signInApp(database: Database, options: SignInAppOptions = {}): S
   const bodies: string[] = [];
   const sent: SignInApp["sent"] = { passwords: [], codes: [] };
   const mail = new FakeMailSink();
+  const sessions = sessionResolver({ database, now: clock.now });
   const app = buildTestApp({
     database,
-    resolve: sessionResolver({ database, now: clock.now }),
+    resolve: options.mcpSessions === "on" ? sessionsOnMcp(sessions) : sessions,
     now: clock.now,
     allowedOrigins: [TEST_ORIGIN],
     passwordHasher: options.passwords ?? testPasswords(),

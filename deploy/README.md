@@ -144,7 +144,7 @@ The server purges the login rows that have passed every 10 minutes ([db/README.m
 
 ### The mail
 
-The server sends the invitations by mail, through the install's SMTP server. Set all three of these, or none:
+The server sends the invitations by mail, through the install's SMTP server. Set `NORTFOX_SMTP_URL` and `NORTFOX_MAIL_FROM` together, with `NORTFOX_SMTP_PASSWORD_FILE` when the mail server asks for a password, or set none of them. Any other mix stops the server at start, and it says which setting is wrong:
 
 | Setting | What it holds |
 | --- | --- |
