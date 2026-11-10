@@ -5,17 +5,20 @@
 // pool of connections.
 //
 // - Each request runs in one transaction. Before the work's first query, one
-//   statement sets the company, the actor, its kind and the channel with
-//   set_config(name, value, true), which does what SET LOCAL does and takes
-//   bind parameters. A person's transaction sets no company, and an
+//   statement sets the company, the actor, its kind, the channel and, for an
+//   integration, the via: the API token or the MCP client it acts through
+//   (decision 2). It uses set_config(name, value, true), which does what
+//   SET LOCAL does and takes bind parameters. An integration names a via,
+//   and a user or the system user none, or the transaction throws before any
+//   statement: the database refuses a write otherwise. A person's transaction sets no company, and an
 //   anonymous one only the channel: what a form leaves out is set to '',
 //   which the database reads as unset. A read or a write in a company takes
 //   its company only as a company access that the one membership function
 //   gave (modules/memberships/resolve.ts), for its actor: a company id by
 //   itself, any other object, and another person's access throw before any
-//   statement. The actor, its kind and the channel are set once and never
-//   changed: the database keeps the transaction's first actor and channel,
-//   and refuses another (a lookup sets its person once, later, with actAs).
+//   statement. The actor, its kind, its via and the channel are set once and
+//   never changed: the database keeps the transaction's first actor, via and
+//   channel, and refuses another (a lookup sets its person once, later, with actAs).
 //   The company is set at the start, or once later, from the one function's
 //   answer, from a live invitation link to accept it, or for a company the
 //   work makes (enter and inNewCompany, below).
@@ -29,7 +32,8 @@
 //   writes, at READ COMMITTED, and starts with only the channel set, since
 //   it finds the credential through the lookup functions before it knows the
 //   person. The work may then set the person once, with actAs: the actor and
-//   its kind, a user or an integration, never the internal system user. A
+//   its kind, a user or an integration with its via, never the internal
+//   system user. A
 //   second actAs throws. After that it may enter one company, with enter:
 //   only with a membership that the one membership function gave in this
 //   same lookup, to the person it acts as (modules/memberships/resolve.ts).
@@ -65,31 +69,51 @@ export type ActorKind = "user" | "system" | "integration";
 /** The clients a request comes through, which the behandlingshistorik records. */
 export type Channel = "rest" | "mcp";
 
+/** What an integration acts through (decision 2): an API token, or an MCP client. */
+export type ViaKind = "api-token" | "mcp-client";
+
+/**
+ * The API token or the MCP client an integration acts through, by its id:
+ * the token's, or the client's. The behandlingshistorik records it beside
+ * the person and the kind.
+ */
+export interface Via {
+  readonly kind: ViaKind;
+  readonly id: string;
+}
+
 /** An anonymous transaction, such as a sign-in's before it knows the person: only the channel. */
 export interface AnonymousSettings {
   readonly channel: Channel;
   readonly actorId?: never;
   readonly actorKind?: never;
+  readonly via?: never;
   readonly company?: never;
 }
 
-/** A person's transaction in no company: the actor, its kind and the channel. */
+/**
+ * A person's transaction in no company: the actor, its kind, its via and
+ * the channel. An integration names its via, and a user or the system user
+ * none.
+ */
 export interface PersonSettings {
   readonly actorId: string;
   readonly actorKind: ActorKind;
+  readonly via?: Via;
   readonly channel: Channel;
   readonly company?: never;
 }
 
 /**
  * A transaction in a company: the company, as a company access that the one
- * membership function gave, its person as the actor, the actor's kind and
- * the channel.
+ * membership function gave, its person as the actor, the actor's kind, its
+ * via and the channel.
  */
 export interface CompanySettings {
   readonly company: CompanyAccess;
   readonly actorId: string;
   readonly actorKind: ActorKind;
+  readonly via?: Via;
   readonly channel: Channel;
 }
 
@@ -129,8 +153,12 @@ export type PersonKind = "user" | "integration";
 
 /** The lookup's transaction: its queries, the person it may set once, and the company it may enter once. */
 export interface LookupQueryable extends Queryable {
-  /** Sets the transaction's person, the actor and its kind, once. A second call throws. */
-  actAs(personId: string, kind: PersonKind): Promise<void>;
+  /**
+   * Sets the transaction's person, the actor and its kind, once, with the
+   * via that an integration acts through. A second call, an integration
+   * without a via and a user with one throw before any statement.
+   */
+  actAs(personId: string, kind: PersonKind, via?: Via): Promise<void>;
   /**
    * Sets the transaction's company, once, from a membership that the one
    * membership function gave in this lookup, to the person it acts as
@@ -188,9 +216,33 @@ const READ = "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY";
 const WRITE = "BEGIN ISOLATION LEVEL READ COMMITTED READ WRITE";
 
 const SETTINGS = `SELECT pg_catalog.set_config('nortfox.company_id', $1, true), pg_catalog.set_config('nortfox.actor_id', $2, true),
-  pg_catalog.set_config('nortfox.actor_kind', $3, true), pg_catalog.set_config('nortfox.channel', $4, true)`;
+  pg_catalog.set_config('nortfox.actor_kind', $3, true), pg_catalog.set_config('nortfox.channel', $4, true),
+  pg_catalog.set_config('nortfox.via_kind', $5, true), pg_catalog.set_config('nortfox.via_id', $6, true)`;
 
-const SET_PERSON = "SELECT pg_catalog.set_config('nortfox.actor_id', $1, true), pg_catalog.set_config('nortfox.actor_kind', $2, true)";
+const SET_PERSON = `SELECT pg_catalog.set_config('nortfox.actor_id', $1, true), pg_catalog.set_config('nortfox.actor_kind', $2, true),
+  pg_catalog.set_config('nortfox.via_kind', $3, true), pg_catalog.set_config('nortfox.via_id', $4, true)`;
+
+const VIA_MISSING = "An integration acts through an API token or an MCP client: its transaction names the via.";
+
+const VIA_NOT_ITS = "Only an integration acts through a token or a client: a transaction of a user or of the system user names no via.";
+
+/**
+ * The via settings of an actor of `kind`, as the settings hold them: the
+ * via's kind and id for an integration, and '' and '' for another actor or
+ * none. An integration without a via, and a via of another actor, throw.
+ */
+function viaSettings(kind: ActorKind | undefined, via: Via | undefined): [string, string] {
+  if (kind === "integration") {
+    if (via === undefined) {
+      throw new Error(VIA_MISSING);
+    }
+    return [via.kind, via.id];
+  }
+  if (via !== undefined) {
+    throw new Error(VIA_NOT_ITS);
+  }
+  return ["", ""];
+}
 
 const ENDED = "The transaction has ended. A query after its end would run outside it.";
 
@@ -210,12 +262,13 @@ function lookupOver(tx: Queryable): LookupQueryable {
   let entered = false;
   const lookup: LookupQueryable = {
     query: (text, values) => tx.query(text, values),
-    actAs: async (personId, kind) => {
+    actAs: async (personId, kind, via) => {
       if (person !== undefined) {
         throw new Error(PERSON_SET);
       }
+      const [viaKind, viaId] = viaSettings(kind, via);
       person = personId;
-      await tx.query(SET_PERSON, [personId, kind]);
+      await tx.query(SET_PERSON, [personId, kind, viaKind, viaId]);
     },
     enter: async (membership) => {
       // The membership must be this module's object, made in this lookup, so
@@ -316,8 +369,9 @@ async function runInTransaction<T, Q extends Queryable>(
   work: (tx: Q) => Promise<Ending<T>>,
   onConnectionError: (error: Error) => void,
 ): Promise<T> {
-  // Before a connection is asked for, so a company that the one function did not give sends no statement.
+  // Before a connection is asked for, so a company that the one function did not give, and an actor without its via, send no statement.
   const company = companyOf(settings);
+  const [viaKind, viaId] = viaSettings(settings.actorKind, settings.via);
   const client: PoolClient = await pool.connect();
   let broken = false;
   const noteBreak = (error: Error): void => {
@@ -334,7 +388,7 @@ async function runInTransaction<T, Q extends Queryable>(
     let ending: Ending<T>;
     try {
       await client.query(begin);
-      await client.query(SETTINGS, [company, settings.actorId ?? "", settings.actorKind ?? "", settings.channel]);
+      await client.query(SETTINGS, [company, settings.actorId ?? "", settings.actorKind ?? "", settings.channel, viaKind, viaId]);
       ending = await work(over(tx));
       open = false;
       await client.query(ending.commit ? "COMMIT" : "ROLLBACK");

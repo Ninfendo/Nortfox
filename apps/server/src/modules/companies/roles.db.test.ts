@@ -26,6 +26,7 @@ import { guardedRelations } from "../../db/table-guard.ts";
 /** The app's privileges on each table: SELECT, and only the writes each table needs. */
 const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "access.account_events": ["INSERT", "SELECT"],
+  "access.api_tokens": ["INSERT", "SELECT", "UPDATE"],
   "access.attempt_counters": [],
   "access.catalogue_groups": ["SELECT"],
   "access.catalogue_permissions": ["SELECT"],
@@ -71,6 +72,7 @@ const APP_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
 /** A reader's privileges: SELECT on each company table, and nothing on an install-wide table. */
 const READER_PRIVILEGES: Readonly<Record<string, readonly string[]>> = {
   "access.account_events": [],
+  "access.api_tokens": [],
   "access.attempt_counters": [],
   "access.catalogue_groups": [],
   "access.catalogue_permissions": [],
@@ -121,6 +123,7 @@ const CALLABLE_FUNCTIONS: Readonly<Record<string, readonly string[]>> = {
   nortfox_app: [
     "access.accept_invitation_as_new",
     "access.active_membership",
+    "access.api_token_by_token",
     "access.challenge_by_token",
     "access.choose_company",
     "access.claim_attempt",
@@ -267,6 +270,14 @@ describe("the database roles", () => {
     ["read the invitation links", "SELECT * FROM access.invitation_links"],
     ["use an invitation link by hand", "UPDATE access.invitation_links SET used_at = pg_catalog.clock_timestamp()"],
     ["switch the invitations' rules off", "ALTER TABLE access.invitations DISABLE TRIGGER invitations_rules"],
+    ["delete an API token", "DELETE FROM access.api_tokens"],
+    ["empty the API tokens", "TRUNCATE access.api_tokens"],
+    ["call the trigger that keeps the API tokens' rules", "SELECT access.api_tokens_rules()"],
+    ["call the trigger that writes an API token's entries", "SELECT access.api_tokens_entries()"],
+    ["switch the API tokens' rules off", "ALTER TABLE access.api_tokens DISABLE TRIGGER api_tokens_rules"],
+    ["switch the API tokens' entries off", "ALTER TABLE access.api_tokens DISABLE TRIGGER api_tokens_entries"],
+    ["read the actor's via through the trigger's helper", "SELECT via_kind, via_id FROM ledger.current_actor()"],
+    ["change the via that a transaction keeps", "UPDATE ledger.transaction_actors SET via_id = NULL"],
   ])("refuses the app to %s", async (_case, sql) => {
     await expectError(app.query(sql), INSUFFICIENT_PRIVILEGE);
   });

@@ -21,7 +21,7 @@ import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
 import { InstallKey } from "../src/auth/install-key.ts";
 import { PasswordHasher, type PasswordCost } from "../src/auth/password.ts";
 import { connectionConfig } from "../src/db/connect.ts";
-import { databaseOver, type Database, type Queryable } from "../src/db/database.ts";
+import { databaseOver, type Database, type Queryable, type Via } from "../src/db/database.ts";
 import { serverHandlers } from "../src/handlers.ts";
 import { resolveActive, type MembershipRow, type ResolvedMembership } from "../src/modules/memberships/resolve.ts";
 import { urlOf } from "./cluster.ts";
@@ -257,22 +257,27 @@ export function runnerDeps(database: Database): RunnerDeps {
   };
 }
 
-/** Who a test principal is: its person, its kind and, in a company, its permissions. */
+/** Who a test principal is: its person, its kind, an integration's via and, in a company, its permissions. */
 export interface PrincipalOptions {
   readonly personId?: string;
   readonly kind?: PrincipalKind;
+  /** The token or the client an integration acts through: by default a made-up API token. */
+  readonly via?: Via;
   readonly permissions?: readonly string[];
 }
 
 /**
  * A signed-in person with no company: a user, unless the options say
- * otherwise. Its credential is a session that only the test knows; the
- * test's resolver hands it out for a bearer token.
+ * otherwise. An integration acts through the options' via, or a made-up API
+ * token. Its credential is a session that only the test knows; the test's
+ * resolver hands it out for a bearer token.
  */
 export function personOf(options: Omit<PrincipalOptions, "permissions"> = {}): Principal {
+  const actorKind = options.kind ?? "user";
   return {
     personId: options.personId ?? randomUUID(),
-    actorKind: options.kind ?? "user",
+    actorKind,
+    ...(actorKind === "integration" ? { via: options.via ?? { kind: "api-token", id: randomUUID() } } : {}),
     credential: { kind: "session", sessionId: randomUUID(), method: "password-email", identifiedAt: new Date("2090-03-15T09:00:00.000Z") },
   };
 }
@@ -311,7 +316,11 @@ export async function testMembership(companyId: string, personId: string, adminL
  * that resolve.ts made (testMembership), as the resolver makes it.
  */
 export async function principalOf(companyId: string, options: PrincipalOptions = {}): Promise<Principal & { readonly company: CompanyAccess }> {
-  const person = personOf({ kind: options.kind ?? "integration", ...(options.personId === undefined ? {} : { personId: options.personId }) });
+  const person = personOf({
+    kind: options.kind ?? "integration",
+    ...(options.personId === undefined ? {} : { personId: options.personId }),
+    ...(options.via === undefined ? {} : { via: options.via }),
+  });
   const membership = await testMembership(companyId, person.personId);
   return { ...person, company: membership.access(options.permissions ?? ALL_PERMISSIONS) };
 }

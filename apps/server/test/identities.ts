@@ -71,9 +71,13 @@ export function phcString(): string {
   return `$argon2id$v=19$m=19456,t=2,p=1$${phcBase64(16)}$${phcBase64(32)}`;
 }
 
-/** Runs `work` in one transaction as the app, with the person as the actor of `kind`, as a signed-in request does. */
+/**
+ * Runs `work` in one transaction as the app, with the person as the actor
+ * of `kind`, as a signed-in request does. An integration acts through a
+ * made-up API token, as a request with a token names it.
+ */
 export function asPerson<T>(app: Client, person: string, work: () => Promise<T>, kind = "user"): Promise<T> {
-  return inTransaction(app, { actor: person, kind, channel: "rest" }, work);
+  return inTransaction(app, { actor: person, kind, ...(kind === "integration" ? { viaKind: "api-token", viaId: randomUUID() } : {}), channel: "rest" }, work);
 }
 
 /** Runs one statement as `client` in an anonymous transaction, as a sign-in does before it knows the person: only the channel. */

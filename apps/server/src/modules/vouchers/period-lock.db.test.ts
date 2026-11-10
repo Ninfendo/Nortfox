@@ -27,6 +27,7 @@ import {
   rowsOf,
   setAutomaticLock,
   setLock,
+  someIntegration,
   someUser,
   voucherOf,
   writeRow,
@@ -47,12 +48,12 @@ describe("the period lock on vouchers", () => {
   const userOne: Actor = someUser();
   const userTwo: Actor = someUser();
   const system: Actor = { actor: randomUUID(), kind: "system" };
-  const integration: Actor = { actor: randomUUID(), kind: "integration" };
+  const integration: Actor = someIntegration();
   // The database takes an actor as its id and its kind (ledger.current_actor).
   // So the internal system user or an integration with userOne's id is not
   // userOne, and userOne's own date never locks it.
   const systemWithOnesId: Actor = { actor: userOne.actor, kind: "system" };
-  const integrationWithOnesId: Actor = { actor: userOne.actor, kind: "integration" };
+  const integrationWithOnesId: Actor = someIntegration(userOne.actor);
   const ACTORS = { userOne, userTwo, system, integration, systemWithOnesId, integrationWithOnesId } as const;
   type ActorName = keyof typeof ACTORS;
 

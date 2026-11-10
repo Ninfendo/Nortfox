@@ -25,7 +25,7 @@ import {
   type TestDatabase,
 } from "../../../test/database.ts";
 import { REQUEST_HASH } from "../../../test/every-table.ts";
-import { addCompany, someUser, type Actor } from "../../../test/ledger.ts";
+import { addCompany, someActor, someIntegration, someUser, type Actor } from "../../../test/ledger.ts";
 
 /** PostgreSQL's SQLSTATE for a NULL in a column that may not hold one. */
 const NOT_NULL_VIOLATION = "23502";
@@ -106,7 +106,7 @@ describe("the idempotency keys", () => {
 
   it("writes the transaction's actor, its kind and the time, and the history row with them", async () => {
     for (const kind of ["user", "system", "integration"] as const) {
-      const who = { actor: randomUUID(), kind };
+      const who = someActor(kind);
       const settings: Settings = { company, ...who, channel: "rest" };
       const { stored, began, after } = await inTransaction(app, settings, async () => {
         const times = await app.query<{ began: string }>("SELECT pg_catalog.transaction_timestamp()::text AS began");
@@ -282,7 +282,7 @@ describe("the idempotency keys", () => {
     const who = someUser();
     const first = await storeKey(who, { key: "shared-key" });
     const otherActor = await storeKey(someUser(), { key: "shared-key" });
-    const otherKind = await storeKey({ actor: randomUUID(), kind: "integration" }, { key: "shared-key" });
+    const otherKind = await storeKey(someIntegration(), { key: "shared-key" });
     const otherCompany = await storeKey(who, { key: "shared-key" }, other);
     expect(new Set([first.id, otherActor.id, otherKind.id, otherCompany.id]).size).toBe(4);
     expect(otherCompany).toMatchObject({ company_id: other, actor_id: who.actor });

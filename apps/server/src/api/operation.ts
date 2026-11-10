@@ -132,7 +132,7 @@ import { ServerBusy, type PasswordHasher } from "../auth/password.ts";
 import { commit, rollBack, type Channel, type CompanySettings, type Database, type Ending, type PersonSettings, type Queryable, type TransactionSettings } from "../db/database.ts";
 import { CompanyAccess, resolveActive, type ResolvedMembership } from "../modules/memberships/resolve.ts";
 import type { AfterAnswerTask } from "./after-answer.ts";
-import type { CompanyContext, Principal, RequestContext } from "./context.ts";
+import { actorOf, type CompanyContext, type Principal, type RequestContext } from "./context.ts";
 import { readCursor, signCursor, type CursorScope } from "./cursor.ts";
 import { checkKey, companyKeys, personCompanyKeys, personKeys, requestHash, type KeyCheck, type KeyStore, type KeysInFlight, type StoredAnswer } from "./idempotency.ts";
 import { ledgerRule } from "./ledger-refusals.ts";
@@ -1013,7 +1013,7 @@ function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCa
   const { operation } = handler;
   const { input, key } = read;
   const source = operation["x-nortfox"].company;
-  const person: PersonSettings = { actorId: context.personId, actorKind: context.actorKind, channel: context.channel };
+  const person: PersonSettings = { ...actorOf(context), channel: context.channel };
   const runIn = (tx: Queryable, company: PersonCompany): Promise<Answer<unknown>> => handler.run({ context, tx, company, request, now: deps.now, later }, input);
   const keyed = (stores: KeyStores): Omit<KeyedWrite, "operation" | "frame"> | undefined =>
     key === undefined ? undefined : { actorId: context.personId, input, key, ...stores };
@@ -1046,7 +1046,7 @@ function runPersonList(handler: PersonListHandler, context: RequestContext, inpu
   if (!page.ok) {
     return Promise.resolve(refuse({ kind: "invalid", problems: page.problems }));
   }
-  const settings: PersonSettings = { actorId: context.personId, actorKind: context.actorKind, channel: context.channel };
+  const settings: PersonSettings = { ...actorOf(context), channel: context.channel };
   const listed = async (tx: Queryable): Promise<Answer<unknown>> => {
     const answer = await handler.run({ context, tx, page: page.value }, input);
     return answer.ok ? ok(wirePage(answer.output, scope, deps.cursorKey)) : answer;
@@ -1058,12 +1058,7 @@ function runPersonList(handler: PersonListHandler, context: RequestContext, inpu
 function runData(handler: DataHandler | ListHandler, context: CompanyContext, read: ReadCall, deps: RunnerDeps): Promise<Outcome> {
   const { operation } = handler;
   const { input, key } = read;
-  const settings: TransactionSettings = {
-    company: context.company,
-    actorId: context.personId,
-    actorKind: context.actorKind,
-    channel: context.channel,
-  };
+  const settings: TransactionSettings = { company: context.company, ...actorOf(context), channel: context.channel };
   if (handler.kind === "list") {
     const scope: CursorScope = { operationId: operation.operationId, companyId: context.company.companyId };
     const page = pageRequest(input.query, scope, deps.cursorKey);

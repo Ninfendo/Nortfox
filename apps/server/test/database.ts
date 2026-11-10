@@ -119,16 +119,29 @@ export async function emptyDatabase(): Promise<TestDatabase> {
 export const ISOLATION_LEVELS = ["read uncommitted", "read committed", "repeatable read", "serializable"] as const;
 export type IsolationLevel = (typeof ISOLATION_LEVELS)[number];
 
-/** The settings a transaction may carry. A setting left out is not set, and the isolation level is then the default, READ COMMITTED. */
+/**
+ * The settings a transaction may carry. A setting left out is not set, and
+ * the isolation level is then the default, READ COMMITTED. An integration
+ * names the API token or the MCP client it acts through: viaKind and viaId.
+ */
 export interface Settings {
   readonly company?: string;
   readonly actor?: string;
   readonly kind?: string;
+  readonly viaKind?: string;
+  readonly viaId?: string;
   readonly channel?: string;
   readonly isolation?: IsolationLevel;
 }
 
-const SETTING_NAMES = { company: "nortfox.company_id", actor: "nortfox.actor_id", kind: "nortfox.actor_kind", channel: "nortfox.channel" } as const;
+const SETTING_NAMES = {
+  company: "nortfox.company_id",
+  actor: "nortfox.actor_id",
+  kind: "nortfox.actor_kind",
+  viaKind: "nortfox.via_kind",
+  viaId: "nortfox.via_id",
+  channel: "nortfox.channel",
+} as const;
 
 /**
  * Starts a transaction with the settings, as the server does:
@@ -136,7 +149,7 @@ const SETTING_NAMES = { company: "nortfox.company_id", actor: "nortfox.actor_id"
  */
 export async function begin(client: Client, settings: Settings): Promise<void> {
   await client.query(settings.isolation === undefined ? "BEGIN" : `BEGIN ISOLATION LEVEL ${settings.isolation.toUpperCase()}`);
-  for (const key of ["company", "actor", "kind", "channel"] as const) {
+  for (const key of ["company", "actor", "kind", "viaKind", "viaId", "channel"] as const) {
     const value = settings[key];
     if (value !== undefined) {
       await client.query("SELECT pg_catalog.set_config($1, $2, true)", [SETTING_NAMES[key], value]);

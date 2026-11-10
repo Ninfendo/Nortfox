@@ -33,6 +33,7 @@ import {
   balanced,
   bookVoucher,
   setAutomaticLock,
+  someIntegration,
   someUser,
   type AutomaticInterval,
   type AutomaticLock,
@@ -120,7 +121,7 @@ describe("the automatic lock", () => {
     const first = await settings(company);
     const on = await setAutomaticLock(app, company, "month_end_50", who);
     expect(on).toMatchObject({ id: first?.id, enabled: true, interval: "month_end_50", set_by: who.actor, set_by_kind: "user" });
-    const integration = { actor: randomUUID(), kind: "integration" } as const;
+    const integration = someIntegration();
     const [notice] = (await inTransaction(app, { company, ...integration }, async () =>
       (await app.query<AutomaticLock>(`UPDATE ledger.automatic_locks SET notice_days = 7 RETURNING ${AUTOMATIC_LOCK_COLUMNS}`)).rows,
     ));

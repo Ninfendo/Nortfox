@@ -57,7 +57,7 @@ describe("the behandlingshistorik", () => {
     }
   });
 
-  it("holds each insert, update and delete with the operation, the old and new row, the actor, its kind, the channel, the transaction and the time", async () => {
+  it("holds each insert, update and delete with the operation, the old and new row, the actor, its kind, its via, the channel, the transaction and the time", async () => {
     for (const change of scenario.changes) {
       const found = await inTransaction(app, { company: change.company }, async () =>
         app.query<{ count: bigint }>(
@@ -65,6 +65,7 @@ describe("the behandlingshistorik", () => {
            WHERE company_id = $1 AND table_name = $2 AND row_id = $3 AND operation = $4
              AND old_values IS NOT DISTINCT FROM $5::jsonb AND new_values IS NOT DISTINCT FROM $6::jsonb
              AND actor_id = $7 AND actor_kind = $8 AND channel IS NOT DISTINCT FROM $12 AND transaction_id = $9::xid8
+             AND via_kind IS NOT DISTINCT FROM $13 AND via_id IS NOT DISTINCT FROM $14::uuid
              AND at >= $10::timestamptz AND at <= $11::timestamptz`,
           [
             change.company,
@@ -79,6 +80,8 @@ describe("the behandlingshistorik", () => {
             change.startedAt,
             change.changedBy,
             change.channel,
+            change.viaKind,
+            change.viaId,
           ],
         ),
       );
@@ -87,13 +90,14 @@ describe("the behandlingshistorik", () => {
     expect(scenario.changes.map((change) => change.operation)).toContain("DELETE");
     expect(new Set(scenario.changes.map((change) => change.kind))).toEqual(new Set(["user", "system", "integration"]));
     expect(new Set(scenario.changes.map((change) => change.channel))).toEqual(new Set(["rest", "mcp", null]));
+    expect(new Set(scenario.changes.map((change) => change.viaKind))).toEqual(new Set(["api-token", "mcp-client", null]));
     // No row more than the changes: each change wrote exactly one.
     for (const company of [scenario.companyA, scenario.companyB]) {
       expect(await historyCount(company)).toBe(scenario.changes.filter((change) => change.company === company).length);
     }
   });
 
-  it("refuses a write with no actor, on every table the app can write", async () => {
+  it("refuses a write with no actor, and one by an integration without its via, on every table the app can write", async () => {
     const writable = await app.query<{ relation: string; privilege: string }>(`
       SELECT n.nspname || '.' || c.relname AS relation, p.privilege
       FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
@@ -116,6 +120,10 @@ describe("the behandlingshistorik", () => {
         [{ actor }, "nortfox.actor_kind"],
         [{ actor, kind: "" }, "nortfox.actor_kind"],
         [{ actor, kind: "robot" }, "nortfox.actor_kind"],
+        // An integration names the token or the client it acts through.
+        [{ actor, kind: "integration" }, "nortfox.via_kind"],
+        [{ actor, kind: "integration", viaKind: "api-token" }, "nortfox.via_id"],
+        [{ actor, kind: "user", viaKind: "api-token", viaId: actor }, "nortfox.via_kind"],
       ] as const) {
         const write = build?.(scenario);
         await expectRefusal(

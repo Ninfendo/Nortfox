@@ -223,6 +223,15 @@ export const INSTALL_TABLES: ReadonlyMap<string, InstallTable> = new Map<string,
     },
   ],
   [
+    "access.api_tokens",
+    {
+      class: "company",
+      column: "token_company_id",
+      commands: ["SELECT", "INSERT", "UPDATE"],
+      why: "A member's API token is bound to one company and kept only as its hash. Its trigger writes its entries in the company's behandlingshistorik, so the table keeps no history of its own. The app reads, adds and revokes only its company's, and the resolver finds one by its hash through a lookup function.",
+    },
+  ],
+  [
     "access.catalogue_programs",
     { class: "public", why: "The programs of the permission catalogue are the same for every company. The app reads them, and only a migration writes them." },
   ],

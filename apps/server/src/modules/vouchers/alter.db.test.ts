@@ -35,6 +35,7 @@ import {
   bookVoucher,
   isAfter,
   rowsOf,
+  someIntegration,
   someUser,
   voucherOf,
   writeRow,
@@ -50,7 +51,7 @@ describe("Ändra", () => {
   let app: Client;
   let owner: Client;
   const booker = someUser();
-  const changer: Actor = { actor: randomUUID(), kind: "integration" };
+  const changer: Actor = someIntegration();
 
   beforeAll(async () => {
     db = await freshDatabase();

@@ -20,6 +20,10 @@ export type ActorKind = (typeof ACTOR_KINDS)[number];
 export const CHANNELS = ["rest", "mcp"] as const;
 export type Channel = (typeof CHANNELS)[number];
 
+/** What an integration acts through, which the behandlingshistorik records. */
+export const VIA_KINDS = ["api-token", "mcp-client"] as const;
+export type ViaKind = (typeof VIA_KINDS)[number];
+
 export type Row = Record<string, unknown>;
 
 /** A statement and its parameters. */
@@ -38,6 +42,9 @@ export interface Change {
   readonly newValues: Row | null;
   readonly actor: string;
   readonly kind: ActorKind;
+  /** The token or the client an integration acted through, or null for another actor. */
+  readonly viaKind: ViaKind | null;
+  readonly viaId: string | null;
   /** The channel its transaction set, or null when it set none. */
   readonly channel: Channel | null;
   /** pg_current_xact_id() of its transaction, as text. */
@@ -518,6 +525,8 @@ interface Actor {
   readonly company: string;
   readonly actor: string;
   readonly kind: ActorKind;
+  readonly viaKind?: ViaKind;
+  readonly viaId?: string;
   readonly channel?: Channel;
 }
 
@@ -620,6 +629,8 @@ async function changeOfSteps(client: Client, who: Actor, steps: readonly Step[],
       company: who.company,
       actor: who.actor,
       kind: who.kind,
+      viaKind: who.viaKind ?? null,
+      viaId: who.viaId ?? null,
       channel: who.channel ?? null,
       transaction: stamp.transaction,
       startedAt: stamp.started,
@@ -654,6 +665,10 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
   const user = randomUUID();
   const system = randomUUID();
   const integration = randomUUID();
+  // The integration acts through an MCP client in its writes through MCP,
+  // and through an API token in its others.
+  const client = randomUUID();
+  const token = randomUUID();
   const [readerA, readerB] = TEST_READERS;
   const changes: Change[] = [];
   const bind = "INSERT INTO ledger.reader_roles AS t (id, company_id, role_oid) VALUES ($1, $2, $3::pg_catalog.regrole) RETURNING to_jsonb(t) AS row";
@@ -693,7 +708,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     )),
     ...(await changeOfSteps(
       app,
-      { company: companyB, actor: integration, kind: "integration", channel: "mcp" },
+      { company: companyB, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" },
       [
         { table: "ledger.companies", operation: "INSERT", rowId: companyB, write: { sql: INSERT_COMPANY, params: [companyB, "Testbolaget Beta AB", "599999-0129"] } },
         { table: "access.memberships", operation: "INSERT", rowId: ownerB, write: { sql: INSERT_OWNER, params: [ownerB, companyB, integration] } },
@@ -737,11 +752,11 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: setMembership("status = 'inactive'"),
       params: [memberA],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.memberships", "INSERT", invitedB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" }, "access.memberships", "INSERT", invitedB, {
       sql: invite,
       params: [invitedB, companyB],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.invitations", "INSERT", invitationB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" }, "access.invitations", "INSERT", invitationB, {
       sql: INSERT_INVITATION,
       params: [invitationB, companyB, invitedB],
     })),
@@ -755,7 +770,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: INSERT_EVENT,
       params: [eventA, companyA, user, { method: "password-email", secondStep: "totp", application: "web", outcome: "signed-in" }],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.events", "INSERT", eventB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" }, "access.events", "INSERT", eventB, {
       sql: INSERT_EVENT,
       params: [eventB, companyB, integration, { method: "password-email", secondStep: "totp", application: "Testklienten", outcome: "signed-in" }],
     })),
@@ -778,7 +793,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: INSERT_GRANT,
       params: [bookkeepingA, companyA, memberA, "bookkeeping", ["vouchers.view", "vouchers.book", "reports.vat"]],
     })),
-    ...(await change(app, { company: companyA, actor: integration, kind: "integration", channel: "mcp" }, "access.program_grants", "UPDATE", bookkeepingA, {
+    ...(await change(app, { company: companyA, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" }, "access.program_grants", "UPDATE", bookkeepingA, {
       sql: "UPDATE access.program_grants AS t SET permissions = $2 WHERE t.id = $1 RETURNING to_jsonb(t) AS row",
       params: [bookkeepingA, ["vouchers.view", "reports.vat"]],
     })),
@@ -790,7 +805,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: withdraw("access.program_grants"),
       params: [readA],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.program_grants", "INSERT", readB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" }, "access.program_grants", "INSERT", readB, {
       sql: INSERT_GRANT,
       params: [readB, companyB, ownerB, "read", ["vouchers.view", "reports.vat"]],
     })),
@@ -802,11 +817,11 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: INSERT_PROGRAM_ADMIN,
       params: [readAdminA, companyA, ownerA, "read"],
     })),
-    ...(await change(app, { company: companyA, actor: integration, kind: "integration" }, "access.program_admins", "DELETE", readAdminA, {
+    ...(await change(app, { company: companyA, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "access.program_admins", "DELETE", readAdminA, {
       sql: withdraw("access.program_admins"),
       params: [readAdminA],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration", channel: "mcp" }, "access.program_admins", "INSERT", auditorAdminB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" }, "access.program_admins", "INSERT", auditorAdminB, {
       sql: INSERT_PROGRAM_ADMIN,
       params: [auditorAdminB, companyB, ownerB, "auditor"],
     })),
@@ -851,11 +866,11 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: insertYear,
       params: [nextA, companyA, "2031-01-01", "2031-12-31", "CASH", "Bas 2031", false],
     })),
-    ...(await change(app, { company: companyA, actor: integration, kind: "integration" }, "ledger.fiscal_years", "UPDATE", nextA, {
+    ...(await change(app, { company: companyA, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.fiscal_years", "UPDATE", nextA, {
       sql: "UPDATE ledger.fiscal_years AS t SET to_date = $2 WHERE t.id = $1 RETURNING to_jsonb(t) AS row",
       params: [nextA, "2032-06-30"],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration" }, "ledger.fiscal_years", "INSERT", yearB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.fiscal_years", "INSERT", yearB, {
       sql: insertYear,
       params: [yearB, companyB, "2030-01-01", "2030-12-31", "ACCRUAL", "Bas 2030", false],
     })),
@@ -880,7 +895,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: "UPDATE ledger.periods AS t SET to_date = $2 WHERE t.id = $1 RETURNING to_jsonb(t) AS row",
       params: [februaryA, "2030-02-28"],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration" }, "ledger.periods", "INSERT", januaryB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.periods", "INSERT", januaryB, {
       sql: insertPeriod,
       params: [januaryB, companyB, yearB, "2030-01-01", "2030-01-31"],
     })),
@@ -902,11 +917,11 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: insertLock,
       params: [allLockA, companyA, "all", null, "2030-01-31"],
     })),
-    ...(await change(app, { company: companyA, actor: integration, kind: "integration" }, "ledger.period_locks", "UPDATE", userLockA, {
+    ...(await change(app, { company: companyA, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.period_locks", "UPDATE", userLockA, {
       sql: "UPDATE ledger.period_locks AS t SET end_date = NULL WHERE t.id = $1 RETURNING to_jsonb(t) AS row",
       params: [userLockA],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration" }, "ledger.period_locks", "INSERT", integrationLockB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.period_locks", "INSERT", integrationLockB, {
       sql: insertLock,
       params: [integrationLockB, companyB, "integration", null, "2030-02-28"],
     })),
@@ -925,7 +940,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: setAutomatic,
       params: [automaticA, false, "month_end_50", 7],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration" }, "ledger.automatic_locks", "UPDATE", automaticB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.automatic_locks", "UPDATE", automaticB, {
       sql: setAutomatic,
       params: [automaticB, true, "quarter_end_50", null],
     })),
@@ -946,7 +961,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: insertAccount,
       params: [salesA, companyA, yearA, 3001, "Försäljning inom Sverige", true],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration" }, "ledger.accounts", "INSERT", salesB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.accounts", "INSERT", salesB, {
       sql: insertAccount,
       params: [salesB, companyB, yearB, 3001, "Försäljning inom Sverige", true],
     })),
@@ -960,7 +975,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: insertAccount,
       params: [officeA, companyA, yearA, 6110, "Kontorsmateriel", true],
     })),
-    ...(await change(app, { company: companyA, actor: integration, kind: "integration" }, "ledger.accounts", "UPDATE", officeA, {
+    ...(await change(app, { company: companyA, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.accounts", "UPDATE", officeA, {
       sql: "UPDATE ledger.accounts AS t SET description = $2, active = false WHERE t.id = $1 RETURNING to_jsonb(t) AS row",
       params: [officeA, "Kontorsmaterial"],
     })),
@@ -972,7 +987,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       sql: "DELETE FROM ledger.accounts AS t WHERE t.id = $1 RETURNING to_jsonb(t) AS row",
       params: [unusedA],
     })),
-    ...(await change(app, { company: companyB, actor: integration, kind: "integration" }, "ledger.accounts", "INSERT", bankB, {
+    ...(await change(app, { company: companyB, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.accounts", "INSERT", bankB, {
       sql: insertAccount,
       params: [bankB, companyB, yearB, 1930, "Företagskonto", true],
     })),
@@ -1012,7 +1027,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
       { sql: insertSeries, params: [closingA, companyA, yearA, "I", "Bokslut", true, true] },
       [counterOf(closingA)],
     )),
-    ...(await change(app, { company: companyA, actor: integration, kind: "integration" }, "ledger.voucher_series", "UPDATE", closingA, {
+    ...(await change(app, { company: companyA, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, "ledger.voucher_series", "UPDATE", closingA, {
       sql: "UPDATE ledger.voucher_series AS t SET description = $2 WHERE t.id = $1 RETURNING to_jsonb(t) AS row",
       params: [closingA, "Bokslutsverifikationer"],
     })),
@@ -1036,7 +1051,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     )),
     ...(await change(
       app,
-      { company: companyB, actor: integration, kind: "integration" },
+      { company: companyB, actor: integration, kind: "integration", viaKind: "api-token", viaId: token },
       "ledger.voucher_series",
       "INSERT",
       seriesB,
@@ -1081,11 +1096,11 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     [1930, 12_500, 0],
     [3001, 0, 12_500],
   ]);
-  await vouchers.alter({ company: companyA, actor: integration, kind: "integration" }, keptA, "ledger.vouchers", keptA.id, "description = 'Kontantförsäljning'");
+  await vouchers.alter({ company: companyA, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, keptA, "ledger.vouchers", keptA.id, "description = 'Kontantförsäljning'");
   const zeroRow = await vouchers.addRow({ company: companyA, actor: system, kind: "system" }, keptA, [1930, 0, 0]);
   await vouchers.alter({ company: companyA, actor: user, kind: "user" }, keptA, "ledger.voucher_rows", zeroRow, "removed = true");
   await vouchers.alter(
-    { company: companyA, actor: integration, kind: "integration" },
+    { company: companyA, actor: integration, kind: "integration", viaKind: "api-token", viaId: token },
     keptA,
     "ledger.voucher_rows",
     keptA.rows[0] ?? "",
@@ -1105,8 +1120,8 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     [1930, 990, 0],
     [3001, 0, 990],
   ]);
-  await vouchers.remove({ company: companyA, actor: integration, kind: "integration" }, seriesA, deletedA);
-  const deletedB = await vouchers.book({ company: companyB, actor: integration, kind: "integration" }, yearB, seriesB, [
+  await vouchers.remove({ company: companyA, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, seriesA, deletedA);
+  const deletedB = await vouchers.book({ company: companyB, actor: integration, kind: "integration", viaKind: "api-token", viaId: token }, yearB, seriesB, [
     [1930, 5000, 0],
     [3001, 0, 5000],
   ]);
@@ -1137,7 +1152,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     )),
     ...(await change(
       app,
-      { company: companyA, actor: integration, kind: "integration", channel: "mcp" },
+      { company: companyA, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" },
       "ledger.idempotency_keys",
       "INSERT",
       integrationKeyA,
@@ -1145,7 +1160,7 @@ export async function fillEveryTable(db: TestDatabase): Promise<Scenario> {
     )),
     ...(await change(
       app,
-      { company: companyB, actor: integration, kind: "integration", channel: "mcp" },
+      { company: companyB, actor: integration, kind: "integration", viaKind: "mcp-client", viaId: client, channel: "mcp" },
       "ledger.idempotency_keys",
       "INSERT",
       integrationKeyB,

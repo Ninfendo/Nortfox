@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // One transaction per request (decision 9, db/README.md). The server opens
-// it, sets the company, the actor, its kind and the channel once, before the
-// work's first query, with set_config(name, value, true), and ends it. The
+// it, sets the company, the actor, its kind, an integration's via and the
+// channel once, before the work's first query, with set_config(name, value,
+// true), and ends it. The
 // settings end with the transaction, so a pooled connection never carries
 // them on to the next request, after a request that failed neither. A
 // connection that breaks leaves the pool. These tests run as the app role.
@@ -33,12 +34,14 @@ import { readRefusal } from "./refusals.ts";
 const READ_ONLY_SQL_TRANSACTION = "25006";
 const ADMIN_SHUTDOWN = "57P01";
 
-/** What a connection holds of the four settings, "" when unset, and its backend. */
+/** What a connection holds of the six settings, "" when unset, and its backend. */
 interface Seen {
   readonly company: string;
   readonly actor: string;
   readonly kind: string;
   readonly channel: string;
+  readonly viaKind: string;
+  readonly viaId: string;
   readonly pid: number;
 }
 
@@ -46,9 +49,11 @@ const SEEN = `SELECT COALESCE(pg_catalog.current_setting('nortfox.company_id', t
   COALESCE(pg_catalog.current_setting('nortfox.actor_id', true), '') AS actor,
   COALESCE(pg_catalog.current_setting('nortfox.actor_kind', true), '') AS kind,
   COALESCE(pg_catalog.current_setting('nortfox.channel', true), '') AS channel,
+  COALESCE(pg_catalog.current_setting('nortfox.via_kind', true), '') AS "viaKind",
+  COALESCE(pg_catalog.current_setting('nortfox.via_id', true), '') AS "viaId",
   pg_catalog.pg_backend_pid() AS pid`;
 
-const UNSET = { company: "", actor: "", kind: "", channel: "" };
+const UNSET = { company: "", actor: "", kind: "", channel: "", viaKind: "", viaId: "" };
 
 const ENDED = new Error("The transaction has ended. A query after its end would run outside it.");
 
@@ -91,14 +96,26 @@ describe("one transaction per request", () => {
     return { pool, database: databaseOver(pool, (error) => errors.push(error)), errors };
   }
 
-  /** The settings of a transaction in the books' company, as a made-up person: a company access is the only way into a company. */
+  /**
+   * The settings of a transaction in the books' company, as a made-up
+   * person: a company access is the only way into a company. An integration
+   * acts through a made-up API token.
+   */
   async function settingsOf(kind: ActorKind = "integration", channel: Channel = "rest"): Promise<TransactionSettings> {
     const actorId = randomUUID();
-    return { company: (await testMembership(books.company, actorId)).access([]), actorId, actorKind: kind, channel };
+    const via = kind === "integration" ? { via: { kind: "api-token", id: randomUUID() } as const } : {};
+    return { company: (await testMembership(books.company, actorId)).access([]), actorId, actorKind: kind, ...via, channel };
   }
 
   function seenAs(settings: TransactionSettings): Omit<Seen, "pid"> {
-    return { company: settings.company?.companyId ?? "", actor: settings.actorId ?? "", kind: settings.actorKind ?? "", channel: settings.channel };
+    return {
+      company: settings.company?.companyId ?? "",
+      actor: settings.actorId ?? "",
+      kind: settings.actorKind ?? "",
+      channel: settings.channel,
+      viaKind: settings.via?.kind ?? "",
+      viaId: settings.via?.id ?? "",
+    };
   }
 
   /** The transaction's level and whether it is read only. */
@@ -134,7 +151,7 @@ describe("one transaction per request", () => {
     return found.rows.length === 1;
   }
 
-  it("sets the company, the actor, its kind and the channel before the work's first query, for a read and for a write", async () => {
+  it("sets the company, the actor, its kind, an integration's via and the channel before the work's first query, for a read and for a write", async () => {
     const { database } = poolOf(2);
     for (const kind of ["user", "system", "integration"] as const) {
       for (const channel of ["rest", "mcp"] as const) {
@@ -156,8 +173,8 @@ describe("one transaction per request", () => {
       expect(await database.read(settings, async (tx) => commit(await seenBy(tx)))).toMatchObject(seenAs(settings));
       expect(await database.write(settings, async (tx) => commit(await seenBy(tx)))).toMatchObject(seenAs(settings));
     }
-    expect(seenAs(person)).toEqual({ company: "", actor: person.actorId, kind: "user", channel: "rest" });
-    expect(seenAs(anonymous)).toEqual({ company: "", actor: "", kind: "", channel: "rest" });
+    expect(seenAs(person)).toEqual({ company: "", actor: person.actorId, kind: "user", channel: "rest", viaKind: "", viaId: "" });
+    expect(seenAs(anonymous)).toEqual({ company: "", actor: "", kind: "", channel: "rest", viaKind: "", viaId: "" });
     // With no company set, row level security shows no company's rows.
     expect(await database.read(person, async (tx) => commit((await tx.query("SELECT company_id FROM ledger.companies")).rows))).toEqual([]);
   });
@@ -173,21 +190,22 @@ describe("one transaction per request", () => {
       const mode = await modeOf(tx);
       await tx.actAs(person, "user");
       const after = await seenBy(tx);
-      const again = await failureOf(tx.actAs(randomUUID(), "integration"));
+      const again = await failureOf(tx.actAs(randomUUID(), "integration", { kind: "api-token", id: randomUUID() }));
       return commit({ before, mode, after, again, last: await seenBy(tx) });
     });
-    expect(seen.before).toMatchObject({ company: "", actor: "", kind: "", channel: "rest" });
+    expect(seen.before).toMatchObject({ company: "", actor: "", kind: "", channel: "rest", viaKind: "", viaId: "" });
     expect(seen.mode).toEqual({ level: "read committed", readOnly: "off" });
-    expect(seen.after).toMatchObject({ company: "", actor: person, kind: "user", channel: "rest" });
+    expect(seen.after).toMatchObject({ company: "", actor: person, kind: "user", channel: "rest", viaKind: "", viaId: "" });
     expect(seen.again).toEqual(new Error("The lookup has set its person already. A lookup sets the person once."));
-    expect(seen.last).toMatchObject({ actor: person, kind: "user" });
+    expect(seen.last).toMatchObject({ actor: person, kind: "user", viaKind: "", viaId: "" });
     expect(await database.read({ channel: "mcp" }, async (tx) => commit(await seenBy(tx)))).toMatchObject({ ...UNSET, channel: "mcp" });
-    // An integration, as a token's lookup sets it, with the other channel.
+    // An integration with its via, as a token's lookup sets it, with the other channel.
+    const tokenId = randomUUID();
     const token = await database.lookup("mcp", async (tx) => {
-      await tx.actAs(person, "integration");
+      await tx.actAs(person, "integration", { kind: "api-token", id: tokenId });
       return commit(await seenBy(tx));
     });
-    expect(token).toMatchObject({ company: "", actor: person, kind: "integration", channel: "mcp" });
+    expect(token).toMatchObject({ company: "", actor: person, kind: "integration", channel: "mcp", viaKind: "api-token", viaId: tokenId });
     // Its writes commit, or roll back.
     const kept = Buffer.from("a made-up check value");
     const keep = (value: Buffer) => async (tx: Queryable) =>

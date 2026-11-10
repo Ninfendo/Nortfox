@@ -23,7 +23,7 @@
 // that it gave, and authorize refuses a principal whose company is anything
 // else.
 
-import type { ActorKind, Channel } from "../db/database.ts";
+import type { ActorKind, Channel, Via } from "../db/database.ts";
 import type { CompanyAccess } from "../modules/memberships/resolve.ts";
 
 /** The kinds of actor a credential can name. A session acts as its user (decision 2); the system user is never a request's actor. */
@@ -62,9 +62,28 @@ export interface Principal {
   /** The person: the identity's id, which is the actor's id. */
   readonly personId: string;
   readonly actorKind: PrincipalKind;
+  /**
+   * The API token or the MCP client an integration acts through, which the
+   * behandlingshistorik records with the person (decision 2). An
+   * integration has one, and a user none: the database layer refuses a
+   * transaction otherwise.
+   */
+  readonly via?: Via;
   readonly credential: Credential;
   /** The company the credential works in, when it names one. */
   readonly company?: CompanyAccess;
+}
+
+/** The actor that a principal's transaction sets: the person, its kind, and an integration's via. */
+export interface PrincipalActor {
+  readonly actorId: string;
+  readonly actorKind: PrincipalKind;
+  readonly via?: Via;
+}
+
+/** The actor that `principal`'s transaction sets. */
+export function actorOf(principal: Principal): PrincipalActor {
+  return { actorId: principal.personId, actorKind: principal.actorKind, ...(principal.via === undefined ? {} : { via: principal.via }) };
 }
 
 /** The principal, and the channel the request came through. */
