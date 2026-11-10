@@ -257,6 +257,7 @@ export const getCompany = defineOperation({
     "Gives the company the request works in: its id, name, organisation number and tenant id, and its postal and visiting addresses and its phone number and e-mail address when they are set. The company comes from the request's credential.",
   output: Company,
   permission: "company:read",
+  scope: "companyinformation",
   tool: "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
   assistant: true,
   writes: false,
@@ -279,6 +280,7 @@ export const createCompany = defineOperation({
   output: Company,
   status: 201,
   permission: "signed-in",
+  scope: "companies",
   company: "new",
   tool: "Creates a company and makes you its owner. Its organisation number never changes.",
   writes: true,
@@ -305,6 +307,7 @@ export const listCompanies = defineListOperation({
   }),
   item: CompanyChoice,
   permission: "signed-in",
+  scope: "companies",
   tool: "Lists the companies where you are an active member, with your system administrator's level in each.",
 });
 
@@ -315,10 +318,13 @@ export const listRecentCompanies = defineOperation({
   path: "/v1/me/companies/recent",
   tags: ["me"],
   summary: "List your recent companies",
-  description: "Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member.",
+  description:
+    "Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member. " +
+    "It tells of the person's other companies, so it needs a browser session: a token is refused it with 403 session-required.",
   output: RecentCompanies,
   permission: "signed-in",
-  tool: "Gives the three companies you chose last, where you are still an active member.",
+  session: "only",
+  tool: "Gives the three companies you chose last, where you are still an active member. It needs a browser session, so this tool refuses a call that comes with a token.",
   writes: false,
 });
 
@@ -341,6 +347,7 @@ export const updateMyMembership = defineOperation({
   }),
   output: Membership,
   permission: "signed-in",
+  scope: "companies",
   company: { input: "companyId" },
   tool: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
   writes: true,
@@ -361,6 +368,7 @@ export const leaveCompany = defineOperation({
   output: NoBody,
   status: 204,
   permission: "signed-in",
+  scope: "companies",
   company: { input: "companyId" },
   tool: "Leaves a company where you are an active member. Only a new invitation lets you back.",
   writes: true,
@@ -395,6 +403,7 @@ export const updateCompany = defineOperation({
   }),
   output: Company,
   permission: "company:update",
+  scope: "companies",
   tool: "Changes the company you work in: its name, its addresses, its phone number and its e-mail address. Its organisation number never changes.",
   writes: true,
 });

@@ -73,6 +73,7 @@ describe("the shapes of slice 2c in the API description", () => {
     const signIn = pathOf("/v1/test-sign-ins", "post");
     expect(signIn?.["x-nortfox"]).toEqual({
       permission: "none",
+      scope: null,
       tool: "Signs in. Only the tests serve it.",
       assistant: false,
       writes: true,
@@ -80,9 +81,10 @@ describe("the shapes of slice 2c in the API description", () => {
       session: "flow",
       company: "none",
       personalOutput: [],
+      secretOutput: [],
     });
     expect(signIn?.parameters).toBeUndefined();
-    expect(pathOf("/v1/test-person", "get")?.["x-nortfox"]).toMatchObject({ permission: "signed-in", session: null, company: "none" });
+    expect(pathOf("/v1/test-person", "get")?.["x-nortfox"]).toMatchObject({ permission: "signed-in", scope: "profile", session: null, company: "none" });
   });
 });
 

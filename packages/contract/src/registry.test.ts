@@ -2,7 +2,8 @@
 
 import { describe, expect, it } from "vitest";
 import * as contract from "./index.ts";
-import { PERMISSIONS } from "./operation.ts";
+import { secretPointers } from "./fields.ts";
+import { PERMISSIONS, outputSchema } from "./operation.ts";
 import { REGISTRY } from "./registry.ts";
 import { registryProblems } from "./registry-guard.ts";
 
@@ -54,7 +55,7 @@ describe("REGISTRY", () => {
         "listRecentCompanies",
         "GET /v1/me/companies/recent",
         "signed-in",
-        { assistant: false, writes: false, list: false, session: null, company: "none", personalOutput: [] },
+        { assistant: false, writes: false, list: false, session: "only", company: "none", personalOutput: [] },
       ],
       [
         "selectCompany",
@@ -173,7 +174,8 @@ describe("REGISTRY", () => {
         "and the company you work in, with your membership and permissions there.",
       createCompany: "Creates a company and makes you its owner. Its organisation number never changes.",
       listCompanies: "Lists the companies where you are an active member, with your system administrator's level in each.",
-      listRecentCompanies: "Gives the three companies you chose last, where you are still an active member.",
+      listRecentCompanies:
+        "Gives the three companies you chose last, where you are still an active member. It needs a browser session, so this tool refuses a call that comes with a token.",
       selectCompany:
         "Chooses the browser session's company. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
       updateMyMembership: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
@@ -197,6 +199,63 @@ describe("REGISTRY", () => {
       acceptInvitation: "Accepts an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
       leaveCompany: "Leaves a company where you are an active member. Only a new invitation lets you back.",
     });
+  });
+
+  it("names each operation's scope, session mark and secret output", () => {
+    expect(
+      Object.fromEntries(
+        REGISTRY.map((entry) => {
+          const { scope, session, secretOutput } = entry["x-nortfox"];
+          return [entry.operationId, { scope, session, secretOutput }];
+        }),
+      ),
+    ).toEqual({
+      getHealth: { scope: null, session: null, secretOutput: [] },
+      getCompany: { scope: "companyinformation", session: null, secretOutput: [] },
+      completeSetup: { scope: null, session: "flow", secretOutput: ["/totpEnrolment/otpauthUri"] },
+      loginWithPassword: { scope: null, session: "flow", secretOutput: ["/challenge"] },
+      verifyTotp: { scope: null, session: "flow", secretOutput: [] },
+      logout: { scope: null, session: "flow", secretOutput: [] },
+      getSession: { scope: null, session: "flow", secretOutput: [] },
+      getMe: { scope: "profile", session: null, secretOutput: [] },
+      createCompany: { scope: "companies", session: null, secretOutput: [] },
+      listCompanies: { scope: "companies", session: null, secretOutput: [] },
+      listRecentCompanies: { scope: null, session: "only", secretOutput: [] },
+      selectCompany: { scope: null, session: "flow", secretOutput: [] },
+      updateMyMembership: { scope: "companies", session: null, secretOutput: [] },
+      updateCompany: { scope: "companies", session: null, secretOutput: [] },
+      listPermissions: { scope: "users", session: null, secretOutput: [] },
+      listUsers: { scope: "users", session: null, secretOutput: [] },
+      getUser: { scope: "users", session: null, secretOutput: [] },
+      updateUser: { scope: "users", session: null, secretOutput: [] },
+      removeUser: { scope: "users", session: null, secretOutput: [] },
+      assignProgram: { scope: "users", session: null, secretOutput: [] },
+      removeProgram: { scope: "users", session: null, secretOutput: [] },
+      moveProgram: { scope: "users", session: null, secretOutput: [] },
+      updateUserRights: { scope: "users", session: null, secretOutput: [] },
+      inviteUser: { scope: "users", session: null, secretOutput: [] },
+      resendInvitation: { scope: "users", session: null, secretOutput: [] },
+      disconnectUserIdentity: { scope: "users", session: null, secretOutput: [] },
+      getInvitation: { scope: null, session: "flow", secretOutput: [] },
+      acceptInvitation: { scope: null, session: "flow", secretOutput: ["/totpEnrolment/otpauthUri"] },
+      leaveCompany: { scope: "companies", session: null, secretOutput: [] },
+    });
+  });
+
+  it("lets a token call exactly the operations that name a scope: neither public, nor serving or needing a browser session", () => {
+    for (const entry of REGISTRY) {
+      const { permission, session, scope } = entry["x-nortfox"];
+      expect(scope === null, entry.operationId).toBe(permission === "public" || session !== null);
+    }
+  });
+
+  it("gives a token no secret: no operation that names a scope has a secret field in its output", () => {
+    const reachable = REGISTRY.filter((entry) => entry["x-nortfox"].scope !== null);
+    expect(reachable.length).toBeGreaterThan(0);
+    for (const entry of reachable) {
+      expect(secretPointers(outputSchema(entry)), entry.operationId).toEqual([]);
+      expect(entry["x-nortfox"].secretOutput, entry.operationId).toEqual([]);
+    }
   });
 
   it("uses every permission on the list, so none is dead", () => {

@@ -60,6 +60,7 @@ export const getMe = defineOperation({
     "When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.",
   output: Me,
   permission: "signed-in",
+  scope: "profile",
   company: "current",
   tool:
     "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; " +

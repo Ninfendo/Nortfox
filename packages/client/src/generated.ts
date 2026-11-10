@@ -405,6 +405,14 @@ export interface Problem {
    */
   readonly permission?: string;
   /**
+   * For scope-missing: the scope the operation needs, which the token lacks.
+   */
+  readonly scope?: string;
+  /**
+   * For answer-shown-once: the first answer to the idempotency key without the secret it held, such as the id of what it made.
+   */
+  readonly answer?: Readonly<Record<string, unknown>>;
+  /**
    * For a rule's refusal that concerns one field: that field's JSON Pointer.
    */
   readonly pointer?: string;
@@ -600,6 +608,8 @@ export interface Operations {
    * Needs no actor: anyone may call it, before signing in.
    *
    * Serves the browser's session: its MCP tool refuses every call.
+   *
+   * The answer holds a secret, which no other answer gives: `/challenge`.
    */
   loginWithPassword(
     input: {
@@ -649,6 +659,8 @@ export interface Operations {
    *
    * Needs a signed-in person, and works in no company.
    *
+   * A token needs the scope `companies`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    */
   listCompanies(
@@ -691,6 +703,8 @@ export interface Operations {
    *
    * Needs a signed-in person, and works in the company it makes.
    *
+   * A token needs the scope `companies`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    */
   createCompany(
@@ -716,6 +730,8 @@ export interface Operations {
    *
    * Needs the permission `company:read`, in the company that the credential names.
    *
+   * A token needs the scope `companyinformation`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    */
   getCompany(options?: CallOptions): Promise<Company>;
@@ -728,6 +744,8 @@ export interface Operations {
    * `PATCH /v1/company`
    *
    * Needs the permission `company:update`, in the company that the credential names.
+   *
+   * A token needs the scope `companies`.
    *
    * Credential: the cookie `__Host-nortfox-session`.
    */
@@ -827,6 +845,8 @@ export interface Operations {
    * Serves the browser's session: its MCP tool refuses every call.
    *
    * The answer holds personal data: `/user/name`, `/user/email`, `/membership/workEmail`, `/membership/workPhone`.
+   *
+   * The answer holds a secret, which no other answer gives: `/totpEnrolment/otpauthUri`.
    */
   acceptInvitation(
     input: {
@@ -861,6 +881,8 @@ export interface Operations {
    *
    * Needs a signed-in person, and works in the company that the credential names, or in none.
    *
+   * A token needs the scope `profile`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    *
    * The answer holds personal data: `/user/name`, `/user/email`, `/personalIdentityNumber`, `/mobile`, `/membership/workEmail`, `/membership/workPhone`.
@@ -870,13 +892,15 @@ export interface Operations {
   /**
    * List your recent companies
    *
-   * Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member.
+   * Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member. It tells of the person's other companies, so it needs a browser session: a token is refused it with 403 session-required.
    *
    * `GET /v1/me/companies/recent`
    *
    * Needs a signed-in person, and works in no company.
    *
    * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * Needs a browser session: a token is refused it with 403 `session-required`.
    */
   listRecentCompanies(options?: CallOptions): Promise<RecentCompanies>;
 
@@ -888,6 +912,8 @@ export interface Operations {
    * `PATCH /v1/me/companies/{companyId}`
    *
    * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.
+   *
+   * A token needs the scope `companies`.
    *
    * Credential: the cookie `__Host-nortfox-session`.
    *
@@ -925,6 +951,8 @@ export interface Operations {
    *
    * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.
    *
+   * A token needs the scope `companies`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    */
   leaveCompany(
@@ -945,6 +973,8 @@ export interface Operations {
    * `GET /v1/permissions`
    *
    * Needs a signed-in person, and works in no company.
+   *
+   * A token needs the scope `users`.
    *
    * Credential: the cookie `__Host-nortfox-session`.
    */
@@ -1004,6 +1034,8 @@ export interface Operations {
    * Serves the browser's session: its MCP tool refuses every call.
    *
    * The answer holds personal data: `/user/name`, `/user/email`.
+   *
+   * The answer holds a secret, which no other answer gives: `/totpEnrolment/otpauthUri`.
    */
   completeSetup(
     input: {
@@ -1036,6 +1068,8 @@ export interface Operations {
    * `GET /v1/users`
    *
    * Needs the permission `users:read`, in the company that the credential names.
+   *
+   * A token needs the scope `users`.
    *
    * Credential: the cookie `__Host-nortfox-session`.
    *
@@ -1077,6 +1111,8 @@ export interface Operations {
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
+   * A token needs the scope `users`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
@@ -1104,6 +1140,8 @@ export interface Operations {
    *
    * Needs the permission `users:read`, in the company that the credential names.
    *
+   * A token needs the scope `users`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
@@ -1127,6 +1165,8 @@ export interface Operations {
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
+   * A token needs the scope `users`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    */
   removeUser(
@@ -1147,6 +1187,8 @@ export interface Operations {
    * `PATCH /v1/users/{memberId}`
    *
    * Needs the permission `users:admin`, in the company that the credential names.
+   *
+   * A token needs the scope `users`.
    *
    * Credential: the cookie `__Host-nortfox-session`.
    *
@@ -1196,6 +1238,8 @@ export interface Operations {
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
+   * A token needs the scope `users`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
@@ -1219,6 +1263,8 @@ export interface Operations {
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
+   * A token needs the scope `users`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    */
   resendInvitation(
@@ -1239,6 +1285,8 @@ export interface Operations {
    * `PUT /v1/users/{memberId}/programs/{program}`
    *
    * Needs the permission `programs:grant`, in the company that the credential names.
+   *
+   * A token needs the scope `users`.
    *
    * Credential: the cookie `__Host-nortfox-session`.
    */
@@ -1274,6 +1322,8 @@ export interface Operations {
    *
    * Needs the permission `programs:grant`, in the company that the credential names.
    *
+   * A token needs the scope `users`.
+   *
    * Credential: the cookie `__Host-nortfox-session`.
    */
   removeProgram(
@@ -1298,6 +1348,8 @@ export interface Operations {
    * `POST /v1/users/{memberId}/programs/{program}/move`
    *
    * Needs the permission `programs:grant`, in the company that the credential names.
+   *
+   * A token needs the scope `users`.
    *
    * Credential: the cookie `__Host-nortfox-session`.
    */
@@ -1332,6 +1384,8 @@ export interface Operations {
    * `PUT /v1/users/{memberId}/rights`
    *
    * Needs the permission `programs:grant`, in the company that the credential names.
+   *
+   * A token needs the scope `users`.
    *
    * Credential: the cookie `__Host-nortfox-session`.
    */

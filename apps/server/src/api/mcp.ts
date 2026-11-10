@@ -27,9 +27,11 @@
 //    error. A tool of an operation that serves the browser's session, such
 //    as a sign-in, refuses every call with 403 browser-only before any
 //    argument is read: an MCP client signs in through OAuth. For any other
-//    tool, the actor and the permission are checked before any argument is
-//    read, as on /v1. A principal whose company access the one membership
-//    function did not give is a fault of the server: 500 internal-error.
+//    tool, the actor, a token's scope and the permission are checked before
+//    any argument is read, as on /v1: a tool of an operation that needs a
+//    browser session refuses a token's call with 403 session-required. A
+//    principal whose company access the one membership function did not
+//    give is a fault of the server: 500 internal-error.
 // 4. The arguments are the operation's flat input: a path parameter goes to
 //    the path parameters, a query field to the query, idempotencyKey to a
 //    write's key, and every other argument to the body, or to the query of an

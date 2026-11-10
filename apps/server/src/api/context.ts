@@ -18,11 +18,16 @@
 // actor answers 401 there. The tests pass their own resolver. No setting
 // turns on a fixed actor.
 //
+// A token, an API token or later an MCP client's, is an integration in its
+// one company, within its scopes (api/operation.ts, authorize). A session is
+// its user, and no scope limits it.
+//
 // The company in a principal comes only from the one membership function
 // (modules/memberships/resolve.ts): a CompanyAccess is made from a membership
 // that it gave, and authorize refuses a principal whose company is anything
 // else.
 
+import type { Scope } from "@nortfox/contract";
 import type { ActorKind, Channel, Via } from "../db/database.ts";
 import type { CompanyAccess } from "../modules/memberships/resolve.ts";
 
@@ -35,7 +40,7 @@ export type SignInMethod = "password-email" | "password-personnummer" | "bankid"
 /** The second step of a password sign-in: a TOTP code, or a device the person knows inside its 90 days. */
 export type SecondStep = "totp" | "known-device";
 
-/** A browser session, from the session cookie. API tokens and MCP tokens come later in slice 2c. */
+/** A browser session, from the session cookie. */
 export interface SessionCredential {
   readonly kind: "session";
   readonly sessionId: string;
@@ -46,8 +51,40 @@ export interface SessionCredential {
   readonly identifiedAt: Date;
 }
 
+/**
+ * An API token, from the Authorization header. It acts as its person, an
+ * integration, in its one company, within its scopes. The resolver that reads
+ * it comes later in this part of slice 2c, and the MCP clients' tokens in a
+ * later part.
+ */
+export interface ApiTokenCredential {
+  readonly kind: "api-token";
+  readonly tokenId: string;
+  readonly scopes: ReadonlySet<Scope>;
+}
+
 /** What the request's credential is. */
-export type Credential = SessionCredential;
+export type Credential = SessionCredential | ApiTokenCredential;
+
+/** A credential that is not a browser session: a token, which its scopes limit. */
+export type TokenCredential = Exclude<Credential, SessionCredential>;
+
+/** Whether the credential is a token, not a browser session. */
+export function isToken(credential: Credential): credential is TokenCredential {
+  return credential.kind !== "session";
+}
+
+/**
+ * The browser session of a call of an operation that serves the browser's
+ * session, such as logout. authorize refuses a token's call of one with
+ * session-required, so a token here is a fault of the server.
+ */
+export function sessionOf(operationId: string, credential: Credential): SessionCredential {
+  if (isToken(credential)) {
+    throw new Error(`${operationId} serves the browser's session, and the call came with a token, which authorize refuses.`);
+  }
+  return credential;
+}
 
 /**
  * The company a request works in: the membership, its admin level and the

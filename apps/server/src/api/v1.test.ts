@@ -154,6 +154,7 @@ describe("the paths and the methods", () => {
       body: z.strictObject({ number: z.int() }),
       output: z.strictObject({ number: z.int() }),
       permission: "test:write",
+      scope: "bookkeeping",
       tool: "Adds an account. Only the tests serve it.",
       writes: true,
     });

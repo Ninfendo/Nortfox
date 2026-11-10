@@ -42,6 +42,11 @@
 //   common: the key in flight, whose scope is the company for both, keeps
 //   two such writes of one process apart. A refused or failed write stores
 //   nothing, so a retry with the key runs again.
+// - A write whose answer holds a secret, such as a token shown once
+//   (secretOutput), keeps its key with the answer less each secret field
+//   (withoutSecrets), so no table and no behandlingshistorik holds the
+//   secret. A repeat of the same request gets 409 answer-shown-once with
+//   that answer, such as the id of what the first call made (operation.ts).
 // - A write that runs before sign-in takes no key: there is no actor to keep
 //   it for.
 
@@ -134,6 +139,45 @@ export function canonicalJson(value: unknown): string {
  */
 export function requestHash(key: Uint8Array, operationId: string, query: unknown, body: unknown, params?: unknown): string {
   return createHmac("sha256", key).update(canonicalJson({ operation: operationId, params, query, body })).digest("hex");
+}
+
+/** The segments of a JSON Pointer (RFC 6901), unescaped: "" is the whole value, "/a~1b/*" is "a/b" and "*". */
+function segmentsOf(pointer: string): string[] {
+  return pointer === "" ? [] : pointer.slice(1).split("/").map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+}
+
+/**
+ * A copy of `value` without the field that the segments name, or undefined
+ * when they name the value itself. "*" stands for each item of a list and
+ * each value of an object, as the registry's pointers write it. A field that
+ * the value does not have, or a value that holds no field, is passed over.
+ */
+function without(value: unknown, segments: readonly string[]): unknown {
+  const [head, ...rest] = segments;
+  if (head === undefined) {
+    return undefined;
+  }
+  const keep = (item: unknown): unknown[] => {
+    const kept = without(item, rest);
+    return kept === undefined ? [] : [kept];
+  };
+  if (Array.isArray(value)) {
+    return head === "*" ? value.flatMap(keep) : value;
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).flatMap(([name, item]) => (head === "*" || head === name ? keep(item).map((kept) => [name, kept]) : [[name, item]])));
+}
+
+/**
+ * The answer a write keeps with its key: its first answer less each secret
+ * field that `pointers`, the operation's secretOutput, names. The answer
+ * itself is not changed: the first call still gives it whole. An answer
+ * that is a secret as a whole keeps nothing, an empty object.
+ */
+export function withoutSecrets(answer: unknown, pointers: readonly string[]): unknown {
+  return pointers.reduce<unknown>((kept, pointer) => without(kept, segmentsOf(pointer)) ?? {}, answer);
 }
 
 /**

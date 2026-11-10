@@ -96,6 +96,7 @@ export const listUsers = defineListOperation({
     "A program administrator sees only the programs they administer.",
   item: Member,
   permission: "users:read",
+  scope: "users",
   tool: "Lists the users of the company you work in, with their status, admin level and programs. A program administrator sees only the programs they administer.",
 });
 
@@ -110,6 +111,7 @@ export const getUser = defineOperation({
   params: MemberPath,
   output: Member,
   permission: "users:read",
+  scope: "users",
   tool: "Gives one user of the company you work in, by the member's id.",
   writes: false,
 });
@@ -140,6 +142,7 @@ export const updateUser = defineOperation({
   }),
   output: Member,
   permission: "users:admin",
+  scope: "users",
   tool: "Changes a user of the company you work in: whether they are active, their system administrator's level, the programs they administer, their idle logout and their work contacts.",
   writes: true,
 });
@@ -157,6 +160,7 @@ export const removeUser = defineOperation({
   output: NoBody,
   status: 204,
   permission: "users:admin",
+  scope: "users",
   tool: "Removes a user from the company you work in. You cannot remove yourself.",
   writes: true,
 });
@@ -200,6 +204,7 @@ export const assignProgram = defineOperation({
     }),
   output: ProgramGrant,
   permission: "programs:grant",
+  scope: "users",
   tool: "Grants a program to a user of the company you work in, with Full behörighet or with a list of its rights.",
   writes: true,
 });
@@ -215,6 +220,7 @@ export const removeProgram = defineOperation({
   output: NoBody,
   status: 204,
   permission: "programs:grant",
+  scope: "users",
   tool: "Takes a program from a user of the company you work in.",
   writes: true,
 });
@@ -235,6 +241,7 @@ export const moveProgram = defineOperation({
   }),
   output: ProgramGrant,
   permission: "programs:grant",
+  scope: "users",
   tool: "Moves a program from one user of the company you work in to another, narrowed first if you give a list of its rights.",
   writes: true,
 });
@@ -264,6 +271,7 @@ export const inviteUser = defineOperation({
   output: Member,
   status: 201,
   permission: "users:admin",
+  scope: "users",
   tool: "Invites a person to the company you work in, with a name and an e-mail address: the invitation goes to that address by mail.",
   writes: true,
 });
@@ -281,6 +289,7 @@ export const resendInvitation = defineOperation({
   output: NoBody,
   status: 204,
   permission: "users:admin",
+  scope: "users",
   tool: "Sends a new invitation to a user of the company you work in who has not accepted theirs, and stops the old link.",
   writes: true,
 });
@@ -301,6 +310,7 @@ export const disconnectUserIdentity = defineOperation({
   params: MemberPath,
   output: Member,
   permission: "users:admin",
+  scope: "users",
   tool: "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
   writes: true,
 });
@@ -320,6 +330,7 @@ export const updateUserRights = defineOperation({
   }),
   output: UserRights,
   permission: "programs:grant",
+  scope: "users",
   tool: "Sets the Rapporter and Register/Övrigt rights of a user of the company you work in.",
   writes: true,
 });

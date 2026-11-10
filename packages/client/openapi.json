@@ -78,6 +78,15 @@
             "type": "string",
             "description": "For permission-missing: the permission the operation needs."
           },
+          "scope": {
+            "type": "string",
+            "description": "For scope-missing: the scope the operation needs, which the token lacks."
+          },
+          "answer": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "For answer-shown-once: the first answer to the idempotency key without the secret it held, such as the id of what it made."
+          },
           "pointer": {
             "type": "string",
             "description": "For a rule's refusal that concerns one field: that field's JSON Pointer."
@@ -1056,13 +1065,15 @@
         "description": "Answers as soon as the server runs. It reads no data.",
         "x-nortfox": {
           "permission": "public",
+          "scope": null,
           "tool": "Checks that the NortFox server is up, and gives its version. It reads no data.",
           "assistant": false,
           "writes": false,
           "list": false,
           "session": null,
           "company": "none",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "responses": {
           "200": {
@@ -1108,13 +1119,15 @@
         "description": "Gives the company the request works in: its id, name, organisation number and tenant id, and its postal and visiting addresses and its phone number and e-mail address when they are set. The company comes from the request's credential.",
         "x-nortfox": {
           "permission": "company:read",
+          "scope": "companyinformation",
           "tool": "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
           "assistant": true,
           "writes": false,
           "list": false,
           "session": null,
           "company": "credential",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -1161,7 +1174,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1191,13 +1204,15 @@
         "description": "Changes the request's company: its name, its postal and visiting addresses, and its phone number and e-mail address. A field left out stays as it is, and null takes an address field or a contact detail away. The organisation number never changes, so the operation does not take it.",
         "x-nortfox": {
           "permission": "company:update",
+          "scope": "companies",
           "tool": "Changes the company you work in: its name, its addresses, its phone number and its e-mail address. Its organisation number never changes.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": null,
           "company": "credential",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -1365,7 +1380,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1437,6 +1452,7 @@
         "description": "Makes the install's first identity from its setup link, with a name, an e-mail address and a password of 12 to 1024 characters. The link works once, for 28 days, on an install with no identity, and a newer link stops it. A link that the setup command made while the install's only identity never confirmed its TOTP secret replaces that identity instead. The answer gives the new TOTP secret, and no answer gives it again. It sets no session: the person signs in next, with the password and a code.",
         "x-nortfox": {
           "permission": "none",
+          "scope": null,
           "tool": "Makes the first identity of an empty install. It serves the browser's sign-in, so this tool refuses every call.",
           "assistant": false,
           "writes": true,
@@ -1446,6 +1462,9 @@
           "personalOutput": [
             "/user/name",
             "/user/email"
+          ],
+          "secretOutput": [
+            "/totpEnrolment/otpauthUri"
           ]
         },
         "parameters": [
@@ -1616,13 +1635,17 @@
         "description": "Signs in with an identifier, the e-mail address in any letter case or the personnummer, and the password. A right password gives the TOTP step, or a session on a known device inside its 90 days when the person's two-step choice allows it. Every failure gets the same answer. After 5 failures in an hour each attempt waits longer, and after 100 the sign-in waits until the hour has passed.",
         "x-nortfox": {
           "permission": "none",
+          "scope": null,
           "tool": "Signs a browser in with a password. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": "flow",
           "company": "none",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": [
+            "/challenge"
+          ]
         },
         "requestBody": {
           "required": true,
@@ -1772,13 +1795,15 @@
         "description": "Ends a password sign-in with the six digits of the person's authenticator app. A right code sets the session cookie, and makes the browser a known device. A code works once. A challenge takes five codes, and ten wrong codes in 15 minutes stop the TOTP step for 15 minutes.",
         "x-nortfox": {
           "permission": "none",
+          "scope": null,
           "tool": "Gives the TOTP code of a browser's sign-in. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": "flow",
           "company": "none",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "requestBody": {
           "required": true,
@@ -1920,13 +1945,15 @@
         "description": "Ends the browser's session, so its cookie is refused from the next request, and clears the cookie.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": null,
           "tool": "Signs a browser out. It serves the browser's session, so this tool refuses every call.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": "flow",
           "company": "none",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -1979,7 +2006,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2031,6 +2058,7 @@
         "description": "Gives the browser's session: the person it signed in, and the company it works in once one is chosen.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": null,
           "tool": "Reads the browser's session. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
           "assistant": false,
           "writes": false,
@@ -2040,7 +2068,8 @@
           "personalOutput": [
             "/user/name",
             "/user/email"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -2086,6 +2115,16 @@
               }
             }
           },
+          "403": {
+            "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The server failed. The answer holds no detail of the error.",
             "content": {
@@ -2109,6 +2148,7 @@
         "description": "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": "profile",
           "tool": "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; and the company you work in, with your membership and permissions there.",
           "assistant": false,
           "writes": false,
@@ -2122,7 +2162,8 @@
             "/mobile",
             "/membership/workEmail",
             "/membership/workPhone"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -2168,6 +2209,16 @@
               }
             }
           },
+          "403": {
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The server failed. The answer holds no detail of the error.",
             "content": {
@@ -2191,13 +2242,15 @@
         "description": "Makes a company with its name and organisation number, and makes the signed-in person its owner, a system administrator, in the same transaction. The company gets its tenant id, a number that is never given out again. The organisation number never changes.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": "companies",
           "tool": "Creates a company and makes you its owner. Its organisation number never changes.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": null,
           "company": "new",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -2285,7 +2338,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2355,13 +2408,15 @@
         "description": "Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": "companies",
           "tool": "Lists the companies where you are an active member, with your system administrator's level in each.",
           "assistant": false,
           "writes": false,
           "list": true,
           "session": null,
           "company": "none",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -2466,6 +2521,16 @@
               }
             }
           },
+          "403": {
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The server failed. The answer holds no detail of the error.",
             "content": {
@@ -2486,16 +2551,18 @@
           "me"
         ],
         "summary": "List your recent companies",
-        "description": "Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member.",
+        "description": "Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member. It tells of the person's other companies, so it needs a browser session: a token is refused it with 403 session-required.",
         "x-nortfox": {
           "permission": "signed-in",
-          "tool": "Gives the three companies you chose last, where you are still an active member.",
+          "scope": null,
+          "tool": "Gives the three companies you chose last, where you are still an active member. It needs a browser session, so this tool refuses a call that comes with a token.",
           "assistant": false,
           "writes": false,
           "list": false,
-          "session": null,
+          "session": "only",
           "company": "none",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -2541,6 +2608,16 @@
               }
             }
           },
+          "403": {
+            "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The server failed. The answer holds no detail of the error.",
             "content": {
@@ -2564,6 +2641,7 @@
         "description": "Makes the browser's session work in the company that companyId names, where the person must be an active member, without a new sign-in. Any other company, also one that does not exist, gets the same refusal. The session takes the person's permissions there as they are now, and the company's behandlingshistorik gets the sign-in.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": null,
           "tool": "Chooses the browser session's company. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
           "assistant": false,
           "writes": true,
@@ -2575,7 +2653,8 @@
           "personalOutput": [
             "/user/name",
             "/user/email"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -2656,7 +2735,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2728,6 +2807,7 @@
         "description": "Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": "companies",
           "tool": "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
           "assistant": false,
           "writes": true,
@@ -2739,7 +2819,8 @@
           "personalOutput": [
             "/workEmail",
             "/workPhone"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -2850,7 +2931,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2922,13 +3003,15 @@
         "description": "Gives the permission catalogue as the install holds it: the plan's six roles, the programs with each one's set and what Full behörighet holds, the groups, and every permission, each in the catalogue's order, with its view and manual-only marks.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": "users",
           "tool": "Gives the permission catalogue: the roles, the programs with their sets, the groups and every permission in order, with the view and manual-only marks.",
           "assistant": false,
           "writes": false,
           "list": false,
           "session": null,
           "company": "none",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -2974,6 +3057,16 @@
               }
             }
           },
+          "403": {
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The server failed. The answer holds no detail of the error.",
             "content": {
@@ -2997,6 +3090,7 @@
         "description": "Lists the company's invited, active and inactive members, in the order they were added, each with the person's name, the status, the admin level, the idle logout, the work contacts and the programs. A program administrator sees only the programs they administer.",
         "x-nortfox": {
           "permission": "users:read",
+          "scope": "users",
           "tool": "Lists the users of the company you work in, with their status, admin level and programs. A program administrator sees only the programs they administer.",
           "assistant": false,
           "writes": false,
@@ -3007,7 +3101,8 @@
             "/items/*/name",
             "/items/*/workEmail",
             "/items/*/workPhone"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -3101,7 +3196,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3131,6 +3226,7 @@
         "description": "Lägg till användare: makes an invited member of the company, with a name and an e-mail address, and sends the invitation to that address. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An address that a member of the company has, or that an open invitation of the company goes to, gets 422 already-member.",
         "x-nortfox": {
           "permission": "users:admin",
+          "scope": "users",
           "tool": "Invites a person to the company you work in, with a name and an e-mail address: the invitation goes to that address by mail.",
           "assistant": false,
           "writes": true,
@@ -3141,7 +3237,8 @@
             "/name",
             "/workEmail",
             "/workPhone"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -3231,7 +3328,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3303,6 +3400,7 @@
         "description": "Gives one invited, active or inactive member of the company, as listUsers gives it. Any other id, also one of a removed or a left member, gets 422 user-not-found.",
         "x-nortfox": {
           "permission": "users:read",
+          "scope": "users",
           "tool": "Gives one user of the company you work in, by the member's id.",
           "assistant": false,
           "writes": false,
@@ -3313,7 +3411,8 @@
             "/name",
             "/workEmail",
             "/workPhone"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -3373,7 +3472,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3413,6 +3512,7 @@
         "description": "Changes a member of the company: Aktiv användare, the system administrator's level, the programs the member administers, the idle logout and the work contacts. A field left out stays as it is. adminLevel admin makes the member a system administrator, and null makes them no longer one; only creating a company gives the owner's level, which admin keeps. The work e-mail address is required, so null is refused for it. The company always keeps an active system administrator.",
         "x-nortfox": {
           "permission": "users:admin",
+          "scope": "users",
           "tool": "Changes a user of the company you work in: whether they are active, their system administrator's level, the programs they administer, their idle logout and their work contacts.",
           "assistant": false,
           "writes": true,
@@ -3423,7 +3523,8 @@
             "/name",
             "/workEmail",
             "/workPhone"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -3557,7 +3658,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3627,13 +3728,15 @@
         "description": "Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, and its sessions end. The member's work contacts are erased. The company always keeps an active system administrator.",
         "x-nortfox": {
           "permission": "users:admin",
+          "scope": "users",
           "tool": "Removes a user from the company you work in. You cannot remove yourself.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": null,
           "company": "credential",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -3697,7 +3800,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3749,13 +3852,15 @@
         "description": "Tilldela program: grants the program to a member, with Full behörighet (full: true), or with a list of its rights. For a member who holds the program, the list replaces the grant's, which keeps its time and its end; a grant that has ended is granted again. A program administrator grants only the programs they administer.",
         "x-nortfox": {
           "permission": "programs:grant",
+          "scope": "users",
           "tool": "Grants a program to a user of the company you work in, with Full behörighet or with a list of its rights.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": null,
           "company": "credential",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -3870,7 +3975,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3940,13 +4045,15 @@
         "description": "Ta bort program: takes the program's grant from a member. A program administrator removes only the programs they administer.",
         "x-nortfox": {
           "permission": "programs:grant",
+          "scope": "users",
           "tool": "Takes a program from a user of the company you work in.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": null,
           "company": "credential",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -4026,7 +4133,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4078,13 +4185,15 @@
         "description": "Flytta program: gives a member's grant of the program to another member, who must not hold the program, and takes it from the first. The grant keeps its time and its end. With permissions, it is narrowed first: the list holds only rights the grant holds. A program administrator moves only the programs they administer.",
         "x-nortfox": {
           "permission": "programs:grant",
+          "scope": "users",
           "tool": "Moves a program from one user of the company you work in to another, narrowed first if you give a list of its rights.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": null,
           "company": "credential",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -4200,7 +4309,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4272,13 +4381,15 @@
         "description": "Anpassa Rapporter and Anpassa Register/Övrigt: sets a member's Rapporter and Register/Övrigt rights, the whole list. Each of the member's grants holds those its program covers, and keeps its own rights. A right that no grant of the member covers is refused. A program administrator sets them only in the grants of the programs they administer.",
         "x-nortfox": {
           "permission": "programs:grant",
+          "scope": "users",
           "tool": "Sets the Rapporter and Register/Övrigt rights of a user of the company you work in.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": null,
           "company": "credential",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -4373,7 +4484,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4445,13 +4556,15 @@
         "description": "Skicka en ny inbjudan: sends an invited member a new invitation, to the name and the e-mail address of their latest one. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. A member who is not invited gets 422 user-not-invited.",
         "x-nortfox": {
           "permission": "users:admin",
+          "scope": "users",
           "tool": "Sends a new invitation to a user of the company you work in who has not accepted theirs, and stops the old link.",
           "assistant": false,
           "writes": true,
           "list": false,
           "session": null,
           "company": "credential",
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -4515,7 +4628,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4567,6 +4680,7 @@
         "description": "Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. The company always keeps an active system administrator.",
         "x-nortfox": {
           "permission": "users:admin",
+          "scope": "users",
           "tool": "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
           "assistant": false,
           "writes": true,
@@ -4577,7 +4691,8 @@
             "/name",
             "/workEmail",
             "/workPhone"
-          ]
+          ],
+          "secretOutput": []
         },
         "security": [
           {
@@ -4648,7 +4763,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4700,6 +4815,7 @@
         "description": "Gives the invitation that a link holds: the name and the e-mail address it was sent to, the company, who sent it, and when the link stops working. A link that is unknown, used, stopped by a newer invitation or past its 14 days gets one answer, 422 invitation-link-invalid.",
         "x-nortfox": {
           "permission": "none",
+          "scope": null,
           "tool": "Reads an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
           "assistant": false,
           "writes": false,
@@ -4710,7 +4826,8 @@
             "/name",
             "/email",
             "/inviterName"
-          ]
+          ],
+          "secretOutput": []
         },
         "parameters": [
           {
@@ -4825,6 +4942,7 @@
         "description": "Accepts the invitation that a link holds, once. With newIdentity, Skapa ett nytt NortFox ID: a new identity with that name and a password of 12 to 1024 characters, which takes the invitation's e-mail address; the answer gives its TOTP secret, and sets no session, so the person signs in next with the password and a code. Without it, Koppla ihop med befintligt NortFox ID: the identity of the browser's session accepts, and with no session the call gets 422 sign-in-required. The member's work e-mail address becomes the invitation's. A link that is unknown, used, stopped by a newer invitation or past its 14 days gets one answer, 422 invitation-link-invalid. An e-mail address that another identity has gets 422 email-taken, and a person who is a member of the company already gets 422 already-member.",
         "x-nortfox": {
           "permission": "none",
+          "scope": null,
           "tool": "Accepts an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
           "assistant": false,
           "writes": true,
@@ -4836,6 +4954,9 @@
             "/user/email",
             "/membership/workEmail",
             "/membership/workPhone"
+          ],
+          "secretOutput": [
+            "/totpEnrolment/otpauthUri"
           ]
         },
         "parameters": [
@@ -5005,6 +5126,7 @@
         "description": "The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave.",
         "x-nortfox": {
           "permission": "signed-in",
+          "scope": "companies",
           "tool": "Leaves a company where you are an active member. Only a new invitation lets you back.",
           "assistant": false,
           "writes": true,
@@ -5013,7 +5135,8 @@
           "company": {
             "input": "companyId"
           },
-          "personalOutput": []
+          "personalOutput": [],
+          "secretOutput": []
         },
         "security": [
           {
@@ -5077,7 +5200,7 @@
             }
           },
           "403": {
-            "description": "The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
             "content": {
               "application/problem+json": {
                 "schema": {

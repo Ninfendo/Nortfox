@@ -8,7 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Client as McpClient, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { Money, PERMISSIONS, REGISTRY, defineListOperation, defineOperation, moneyToOre, oreToMoney, type AdminLevel, type Operation } from "@nortfox/contract";
+import { Money, PERMISSIONS, REGISTRY, SCOPES, defineListOperation, defineOperation, moneyToOre, oreToMoney, type AdminLevel, type Operation, type Scope } from "@nortfox/contract";
 import type { Client, QueryResult, QueryResultRow } from "pg";
 import { Pool } from "pg";
 import { z } from "zod";
@@ -75,6 +75,7 @@ export const testListAccounts = defineListOperation({
   description: "Lists the company's accounts, ordered by id. Only the tests serve it.",
   item: TestAccount,
   permission: "test:read",
+  scope: "bookkeeping",
   tool: "Lists the accounts of the company you work in. Only the tests serve it.",
 });
 
@@ -120,6 +121,7 @@ export const testBookVoucher = defineOperation({
   output: TestVoucher,
   status: 201,
   permission: "test:write",
+  scope: "bookkeeping",
   tool: "Books a voucher of one amount in the company you work in. Only the tests serve it.",
   writes: true,
 });
@@ -323,6 +325,34 @@ export async function principalOf(companyId: string, options: PrincipalOptions =
   });
   const membership = await testMembership(companyId, person.personId);
   return { ...person, company: membership.access(options.permissions ?? ALL_PERMISSIONS) };
+}
+
+/** Who a test token is: its person, its scopes and the permissions its person holds in its company. */
+export interface TokenOptions {
+  readonly personId?: string;
+  /** The token's scopes: every scope by default. */
+  readonly scopes?: readonly Scope[];
+  /** The permissions its person holds in its company: every one by default. */
+  readonly permissions?: readonly string[];
+}
+
+/**
+ * An API token's principal in `companyId`, as the resolver will make it: an
+ * integration that acts through the token, with the token's scopes, in the
+ * token's company. Its company access is made from a membership that
+ * resolve.ts made (testMembership).
+ */
+export async function tokenPrincipalOf(companyId: string, options: TokenOptions = {}): Promise<Principal & { readonly company: CompanyAccess }> {
+  const personId = options.personId ?? randomUUID();
+  const tokenId = randomUUID();
+  const membership = await testMembership(companyId, personId);
+  return {
+    personId,
+    actorKind: "integration",
+    via: { kind: "api-token", id: tokenId },
+    credential: { kind: "api-token", tokenId, scopes: new Set(options.scopes ?? SCOPES) },
+    company: membership.access(options.permissions ?? ALL_PERMISSIONS),
+  };
 }
 
 /** A resolver that maps `Authorization: Bearer <token>` to the token's principal, and anything else to no actor. */

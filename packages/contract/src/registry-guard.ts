@@ -5,15 +5,18 @@
  * it. The registry's test runs it on the registry. It fails an entry with no
  * permission or no MCP tool text, a write without a required
  * Idempotency-Key header, a mark it does not know, credentials in security
- * that its permission does not ask for, and every other entry that REST and
- * MCP could not serve the same way.
+ * that its permission does not ask for, a scope where no token calls the
+ * operation or none where one does, a secret in the answer of an operation
+ * that a token may call, and every other entry that REST and MCP could not
+ * serve the same way.
  */
 
 import { z } from "zod";
-import { personalPointers } from "./fields.ts";
+import { personalPointers, secretPointers } from "./fields.ts";
 import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
 import { jsonSchemaOf, type JsonSchema } from "./json-schema.ts";
 import { COMPANY_SOURCES, METHODS, NONE, OPEN_PERMISSIONS, PUBLIC, SIGNED_IN, securityOf } from "./operation.ts";
+import { SCOPES } from "./scopes.ts";
 
 const ID = /^[a-z][A-Za-z0-9]{0,63}$/;
 const WORD = "[a-z0-9]+(-[a-z0-9]+)*";
@@ -22,7 +25,10 @@ const PARAMETER = String.raw`\{[a-z][A-Za-z0-9]*\}`;
 const PATH = new RegExp(`^/v1/${WORD}(/(${WORD}|${PARAMETER}))*$`);
 
 /** The marks of x-nortfox, in the order they are read. */
-const MARKS = ["permission", "tool", "assistant", "writes", "list", "session", "company", "personalOutput"];
+const MARKS = ["permission", "scope", "tool", "assistant", "writes", "list", "session", "company", "personalOutput", "secretOutput"];
+
+/** The session marks: one that serves the browser's session, one that needs it, and none. */
+const SESSION_MARKS: readonly unknown[] = ["flow", "only", null];
 
 /** The company sources that only a signed-in operation may have: its current company, a new one, or one its input names. */
 const PERSON_SOURCES: readonly unknown[] = ["current", "new"];
@@ -137,7 +143,7 @@ function strings(value: unknown): value is readonly string[] {
 /** What is wrong with the values of x-nortfox, each one by itself. */
 function markProblems(name: string, meta: Entry, permissions: ReadonlySet<string>): string[] {
   const problems: string[] = [];
-  const { permission, tool, writes, assistant, list, session, company, personalOutput } = meta;
+  const { permission, scope, tool, writes, assistant, list, session, company, personalOutput, secretOutput } = meta;
   for (const mark of Object.keys(meta).filter((key) => !MARKS.includes(key))) {
     problems.push(`${name} has the mark ${JSON.stringify(mark)} in x-nortfox, which the registry does not know.`);
   }
@@ -146,14 +152,17 @@ function markProblems(name: string, meta: Entry, permissions: ReadonlySet<string
   } else if (!(OPEN_PERMISSIONS as readonly string[]).includes(permission) && !permissions.has(permission)) {
     problems.push(`${name} needs the permission ${JSON.stringify(permission)}, which is not on the list.`);
   }
+  if (scope !== null && !(SCOPES as readonly unknown[]).includes(scope)) {
+    problems.push(`${name} has the scope ${shown(scope)}. A scope is one of SCOPES, or null.`);
+  }
   if (typeof tool !== "string" || tool.trim() === "") {
     problems.push(`${name} has no MCP tool text.`);
   }
   if (typeof writes !== "boolean" || typeof assistant !== "boolean" || typeof list !== "boolean") {
     problems.push(`${name} must say whether it writes, whether it is a list and whether the assistant may call it, each true or false.`);
   }
-  if (session !== "flow" && session !== null) {
-    problems.push(`${name} has the session mark ${shown(session)}. It is "flow" or null.`);
+  if (!SESSION_MARKS.includes(session)) {
+    problems.push(`${name} has the session mark ${shown(session)}. It is "flow", "only" or null.`);
   }
   if (!knownSource(company)) {
     problems.push(`${name} has the company source ${shown(company)}. It is "none", "credential", "current", "new" or {"input": "<field>"}.`);
@@ -161,7 +170,42 @@ function markProblems(name: string, meta: Entry, permissions: ReadonlySet<string
   if (!strings(personalOutput)) {
     problems.push(`${name} has the personal output ${shown(personalOutput)}. It is the list of the JSON Pointers of the output's personal fields.`);
   }
+  if (!strings(secretOutput)) {
+    problems.push(`${name} has the secret output ${shown(secretOutput)}. It is the list of the JSON Pointers of the output's secret fields.`);
+  }
   return problems;
+}
+
+/** Why an operation names no scope, or undefined for one that a token may call by a scope. */
+function noScope(meta: Entry): string | undefined {
+  const { permission, session } = meta;
+  if (permission === PUBLIC) {
+    return "is public, so it";
+  }
+  if (session === "flow") {
+    return "serves the browser's session, so no token calls it and it";
+  }
+  if (session === "only") {
+    return "needs a browser session, so no token calls it and it";
+  }
+  // One that runs before sign-in and does not serve the session is refused for that already.
+  return permission === NONE ? "runs before sign-in, so it" : undefined;
+}
+
+/**
+ * What is wrong with the scope against the other marks. A token calls by a
+ * scope every operation that is not public and neither serves nor needs a
+ * browser session, so such an operation names one, and no other does.
+ */
+function scopeProblems(name: string, meta: Entry): string[] {
+  const { scope } = meta;
+  const why = noScope(meta);
+  if (why === undefined) {
+    return scope === null
+      ? [`${name} neither is public nor serves or needs a browser session, so a token may call it: it names the scope the token needs, one of SCOPES, not null.`]
+      : [];
+  }
+  return scope === null ? [] : [`${name} ${why} names no scope: its scope is null, not ${JSON.stringify(scope)}.`];
 }
 
 /** What is wrong with how the marks of a well-formed x-nortfox go together. */
@@ -171,7 +215,10 @@ function pairingProblems(name: string, meta: Entry): string[] {
   if (permission === PUBLIC && writes === true) {
     problems.push(`${name} is public and writes. A public operation reads and writes no data.`);
   }
-  if (permission === NONE && session !== "flow") {
+  if (session === "only" && (permission === PUBLIC || permission === NONE)) {
+    problems.push(`${name} needs a browser session, so it needs an actor: its permission is "signed-in" or a permission, not ${JSON.stringify(permission)}.`);
+  }
+  if (permission === NONE && session === null) {
     problems.push(`${name} runs before sign-in, so it serves the browser's session: its session mark must be "flow".`);
   }
   if (session === "flow" && permission !== NONE && permission !== SIGNED_IN) {
@@ -187,7 +234,7 @@ function pairingProblems(name: string, meta: Entry): string[] {
   if ((PERSON_SOURCES.includes(company) || companyField(company) !== undefined) && permission !== SIGNED_IN) {
     problems.push(`${name} has the company source ${JSON.stringify(company)}, which only a signed-in operation may have.`);
   }
-  return problems;
+  return [...problems, ...scopeProblems(name, meta)];
 }
 
 /** What is wrong with x-nortfox, which the other checks read. */
@@ -336,24 +383,60 @@ function requiredString(json: JsonSchema | undefined, name: string): boolean {
   return field(json, "properties", name, "type") === "string" && Array.isArray(required) && required.includes(name);
 }
 
+/** A list of pointers that the registry derives from the output schema: its mark, its name in the texts, and how it is read. */
+interface MarkedOutput {
+  readonly mark: "personalOutput" | "secretOutput";
+  readonly kind: "personal" | "secret";
+  readonly pointers: (schema: z.ZodType) => string[];
+}
+
+const PERSONAL_OUTPUT: MarkedOutput = { mark: "personalOutput", kind: "personal", pointers: personalPointers };
+const SECRET_OUTPUT: MarkedOutput = { mark: "secretOutput", kind: "secret", pointers: secretPointers };
+
 /**
- * What is wrong with the personal output: it must be the list that personal()
- * gives for the output schema, in its order, and empty for an answer with no
- * body. A list that is no list of strings is a mark's problem already.
+ * The marked fields of the output, as the output schema gives them: none for
+ * an answer with no body, and undefined when there is no success answer, or
+ * its schema is no zod schema, which other checks refuse.
  */
-function personalProblems(name: string, entry: Entry, personalOutput: unknown, success: Success): string[] {
-  if (!strings(personalOutput) || success.status === undefined) {
+function markedFields(entry: Entry, success: Success, marked: MarkedOutput): string[] | undefined {
+  if (success.status === undefined) {
+    return undefined;
+  }
+  if (NO_BODY_SUCCESSES.includes(success.status)) {
     return [];
   }
   const schema = field(entry, "responses", success.status, "content", "application/json", "schema");
-  const noBody = NO_BODY_SUCCESSES.includes(success.status);
-  if (!noBody && !(schema instanceof z.ZodType)) {
+  return schema instanceof z.ZodType ? marked.pointers(schema) : undefined;
+}
+
+/**
+ * What is wrong with the personal or the secret output: it must be the list
+ * that personal() or secret() gives for the output schema, in its order, and
+ * empty for an answer with no body. A list that is no list of strings is a
+ * mark's problem already.
+ */
+function markedProblems(name: string, entry: Entry, meta: unknown, success: Success, marked: MarkedOutput): string[] {
+  const listed = field(meta, marked.mark);
+  const wanted = markedFields(entry, success, marked);
+  if (!strings(listed) || wanted === undefined || JSON.stringify(listed) === JSON.stringify(wanted)) {
     return [];
   }
-  const wanted = noBody || !(schema instanceof z.ZodType) ? [] : personalPointers(schema);
-  return JSON.stringify(personalOutput) === JSON.stringify(wanted)
-    ? []
-    : [`${name}'s personal output is ${JSON.stringify(personalOutput)}, but the personal fields of its output are ${JSON.stringify(wanted)}.`];
+  return [`${name}'s ${marked.kind} output is ${JSON.stringify(listed)}, but the ${marked.kind} fields of its output are ${JSON.stringify(wanted)}.`];
+}
+
+/**
+ * The secret fields in the output of an operation that a token may call:
+ * one that is not public and neither serves nor needs a browser session, so
+ * one that names a scope. Its output holds no secret, so no token and no MCP
+ * client ever gets a credential in an answer. The fields are read from the
+ * output schema, not from the list that x-nortfox gives.
+ */
+function tokenSecretProblems(name: string, entry: Entry, meta: unknown, success: Success): string[] {
+  const secrets = markedFields(entry, success, SECRET_OUTPUT) ?? [];
+  if (!isRecord(meta) || noScope(meta) !== undefined || secrets.length === 0) {
+    return [];
+  }
+  return [`${name} may be called with a token, so its output holds no secret, but its secret fields are ${JSON.stringify(secrets)}.`];
 }
 
 /** What is wrong with one entry, apart from the duplicates. */
@@ -366,7 +449,7 @@ function entryProblems(entry: Entry, name: string, permissions: ReadonlySet<stri
   const meta = entry["x-nortfox"];
   if (!isRecord(meta)) {
     problems.push(
-      `${name} declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark, company source and personal output.`,
+      `${name} declares no x-nortfox: its permission, scope, MCP tool text, assistant flag, writes flag, list flag, session mark, company source, personal output and secret output.`,
     );
   } else {
     const marks = metaProblems(name, meta, permissions);
@@ -414,7 +497,11 @@ function entryProblems(entry: Entry, name: string, permissions: ReadonlySet<stri
   if (input !== undefined && ![path.params, query, body].some((part) => requiredString(part, input))) {
     problems.push(`${name} takes its company from the input field ${JSON.stringify(input)}, which its input does not have as a required string.`);
   }
-  problems.push(...personalProblems(name, entry, field(meta, "personalOutput"), success));
+  problems.push(
+    ...markedProblems(name, entry, meta, success, PERSONAL_OUTPUT),
+    ...markedProblems(name, entry, meta, success, SECRET_OUTPUT),
+    ...tokenSecretProblems(name, entry, meta, success),
+  );
 
   if (field(meta, "list") === true) {
     const page = fieldNames(success.output);

@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { personal } from "./fields.ts";
+import { personal, secret } from "./fields.ts";
 import { Money } from "./money.ts";
 import { Limit } from "./paging.ts";
 import { NoBody, Redirect, defineListOperation, defineOperation, type Operation } from "./operation.ts";
@@ -24,6 +24,7 @@ const readThing = defineOperation({
   query: z.strictObject({ name: z.string().optional() }),
   output: z.strictObject({ name: z.string() }),
   permission: "test:read",
+  scope: "bookkeeping",
   tool: "Reads the thing.",
   writes: false,
 });
@@ -39,6 +40,7 @@ const bookThing = defineOperation({
   output: z.strictObject({ id: z.uuid() }),
   status: 201,
   permission: "test:write",
+  scope: "bookkeeping",
   tool: "Books a thing.",
   writes: true,
 });
@@ -52,6 +54,7 @@ const listThings = defineListOperation({
   description: "Lists the things.",
   item: z.strictObject({ id: z.uuid() }),
   permission: "test:read",
+  scope: "bookkeeping",
   tool: "Lists the things.",
 });
 
@@ -79,6 +82,7 @@ const readOne = defineOperation({
   query: z.strictObject({ view: z.enum(["short", "long"]).optional() }),
   output: z.strictObject({ name: z.string() }),
   permission: "test:read",
+  scope: "bookkeeping",
   tool: "Reads one part of a thing.",
   writes: false,
 });
@@ -94,6 +98,7 @@ const removeOne = defineOperation({
   output: NoBody,
   status: 204,
   permission: "test:write",
+  scope: "bookkeeping",
   tool: "Removes a thing.",
   writes: true,
 });
@@ -154,6 +159,7 @@ const getPerson = defineOperation({
   description: "Reads the signed-in person.",
   output: z.strictObject({ name: z.string() }),
   permission: "signed-in",
+  scope: "profile",
   tool: "Reads the signed-in person.",
   writes: false,
 });
@@ -200,6 +206,7 @@ const changeMember = defineOperation({
   body: z.strictObject({ workEmail: personal(z.string()).nullable().optional() }),
   output: z.strictObject({ companyId: z.uuid(), workEmail: personal(z.string()).optional() }),
   permission: "signed-in",
+  scope: "companies",
   company: { input: "companyId" },
   tool: "Changes your membership.",
   writes: true,
@@ -216,6 +223,7 @@ const makeThing = defineOperation({
   output: z.strictObject({ id: z.uuid() }),
   status: 201,
   permission: "signed-in",
+  scope: "companies",
   company: "new",
   tool: "Makes a company.",
   writes: true,
@@ -230,8 +238,39 @@ const readCurrent = defineOperation({
   description: "Reads the session's company, when it has one.",
   output: z.strictObject({ name: z.string().optional() }),
   permission: "signed-in",
+  scope: "profile",
   company: "current",
   tool: "Reads the current company.",
+  writes: false,
+});
+
+const makeToken = defineOperation({
+  id: "makeToken",
+  method: "post",
+  path: "/v1/made-tokens",
+  tags: ["tokens"],
+  summary: "Make a token",
+  description: "Makes a token, shown once. Only a browser session may.",
+  body: z.strictObject({ name: z.string() }),
+  output: z.strictObject({ id: z.uuid(), token: secret(z.string()) }),
+  status: 201,
+  permission: "test:write",
+  session: "only",
+  tool: "Makes a token.",
+  writes: true,
+});
+
+const readRecent = defineOperation({
+  id: "getRecentThings",
+  method: "get",
+  path: "/v1/recent-things",
+  tags: ["person"],
+  summary: "Read the recent things",
+  description: "Reads what the person chose last. Only a browser session may.",
+  output: z.strictObject({ names: z.array(z.string()) }),
+  permission: "signed-in",
+  session: "only",
+  tool: "Reads the recent things.",
   writes: false,
 });
 
@@ -251,6 +290,8 @@ const GOOD = [
   changeMember,
   makeThing,
   readCurrent,
+  makeToken,
+  readRecent,
 ];
 
 /** A copy of an entry with some parts replaced. */
@@ -282,7 +323,7 @@ function problemsOf(...entries: unknown[]): string[] {
 }
 
 describe("registryProblems", () => {
-  it("passes good entries: a read, a write with its key, a list, a public read, path parameters, a 204, the session's operations, and each company source", () => {
+  it("passes good entries: a read, a write with its key, a list, a public read, path parameters, a 204, the session's operations, each company source, and the session-only operations", () => {
     expect(problemsOf(...GOOD)).toEqual([]);
   });
 
@@ -323,24 +364,22 @@ describe("registryProblems", () => {
 
   it("fails an entry that declares nothing", () => {
     const bare = without(readThing, "x-nortfox");
-    expect(problemsOf(bare)).toEqual([
-      "getThing declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark, company source and personal output.",
-    ]);
-    expect(problemsOf(changed(readThing, { "x-nortfox": "company:read" }))).toEqual([
-      "getThing declares no x-nortfox: its permission, MCP tool text, assistant flag, writes flag, list flag, session mark, company source and personal output.",
-    ]);
+    const nothing =
+      "getThing declares no x-nortfox: its permission, scope, MCP tool text, assistant flag, writes flag, list flag, session mark, company source, personal output and secret output.";
+    expect(problemsOf(bare)).toEqual([nothing]);
+    expect(problemsOf(changed(readThing, { "x-nortfox": "company:read" }))).toEqual([nothing]);
   });
 
   describe("the marks of part 1", () => {
-    it.each(["scope", "secretOutput", "personal", "Session", ""])("fails a mark the registry does not know: %j", (mark) => {
+    it.each(["personal", "secret", "scopes", "Session", ""])("fails a mark the registry does not know: %j", (mark) => {
       expect(problemsOf(withMeta(readThing, { [mark]: null }))).toEqual([
         `getThing has the mark ${JSON.stringify(mark)} in x-nortfox, which the registry does not know.`,
       ]);
     });
 
-    it.each(["only", "Flow", "", undefined, false])("fails the session mark %j", (session) => {
+    it.each(["Only", "Flow", "", undefined, false, "session"])("fails the session mark %j", (session) => {
       expect(problemsOf(withMeta(readThing, { session }))).toEqual([
-        `getThing has the session mark ${session === undefined ? "undefined" : JSON.stringify(session)}. It is "flow" or null.`,
+        `getThing has the session mark ${session === undefined ? "undefined" : JSON.stringify(session)}. It is "flow", "only" or null.`,
       ]);
     });
 
@@ -372,7 +411,7 @@ describe("registryProblems", () => {
     });
 
     it.each(["test:read", "public"])("fails an operation of the browser's session whose permission is %j", (permission) => {
-      const entry = withMeta(readThing, { session: "flow", permission, company: permission === "public" ? "none" : "credential" });
+      const entry = withMeta(readThing, { session: "flow", permission, scope: null, company: permission === "public" ? "none" : "credential" });
       expect(problemsOf(entry)).toEqual([
         `getThing serves the browser's session, so its permission is "none" or "signed-in", not ${JSON.stringify(permission)}.`,
       ]);
@@ -456,6 +495,126 @@ describe("registryProblems", () => {
     });
   });
 
+  describe("the marks of part 4", () => {
+    /** readThing with a secret field in its output, beside its name. */
+    const secretRead = changed(readThing, {
+      responses: { ...readThing.responses, 200: { description: "The thing.", content: { "application/json": { schema: z.strictObject({ name: z.string(), token: secret(z.string()) }) } } } },
+    });
+
+    // A list in it.each is spread into the test's arguments, so the list of one scope is wrapped once more.
+    it.each(["Bookkeeping", "book keeping", "bookkeeping ", "", "users:read", 7, false, [["profile"]], undefined])("fails the scope %j, which SCOPES does not hold", (scope) => {
+      expect(problemsOf(withMeta(readThing, { scope }))).toEqual([
+        `getThing has the scope ${scope === undefined ? "undefined" : JSON.stringify(scope)}. A scope is one of SCOPES, or null.`,
+      ]);
+    });
+
+    it("fails a scope of null on an operation that a token may call: one with a permission, and a signed-in one", () => {
+      for (const [entry, name] of [
+        [readThing, "getThing"],
+        [bookThing, "bookThing"],
+        [listThings, "listThings"],
+        [getPerson, "getPerson"],
+        [changeMember, "changeMember"],
+        [makeThing, "makeThing"],
+      ] as const) {
+        expect(problemsOf(withMeta(entry, { scope: null }))).toEqual([
+          `${name} neither is public nor serves or needs a browser session, so a token may call it: it names the scope the token needs, one of SCOPES, not null.`,
+        ]);
+      }
+    });
+
+    it("fails a scope on a public operation, on one that serves the browser's session, and on one that needs a browser session", () => {
+      expect(problemsOf(withMeta(health, { scope: "profile" }))).toEqual(['getStatus is public, so it names no scope: its scope is null, not "profile".']);
+      for (const [entry, name] of [
+        [signIn, "signIn"],
+        [startRedirect, "startRedirect"],
+        [endSession, "endSession"],
+        [chooseThing, "chooseThing"],
+      ] as const) {
+        expect(problemsOf(withMeta(entry, { scope: "profile" }))).toEqual([
+          `${name} serves the browser's session, so no token calls it and it names no scope: its scope is null, not "profile".`,
+        ]);
+      }
+      for (const [entry, name] of [
+        [makeToken, "makeToken"],
+        [readRecent, "getRecentThings"],
+      ] as const) {
+        expect(problemsOf(withMeta(entry, { scope: "tokens" }))).toEqual([
+          `${name} needs a browser session, so no token calls it and it names no scope: its scope is null, not "tokens".`,
+        ]);
+      }
+    });
+
+    it("fails the session mark only on a public operation and on one that runs before sign-in", () => {
+      expect(problemsOf(withMeta(health, { session: "only" }))).toEqual([
+        'getStatus needs a browser session, so it needs an actor: its permission is "signed-in" or a permission, not "public".',
+      ]);
+      expect(problemsOf(withMeta(signIn, { session: "only" }))).toEqual([
+        'signIn needs a browser session, so it needs an actor: its permission is "signed-in" or a permission, not "none".',
+      ]);
+    });
+
+    it("takes the session mark only on a signed-in operation and on one with a permission, each with no scope", () => {
+      expect(readRecent["x-nortfox"]).toMatchObject({ permission: "signed-in", session: "only", scope: null });
+      expect(makeToken["x-nortfox"]).toMatchObject({ permission: "test:write", session: "only", scope: null });
+      expect(problemsOf(makeToken, readRecent)).toEqual([]);
+    });
+
+    it.each([undefined, "/token", [1], {}, null])("fails a secret output that is not a list of pointers: %j", (secretOutput) => {
+      expect(problemsOf(withMeta(makeToken, { secretOutput }))).toEqual([
+        `makeToken has the secret output ${secretOutput === undefined ? "undefined" : JSON.stringify(secretOutput)}. It is the list of the JSON Pointers of the output's secret fields.`,
+      ]);
+    });
+
+    it.each([
+      ["leaves a secret field out", makeToken, [], "makeToken", '["/token"]'],
+      ["names a field that is not secret", makeToken, ["/id", "/token"], "makeToken", '["/token"]'],
+      ["names a field that the output does not have", makeToken, ["/token", "/code"], "makeToken", '["/token"]'],
+      ["lists a field twice", makeToken, ["/token", "/token"], "makeToken", '["/token"]'],
+      ["names a field of an answer with no body", endSession, ["/token"], "endSession", "[]"],
+    ])("fails a secret output that %s", (_what, entry, secretOutput, name, wanted) => {
+      expect(problemsOf(withMeta(entry, { secretOutput }))).toEqual([
+        `${name}'s secret output is ${JSON.stringify(secretOutput)}, but the secret fields of its output are ${wanted}.`,
+      ]);
+    });
+
+    it("derives the secret output from the output schema", () => {
+      expect(makeToken["x-nortfox"].secretOutput).toEqual(["/token"]);
+      expect(readThing["x-nortfox"].secretOutput).toEqual([]);
+      expect(endSession["x-nortfox"].secretOutput).toEqual([]);
+    });
+
+    it("fails a secret field in the output of an operation that a token may call, also when the secret output lists it", () => {
+      expect(problemsOf(withMeta(secretRead, { secretOutput: ["/token"] }))).toEqual([
+        'getThing may be called with a token, so its output holds no secret, but its secret fields are ["/token"].',
+      ]);
+      expect(problemsOf(secretRead)).toEqual([
+        "getThing's secret output is [], but the secret fields of its output are [\"/token\"].",
+        'getThing may be called with a token, so its output holds no secret, but its secret fields are ["/token"].',
+      ]);
+      // A token may call it by its kind, whatever its scope says: one left out is refused beside the secret.
+      expect(problemsOf(withMeta(secretRead, { scope: null, secretOutput: ["/token"] }))).toEqual([
+        "getThing neither is public nor serves or needs a browser session, so a token may call it: it names the scope the token needs, one of SCOPES, not null.",
+        'getThing may be called with a token, so its output holds no secret, but its secret fields are ["/token"].',
+      ]);
+    });
+
+    it("fails a scope on an operation that runs before sign-in, also when it does not serve the browser's session, which is refused for that too", () => {
+      expect(problemsOf(withMeta(signIn, { session: null, scope: "profile" }))).toEqual([
+        'signIn runs before sign-in, so it serves the browser\'s session: its session mark must be "flow".',
+        'signIn runs before sign-in, so it names no scope: its scope is null, not "profile".',
+      ]);
+    });
+
+    it("takes a secret field in the output of an operation that no token calls", () => {
+      const flow = withMeta(changed(chooseThing, { responses: { 200: { description: "Chosen.", content: { "application/json": { schema: z.strictObject({ code: secret(z.string()) }) } } } } }), {
+        personalOutput: [],
+        secretOutput: ["/code"],
+      });
+      expect(problemsOf(flow)).toEqual([]);
+    });
+  });
+
   describe("the credential in security", () => {
     const SESSION = '[{"sessionCookie":[]}]';
 
@@ -497,7 +656,7 @@ describe("registryProblems", () => {
       expect(problemsOf(withMeta(readThing, { permission: "company:delete" }))).toEqual([
         'getThing needs the permission "company:delete", which is not on the list.',
       ]);
-      expect(problemsOf(withMeta(bookThing, { permission: "public", company: "none" }))).toEqual([
+      expect(problemsOf(withMeta(bookThing, { permission: "public", scope: null, company: "none" }))).toEqual([
         "bookThing is public and writes. A public operation reads and writes no data.",
       ]);
     });
@@ -668,7 +827,7 @@ describe("registryProblems", () => {
   });
 
   it("fails a public operation that writes", () => {
-    expect(problemsOf(withMeta(bookThing, { permission: "public", company: "none" }))).toEqual([
+    expect(problemsOf(withMeta(bookThing, { permission: "public", scope: null, company: "none" }))).toEqual([
       "bookThing is public and writes. A public operation reads and writes no data.",
     ]);
   });

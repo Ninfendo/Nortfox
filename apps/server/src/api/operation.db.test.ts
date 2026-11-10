@@ -59,6 +59,7 @@ const testReadSettings = defineOperation({
   description: "Gives the transaction's isolation level and settings. Only the tests run it.",
   output: Settings,
   permission: "test:read",
+  scope: "bookkeeping",
   tool: "Gives the transaction's settings. Only the tests run it.",
   writes: false,
 });
@@ -204,6 +205,7 @@ describe("the runner's write path", () => {
     description: "Gives the isolation level and the settings of a write's transaction. Only the tests run it.",
     output: Settings,
     permission: "test:write",
+    scope: "bookkeeping",
     tool: "Gives a write's settings. Only the tests run it.",
     writes: true,
   });

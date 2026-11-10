@@ -146,12 +146,14 @@ export {
   newPasswordIssue,
   passwordLength,
 } from "./password.ts";
-export { isPersonal, personal, personalPointers } from "./fields.ts";
+export { isPersonal, isSecret, personal, personalPointers, secret, secretPointers } from "./fields.ts";
 export { NOT_IN_A_NAME } from "./text.ts";
 export { ATEXT, ATEXT_END, EMAIL_MAX, INVITED_PATTERN, MAILBOX, MAILBOX_PATTERN, WIDE, emailAddress, foldsAsLowerCase, identityAddress, invitedAddress, localPartInAscii } from "./address.ts";
 export { FIELD_PROBLEM_CODES, FieldProblem, PROBLEM_CODES, Problem, fieldIssues, jsonPointer } from "./problem.ts";
 export type { FieldIssue, FieldProblemCode, JsonValue, ProblemCode } from "./problem.ts";
 export { REGISTRY } from "./registry.ts";
+export { SCOPES } from "./scopes.ts";
+export type { Scope } from "./scopes.ts";
 export { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
 export type { SecurityScheme } from "./security.ts";
 export { registryProblems } from "./registry-guard.ts";

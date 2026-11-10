@@ -72,6 +72,9 @@ const CODES = {
   permission: "permission-missing",
   company: "company-required",
   browserOnly: "browser-only",
+  sessionRequired: "session-required",
+  scope: "scope-missing",
+  shownOnce: "answer-shown-once",
   notFound: "not-found",
   method: "method-not-allowed",
   keyInUse: "idempotency-key-in-use",
@@ -100,6 +103,10 @@ export function problemOf(refusal: Refusal): ProblemAnswer {
         {},
         { "WWW-Authenticate": refusal.challenge },
       );
+    case "session-required":
+      return answer(403, CODES.sessionRequired, "The operation needs a browser session, and the request came with a token. Sign in with a browser to call it.");
+    case "scope-missing":
+      return answer(403, CODES.scope, `The token lacks the scope ${refusal.scope}, which this operation needs.`, { scope: refusal.scope });
     case "company-required":
       return answer(403, CODES.company, "The operation works in a company, and the request's credential names none. Choose a company first.");
     case "permission-missing":
@@ -118,6 +125,14 @@ export function problemOf(refusal: Refusal): ProblemAnswer {
       return answer(409, CODES.keyInUse, "Another request with this idempotency key is still running. Send the request again when it has ended.");
     case "idempotency-key-reused":
       return answer(422, CODES.keyReused, "This idempotency key belongs to another request. A new request takes a new key.");
+    case "answer-shown-once":
+      return answer(
+        409,
+        CODES.shownOnce,
+        "The first answer to this idempotency key held a secret, which is shown only once. answer gives the rest of it, such as the id of what it made. " +
+          "If the secret is lost, end what it made and send the request again with a new key.",
+        { answer: { ...refusal.answer } },
+      );
     case "too-many-attempts":
       return answer(
         429,

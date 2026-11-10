@@ -182,6 +182,7 @@ function attemptOperation(attempt: Attempt, permission: string, suffix: "" | "-a
     description: `Tries to ${attempt.does}, and needs the permission ${permission}. Only the tests serve it.`,
     output: Attempted,
     permission,
+    scope: "bookkeeping",
     tool: `Tries to ${attempt.does}, and needs the permission ${permission}. Only the tests serve it.`,
     writes: true,
   });

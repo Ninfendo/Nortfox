@@ -17,13 +17,15 @@ Each operation is one entry in the registry in `packages/contract` ([decision 3]
 - its method and its path under `/v1`, with each path parameter as `{name}`;
 - the shapes of its input and its output, and its success status;
 - who may call it (`permission`);
+- the scope a token needs to call it (`scope`);
 - the text of its MCP tool;
 - whether it writes;
 - whether it is a list;
 - whether the AI assistant may call it. An operation is closed to the assistant unless it says otherwise;
-- whether it serves the browser's session (`session`);
+- whether it serves or needs the browser's session (`session`);
 - where its company comes from (`company`);
-- which fields of its answer are a person's contact data (`personalOutput`).
+- which fields of its answer are a person's contact data (`personalOutput`);
+- which fields of its answer are secrets (`secretOutput`).
 
 `openapi.json` shows these facts on each operation, under `x-nortfox`, and names the credential of each operation that needs an actor under OpenAPI's own `security` (Who acts, below). So the diff of `openapi.json` in a pull request shows a reviewer every change, a changed permission too.
 
@@ -35,7 +37,10 @@ Each operation is one entry in the registry in `packages/contract` ([decision 3]
 | | `none` | Runs before there is an actor, such as a sign-in. Anyone may call it. It serves the browser's session, and it takes no idempotency key. |
 | | `signed-in` | Needs a signed-in person, and no permission in a company. |
 | | a permission, such as `company:read` | Needs that permission in the credential's company. |
-| `session` | `flow` | Serves the browser's session, such as a sign-in or a logout. Its MCP tool refuses every call. |
+| `scope` | a scope, such as `companyinformation` | The scope a token needs to call it (Scopes, below). |
+| | `null` | No token calls it by a scope: a `public` operation, and one that serves or needs a browser session. |
+| `session` | `flow` | Serves the browser's session, such as a sign-in or a logout. Its MCP tool refuses every call, and `/v1` refuses a token's call with 403 `session-required`. |
+| | `only` | Needs a browser session, though it does not serve it, such as `listRecentCompanies`. A token's call is refused with 403 `session-required`, on `/v1` and through its MCP tool. |
 | | `null` | Any other operation. |
 | `company` | `none` | Works in no company: every `public` and `none` operation, and a `signed-in` one by default. |
 | | `credential` | Works in the company that the request's credential names: every operation with a permission. |
@@ -43,8 +48,9 @@ Each operation is one entry in the registry in `packages/contract` ([decision 3]
 | | `new` | A `signed-in` operation that works in the company it makes: `createCompany`. The server picks the company's id. |
 | | `{"input": "companyId"}` | A `signed-in` operation that works in the company that a field of its input names, where the person must be an active member, such as `selectCompany`. Any other company, also one that does not exist, gets 422 `company-not-available` at the field's pointer. |
 | `personalOutput` | a list of JSON Pointers | The fields of the answer that hold a person's contact data: a person's name, an e-mail address, a phone or mobile number, a personnummer. The registry derives the list from the answer's schema, and `*` stands for each item of a list or a tuple and each value of a record. A write keeps the answer of its key outside every company table when the list is not empty (Writes and idempotency keys). |
+| `secretOutput` | a list of JSON Pointers | The fields of the answer that work as a credential: a token, a code, an `otpauth` URI, a URL that carries a code or a `state`. The registry derives the list from the answer's schema, as for `personalOutput`. A write keeps the answer of its key without them (Writes and idempotency keys). |
 
-The registry guard holds these together. An operation that runs before sign-in serves the browser's session. Only a `none` or a `signed-in` operation may serve it. An operation with a permission takes its company from the credential, and no other operation does. Only a `signed-in` operation takes its company from `current`, `new` or its input, and the input's field is a required string. A write takes an idempotency key, unless it runs before sign-in. A `GET` writes only when it runs before sign-in and answers 303. Two operations of one method never answer the same path, so `/v1/users/{memberId}` and `/v1/users/me` cannot both be `GET`. Two operations whose paths differ only in a parameter's name are one path, so they give the parameter one name: `GET /v1/users/{memberId}` and `PATCH /v1/users/{id}` cannot both be in the registry. An operation that needs an actor, `signed-in` or with a permission, names its credential in `security`, and a `public` or `none` operation names none.
+The registry guard holds these together. An operation that runs before sign-in serves the browser's session. Only a `none` or a `signed-in` operation may serve it. Only a `signed-in` operation or one with a permission may need it. An operation names a scope exactly when it is not `public` and neither serves nor needs a browser session, and the scope is one of `SCOPES`. An operation that a token may call has no secret in its answer, so no token and no MCP client ever gets a credential in an answer. An operation with a permission takes its company from the credential, and no other operation does. Only a `signed-in` operation takes its company from `current`, `new` or its input, and the input's field is a required string. A write takes an idempotency key, unless it runs before sign-in. A `GET` writes only when it runs before sign-in and answers 303. Two operations of one method never answer the same path, so `/v1/users/{memberId}` and `/v1/users/me` cannot both be `GET`. Two operations whose paths differ only in a parameter's name are one path, so they give the parameter one name: `GET /v1/users/{memberId}` and `PATCH /v1/users/{id}` cannot both be in the registry. An operation that needs an actor, `signed-in` or with a permission, names its credential in `security`, and a `public` or `none` operation names none.
 
 The server serves only what the registry holds. It refuses to start when a route under `/v1` is not in the registry.
 
@@ -97,6 +103,23 @@ A browser signs in with a password and a TOTP code, and then sends its session i
 The server checks the actor and the permission before it reads the rest of the request: on REST before the path parameters, the query and the body, on MCP before the tool's arguments. So a request with no actor gets 401, a credential that names no company gets 403 `company-required` for an operation in the credential's company, and an actor without the permission gets 403 `permission-missing`, even when the rest of the request is wrong. No transaction of the operation runs for them, and nothing of the input is read. A test generated from the registry checks this for every operation with a permission, by REST and by MCP: for each of the plan's six roles, and for a member who holds each smallest set of the catalogue (The roles and the programs, below), each made through the operations. Only the session's own lookup runs first: the server finds the session by its cookie's hash, ends it when it has passed its end, and notes the request.
 
 Each request runs in one database transaction, with the company, the actor, the actor's kind (`user`, `system` or `integration`), the channel (`rest` or `mcp`) and, for an integration, its via (the API token or the MCP client it acts through) set for that transaction only. A `signed-in` operation's transaction works in the company that its company source names (the credential's, the one it makes, or the one its input names), or in none. A `none` operation opens its own transactions. A read sees one snapshot, so a page and its total agree. The behandlingshistorik records the actor, its kind, its via and the channel of every change ([db/README.md](../db/README.md)).
+
+A token, an API token or an MCP client's, acts as its person with the actor kind `integration`, in its one company. The server refuses a token before it reads anything of the input: an operation that serves or needs a browser session with 403 `session-required`, and an operation whose scope the token lacks with 403 `scope-missing`, which names the scope in `scope`, also when the token's person holds the permission. Both come before `company-required` and `permission-missing`. So what a token may do is its scopes and its person's permissions in its company together. A session is not limited by scopes. An operation whose input names its company, such as `updateMyMembership`, refuses a token's call that names another company than the token's with 422 `company-not-available`, the same answer as for a company that does not exist, before the database is asked. An operation that runs before sign-in takes a token's call as a call with no actor. The server takes no token yet: API tokens and the MCP clients' tokens come later in slice 2c.
+
+### Scopes
+
+Each operation that a token may call names one scope. The established API's scope names are kept where it has one, case-sensitive, also those that no operation names yet, and NortFox has its own scope for each module that the established API has none for: `companies`, `users` and `tokens`. Each scope reads and writes. `SCOPES` in `packages/contract` is the list.
+
+| Scope | Operations |
+| --- | --- |
+| `companyinformation` | `getCompany` |
+| `profile` | `getMe` |
+| `companies` | `createCompany`, `listCompanies`, `updateMyMembership`, `updateCompany`, `leaveCompany` |
+| `users` | `listPermissions`, `listUsers`, `getUser`, `updateUser`, `removeUser`, `assignProgram`, `removeProgram`, `moveProgram`, `updateUserRights`, `inviteUser`, `resendInvitation`, `disconnectUserIdentity` |
+| `tokens` | none yet |
+| `bookkeeping`, `settings`, `costcenter`, `project`, `currency`, `supplier`, `supplierinvoice`, `payment`, `connectfile`, `inbox`, `archive`, `deletevoucher` | none yet: later slices name them |
+
+No scope covers a `public` operation, an operation that serves the browser's session (the `none` operations, `getSession`, `selectCompany` and `logout`), or one that needs a browser session (`listRecentCompanies`).
 
 ## Requests on `/v1`
 
@@ -273,7 +296,8 @@ Every error on `/v1` is problem details (RFC 9457), as `application/problem+json
 - `type` is always `about:blank`, so `title` is the status's phrase.
 - `code` is stable and kebab-case. Programs rely on `code`, never on `detail`. The texts are English until slice 2d brings the Swedish ones.
 - `errors` lists every field problem of a 400 `invalid-request`. Each has its own `code`, a `detail`, a `pointer` and, when there are any, its facts in `data`: `expected` (the JSON type the field takes), `minimum`, `maximum`, `allowed` (the values it takes) and `format` (the format a text lacks).
-- `permission` names the permission a 403 `permission-missing` lacks.
+- `permission` names the permission a 403 `permission-missing` lacks, and `scope` the scope a 403 `scope-missing` lacks.
+- `answer` holds, for a 409 `answer-shown-once`, the first answer to the key without its secret.
 - A rule's refusal, 422, has the rule's `code`, its facts in `data`, and a `pointer` when it is about one field, so a screen can show it on that field.
 - A 429 and a 503 carry `Retry-After`, in whole seconds.
 - A 500 `internal-error` holds nothing of the error. The server logs it, but only the error's class, its code, the constraint, schema, table and column it names, its message and its stack, with every token, personnummer and e-mail address taken out. The log never holds a database error's detail, which can hold a row, nor the parameters of a statement.
@@ -302,9 +326,12 @@ The registry keeps the names apart, so a pointer is never ambiguous. The same re
 | 403 | `permission-missing` | The actor lacks the operation's permission. |
 | 403 | `origin-not-allowed` | A request from a site that may not send it: to `/mcp` from a browser origin that the install does not allow, or to `/v1` as Cross-site requests says. |
 | 403 | `browser-only` | An MCP call of an operation that serves the browser's session. |
+| 403 | `session-required` | A token's call of an operation that serves or needs a browser session. |
+| 403 | `scope-missing` | A token lacks the operation's scope. `scope` names it. |
 | 404 | `not-found` | No operation has the path. |
 | 405 | `method-not-allowed` | The path takes another method. |
 | 409 | `idempotency-key-in-use` | Another request with the same idempotency key is still running. |
+| 409 | `answer-shown-once` | The same request came again with its idempotency key, and its first answer held a secret, which is shown only once. `answer` gives the rest of that answer (Writes and idempotency keys). |
 | 413 | `payload-too-large` | The body is over 1 MiB. |
 | 415 | `unsupported-media-type` | The body is not `application/json`. |
 | 422 | `idempotency-key-reused` | The idempotency key belongs to another request. |
@@ -357,6 +384,7 @@ The rules of the ledger live in the database. When one refuses a request, the an
 A write takes an idempotency key: the `Idempotency-Key` header on REST, and the `idempotencyKey` argument on MCP. A key is 1 to 255 characters of visible ASCII without `"` and `\`, such as a random UUID. The header takes the key bare or in double quotes, as the IETF draft writes it. A write that runs before sign-in takes no key, since there is no actor to keep it for.
 
 - The same key with the same request gives the first answer again, and nothing is written twice. An answer without a body is given again with no body.
+- A secret is shown once. A write whose answer holds one (`secretOutput`) keeps its key with the answer less each secret field, and never the secret. The same key with the same request gets 409 `answer-shown-once` instead of the first answer, and nothing is written twice. Its `answer` is the answer it kept, such as the id of what the first call made, so a client that lost the secret can end what it made and send the request again with a new key.
 - The same key with another request gets 422 `idempotency-key-reused`. Another operation, another path parameter, another body or another query is another request, and so is `"1.5"` beside `"1.50"`.
 - A request whose key a running request holds gets 409 `idempotency-key-in-use`, and writes nothing. Send it again once the first has ended.
 - A write with no key gets 400, with the field problem `idempotency-key-missing` at `/idempotencyKey`. A key that is not a key gets `idempotency-key-invalid` there.
@@ -392,7 +420,7 @@ A list takes `limit` and `cursor`, and answers its items, `nextCursor` while mor
 
 A tool call answers the same JSON as the REST call, as structured content and as the same JSON in one text block. A refusal answers the same problem details as `/v1`, in a result marked `isError`. A tool name that the registry does not hold is a protocol error. Each tool call is one request, with one transaction and the same rules as REST.
 
-The tool of an operation that serves the browser's session, such as a sign-in, is listed like any other, and refuses every call with 403 `browser-only` before it reads an argument. An MCP client signs in through OAuth instead.
+The tool of an operation that serves the browser's session, such as a sign-in, is listed like any other, and refuses every call with 403 `browser-only` before it reads an argument. An MCP client signs in through OAuth instead. The tool of an operation that needs a browser session, such as `listRecentCompanies`, refuses a token's call with 403 `session-required`, and every tool refuses a token that lacks its scope with 403 `scope-missing`, as on `/v1`.
 
 The arguments take JSON's own types: on MCP, `limit` is a JSON number, and the key is the argument as it is, without the header's quotes.
 

@@ -217,6 +217,49 @@ describe("generateClient", () => {
     );
   });
 
+  it("writes the scope, the session-only mark and the secret fields of the answer into the doc comment", () => {
+    const meta = (extra: Record<string, unknown>) => ({
+      permission: "signed-in",
+      tool: "T.",
+      assistant: false,
+      writes: false,
+      list: false,
+      session: null,
+      company: "none",
+      personalOutput: [],
+      secretOutput: [],
+      scope: null,
+      ...extra,
+    });
+    const keyHeader = { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string" } };
+    const created = { "201": { content: { "application/json": { schema: { type: "string" } } } } };
+    const source = generateClient(
+      documentWith(
+        {},
+        {
+          "/v1/g": getOperation({ type: "string" }, { operationId: "getG", "x-nortfox": meta({ scope: "profile" }) }),
+          "/v1/h": getOperation({ type: "string" }, { operationId: "getH", "x-nortfox": meta({ session: "only" }) }),
+          "/v1/i": {
+            post: { operationId: "makeI", parameters: [keyHeader], responses: created, "x-nortfox": meta({ permission: "tokens:own", session: "only", writes: true, secretOutput: ["/token"] }) },
+          },
+          "/v1/j": { post: { operationId: "startJ", responses: created, "x-nortfox": meta({ permission: "none", session: "flow", writes: true, secretOutput: ["/challenge"] }) } },
+        },
+      ),
+    );
+    expect(source).toContain("   * `GET /v1/g`\n   *\n   * Needs a signed-in person, and works in no company.\n   *\n   * A token needs the scope `profile`.\n   */\n  getG(");
+    expect(source).toContain(
+      "   * `GET /v1/h`\n   *\n   * Needs a signed-in person, and works in no company.\n   *\n   * Needs a browser session: a token is refused it with 403 `session-required`.\n   */\n  getH(",
+    );
+    expect(source).toContain(
+      "   * `POST /v1/i`\n   *\n   * Needs the permission `tokens:own`.\n   *\n   * Needs a browser session: a token is refused it with 403 `session-required`.\n   *\n" +
+        "   * The answer holds a secret, which no other answer gives: `/token`. A repeat with its idempotency key gets 409 `answer-shown-once`, without the secret.\n   */\n  makeI(",
+    );
+    expect(source).toContain(
+      "   * `POST /v1/j`\n   *\n   * Needs no actor: anyone may call it, before signing in.\n   *\n   * Serves the browser's session: its MCP tool refuses every call.\n   *\n" +
+        "   * The answer holds a secret, which no other answer gives: `/challenge`.\n   */\n  startJ(",
+    );
+  });
+
   it("writes a union, such as a nullable field, an enum of numbers and an enum that takes null", () => {
     const source = generateClient(
       documentWith({
@@ -490,8 +533,28 @@ describe("generateClient", () => {
     [documentWith({}, { "/v1/x": { trace: {} } }), 'paths["/v1/x"].trace: only GET, PUT, POST, DELETE and PATCH operations are supported yet.'],
     [documentWith({}, { "/v1/x": { query: {} } }), 'paths["/v1/x"].query: only GET, PUT, POST, DELETE and PATCH operations are supported yet.'],
     [
-      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", session: "only" } }) }),
-      'paths["/v1/x"].get.x-nortfox.session is "only", which the generator does not support yet.',
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", session: "Only" } }) }),
+      'paths["/v1/x"].get.x-nortfox.session is "Only", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", scope: 7 } }) }),
+      'paths["/v1/x"].get.x-nortfox.scope must be the name of a scope, in small letters, or null.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", scope: "Book keeping" } }) }),
+      'paths["/v1/x"].get.x-nortfox.scope must be the name of a scope, in small letters, or null.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", scope: "" } }) }),
+      'paths["/v1/x"].get.x-nortfox.scope must be the name of a scope, in small letters, or null.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", secretOutput: "/token" } }) }),
+      'paths["/v1/x"].get.x-nortfox.secretOutput must be a list of JSON Pointers.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", secretOutput: [null] } }) }),
+      'paths["/v1/x"].get.x-nortfox.secretOutput must be a list of JSON Pointers.',
     ],
     [
       documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", company: "Current" } }) }),

@@ -331,7 +331,7 @@ const COMPANY_TOOLS = [
   {
     name: "listRecentCompanies",
     title: "List your recent companies",
-    description: "Gives the three companies you chose last, where you are still an active member.",
+    description: "Gives the three companies you chose last, where you are still an active member. It needs a browser session, so this tool refuses a call that comes with a token.",
     inputSchema: NO_INPUT,
     outputSchema: {
       type: "object",

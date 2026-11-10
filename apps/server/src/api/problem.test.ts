@@ -82,6 +82,59 @@ describe("problemOf", () => {
     });
   });
 
+  it("answers a token's call of an operation that needs a browser session with 403 session-required", () => {
+    const answer = problemOf({ kind: "session-required" });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 403,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Forbidden",
+        status: 403,
+        detail: "The operation needs a browser session, and the request came with a token. Sign in with a browser to call it.",
+        code: "session-required",
+      },
+    });
+  });
+
+  it("answers a token that lacks the operation's scope with 403 scope-missing and the scope", () => {
+    const answer = problemOf({ kind: "scope-missing", scope: "companyinformation" });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 403,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Forbidden",
+        status: 403,
+        detail: "The token lacks the scope companyinformation, which this operation needs.",
+        code: "scope-missing",
+        scope: "companyinformation",
+      },
+    });
+  });
+
+  it("answers a repeat of a write whose answer held a secret with 409 answer-shown-once and the answer it kept, without the secret", () => {
+    const kept = { id: "0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e", name: "Bokföringsexport", scopes: ["bookkeeping"] };
+    const answer = problemOf({ kind: "answer-shown-once", answer: kept });
+    expectProblem(answer);
+    expect(answer).toEqual({
+      status: 409,
+      headers: JSON_PROBLEM,
+      body: {
+        type: "about:blank",
+        title: "Conflict",
+        status: 409,
+        detail:
+          "The first answer to this idempotency key held a secret, which is shown only once. answer gives the rest of it, such as the id of what it made. " +
+          "If the secret is lost, end what it made and send the request again with a new key.",
+        code: "answer-shown-once",
+        answer: kept,
+      },
+    });
+  });
+
   it("answers an invalid request with 400 and a field problem per issue, without the value received", () => {
     const answer = problemOf({
       kind: "invalid",

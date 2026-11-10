@@ -42,6 +42,7 @@ export function rightCheck(permission: string): { readonly operation: Operation;
     description: `Reads nothing, and needs the permission ${permission}. Only the tests serve it.`,
     output: RightChecked,
     permission,
+    scope: "bookkeeping",
     tool: `Reads nothing, and needs the permission ${permission}. Only the tests serve it.`,
     writes: false,
   });
