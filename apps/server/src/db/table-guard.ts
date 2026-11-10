@@ -232,6 +232,22 @@ export const INSTALL_TABLES: ReadonlyMap<string, InstallTable> = new Map<string,
     },
   ],
   [
+    "access.consents",
+    {
+      class: "company",
+      column: "consent_company_id",
+      commands: ["SELECT", "INSERT", "UPDATE"],
+      why: "A person's consent for an MCP client is bound to one company. Its trigger writes its entries in the company's behandlingshistorik, so the table keeps no history of its own. The app reads, gives and revokes only its company's.",
+    },
+  ],
+  [
+    "access.oauth_clients",
+    {
+      class: "public",
+      why: "An MCP client registers itself for the whole install, and any company's member may approve it. Its client id is public. The app reads every client, and only the registration function adds one.",
+    },
+  ],
+  [
     "access.catalogue_programs",
     { class: "public", why: "The programs of the permission catalogue are the same for every company. The app reads them, and only a migration writes them." },
   ],
@@ -259,6 +275,13 @@ export const INSTALL_TABLES: ReadonlyMap<string, InstallTable> = new Map<string,
     "access.invitation_links",
     { class: "secret", why: "It holds the hashes of the invitation links, with what a link's page shows before anyone accepts. Only the lookup functions read it." },
   ],
+  [
+    "access.oauth_requests",
+    { class: "secret", why: "It holds the hashes of the MCP clients' authorization requests and of the login cookies they are bound to. Only the lookup functions read it." },
+  ],
+  ["access.oauth_codes", { class: "secret", why: "It holds the hashes of the OAuth codes. Only the lookup functions read it." }],
+  ["access.oauth_access_tokens", { class: "secret", why: "It holds the hashes of the MCP access tokens. Only the lookup functions read it." }],
+  ["access.oauth_refresh_tokens", { class: "secret", why: "It holds the hashes of the MCP refresh tokens. Only the lookup functions read it." }],
 ]);
 
 /** The owner's one policy on every install-wide table: every row, which the lookup functions read and write through. */

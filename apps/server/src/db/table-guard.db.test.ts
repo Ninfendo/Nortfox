@@ -68,6 +68,7 @@ describe("the table guard", () => {
       "access.catalogue_permissions",
       "access.catalogue_program_permissions",
       "access.catalogue_programs",
+      "access.consents",
       "access.events",
       "access.idempotency_keys",
       "access.identities",
@@ -78,6 +79,11 @@ describe("the table guard", () => {
       "access.login_challenges",
       "access.membership_contacts",
       "access.memberships",
+      "access.oauth_access_tokens",
+      "access.oauth_clients",
+      "access.oauth_codes",
+      "access.oauth_refresh_tokens",
+      "access.oauth_requests",
       "access.password_credentials",
       "access.program_admins",
       "access.program_grants",
@@ -567,6 +573,7 @@ describe("the table guard", () => {
         "access.catalogue_permissions",
         "access.catalogue_program_permissions",
         "access.catalogue_programs",
+        "access.consents",
         "access.idempotency_keys",
         "access.identities",
         "access.install_keys",
@@ -574,6 +581,11 @@ describe("the table guard", () => {
         "access.known_devices",
         "access.login_challenges",
         "access.membership_contacts",
+        "access.oauth_access_tokens",
+        "access.oauth_clients",
+        "access.oauth_codes",
+        "access.oauth_refresh_tokens",
+        "access.oauth_requests",
         "access.password_credentials",
         "access.recent_companies",
         "access.sessions",
@@ -592,10 +604,14 @@ describe("the table guard", () => {
         column: "contact_company_id",
         commands: ["SELECT", "INSERT", "UPDATE", "DELETE"],
       });
-      // A token is never deleted: the app reads, adds and revokes.
+      // A token is never deleted: the app reads, adds and revokes. So is a consent.
       expect(INSTALL_TABLES.get("access.api_tokens")).toMatchObject({ class: "company", column: "token_company_id", commands: ["SELECT", "INSERT", "UPDATE"] });
-      for (const table of ["access.catalogue_programs", "access.catalogue_groups", "access.catalogue_permissions", "access.catalogue_program_permissions"]) {
+      expect(INSTALL_TABLES.get("access.consents")).toMatchObject({ class: "company", column: "consent_company_id", commands: ["SELECT", "INSERT", "UPDATE"] });
+      for (const table of ["access.catalogue_programs", "access.catalogue_groups", "access.catalogue_permissions", "access.catalogue_program_permissions", "access.oauth_clients"]) {
         expect(INSTALL_TABLES.get(table), table).toMatchObject({ class: "public" });
+      }
+      for (const table of ["access.oauth_requests", "access.oauth_codes", "access.oauth_access_tokens", "access.oauth_refresh_tokens"]) {
+        expect(INSTALL_TABLES.get(table), table).toMatchObject({ class: "secret" });
       }
     });
 
