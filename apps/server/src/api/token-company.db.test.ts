@@ -27,8 +27,8 @@ import { appPool, type AppPool } from "../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../test/database.ts";
 import { someEmail } from "../../test/identities.ts";
 import { OPERATION_ARGUMENTS, type ArgumentsFixture } from "../../test/operation-arguments.ts";
-import { expectNoSecretsAtRestFromSignInApps, expectNoTokensFromSignInApps, jsonOf, signInApp, testClock, type SignInApp } from "../../test/sign-in.ts";
-import { callWithToken, makeApiToken } from "../../test/tokens.ts";
+import { expectNoSecretsAtRestFromSignInApps, expectNoTokensFromSignInApps, jsonOf, signInApp, testClock, writeAs, type SignInApp } from "../../test/sign-in.ts";
+import { asToken, callWithToken, makeApiToken } from "../../test/tokens.ts";
 import { apiCompany, calls, invite, joinWith, newMember, type ApiCompany } from "../../test/users.ts";
 
 /** Every operation that a token may call: those that name a scope. */
@@ -188,6 +188,39 @@ describe("a token stays in its company", () => {
       }
     },
   );
+
+  it("never replays an answer that another credential of the person stored: createCompany's key of the person's session, or of another token, is another request", async () => {
+    const at = await scene();
+    const body = { name: "Testbolaget Gamma AB", organizationNumber: "556000-0167" };
+    // The person's session makes Gamma with a key.
+    const gamma = await jsonOf<{ id: string; name: string; databaseNumber: number }>(
+      await writeAs(server, at.alfa.session, "POST", "/v1/companies", body, { key: "shared-key-1" }),
+      201,
+    );
+    const gammaFacts = [gamma.id, `"databaseNumber":${String(gamma.databaseNumber)}`];
+    const companies = async (): Promise<{ company_id: string }[]> => (await superuser.query<{ company_id: string }>("SELECT company_id FROM ledger.companies ORDER BY company_id")).rows;
+    const before = await companies();
+    // The token sends the same key with the same body: another request, which makes nothing and tells nothing of Gamma.
+    const replayed = await asToken(server, at.token, "POST", "/v1/companies", { body, key: "shared-key-1" });
+    const text = await replayed.text();
+    expect(replayed.status, text).toBe(422);
+    expect(JSON.parse(text)).toMatchObject({ code: "idempotency-key-reused" });
+    for (const fact of gammaFacts) {
+      expect(text).not.toContain(fact);
+    }
+    expect(await companies()).toEqual(before);
+    // The token's own key replays the token's own answer, and is another request for the session and for another token of the person.
+    const delta = { name: "Testbolaget Delta AB", organizationNumber: "556000-0167" };
+    const made = await jsonOf<{ id: string }>(await asToken(server, at.token, "POST", "/v1/companies", { body: delta, key: "token-key-1" }), 201);
+    expect(await jsonOf(await asToken(server, at.token, "POST", "/v1/companies", { body: delta, key: "token-key-1" }), 201)).toEqual(made);
+    const bySession = await writeAs(server, at.alfa.session, "POST", "/v1/companies", delta, { key: "token-key-1" });
+    expect(await jsonOf(bySession, 422)).toMatchObject({ code: "idempotency-key-reused" });
+    const second = await makeApiToken(server, at.alfa.session, { scopes: ["companies"] });
+    const bySecond = await asToken(server, second.token, "POST", "/v1/companies", { body: delta, key: "token-key-1" });
+    const secondText = await bySecond.text();
+    expect(bySecond.status, secondText).toBe(422);
+    expect(secondText).not.toContain(made.id);
+  });
 
   it("leaves no token in an answer and no secret at rest", async () => {
     expectNoTokensFromSignInApps();

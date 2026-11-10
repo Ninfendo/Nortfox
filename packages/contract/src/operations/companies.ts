@@ -258,7 +258,9 @@ export const getCompany = defineOperation({
   output: Company,
   permission: "company:read",
   scope: "companyinformation",
-  tool: "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
+  tool:
+    "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names. " +
+    "Through a token, a companyId may name only the token's company.",
   assistant: true,
   writes: false,
 });
@@ -295,7 +297,8 @@ export const listCompanies = defineListOperation({
   summary: "List your companies",
   description:
     "Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. " +
-    "query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.",
+    "query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen. " +
+    "Through a token it lists the token's company alone.",
   query: z.strictObject({
     query: z
       .string()
@@ -308,7 +311,7 @@ export const listCompanies = defineListOperation({
   item: CompanyChoice,
   permission: "signed-in",
   scope: "companies",
-  tool: "Lists the companies where you are an active member, with your system administrator's level in each.",
+  tool: "Lists the companies where you are an active member, with your system administrator's level in each. Through a token it lists the token's company alone.",
 });
 
 /** The person's last three companies, for the company choice. */
@@ -338,7 +341,8 @@ export const updateMyMembership = defineOperation({
   description:
     "Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: " +
     "the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, " +
-    "so it can be changed but not taken away; null takes the phone number away.",
+    "so it can be changed but not taken away; null takes the phone number away. " +
+    "Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.",
   params: z.strictObject({ companyId: z.uuid().meta({ description: "The company's id." }) }),
   body: z.strictObject({
     workEmail: WorkEmail.optional(),
@@ -349,7 +353,7 @@ export const updateMyMembership = defineOperation({
   permission: "signed-in",
   scope: "companies",
   company: { input: "companyId" },
-  tool: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
+  tool: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member. Through a token, only in the token's company.",
   writes: true,
 });
 
@@ -362,15 +366,16 @@ export const leaveCompany = defineOperation({
   summary: "Leave a company",
   description:
     "The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, " +
-    "and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, " +
-    "so its last one cannot leave.",
+    "its sessions end and its API tokens are revoked; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, " +
+    "so its last one cannot leave. " +
+    "Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.",
   params: z.strictObject({ companyId: z.uuid().meta({ description: "The company's id." }) }),
   output: NoBody,
   status: 204,
   permission: "signed-in",
   scope: "companies",
   company: { input: "companyId" },
-  tool: "Leaves a company where you are an active member. Only a new invitation lets you back.",
+  tool: "Leaves a company where you are an active member, and revokes your API tokens there. Only a new invitation lets you back. Through a token, only the token's company.",
   writes: true,
 });
 

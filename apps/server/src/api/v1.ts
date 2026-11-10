@@ -12,6 +12,8 @@
 // 2. authorize: the resolver reads the credential from the request's headers,
 //    and the runner's authorize answers 401 (with the operation's challenge) or
 //    403 at once. No query parameter and no byte of the body is read first.
+//    A refusal of a request with a bearer token names RFC 6750's error code
+//    in its Bearer challenge (refusalAnswer).
 // 3. the body limit, for an operation that takes a body: a body over 1 MiB
 //    gets 413. A Content-Length over the limit is refused before a byte is
 //    read; a body without one is counted as it comes, and refused once it
@@ -51,16 +53,28 @@
 // so a write without one is 400 (idempotency.ts).
 
 import { isIPv4 } from "node:net";
-import { IDEMPOTENCY_KEY_HEADER, PUBLIC, bodySchema, jsonPointer, jsonSchemaOf, paramsSchema, querySchema, type FieldIssue, type Operation } from "@nortfox/contract";
+import {
+  IDEMPOTENCY_KEY_HEADER,
+  PUBLIC,
+  bearerChallenge,
+  bodySchema,
+  challengeOf,
+  jsonPointer,
+  jsonSchemaOf,
+  paramsSchema,
+  querySchema,
+  type FieldIssue,
+  type Operation,
+} from "@nortfox/contract";
 import type { Context, Hono, Handler as RouteHandler, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { z } from "zod";
 import { DEVICE_COOKIE, readCookie, setCookieHeader } from "../auth/cookies.ts";
-import { crossSiteRefused } from "../auth/origin.ts";
+import { carriesBearer, crossSiteRefused } from "../auth/origin.ts";
 import type { AfterAnswerQueue } from "./after-answer.ts";
-import type { ContextResolver, Principal, RequestContext } from "./context.ts";
+import { isToken, type ContextResolver, type Principal, type RequestContext } from "./context.ts";
 import { readKeyHeader } from "./idempotency.ts";
-import { authorize, runOperation, type Handler, type OperationCall, type Outcome, type RequestFacts, type RunnerDeps } from "./operation.ts";
+import { authorize, runOperation, type Handler, type OperationCall, type Outcome, type Refusal, type RequestFacts, type RunnerDeps } from "./operation.ts";
 import {
   NO_STORE,
   crossSiteRequest,
@@ -216,6 +230,31 @@ function factsOf(c: Context<V1Env>): RequestFacts {
   };
 }
 
+/** The refusals of authorize that a token gets when it may not call the operation. */
+const TOKEN_FORBIDDEN: ReadonlySet<Refusal["kind"]> = new Set(["session-required", "scope-missing", "company-required", "permission-missing"]);
+
+/**
+ * A refusal as /v1 answers it. A request with a bearer token gets RFC
+ * 6750's error code (3.1) in its Bearer challenge. A 401 to one, whose token
+ * names no actor, is invalid_token, with the same text whatever the token
+ * was: unknown, revoked, of another kind, not in the bearer form, or of a
+ * membership that is not active. A 403 that authorize gives a token is
+ * insufficient_scope, with the scope it lacks for scope-missing. A request
+ * without a bearer token gets the operation's plain challenge on a 401 and
+ * none on a 403.
+ */
+export function refusalAnswer(operation: Operation, refusal: Refusal, headers: Headers, principal: Principal | undefined): ProblemAnswer {
+  if (refusal.kind === "authentication-required" && carriesBearer(headers)) {
+    return problemOf({ ...refusal, challenge: challengeOf(operation, { invalidToken: true }) });
+  }
+  const answer = problemOf(refusal);
+  if (principal === undefined || !isToken(principal.credential) || !TOKEN_FORBIDDEN.has(refusal.kind)) {
+    return answer;
+  }
+  const challenge = bearerChallenge("insufficient_scope", refusal.kind === "scope-missing" ? refusal.scope : undefined);
+  return { ...answer, headers: { ...answer.headers, "WWW-Authenticate": challenge } };
+}
+
 /**
  * The chain's first step: whether another site may have started the request,
  * then who acts, and whether they may call the operation. Nothing of the
@@ -231,7 +270,7 @@ function authorizeRequest(operation: Operation, deps: V1Deps): MiddlewareHandler
     const principal = isPublic ? undefined : await deps.resolve(c.req.raw, "rest");
     const refusal = authorize(operation, principal);
     if (refusal !== undefined) {
-      return problemResponse(problemOf(refusal));
+      return problemResponse(refusalAnswer(operation, refusal, c.req.raw.headers, principal));
     }
     c.set("principal", principal);
     await next();
@@ -269,7 +308,7 @@ function serve(handler: Handler, fields: QueryFields, deps: V1Deps): RouteHandle
         deps.report(error);
         return problemResponse(internalError());
       }
-      return outcome.ok ? successResponse(outcome) : problemResponse(problemOf(outcome.refusal));
+      return outcome.ok ? successResponse(outcome) : problemResponse(refusalAnswer(operation, outcome.refusal, c.req.raw.headers, principal));
     } finally {
       batch.release();
     }

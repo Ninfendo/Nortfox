@@ -22,7 +22,11 @@
 //   stored fingerprint tells nothing.
 // - Keys are kept per company and actor, and a signed-in person's own write,
 //   which works in no company, keeps its keys per person, as createCompany
-//   does, whose company is new on each try. While a request runs, its key is
+//   does, whose company is new on each try. Such a write through a token
+//   holds the token in its fingerprint: a key that the person's session or
+//   another of the person's tokens used is another request for it (422), so
+//   a token never replays an answer that another credential stored, such as
+//   a company that the token did not make. While a request runs, its key is
 //   in flight in this process, and a second request with it gets 409 before
 //   it asks the pool for a connection. NortFox runs one server process
 //   (decision 3); across processes the database's unique key decides.
@@ -52,7 +56,7 @@
 
 import { createHmac } from "node:crypto";
 import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_MAX_LENGTH, IDEMPOTENCY_KEY_PATTERN, jsonPointer, type FieldIssue, type JsonValue } from "@nortfox/contract";
-import type { Queryable } from "../db/database.ts";
+import type { Queryable, Via } from "../db/database.ts";
 
 /** A key after its check: the key, or its one problem. */
 export type KeyCheck = { readonly ok: true; readonly value: string } | { readonly ok: false; readonly problems: readonly FieldIssue[] };
@@ -134,11 +138,12 @@ export function canonicalJson(value: unknown): string {
 /**
  * The request's fingerprint: the HMAC-SHA256 under `key`, the install's
  * fingerprint key, of the canonical JSON of the operation, its path
- * parameters when it takes any, the query and the body, as 64 lower-case
- * hexadecimal digits.
+ * parameters when it takes any, the query and the body, and the token or
+ * client a person's own write came through when it names one (`via`), as 64
+ * lower-case hexadecimal digits.
  */
-export function requestHash(key: Uint8Array, operationId: string, query: unknown, body: unknown, params?: unknown): string {
-  return createHmac("sha256", key).update(canonicalJson({ operation: operationId, params, query, body })).digest("hex");
+export function requestHash(key: Uint8Array, operationId: string, query: unknown, body: unknown, params?: unknown, via?: Via): string {
+  return createHmac("sha256", key).update(canonicalJson({ operation: operationId, params, query, body, via })).digest("hex");
 }
 
 /** The segments of a JSON Pointer (RFC 6901), unescaped: "" is the whole value, "/a~1b/*" is "a/b" and "*". */

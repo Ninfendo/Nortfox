@@ -155,8 +155,8 @@ export type { FieldIssue, FieldProblemCode, JsonValue, ProblemCode } from "./pro
 export { REGISTRY } from "./registry.ts";
 export { SCOPES } from "./scopes.ts";
 export type { Scope } from "./scopes.ts";
-export { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
-export type { SecurityScheme } from "./security.ts";
+export { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE, bearerChallenge } from "./security.ts";
+export type { BearerError, SecurityScheme } from "./security.ts";
 export { registryProblems } from "./registry-guard.ts";
 export { jsonSchemaOf, toolInputSchema, toolOutputSchema } from "./tool-schema.ts";
 export type { JsonSchema } from "./tool-schema.ts";

@@ -332,11 +332,11 @@
           "personalIdentityNumber": {
             "type": "string",
             "pattern": "^[0-9]{8}-[0-9]{4}$",
-            "description": "The person's personnummer, in twelve digits with a hyphen. Absent until one is added."
+            "description": "The person's personnummer, in twelve digits with a hyphen. Absent until one is added, and always through a token."
           },
           "mobile": {
             "type": "string",
-            "description": "The person's mobile number. Absent when none is set."
+            "description": "The person's mobile number. Absent when none is set, and always through a token."
           },
           "twoStep": {
             "type": "string",
@@ -357,7 +357,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company."
+            "description": "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. A token holds its person's there now, on every request. Empty when the request works in no company."
           }
         },
         "required": [
@@ -1233,7 +1233,7 @@
         "x-nortfox": {
           "permission": "company:read",
           "scope": "companyinformation",
-          "tool": "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
+          "tool": "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names. Through a token, a companyId may name only the token's company.",
           "assistant": true,
           "writes": false,
           "list": false,
@@ -1275,7 +1275,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -1291,6 +1291,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"companyinformation\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1484,7 +1492,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -1500,6 +1508,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"companies\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2126,6 +2142,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token, which the operation refuses with session-required: Bearer realm=\"NortFox\", error=\"insufficient_scope\" (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2236,6 +2260,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token, which the operation refuses with session-required: Bearer realm=\"NortFox\", error=\"insufficient_scope\" (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2264,11 +2296,11 @@
           "me"
         ],
         "summary": "Read yourself",
-        "description": "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.",
+        "description": "Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there. Through a token it gives no personnummer and no mobile number, even when they are set, and the permissions are its person's in the token's company now.",
         "x-nortfox": {
           "permission": "signed-in",
           "scope": "profile",
-          "tool": "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; and the company you work in, with your membership and permissions there.",
+          "tool": "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; and the company you work in, with your membership and permissions there. Through a token it gives no personnummer and no mobile number.",
           "assistant": false,
           "writes": false,
           "list": false,
@@ -2317,7 +2349,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -2333,6 +2365,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"profile\" when the token lacks the scope (scope-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2448,7 +2488,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -2464,6 +2504,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"companies\" when the token lacks the scope (scope-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2530,11 +2578,11 @@
           "companies"
         ],
         "summary": "List your companies",
-        "description": "Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.",
+        "description": "Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen. Through a token it lists the token's company alone.",
         "x-nortfox": {
           "permission": "signed-in",
           "scope": "companies",
-          "tool": "Lists the companies where you are an active member, with your system administrator's level in each.",
+          "tool": "Lists the companies where you are an active member, with your system administrator's level in each. Through a token it lists the token's company alone.",
           "assistant": false,
           "writes": false,
           "list": true,
@@ -2635,7 +2683,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -2651,6 +2699,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"companies\" when the token lacks the scope (scope-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2738,6 +2794,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token, which the operation refuses with session-required: Bearer realm=\"NortFox\", error=\"insufficient_scope\" (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2864,6 +2928,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token, which the operation refuses with session-required: Bearer realm=\"NortFox\", error=\"insufficient_scope\" (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2932,11 +3004,11 @@
           "me"
         ],
         "summary": "Change your membership",
-        "description": "Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away.",
+        "description": "Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away. Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.",
         "x-nortfox": {
           "permission": "signed-in",
           "scope": "companies",
-          "tool": "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
+          "tool": "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member. Through a token, only in the token's company.",
           "assistant": false,
           "writes": true,
           "list": false,
@@ -3047,7 +3119,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -3063,6 +3135,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"companies\" when the token lacks the scope (scope-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3177,7 +3257,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -3193,6 +3273,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3318,7 +3406,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -3334,6 +3422,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3453,7 +3549,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -3469,6 +3565,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3600,7 +3704,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -3616,6 +3720,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3789,7 +3901,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -3805,6 +3917,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3871,11 +3991,11 @@
           "users"
         ],
         "summary": "Remove a user",
-        "description": "Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, and its sessions end. The member's work contacts are erased. The company always keeps an active system administrator.",
+        "description": "Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, its sessions end and its API tokens are revoked. The member's work contacts are erased. The company always keeps an active system administrator.",
         "x-nortfox": {
           "permission": "users:admin",
           "scope": "users",
-          "tool": "Removes a user from the company you work in. You cannot remove yourself.",
+          "tool": "Removes a user from the company you work in, and revokes their API tokens there. You cannot remove yourself.",
           "assistant": false,
           "writes": true,
           "list": false,
@@ -3934,7 +4054,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -3950,6 +4070,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4112,7 +4240,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -4128,6 +4256,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4273,7 +4409,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -4289,6 +4425,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4452,7 +4596,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -4468,6 +4612,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4630,7 +4782,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -4646,6 +4798,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4777,7 +4937,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -4793,6 +4953,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4841,11 +5009,11 @@
           "users"
         ],
         "summary": "Disconnect a user's identity",
-        "description": "Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. The company always keeps an active system administrator.",
+        "description": "Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, their API tokens are revoked, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. The company always keeps an active system administrator.",
         "x-nortfox": {
           "permission": "users:admin",
           "scope": "users",
-          "tool": "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
+          "tool": "Disconnects the identity of a user of the company you work in, revokes their API tokens there, and sends the user a new invitation that a new or an existing identity may accept.",
           "assistant": false,
           "writes": true,
           "list": false,
@@ -4915,7 +5083,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -4931,6 +5099,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"users\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5290,11 +5466,11 @@
           "me"
         ],
         "summary": "Leave a company",
-        "description": "The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave.",
+        "description": "The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, its sessions end and its API tokens are revoked; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave. Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.",
         "x-nortfox": {
           "permission": "signed-in",
           "scope": "companies",
-          "tool": "Leaves a company where you are an active member. Only a new invitation lets you back.",
+          "tool": "Leaves a company where you are an active member, and revokes your API tokens there. Only a new invitation lets you back. Through a token, only the token's company.",
           "assistant": false,
           "writes": true,
           "list": false,
@@ -5355,7 +5531,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -5371,6 +5547,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"companies\" when the token lacks the scope (scope-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5525,6 +5709,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token, which the operation refuses with session-required: Bearer realm=\"NortFox\", error=\"insufficient_scope\" (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5684,7 +5876,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -5700,6 +5892,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"tokens\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5791,7 +5991,7 @@
             "description": "No actor: the request carries no credential that names one.",
             "headers": {
               "WWW-Authenticate": {
-                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\".",
+                "description": "The challenge, as RFC 9110 asks of every 401: Cookie realm=\"NortFox\", cookie-name=\"__Host-nortfox-session\", Bearer realm=\"NortFox\". To a request whose bearer token names no actor, the Bearer challenge is Bearer realm=\"NortFox\", error=\"invalid_token\" (RFC 6750, 3.1).",
                 "schema": {
                   "type": "string"
                 }
@@ -5807,6 +6007,14 @@
           },
           "403": {
             "description": "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "To a token: Bearer realm=\"NortFox\", error=\"insufficient_scope\", scope=\"tokens\" when the token lacks the scope (scope-missing), and Bearer realm=\"NortFox\", error=\"insufficient_scope\" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {

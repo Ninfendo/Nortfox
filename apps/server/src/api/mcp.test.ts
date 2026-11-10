@@ -305,7 +305,7 @@ const COMPANY_TOOLS = [
   {
     name: "listCompanies",
     title: "List your companies",
-    description: "Lists the companies where you are an active member, with your system administrator's level in each.",
+    description: "Lists the companies where you are an active member, with your system administrator's level in each. Through a token it lists the token's company alone.",
     inputSchema: {
       type: "object",
       properties: {
@@ -358,7 +358,7 @@ const COMPANY_TOOLS = [
   {
     name: "updateMyMembership",
     title: "Change your membership",
-    description: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
+    description: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member. Through a token, only in the token's company.",
     inputSchema: {
       type: "object",
       properties: {
@@ -603,7 +603,7 @@ const USER_TOOLS = [
   {
     name: "removeUser",
     title: "Remove a user",
-    description: "Removes a user from the company you work in. You cannot remove yourself.",
+    description: "Removes a user from the company you work in, and revokes their API tokens there. You cannot remove yourself.",
     inputSchema: { type: "object", properties: { memberId: MEMBER_ID, idempotencyKey: IDEMPOTENCY_KEY }, required: ["memberId", "idempotencyKey"], additionalProperties: false },
     outputSchema: NO_OUTPUT,
     annotations: { readOnlyHint: false },
@@ -728,7 +728,7 @@ const INVITATION_TOOLS = [
   {
     name: "disconnectUserIdentity",
     title: "Disconnect a user's identity",
-    description: "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
+    description: "Disconnects the identity of a user of the company you work in, revokes their API tokens there, and sends the user a new invitation that a new or an existing identity may accept.",
     inputSchema: { type: "object", properties: { memberId: MEMBER_ID, idempotencyKey: IDEMPOTENCY_KEY }, required: ["memberId", "idempotencyKey"], additionalProperties: false },
     outputSchema: MEMBER,
     annotations: { readOnlyHint: false },
@@ -810,7 +810,7 @@ const INVITATION_TOOLS = [
   {
     name: "leaveCompany",
     title: "Leave a company",
-    description: "Leaves a company where you are an active member. Only a new invitation lets you back.",
+    description: "Leaves a company where you are an active member, and revokes your API tokens there. Only a new invitation lets you back. Through a token, only the token's company.",
     inputSchema: {
       type: "object",
       properties: { companyId: { ...UUID, description: "The company's id." }, idempotencyKey: IDEMPOTENCY_KEY },
@@ -1069,18 +1069,18 @@ const SIGN_IN_TOOLS = [
     title: "Read yourself",
     description:
       "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; " +
-      "and the company you work in, with your membership and permissions there.",
+      "and the company you work in, with your membership and permissions there. Through a token it gives no personnummer and no mobile number.",
     inputSchema: NO_INPUT,
     outputSchema: {
       type: "object",
       properties: {
         user: USER,
         personalIdentityNumber: {
-          description: "The person's personnummer, in twelve digits with a hyphen. Absent until one is added.",
+          description: "The person's personnummer, in twelve digits with a hyphen. Absent until one is added, and always through a token.",
           type: "string",
           pattern: "^[0-9]{8}-[0-9]{4}$",
         },
-        mobile: { description: "The person's mobile number. Absent when none is set.", type: "string" },
+        mobile: { description: "The person's mobile number. Absent when none is set, and always through a token.", type: "string" },
         twoStep: {
           type: "string",
           enum: ["new_device_90_days", "every_login"],
@@ -1093,7 +1093,8 @@ const SIGN_IN_TOOLS = [
           items: { type: "string" },
           description:
             "The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. " +
-            "A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.",
+            "A session holds those it took when it chose the company, less a right whose grant has ended since. A token holds its person's there now, on every request. " +
+            "Empty when the request works in no company.",
         },
       },
       required: ["user", "twoStep", "permissions"],
@@ -1127,7 +1128,8 @@ const TOOLS = [
     name: "getCompany",
     title: "Read the company",
     description:
-      "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
+      "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names. " +
+      "Through a token, a companyId may name only the token's company.",
     inputSchema: NO_INPUT,
     outputSchema: COMPANY_SCHEMA,
     annotations: { readOnlyHint: true },

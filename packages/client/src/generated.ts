@@ -200,11 +200,11 @@ export interface InvitationAcceptance {
 export interface Me {
   readonly user: User;
   /**
-   * The person's personnummer, in twelve digits with a hyphen. Absent until one is added.
+   * The person's personnummer, in twelve digits with a hyphen. Absent until one is added, and always through a token.
    */
   readonly personalIdentityNumber?: string;
   /**
-   * The person's mobile number. Absent when none is set.
+   * The person's mobile number. Absent when none is set, and always through a token.
    */
   readonly mobile?: string;
   /**
@@ -214,7 +214,7 @@ export interface Me {
   readonly company?: Company;
   readonly membership?: Membership;
   /**
-   * The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.
+   * The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. A token holds its person's there now, on every request. Empty when the request works in no company.
    */
   readonly permissions: readonly string[];
 }
@@ -806,7 +806,7 @@ export interface Operations {
   /**
    * List your companies
    *
-   * Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.
+   * Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen. Through a token it lists the token's company alone.
    *
    * `GET /v1/companies`
    *
@@ -1028,7 +1028,7 @@ export interface Operations {
   /**
    * Read yourself
    *
-   * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.
+   * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there. Through a token it gives no personnummer and no mobile number, even when they are set, and the permissions are its person's in the token's company now.
    *
    * `GET /v1/me`
    *
@@ -1060,7 +1060,7 @@ export interface Operations {
   /**
    * Change your membership
    *
-   * Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away.
+   * Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away. Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.
    *
    * `PATCH /v1/me/companies/{companyId}`
    *
@@ -1098,7 +1098,7 @@ export interface Operations {
   /**
    * Leave a company
    *
-   * The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave.
+   * The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, its sessions end and its API tokens are revoked; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave. Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.
    *
    * `POST /v1/me/companies/{companyId}/leave`
    *
@@ -1312,7 +1312,7 @@ export interface Operations {
   /**
    * Remove a user
    *
-   * Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, and its sessions end. The member's work contacts are erased. The company always keeps an active system administrator.
+   * Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, its sessions end and its API tokens are revoked. The member's work contacts are erased. The company always keeps an active system administrator.
    *
    * `DELETE /v1/users/{memberId}`
    *
@@ -1385,7 +1385,7 @@ export interface Operations {
   /**
    * Disconnect a user's identity
    *
-   * Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. The company always keeps an active system administrator.
+   * Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, their API tokens are revoked, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. The company always keeps an active system administrator.
    *
    * `POST /v1/users/{memberId}/disconnect`
    *

@@ -7,9 +7,10 @@
 // and, for an operation that a token may call, an API token in the
 // Authorization header, as a bearer token (RFC 6750). An operation that
 // serves or needs a browser session takes the cookie alone. A 401 names the
-// operation's credentials in its challenge. x-nortfox's permission and
-// scope stay what the server checks, and the registry guard holds the three
-// together.
+// operation's credentials in its challenge. A refusal of a request with a
+// bearer token names RFC 6750's error code in its Bearer challenge. x-nortfox's
+// permission and scope stay what the server checks, and the registry guard
+// holds the three together.
 
 /** The cookie that holds a browser's session. It is HttpOnly, so no script reads it. */
 export const SESSION_COOKIE = "__Host-nortfox-session";
@@ -44,3 +45,21 @@ export const CHALLENGES: Readonly<Record<SecurityScheme, string>> = {
   sessionCookie: `Cookie realm="NortFox", cookie-name="${SESSION_COOKIE}"`,
   bearer: `Bearer realm="NortFox"`,
 };
+
+/**
+ * The error codes of RFC 6750 (3.1) that a Bearer challenge names when a
+ * request with a bearer token is refused: invalid_token in a 401, when the
+ * token names no actor, and insufficient_scope in a 403, when the token may
+ * not call the operation.
+ */
+export type BearerError = "invalid_token" | "insufficient_scope";
+
+/**
+ * The Bearer challenge with its error code, and with the scope that the
+ * token lacks when a missing scope is why it is refused (RFC 6750, 3). The
+ * same text for every token that names no actor, so the answer never tells
+ * an unknown token from a revoked one.
+ */
+export function bearerChallenge(error: BearerError, scope?: string): string {
+  return `${CHALLENGES.bearer}, error="${error}"${scope === undefined ? "" : `, scope="${scope}"`}`;
+}

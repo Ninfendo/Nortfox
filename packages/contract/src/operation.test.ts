@@ -23,7 +23,7 @@ import {
 } from "./operation.ts";
 import { Limit, Cursor } from "./paging.ts";
 import { Problem } from "./problem.ts";
-import { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
+import { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE, bearerChallenge } from "./security.ts";
 
 const Item = z.strictObject({ id: z.uuid() });
 
@@ -720,11 +720,68 @@ describe("the credential an operation takes", () => {
     expect(scoped.responses[401]).toMatchObject({
       headers: {
         "WWW-Authenticate": {
-          description: `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox".`,
+          description:
+            `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox". ` +
+            `To a request whose bearer token names no actor, the Bearer challenge is Bearer realm="NortFox", error="invalid_token" (RFC 6750, 3.1).`,
           schema: { type: "string" },
         },
       },
     });
+    expect(scoped.responses[403]).toMatchObject({
+      headers: {
+        "WWW-Authenticate": {
+          description:
+            `To a token: Bearer realm="NortFox", error="insufficient_scope", scope="bookkeeping" when the token lacks the scope (scope-missing), ` +
+            `and Bearer realm="NortFox", error="insufficient_scope" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.`,
+          schema: { type: "string" },
+        },
+      },
+    });
+  });
+
+  it("names RFC 6750's invalid_token in the bearer token's challenge of a 401 to a request whose token names no actor, and leaves the cookie's as it is", () => {
+    const scoped = { "x-nortfox": { ...read["x-nortfox"], scope: "bookkeeping" as const } };
+    expect(challengeOf(scoped, { invalidToken: true })).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox", error="invalid_token"`);
+    expect(challengeOf(scoped, { invalidToken: false })).toBe(challengeOf(scoped));
+    // An operation that takes the cookie alone has no bearer challenge to name it in.
+    expect(challengeOf(read, { invalidToken: true })).toBe(challengeOf(read));
+  });
+
+  it("gives RFC 6750's Bearer challenge with its error code, and the scope when one is lacked", () => {
+    expect(bearerChallenge("invalid_token")).toBe(`Bearer realm="NortFox", error="invalid_token"`);
+    expect(bearerChallenge("insufficient_scope")).toBe(`Bearer realm="NortFox", error="insufficient_scope"`);
+    expect(bearerChallenge("insufficient_scope", "users")).toBe(`Bearer realm="NortFox", error="insufficient_scope", scope="users"`);
+  });
+
+  it("documents the challenge of a token's 403: insufficient_scope, with the scope only where a scope is what it lacks", () => {
+    const signedIn = defineOperation({
+      id: "getOwnThing",
+      method: "get",
+      path: "/v1/own-things",
+      tags: ["items"],
+      summary: "Read",
+      description: "Reads.",
+      output: Item,
+      permission: "signed-in",
+      scope: "profile",
+      tool: "Reads.",
+      writes: false,
+    });
+    expect(signedIn.responses[403]?.headers).toEqual({
+      "WWW-Authenticate": {
+        description: `To a token: Bearer realm="NortFox", error="insufficient_scope", scope="profile" when the token lacks the scope (scope-missing) (RFC 6750, 3.1). A session's 403 carries none.`,
+        schema: { type: "string" },
+      },
+    });
+    // An operation with no scope refuses every token with session-required.
+    expect(read.responses[403]?.headers).toEqual({
+      "WWW-Authenticate": {
+        description: `To a token, which the operation refuses with session-required: Bearer realm="NortFox", error="insufficient_scope" (RFC 6750, 3.1). A session's 403 carries none.`,
+        schema: { type: "string" },
+      },
+    });
+    // An operation that needs no actor answers no token with a 403 of its own.
+    expect(publicRead.responses[403]).toBeUndefined();
   });
 });
 

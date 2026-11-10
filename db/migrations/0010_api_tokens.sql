@@ -196,7 +196,7 @@ CREATE TABLE access.api_tokens (
   identity_id uuid NOT NULL REFERENCES access.identities (id),
   name text NOT NULL
     CONSTRAINT api_tokens_name_length CHECK (char_length(name) BETWEEN 1 AND 100)
-    CONSTRAINT api_tokens_name_one_line CHECK (name !~ '[\u0001-\u001f\u007f-\u009f  ؜‎‏‪-‮⁦-⁩]'),
+    CONSTRAINT api_tokens_name_one_line CHECK (name !~ '[\u0001-\u001f\u007f-\u009f\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]'),
   -- The list's text form holds an element unquoted only when it is a word
   -- of small letters, and holds no NULL, no empty element and no second
   -- dimension in this form.

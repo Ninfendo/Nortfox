@@ -95,7 +95,8 @@ describe("GET /openapi.json", () => {
     expect(Object.keys(company?.responses ?? {})).toEqual(["200", "400", "401", "403", "500"]);
     expect(company?.responses?.["401"]?.headers).toEqual({
       "WWW-Authenticate": {
-        description: `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox".`,
+        description: `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox". ` +
+          `To a request whose bearer token names no actor, the Bearer challenge is Bearer realm="NortFox", error="invalid_token" (RFC 6750, 3.1).`,
         schema: { type: "string" },
       },
     });

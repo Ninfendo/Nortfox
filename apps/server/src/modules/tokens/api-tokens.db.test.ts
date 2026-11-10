@@ -17,7 +17,7 @@
 import { REGISTRY, SCOPES, type Operation } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { appPool, callTool, mcpClient, untilAtGate, type AppPool, type ProblemBody } from "../../../test/api.ts";
+import { appPool, appPoolHolding, callTool, mcpClient, untilAtGate, type AppPool, type ProblemBody } from "../../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../../test/database.ts";
 import { PERSONAL_IDENTITY_NUMBERS, deleteIdentity } from "../../../test/identities.ts";
 import { OPERATION_ARGUMENTS, type ArgumentsFixture } from "../../../test/operation-arguments.ts";
@@ -32,6 +32,7 @@ import {
   jsonOf,
   signInApp,
   testClock,
+  untilSomeoneWaitsForLock,
   writeAs,
   type SignInApp,
 } from "../../../test/sign-in.ts";
@@ -283,6 +284,42 @@ describe("an API token", () => {
     expect(await jsonOf<ProblemBody>(await asToken(server, token, "GET", "/v1/company"), 401)).toMatchObject({ code: "authentication-required" });
   });
 
+  it("gets RFC 6750's error code in its challenge: invalid_token, with one answer for every token that names no actor, and insufficient_scope", async () => {
+    const member = await newMember(server, { app, owner }, alfa);
+    const deactivated = await makeApiToken(server, await sessionIn(server, member.person, alfa.id));
+    expect((await calls.updateUser(server, alfa.session, member.id, { active: false })).status).toBe(200);
+    const revoked = await makeApiToken(server, alfa.session);
+    expect((await writeAs(server, alfa.session, "DELETE", `/v1/api-tokens/${revoked.id}`, undefined)).status).toBe(204);
+    const cookie = `Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`;
+    const answers = new Set<string>();
+    for (const authorization of [`Bearer ${revoked.token}`, `Bearer ${newToken("apiToken")}`, `Bearer ${newToken("session")}`, `Bearer ${deactivated.token}`, "Bearer a b"]) {
+      const answer = await server.send("/v1/company", { headers: { authorization } });
+      expect(answer.status, authorization).toBe(401);
+      answers.add(JSON.stringify([answer.headers.get("www-authenticate"), await answer.text()]));
+    }
+    expect([...answers]).toEqual([JSON.stringify([`${cookie}, Bearer realm="NortFox", error="invalid_token"`, JSON.stringify(NO_ACTOR)])]);
+    // A request with no credential gets the plain challenge.
+    const none = await server.send("/v1/company", {});
+    expect(none.headers.get("www-authenticate")).toBe(`${cookie}, Bearer realm="NortFox"`);
+    // A live token that may not call the operation: insufficient_scope, with the scope that it lacks.
+    const { token } = await makeApiToken(server, alfa.session, { scopes: ["users"] });
+    const lacking = await asToken(server, token, "GET", "/v1/company");
+    expect(lacking.status).toBe(403);
+    expect(lacking.headers.get("www-authenticate")).toBe(`Bearer realm="NortFox", error="insufficient_scope", scope="companyinformation"`);
+    const sessionOnly = await asToken(server, token, "GET", "/v1/session");
+    expect(sessionOnly.status).toBe(403);
+    expect(sessionOnly.headers.get("www-authenticate")).toBe(`Bearer realm="NortFox", error="insufficient_scope"`);
+    const plain = await newMember(server, { app, owner }, alfa);
+    const plainToken = await makeApiToken(server, await sessionIn(server, plain.person, alfa.id));
+    const forbidden = await asToken(server, plainToken.token, "GET", "/v1/users");
+    expect(await jsonOf<ProblemBody>(forbidden, 403)).toMatchObject({ code: "permission-missing", permission: "users:read" });
+    expect(forbidden.headers.get("www-authenticate")).toBe(`Bearer realm="NortFox", error="insufficient_scope"`);
+    // A session's 403 carries none.
+    const bySession = await getAs(server, await sessionIn(server, plain.person, alfa.id), "/v1/users");
+    expect(bySession.status).toBe(403);
+    expect(bySession.headers.get("www-authenticate")).toBeNull();
+  });
+
   it("is not made for a membership that stops being active while the call runs", async () => {
     const member = await newMember(server, { app, owner }, alfa);
     const session = await sessionIn(server, member.person, alfa.id);
@@ -301,6 +338,38 @@ describe("an API token", () => {
     expect(await jsonOf<ProblemBody>(await making, 401)).toMatchObject({ code: "authentication-required" });
     const made = await superuser.query("SELECT id FROM access.api_tokens WHERE identity_id = $1", [member.person.id]);
     expect(made.rows).toEqual([]);
+  });
+
+  it("holds its membership until the token is made, so a disconnect that comes meanwhile waits and then revokes it", async () => {
+    const member = await newMember(server, { app, owner }, alfa);
+    const session = await sessionIn(server, member.person, alfa.id);
+    // createApiToken has held the membership, and waits before its insert.
+    const held = appPoolHolding(db, 2, /INSERT INTO access\.api_tokens/);
+    try {
+      const racing = signInApp(held.database, { clock: server.clock });
+      const making = Promise.resolve(
+        racing.app.hono.request("/v1/api-tokens", {
+          method: "POST",
+          headers: { origin: TEST_ORIGIN, "content-type": "application/json", "idempotency-key": "make-while-disconnected", ...cookieHeader({ session }) },
+          body: JSON.stringify(apiTokenBody({ name: "Under frånkoppling" })),
+        }),
+      );
+      await untilAtGate(held.gate, making);
+      const disconnecting = calls.disconnectUserIdentity(server, alfa.session, member.id);
+      // The disconnect waits for the membership that createApiToken holds.
+      await untilSomeoneWaitsForLock(superuser);
+      held.gate.open();
+      const made = await jsonOf<{ id: string; token: string }>(await making, 201);
+      expect((await disconnecting).status).toBe(200);
+      const row = await superuser.query("SELECT revoked_at IS NOT NULL AS revoked, revoked_by FROM access.api_tokens WHERE id = $1", [made.id]);
+      expect(row.rows).toEqual([{ revoked: true, revoked_by: alfa.creator.id }]);
+      // The same person accepts the disconnect's invitation of the same membership: the token stays refused.
+      expect(await joinWith(server, member.person, server.mail.invitationTokenTo(member.person.email))).toBe(member.id);
+      expect(await jsonOf<ProblemBody>(await asToken(server, made.token, "GET", "/v1/me"), 401)).toMatchObject({ code: "authentication-required" });
+    } finally {
+      held.gate.open();
+      await held.pool.end();
+    }
   });
 
   it("leaves no token in an answer and no secret at rest", async () => {

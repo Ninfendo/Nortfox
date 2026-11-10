@@ -30,7 +30,7 @@ import {
   type Settings,
   type TestDatabase,
 } from "../../../test/database.ts";
-import { addIdentity, anonymously, tokenHash } from "../../../test/identities.ts";
+import { addIdentity, anonymously, deleteIdentity, tokenHash } from "../../../test/identities.ts";
 import { someIntegration, type Actor } from "../../../test/ledger.ts";
 import { aCompany, addMembership, asMember, type Company } from "../../../test/memberships.ts";
 import { API_TOKEN_COLUMNS, INSERT_API_TOKEN, addApiToken, type ApiTokenRow } from "../../../test/tokens.ts";
@@ -126,6 +126,16 @@ describe("the API tokens' table", () => {
       // A revoked token is found no more.
       await inCompany(alfa.id, alva, "UPDATE access.api_tokens SET revoked_at = pg_catalog.clock_timestamp() WHERE id = $1", [row.id]);
       expect(await anonymously(app, LOOKUP, [hash])).toEqual([]);
+    });
+
+    it("gives the identity's status as it is, so the resolver sees a deleted person's token as one", async () => {
+      const person = await addIdentity(owner, { name: "Stina Ek" });
+      const membership = await addMembership(app, owner, alfa, { user: person });
+      const { hash } = await addApiToken(app, alfa.id, membership, { actor: person, kind: "user" });
+      const STATUS = "SELECT status FROM access.api_token_by_token($1)";
+      expect(await anonymously(app, STATUS, [hash])).toEqual([{ status: "active" }]);
+      await deleteIdentity(app, person);
+      expect(await anonymously(app, STATUS, [hash])).toEqual([{ status: "deleted" }]);
     });
   });
 

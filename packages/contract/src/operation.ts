@@ -19,7 +19,7 @@ import { IDEMPOTENCY_KEY_DESCRIPTION, IDEMPOTENCY_KEY_HEADER } from "./idempoten
 import { Cursor, Limit, pageOf } from "./paging.ts";
 import { Problem } from "./problem.ts";
 import type { Scope } from "./scopes.ts";
-import { CHALLENGES, type SecurityScheme } from "./security.ts";
+import { CHALLENGES, bearerChallenge, type SecurityScheme } from "./security.ts";
 
 /**
  * The permissions an operation can need, each with what it allows. Which
@@ -59,11 +59,14 @@ export const OPEN_PERMISSIONS = [PUBLIC, NONE, SIGNED_IN] as const;
 
 /**
  * The session mark. "flow" marks an operation that serves the browser's
- * session, such as a sign-in or a logout: its MCP tool refuses every call,
- * and /v1 refuses a token's call with session-required. "only" marks an
- * operation that needs a browser session though it does not serve it, such
- * as listRecentCompanies: /v1 and its MCP tool refuse a token's call with
- * session-required. null marks every other operation.
+ * session, such as a sign-in or a logout: its MCP tool refuses every call.
+ * /v1 refuses a token's call of one that needs an actor, such as logout,
+ * getSession or selectCompany, with session-required, and runs a token's
+ * call of one that runs before sign-in, such as loginWithPassword, as a call
+ * with no actor. "only" marks an operation that needs a browser session
+ * though it does not serve it, such as listRecentCompanies: /v1 and its MCP
+ * tool refuse a token's call with session-required. null marks every other
+ * operation.
  */
 export type SessionMark = "flow" | "only" | null;
 
@@ -271,10 +274,17 @@ const FORBIDDEN = {
 /** The cause of a 409 of a write whose answer holds a secret, beside the key in use. */
 const SHOWN_ONCE = "or the same request came again with its key, and its first answer held a secret, which is shown only once (answer-shown-once)";
 
-/** The texts of the refusals that differ from one operation to another: the causes of its 403, the challenge of its 401, and whether its answer holds a secret. */
+/**
+ * The texts of the refusals that differ from one operation to another: the
+ * causes of its 403 and the challenge a token's 403 carries, the challenge
+ * of its 401 and whether a bearer token can name it, and whether its answer
+ * holds a secret.
+ */
 interface RefusalTexts {
   readonly forbidden: readonly string[];
+  readonly tokenForbidden: string | undefined;
   readonly challenge: () => string;
+  readonly bearer: boolean;
   readonly secret: boolean;
 }
 
@@ -292,9 +302,13 @@ function refusal(status: RefusalStatus, texts: RefusalTexts): ResponseConfig {
     content: { "application/problem+json": { schema: Problem } },
   };
   if (status === 401) {
+    const invalid = texts.bearer ? ` To a request whose bearer token names no actor, the Bearer challenge is ${bearerChallenge("invalid_token")} (RFC 6750, 3.1).` : "";
     response.headers = {
-      "WWW-Authenticate": { description: `The challenge, as RFC 9110 asks of every 401: ${texts.challenge()}.`, schema: { type: "string" } },
+      "WWW-Authenticate": { description: `The challenge, as RFC 9110 asks of every 401: ${texts.challenge()}.${invalid}`, schema: { type: "string" } },
     };
+  }
+  if (status === 403 && texts.tokenForbidden !== undefined) {
+    response.headers = { "WWW-Authenticate": { description: texts.tokenForbidden, schema: { type: "string" } } };
   }
   if (status === 429 || status === 503) {
     response.headers = {
@@ -324,16 +338,40 @@ export function securityOf(permission: string, scope: string | null): SecurityRe
 /**
  * The challenge that a 401 of the operation carries in WWW-Authenticate
  * (RFC 9110, 11.6.1): one for each credential that it takes, so it names a
- * credential that the operation takes. An operation that needs no actor
- * answers no 401, so it has none.
+ * credential that the operation takes. To a request whose bearer token
+ * names no actor (`invalidToken`), the Bearer challenge names RFC 6750's
+ * invalid_token (3.1). An operation that needs no actor answers no 401, so
+ * it has none.
  */
-export function challengeOf(operation: Pick<Operation, "x-nortfox">): string {
+export function challengeOf(operation: Pick<Operation, "x-nortfox">, options: { readonly invalidToken?: boolean } = {}): string {
   const { permission, scope } = operation["x-nortfox"];
   const security = securityOf(permission, scope);
   if (security === undefined) {
     throw new Error("An operation that needs no actor answers no 401, so it has no challenge.");
   }
-  return security.flatMap((requirement) => Object.keys(requirement).map((scheme) => CHALLENGES[scheme as SecurityScheme])).join(", ");
+  const challenge = (scheme: SecurityScheme): string => (scheme === "bearer" && options.invalidToken === true ? bearerChallenge("invalid_token") : CHALLENGES[scheme]);
+  return security.flatMap((requirement) => Object.keys(requirement).map((scheme) => challenge(scheme as SecurityScheme))).join(", ");
+}
+
+/**
+ * What the WWW-Authenticate of a 403 holds, by the operation, when a token
+ * is refused (RFC 6750, 3.1): insufficient_scope, with the operation's scope
+ * when the token lacks it. A session's 403 carries no challenge. Undefined
+ * for an operation that no token reaches with a 403: one that needs no
+ * actor.
+ */
+function tokenForbiddenText(meta: OperationMeta): string | undefined {
+  const { permission, scope } = meta;
+  if (permission === PUBLIC || permission === NONE) {
+    return undefined;
+  }
+  const refused = bearerChallenge("insufficient_scope");
+  if (scope === null) {
+    return `To a token, which the operation refuses with session-required: ${refused} (RFC 6750, 3.1). A session's 403 carries none.`;
+  }
+  const lacked = `${bearerChallenge("insufficient_scope", scope)} when the token lacks the scope (scope-missing)`;
+  const permissionText = (OPEN_PERMISSIONS as readonly string[]).includes(permission) ? "" : `, and ${refused} when its person lacks the permission (permission-missing)`;
+  return `To a token: ${lacked}${permissionText} (RFC 6750, 3.1). A session's 403 carries none.`;
 }
 
 /**
@@ -473,7 +511,9 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
   const responses: Record<string, ResponseConfig> = { [status]: successResponse(definition.id, status, output) };
   const texts: RefusalTexts = {
     forbidden: forbiddenCauses(meta, definition.method),
+    tokenForbidden: tokenForbiddenText(meta),
     challenge: () => challengeOf({ "x-nortfox": meta }),
+    bearer: meta.scope !== null,
     secret: keyed && meta.secretOutput.length > 0,
   };
   for (const code of refusals(meta, body !== undefined, params !== undefined, texts.forbidden)) {

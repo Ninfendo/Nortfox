@@ -196,8 +196,17 @@ describe("the runner and an operation that runs before sign-in", () => {
 /** A token of COMPANY with every scope but companyinformation. */
 const SCOPELESS = await tokenPrincipalOf(COMPANY, { scopes: SCOPES.filter((scope) => scope !== "companyinformation") });
 
+/** A token of COMPANY with every scope, whose person holds no permission there, and a session of the same. */
+const POWERLESS = await tokenPrincipalOf(COMPANY, { permissions: [] });
+const POWERLESS_SESSION = await principalOf(COMPANY, { kind: "user", permissions: [] });
+
 describe("/v1 and /mcp with a token", () => {
-  const tokens = { "token-of-alfa": TOKEN, "token-without-companyinformation": SCOPELESS };
+  const tokens = {
+    "token-of-alfa": TOKEN,
+    "token-without-companyinformation": SCOPELESS,
+    "token-without-permissions": POWERLESS,
+    "session-without-permissions": POWERLESS_SESSION,
+  };
 
   function app() {
     const database = untouchedDatabase();
@@ -226,16 +235,31 @@ describe("/v1 and /mcp with a token", () => {
     for (const path of ["/v1/me/companies/recent", "/v1/session"]) {
       const response = await server.hono.request(path, { headers: bearer("token-of-alfa") });
       expect(response.status, path).toBe(403);
+      expect(response.headers.get("www-authenticate"), path).toBe(`Bearer realm="NortFox", error="insufficient_scope"`);
       expect(await problemIn(response)).toEqual(SESSION_REQUIRED);
     }
     expect(database.asked).toEqual([]);
   });
 
-  it("answers 403 scope-missing on /v1 with the scope, before the database is asked", async () => {
+  it("answers 403 scope-missing on /v1 with the scope, in the problem and in RFC 6750's challenge, before the database is asked", async () => {
     const { database, app: server } = app();
     const response = await server.hono.request("/v1/company", { headers: bearer("token-without-companyinformation") });
     expect(response.status).toBe(403);
+    expect(response.headers.get("www-authenticate")).toBe(`Bearer realm="NortFox", error="insufficient_scope", scope="companyinformation"`);
     expect(await problemIn(response)).toEqual(SCOPE_MISSING);
+    expect(database.asked).toEqual([]);
+  });
+
+  it("answers 403 permission-missing on /v1 to a token with RFC 6750's insufficient_scope and no scope, and to a session with no challenge", async () => {
+    const { database, app: server } = app();
+    const response = await server.hono.request("/v1/company", { headers: bearer("token-without-permissions") });
+    expect(response.status).toBe(403);
+    expect(response.headers.get("www-authenticate")).toBe(`Bearer realm="NortFox", error="insufficient_scope"`);
+    expect(await problemIn(response)).toMatchObject({ code: "permission-missing", permission: "company:read" });
+    const bySession = await server.hono.request("/v1/company", { headers: bearer("session-without-permissions") });
+    expect(bySession.status).toBe(403);
+    expect(bySession.headers.get("www-authenticate")).toBeNull();
+    expect(await problemIn(bySession)).toMatchObject({ code: "permission-missing", permission: "company:read" });
     expect(database.asked).toEqual([]);
   });
 

@@ -145,6 +145,18 @@ describe("requestHash", () => {
     expect(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "a" })).toBe(hmacOf(text));
     expect(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "b" })).not.toBe(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "a" }));
   });
+
+  it("holds the token a person's own write came through, when it names one, so a session's and each token's requests are apart", () => {
+    const token = { kind: "api-token", id: "0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e" } as const;
+    const text = '{"body":{"name":"Testbolaget Gamma AB"},"operation":"createCompany","query":{},"via":{"id":"0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e","kind":"api-token"}}';
+    const bySession = requestHash(FINGERPRINT_KEY, "createCompany", {}, { name: "Testbolaget Gamma AB" });
+    const byToken = requestHash(FINGERPRINT_KEY, "createCompany", {}, { name: "Testbolaget Gamma AB" }, undefined, token);
+    expect(byToken).toBe(hmacOf(text));
+    expect(byToken).not.toBe(bySession);
+    expect(requestHash(FINGERPRINT_KEY, "createCompany", {}, { name: "Testbolaget Gamma AB" }, undefined, { ...token, id: "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f" })).not.toBe(byToken);
+    // No via is the fingerprint as it was before the via came in.
+    expect(requestHash(FINGERPRINT_KEY, "createCompany", {}, { name: "Testbolaget Gamma AB" }, undefined, undefined)).toBe(bySession);
+  });
 });
 
 describe("KeysInFlight", () => {

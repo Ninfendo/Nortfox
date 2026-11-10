@@ -171,11 +171,20 @@ describe("no actor", () => {
   });
 
   it.each(CASES)("%s answers 401 with the challenge of each credential it takes, and asks no database", async (_label, sent, operation) => {
-    for (const credential of [{}, bearer("unknown-token"), { authorization: "Basic YTpi" }]) {
+    // A request with a bearer token that names no actor gets RFC 6750's invalid_token in the Bearer challenge; any other, the plain challenge.
+    for (const [credential, invalidToken] of [
+      [{}, false],
+      [{ authorization: "Basic YTpi" }, false],
+      [bearer("unknown-token"), true],
+      [{ authorization: "Bearer a b" }, true],
+      [{ authorization: "bearer   unknown-token" }, true],
+    ] as const) {
       const database = untouchedDatabase();
       const response = await send(database, sent, credential);
       expect(response.status).toBe(401);
-      expect(response.headers.get("www-authenticate")).toBe(challengeOf(operation));
+      const plain = challengeOf(operation);
+      const bearerTaken = operation["x-nortfox"].scope !== null;
+      expect(response.headers.get("www-authenticate")).toBe(invalidToken && bearerTaken ? `${plain}, error="invalid_token"` : plain);
       expect(await problemIn(response)).toEqual({
         type: "about:blank",
         title: "Unauthorized",

@@ -139,7 +139,7 @@ import { z } from "zod";
 import type { CookieEffect } from "../auth/cookies.ts";
 import type { InstallKey } from "../auth/install-key.ts";
 import { ServerBusy, type PasswordHasher } from "../auth/password.ts";
-import { commit, rollBack, type Channel, type CompanySettings, type Database, type Ending, type PersonSettings, type Queryable, type TransactionSettings } from "../db/database.ts";
+import { commit, rollBack, type Channel, type CompanySettings, type Database, type Ending, type PersonSettings, type Queryable, type TransactionSettings, type Via } from "../db/database.ts";
 import { CompanyAccess, resolveActive, type ResolvedMembership } from "../modules/memberships/resolve.ts";
 import type { AfterAnswerTask } from "./after-answer.ts";
 import { actorOf, isToken, type CompanyContext, type Principal, type RequestContext } from "./context.ts";
@@ -854,6 +854,8 @@ interface KeyedWrite {
   readonly store: KeyStore;
   /** The company's other table of keys, for a write in a company: its lookup there reads it too, so one key never serves two writes of the company. */
   readonly other?: KeyStore | undefined;
+  /** The token or client of a person's own write that came through one: its fingerprint holds it, so no other credential of the person replays its answer. */
+  readonly via?: Via | undefined;
   /** Opens the write's transactions. */
   readonly frame: Frame;
 }
@@ -877,14 +879,14 @@ function replaysWhereUnavailable(operation: Operation): boolean {
  * it commits.
  */
 async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outcome> {
-  const { operation, actorId, input, key, store, other, frame } = write;
+  const { operation, actorId, input, key, store, other, via, frame } = write;
   const release = deps.keysInFlight.claim(store.scope, actorId, key);
   if (release === undefined) {
     return refuse({ kind: "idempotency-key-in-use" });
   }
   try {
     const params = paramsSchema(operation) === undefined ? undefined : input.params;
-    const hash = requestHash(deps.fingerprintKey, operation.operationId, input.query, input.body, params);
+    const hash = requestHash(deps.fingerprintKey, operation.operationId, input.query, input.body, params, via);
     // The write's own table; in a company, the other table too. Where the person no longer reaches the company, the own table alone.
     const storedAnswer = async (tx: Queryable, everywhere = true): Promise<Outcome | undefined> => {
       const stored = (await store.find(tx, actorId, key)) ?? (everywhere && other !== undefined ? await other.find(tx, actorId, key) : undefined);
@@ -1078,7 +1080,10 @@ function newCompanyFrame(settings: PersonSettings, run: (tx: Queryable, companyI
  * the company that its company source says: none; the credential's
  * (current); the one its input names (input); or the one it makes (new).
  * A write's key is kept per person in no company and in a new company, and
- * in a company as keysFor says.
+ * in a company as keysFor says. A person's own key of a call through a token
+ * names the token in the fingerprint: such a key belongs to no company, so
+ * the token's company does not keep it apart from the person's other
+ * credentials, and a token never replays what they stored.
  */
 function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCall, later: Later, request: RequestFacts, deps: RunnerDeps): Promise<Outcome> {
   const { operation } = handler;
@@ -1086,8 +1091,10 @@ function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCa
   const source = operation["x-nortfox"].company;
   const person: PersonSettings = { ...actorOf(context), channel: context.channel };
   const runIn = (tx: Queryable, company: PersonCompany): Promise<Answer<unknown>> => handler.run({ context, tx, company, request, now: deps.now, later }, input);
-  const keyed = (stores: KeyStores): Omit<KeyedWrite, "operation" | "frame"> | undefined =>
-    key === undefined ? undefined : { actorId: context.personId, input, key, ...stores };
+  const keyed = (stores: KeyStores, via?: Via): Omit<KeyedWrite, "operation" | "frame"> | undefined =>
+    key === undefined ? undefined : { actorId: context.personId, input, key, ...stores, via };
+  // A person's own keys, which belong to no company: the call's token is in the fingerprint.
+  const ownKeys = (): Omit<KeyedWrite, "operation" | "frame"> | undefined => keyed({ store: personKeys }, context.via);
   if (isCompanyInput(source)) {
     const companyId = inputValue(input, source.input);
     if (!inTokenCompany(context, companyId)) {
@@ -1098,7 +1105,7 @@ function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCa
     return runFramed(operation, inTurn(handler.turn?.(input), String(companyId).toLowerCase(), frame, deps), keyed(keysFor(operation, String(companyId))), deps);
   }
   if (source === "new") {
-    return runFramed(operation, newCompanyFrame(person, (tx, companyId) => runIn(tx, { kind: "new", companyId }), deps), keyed({ store: personKeys }), deps);
+    return runFramed(operation, newCompanyFrame(person, (tx, companyId) => runIn(tx, { kind: "new", companyId }), deps), ownKeys(), deps);
   }
   const access = source === "current" ? context.company : undefined;
   if (access !== undefined) {
@@ -1106,7 +1113,7 @@ function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCa
     const frame = inTurn(handler.turn?.(input), access.companyId, settingsFrame(settings, (tx) => runIn(tx, { kind: "current", access }), deps), deps);
     return runFramed(operation, frame, keyed(keysFor(operation, access.companyId)), deps);
   }
-  return runFramed(operation, settingsFrame(person, (tx) => runIn(tx, { kind: "none" }), deps), keyed({ store: personKeys }), deps);
+  return runFramed(operation, settingsFrame(person, (tx) => runIn(tx, { kind: "none" }), deps), ownKeys(), deps);
 }
 
 /**

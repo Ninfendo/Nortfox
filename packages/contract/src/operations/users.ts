@@ -154,14 +154,14 @@ export const removeUser = defineOperation({
   tags: ["users"],
   summary: "Remove a user",
   description:
-    "Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, and its sessions end. " +
+    "Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, its sessions end and its API tokens are revoked. " +
     "The member's work contacts are erased. The company always keeps an active system administrator.",
   params: MemberPath,
   output: NoBody,
   status: 204,
   permission: "users:admin",
   scope: "users",
-  tool: "Removes a user from the company you work in. You cannot remove yourself.",
+  tool: "Removes a user from the company you work in, and revokes their API tokens there. You cannot remove yourself.",
   writes: true,
 });
 
@@ -303,7 +303,7 @@ export const disconnectUserIdentity = defineOperation({
   description:
     "Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, " +
     "to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, " +
-    "and is invited again; their sessions end, and their work contacts are erased. " +
+    "and is invited again; their sessions end, their API tokens are revoked, and their work contacts are erased. " +
     `${SENDS} An invited member gets 422 user-invited. ` +
     "A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. " +
     "The company always keeps an active system administrator.",
@@ -311,7 +311,7 @@ export const disconnectUserIdentity = defineOperation({
   output: Member,
   permission: "users:admin",
   scope: "users",
-  tool: "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
+  tool: "Disconnects the identity of a user of the company you work in, revokes their API tokens there, and sends the user a new invitation that a new or an existing identity may accept.",
   writes: true,
 });
 

@@ -7,9 +7,11 @@
 // API token works on /v1 only. api-tokens.db.test.ts and the other token
 // tests run the lookup on PostgreSQL.
 
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { untouchedDatabase } from "../../test/api.ts";
-import { bearerToken } from "./api-token.ts";
+import type { Channel, Database, LookupQueryable, LookupWork } from "../db/database.ts";
+import { apiTokenPrincipal, bearerToken } from "./api-token.ts";
 import { credentialResolver } from "./resolver.ts";
 import { newToken } from "./tokens.ts";
 
@@ -60,5 +62,34 @@ describe("the resolver with a bearer token", () => {
     expect(database.asked).toEqual([]);
     await expect(resolve(requestWith({ authorization }), "rest")).rejects.toThrow("The database was asked to lookup");
     expect(database.asked).toEqual(["lookup"]);
+  });
+});
+
+describe("apiTokenPrincipal", () => {
+  // The one membership function also needs an active identity, so only a lookup that gives the status by itself shows the token's own check.
+  // "locked" stands for any status that is not active, such as one a later release adds.
+  it.each([["deleted"], ["locked"]])("names no actor when the token's identity is %s, and goes no further than the lookup", async (status) => {
+    const asked: string[] = [];
+    const row = { token_id: randomUUID(), identity_id: randomUUID(), status, token_company_id: randomUUID(), membership_id: randomUUID(), scopes: ["profile"] };
+    const tx = {
+      query: (text: string) => {
+        asked.push(text);
+        return Promise.resolve({ rows: [row] });
+      },
+      actAs: () => {
+        asked.push("actAs");
+        return Promise.resolve();
+      },
+      enter: () => {
+        asked.push("enter");
+        return Promise.resolve();
+      },
+    } as unknown as LookupQueryable;
+    const database: Database = {
+      ...untouchedDatabase(),
+      lookup: async <T>(_channel: Channel, work: LookupWork<T>): Promise<T> => (await work(tx)).value,
+    };
+    expect(await apiTokenPrincipal(database, newToken("apiToken"), NOW)).toBeUndefined();
+    expect(asked).toEqual(["SELECT token_id, identity_id, status, token_company_id, membership_id, scopes FROM access.api_token_by_token($1)"]);
   });
 });
