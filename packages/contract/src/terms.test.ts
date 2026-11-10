@@ -58,6 +58,9 @@ const SCHEMAS: Readonly<Record<string, readonly string[]>> = {
   PermissionCatalogue: ["roles", "programs", "groups", "permissions"],
   Invitation: ["name", "email", "expiresAt", "companyName", "inviterName"],
   InvitationAcceptance: ["user", "membership", "totpEnrolment"],
+  // Slice 2c, part 4: the API tokens.
+  ApiToken: ["id", "name", "scopes", "userId", "createdAt"],
+  NewApiToken: ["id", "name", "scopes", "userId", "createdAt", "token"],
 };
 
 /**
@@ -73,6 +76,26 @@ const VALUES: Readonly<Record<string, readonly (string | number)[]>> = {
   Program: ["bookkeeping", "approval-read", "read", "auditor"],
   Role: ["owner", "admin", "bookkeeper", "approver", "viewer", "auditor"],
   PermissionGroupKey: ["vouchers", "supplier-invoices", "reports", "register"],
+  // Slice 2c, part 4.
+  Scope: [
+    "companyinformation",
+    "profile",
+    "companies",
+    "users",
+    "tokens",
+    "bookkeeping",
+    "settings",
+    "costcenter",
+    "project",
+    "currency",
+    "supplier",
+    "supplierinvoice",
+    "payment",
+    "connectfile",
+    "inbox",
+    "archive",
+    "deletevoucher",
+  ],
 };
 
 /** The fields that hold a schema that a term names, as Schema.field, each with that schema. */
@@ -92,6 +115,13 @@ const REFERENCES: Readonly<Record<string, string>> = {
   "RoleDefinition.key": "Role",
   "RoleDefinition.adminLevel": "SysAdmin",
   "RoleDefinition.program": "Program",
+};
+
+/** The fields that hold a list of a schema that a term names, as Schema.field, each with the schema of its items. */
+const LISTS: Readonly<Record<string, string>> = {
+  // Slice 2c, part 4.
+  "ApiToken.scopes": "Scope",
+  "NewApiToken.scopes": "Scope",
 };
 
 /**
@@ -148,12 +178,19 @@ const TERMS: readonly (readonly [string, readonly string[]])[] = [
     "Inbjudan / invitation",
     ["Invitation", "Invitation.name", "Invitation.email", "Invitation.expiresAt", "Invitation.companyName", "Invitation.inviterName", "InvitationAcceptance"],
   ],
+  [
+    "(no screen word) / API token",
+    ["ApiToken", "ApiToken.id", "ApiToken.name", "ApiToken.scopes", "ApiToken.userId", "ApiToken.createdAt", "NewApiToken", "NewApiToken.token"],
+  ],
+  ["(no screen word) / scope", ["Scope", "ApiToken.scopes"]],
 ];
 
 interface DescribedSchema {
   readonly properties?: Readonly<Record<string, DescribedSchema>>;
   readonly enum?: readonly unknown[];
   readonly $ref?: string;
+  readonly type?: string;
+  readonly items?: DescribedSchema;
 }
 
 interface Described {
@@ -209,6 +246,11 @@ describe("the terms in /v1", () => {
     expect(schemaOf(name)?.$ref, name).toBe(`#/components/schemas/${schema}`);
   });
 
+  it.each(Object.entries(LISTS))("gives %s a list of the schema %s", (name, schema) => {
+    expect(schemaOf(name)?.type, name).toBe("array");
+    expect(schemaOf(name)?.items?.$ref, name).toBe(`#/components/schemas/${schema}`);
+  });
+
   it.each(TERMS)("gives the term %j names that /v1 has", (_term, names) => {
     for (const name of names) {
       const [schema = "", field] = name.split(".");
@@ -220,8 +262,8 @@ describe("the terms in /v1", () => {
     }
   });
 
-  it("knows each schema and field that VALUES and REFERENCES name", () => {
-    for (const name of [...Object.keys(VALUES), ...Object.keys(REFERENCES), ...Object.values(REFERENCES)]) {
+  it("knows each schema and field that VALUES, REFERENCES and LISTS name", () => {
+    for (const name of [...Object.keys(VALUES), ...Object.keys(REFERENCES), ...Object.values(REFERENCES), ...Object.keys(LISTS), ...Object.values(LISTS)]) {
       const [schema = "", field] = name.split(".");
       if (field === undefined) {
         expect(SCHEMAS[schema] ?? VALUES[schema], name).toBeDefined();
