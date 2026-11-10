@@ -10,7 +10,8 @@
 // password and a code, which makes the pending TOTP secret active. Or it
 // links the signed-in identity, which needs a session. The member's work
 // e-mail becomes the invitation's address either way. A bearer token links
-// nothing: part 4 adds that case to this file.
+// nothing, also beside the session cookie, which a request with one never
+// reads.
 
 import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "pg";
@@ -27,6 +28,7 @@ import {
   answeredWithoutWaiting,
   challengeOf,
   chooseCompany,
+  cookieHeader,
   expectNoSecretsAtRestFromSignInApps,
   expectNoTokensFromSignInApps,
   getAs,
@@ -42,6 +44,7 @@ import {
   writeAs,
   type SignInApp,
 } from "../../../test/sign-in.ts";
+import { makeApiToken } from "../../../test/tokens.ts";
 import { acceptAs, apiCompany, calls, invite, newMember, sessionIn, type ApiCompany } from "../../../test/users.ts";
 import { tokenHash } from "../../auth/tokens.ts";
 import { base32Decode, totpCode } from "../../auth/totp.ts";
@@ -591,6 +594,23 @@ describe("invitations", () => {
       const { session } = await signIn(server, person);
       expect((await writeAs(server, session, "POST", "/v1/auth/logout", undefined)).status).toBe(204);
       expect(await jsonOf<ProblemBody>(await calls.acceptInvitation(server, token, {}, session), 422)).toMatchObject({ code: "sign-in-required" });
+      expect(await linkOf(token)).toEqual({ used: false, superseded: false });
+    });
+
+    it("a bearer token links nothing, also beside the session cookie", async () => {
+      const person = await addSignInIdentity(owner);
+      const own = await apiCompany(server, { app, owner }, "Testbolaget Beta AB", person);
+      const apiToken = (await makeApiToken(server, own.session)).token;
+      const { token } = await invite(server, company.session, person.email, "Alva Berg");
+      // The program's token alone, and with the person's session cookie beside it.
+      for (const cookie of [{}, cookieHeader({ session: own.session })]) {
+        const answer = await server.send(`/v1/invitations/${token}/accept`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${apiToken}`, "content-type": "application/json", ...cookie },
+          body: JSON.stringify({}),
+        });
+        expect(await jsonOf<ProblemBody>(answer, 422)).toMatchObject({ code: "sign-in-required" });
+      }
       expect(await linkOf(token)).toEqual({ used: false, superseded: false });
     });
 

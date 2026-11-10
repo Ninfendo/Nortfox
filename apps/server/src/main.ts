@@ -7,24 +7,24 @@
 // stores the check value of its install secret, and each later start refuses
 // a key that does not open it (auth/install-key.ts). The install's public
 // origin is the one browser origin that /v1 and /mcp allow. The resolver
-// reads the browser's session cookie on /v1 (auth/resolver.ts), and the
-// passwords are hashed at the production cost (auth/password.ts). The
-// install's mail goes through its SMTP server, when it has one set up
-// (mail/smtp.ts). Every 10 minutes the server purges the login rows that
-// have passed. A list's
-// cursors are signed with a key made at start, so a cursor lasts as long as
-// the process. Every error is logged through the safe report
-// (api/report.ts), a failed start too, which exits with 1. A stop (SIGINT or
-// SIGTERM) stops the purge timer, closes the server, which waits for the
-// requests that still run, also those whose client has left, and for the
-// work queued for after the answers (start.ts), and only then ends the pool.
+// reads an API token or the browser's session cookie on /v1
+// (auth/resolver.ts), and the passwords are hashed at the production cost
+// (auth/password.ts). The install's mail goes through its SMTP server, when
+// it has one set up (mail/smtp.ts). Every 10 minutes the server purges the
+// login rows that have passed. A list's cursors are signed with a key made
+// at start, so a cursor lasts as long as the process. Every error is logged
+// through the safe report (api/report.ts), a failed start too, which exits
+// with 1. A stop (SIGINT or SIGTERM) stops the purge timer, closes the
+// server, which waits for the requests that still run, also those whose
+// client has left, and for the work queued for after the answers
+// (start.ts), and only then ends the pool.
 
 import { randomBytes } from "node:crypto";
 import { errorReport, reportSafely } from "./api/report.ts";
 import { createApp } from "./app.ts";
 import { checkInstallKey } from "./auth/install-key.ts";
 import { PasswordHasher } from "./auth/password.ts";
-import { sessionResolver } from "./auth/resolver.ts";
+import { credentialResolver } from "./auth/resolver.ts";
 import { serverConfig } from "./config.ts";
 import { configFromEnvironment } from "./db/connect.ts";
 import { createDatabase, type Database } from "./db/database.ts";
@@ -41,7 +41,7 @@ async function start(database: Database, config: ReturnType<typeof serverConfig>
   await checkInstallKey(database, config.installKey);
   const app = createApp({
     version: readServerVersion(),
-    resolve: sessionResolver({ database, now: systemClock }),
+    resolve: credentialResolver({ database, now: systemClock }),
     database,
     cursorKey: randomBytes(32),
     installKey: config.installKey,

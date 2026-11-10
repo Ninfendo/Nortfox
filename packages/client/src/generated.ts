@@ -6,6 +6,32 @@
 import type { CallOptions, Send, WriteOptions } from "./runtime.ts";
 
 /**
+ * An API token of the company, without the token itself, which only the answer of createApiToken gives.
+ */
+export interface ApiToken {
+  /**
+   * The token's id, which revokeApiToken takes.
+   */
+  readonly id: string;
+  /**
+   * The token's name, which its maker gave it.
+   */
+  readonly name: string;
+  /**
+   * The token's scopes, each once, in the order of the list of scopes.
+   */
+  readonly scopes: readonly Scope[];
+  /**
+   * The person the token acts as: the one who made it.
+   */
+  readonly userId: string;
+  /**
+   * When the token was made.
+   */
+  readonly createdAt: string;
+}
+
+/**
  * A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.
  */
 export interface Company {
@@ -292,6 +318,36 @@ export interface Membership {
 }
 
 /**
+ * A new API token: its facts, and the token itself, which no other answer gives.
+ */
+export interface NewApiToken {
+  /**
+   * The token's id, which revokeApiToken takes.
+   */
+  readonly id: string;
+  /**
+   * The token's name, which its maker gave it.
+   */
+  readonly name: string;
+  /**
+   * The token's scopes, each once, in the order of the list of scopes.
+   */
+  readonly scopes: readonly Scope[];
+  /**
+   * The person the token acts as: the one who made it.
+   */
+  readonly userId: string;
+  /**
+   * When the token was made.
+   */
+  readonly createdAt: string;
+  /**
+   * The token, nft_ and 43 characters: send it as Authorization: Bearer <token>. It is shown once, in this answer, and the server keeps only its hash.
+   */
+  readonly token: string;
+}
+
+/**
  * What a right password gives: a session, or the TOTP step.
  */
 export interface PasswordSignIn {
@@ -516,6 +572,11 @@ export interface RoleDefinition {
 }
 
 /**
+ * A scope: what a token may be used for. Each operation that a token may call names one. companyinformation and profile are the established API's, as are the scopes that no operation names yet; companies, users and tokens are NortFox's own. A name is case-sensitive.
+ */
+export type Scope = "companyinformation" | "profile" | "companies" | "users" | "tokens" | "bookkeeping" | "settings" | "costcenter" | "project" | "currency" | "supplier" | "supplierinvoice" | "payment" | "connectfile" | "inbox" | "archive" | "deletevoucher";
+
+/**
  * The browser's session: the person it signed in, and the company it works in once one is chosen.
  */
 export interface Session {
@@ -583,6 +644,98 @@ export interface UserRights {
 }
 
 export interface Operations {
+  /**
+   * List the API tokens
+   *
+   * Lists the live API tokens of the company, in the order they were made, without the tokens themselves: the actor's own, or every one of the company for a system administrator. A revoked token is not listed.
+   *
+   * `GET /v1/api-tokens`
+   *
+   * Needs the permission `tokens:own`, in the company that the credential names.
+   *
+   * A token needs the scope `tokens`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
+   */
+  listApiTokens(
+    input?: {
+      /**
+       * How many items a page holds: from 1 to 500. Any other whole number gives 100.
+       */
+      readonly limit?: number;
+      /**
+       * Where the page starts: the nextCursor of the page before. Leave it out for the first page.
+       */
+      readonly cursor?: string;
+    },
+    options?: CallOptions,
+  ): Promise<{
+  /**
+   * The items of this page, in the list's order.
+   */
+  readonly items: readonly ApiToken[];
+  /**
+   * Where the next page starts. It is absent on the last page.
+   */
+  readonly nextCursor?: string;
+  /**
+   * How many items the whole list holds.
+   */
+  readonly total: number;
+}>;
+
+  /**
+   * Create an API token
+   *
+   * Makes an API token for the company the session works in, with a name and scopes. The token acts as the signed-in person, in that company, on /v1: it may do what its scopes and the person's permissions there both allow, and it works until it is revoked or the person's membership stops. The answer shows the token once; the server keeps only its hash. It needs a browser session, so a token never makes a token: a token is refused it with 403 session-required.
+   *
+   * `POST /v1/api-tokens`
+   *
+   * Needs the permission `tokens:own`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * Needs a browser session: a token is refused it with 403 `session-required`.
+   *
+   * The answer holds a secret, which no other answer gives: `/token`. A repeat with its idempotency key gets 409 `answer-shown-once`, without the secret.
+   */
+  createApiToken(
+    input: {
+      /**
+       * The token's name, on one line, so its maker knows it again.
+       */
+      readonly name: string;
+      /**
+       * The token's scopes, one or more, each by its exact name. Each is kept once, in the order of the list of scopes.
+       */
+      readonly scopes: readonly Scope[];
+    },
+    options: WriteOptions,
+  ): Promise<NewApiToken>;
+
+  /**
+   * Revoke an API token
+   *
+   * Revokes a live API token of the company: the actor's own, or any of the company's for a system administrator. It is refused from the next request on. Any other id, also one of a revoked token or of another's for a member, gets 422 api-token-not-found.
+   *
+   * `DELETE /v1/api-tokens/{tokenId}`
+   *
+   * Needs the permission `tokens:own`, in the company that the credential names.
+   *
+   * A token needs the scope `tokens`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
+   */
+  revokeApiToken(
+    input: {
+      /**
+       * The token's id.
+       */
+      readonly tokenId: string;
+    },
+    options: WriteOptions,
+  ): Promise<void>;
+
   /**
    * Sign out
    *
@@ -661,7 +814,7 @@ export interface Operations {
    *
    * A token needs the scope `companies`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   listCompanies(
     input?: {
@@ -705,7 +858,7 @@ export interface Operations {
    *
    * A token needs the scope `companies`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   createCompany(
     input: {
@@ -732,7 +885,7 @@ export interface Operations {
    *
    * A token needs the scope `companyinformation`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   getCompany(options?: CallOptions): Promise<Company>;
 
@@ -747,7 +900,7 @@ export interface Operations {
    *
    * A token needs the scope `companies`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   updateCompany(
     input: {
@@ -883,7 +1036,7 @@ export interface Operations {
    *
    * A token needs the scope `profile`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/user/name`, `/user/email`, `/personalIdentityNumber`, `/mobile`, `/membership/workEmail`, `/membership/workPhone`.
    */
@@ -915,7 +1068,7 @@ export interface Operations {
    *
    * A token needs the scope `companies`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/workEmail`, `/workPhone`.
    */
@@ -953,7 +1106,7 @@ export interface Operations {
    *
    * A token needs the scope `companies`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   leaveCompany(
     input: {
@@ -976,7 +1129,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   listPermissions(options?: CallOptions): Promise<PermissionCatalogue>;
 
@@ -1071,7 +1224,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/items/*\/name`, `/items/*\/workEmail`, `/items/*\/workPhone`.
    */
@@ -1113,7 +1266,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
    */
@@ -1142,7 +1295,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
    */
@@ -1167,7 +1320,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   removeUser(
     input: {
@@ -1190,7 +1343,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
    */
@@ -1240,7 +1393,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
    */
@@ -1265,7 +1418,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   resendInvitation(
     input: {
@@ -1288,7 +1441,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   assignProgram(
     input: {
@@ -1324,7 +1477,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   removeProgram(
     input: {
@@ -1351,7 +1504,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   moveProgram(
     input: {
@@ -1387,7 +1540,7 @@ export interface Operations {
    *
    * A token needs the scope `users`.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   updateUserRights(
     input: {
@@ -1407,6 +1560,22 @@ export interface Operations {
 
 export function createOperations(send: Send): Operations {
   return {
+    listApiTokens: async (input, options) => (await send({ method: "GET", path: "/v1/api-tokens", query: ["limit", "cursor"] }, input, options)) as {
+  /**
+   * The items of this page, in the list's order.
+   */
+  readonly items: readonly ApiToken[];
+  /**
+   * Where the next page starts. It is absent on the last page.
+   */
+  readonly nextCursor?: string;
+  /**
+   * How many items the whole list holds.
+   */
+  readonly total: number;
+},
+    createApiToken: async (input, options) => (await send({ method: "POST", path: "/v1/api-tokens", body: true, key: true }, input, options)) as NewApiToken,
+    revokeApiToken: async (input, options) => { await send({ method: "DELETE", path: "/v1/api-tokens/{tokenId}", params: ["tokenId"], key: true, answer: "none" }, input, options); },
     logout: async (options) => { await send({ method: "POST", path: "/v1/auth/logout", key: true, answer: "none" }, undefined, options); },
     loginWithPassword: async (input, options) => (await send({ method: "POST", path: "/v1/auth/password", body: true }, input, options)) as PasswordSignIn,
     verifyTotp: async (input, options) => { await send({ method: "POST", path: "/v1/auth/totp", body: true, answer: "none" }, input, options); },

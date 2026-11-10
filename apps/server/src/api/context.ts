@@ -13,10 +13,10 @@
 // with the permissions held there when the credential names one. It gives
 // nothing when the request names no actor. It never reads the body. The
 // surface tells the resolver which surface asks, and adds the channel to the
-// principal. The server's resolver (auth/resolver.ts) reads the session
-// cookie on /v1, and knows no credential on /mcp yet, so a tool that needs an
-// actor answers 401 there. The tests pass their own resolver. No setting
-// turns on a fixed actor.
+// principal. The server's resolver (auth/resolver.ts) reads an API token or
+// the session cookie on /v1, and knows no credential on /mcp yet, so a tool
+// that needs an actor answers 401 there. The tests pass their own resolver.
+// No setting turns on a fixed actor.
 //
 // A token, an API token or later an MCP client's, is an integration in its
 // one company, within its scopes (api/operation.ts, authorize). A session is
@@ -52,10 +52,9 @@ export interface SessionCredential {
 }
 
 /**
- * An API token, from the Authorization header. It acts as its person, an
- * integration, in its one company, within its scopes. The resolver that reads
- * it comes later in this part of slice 2c, and the MCP clients' tokens in a
- * later part.
+ * An API token, from the Authorization header (auth/api-token.ts). It acts
+ * as its person, an integration, in its one company, within its scopes. The
+ * MCP clients' tokens come in a later part of slice 2c.
  */
 export interface ApiTokenCredential {
   readonly kind: "api-token";
@@ -84,6 +83,22 @@ export function sessionOf(operationId: string, credential: Credential): SessionC
     throw new Error(`${operationId} serves the browser's session, and the call came with a token, which authorize refuses.`);
   }
   return credential;
+}
+
+/**
+ * The company that a token's call is held to, or undefined for a session's
+ * call, which is held to no company. A token works in its one company,
+ * which the resolver gives it from the one membership function, so a token
+ * without one is a fault of the server.
+ */
+export function tokenCompanyOf(principal: Principal): string | undefined {
+  if (!isToken(principal.credential)) {
+    return undefined;
+  }
+  if (principal.company === undefined) {
+    throw new Error("A token works in its one company, and its principal names none.");
+  }
+  return principal.company.companyId;
 }
 
 /**

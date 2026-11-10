@@ -337,7 +337,7 @@ export interface TokenOptions {
 }
 
 /**
- * An API token's principal in `companyId`, as the resolver will make it: an
+ * An API token's principal in `companyId`, as the resolver makes it: an
  * integration that acts through the token, with the token's scopes, in the
  * token's company. Its company access is made from a membership that
  * resolve.ts made (testMembership).

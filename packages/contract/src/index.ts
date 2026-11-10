@@ -136,6 +136,7 @@ export {
 } from "./operations/users.ts";
 export { Session, getSession, selectCompany } from "./operations/session.ts";
 export { Health, getHealth } from "./operations/status.ts";
+export { ApiToken, NewApiToken, ScopeKey, createApiToken, listApiTokens, revokeApiToken } from "./operations/tokens.ts";
 export { Cursor, LIMIT, Limit, effectiveLimit, pageOf } from "./paging.ts";
 export {
   PASSWORD_MAX_LENGTH,

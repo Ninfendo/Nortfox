@@ -33,8 +33,8 @@ import { getCompanyHandler } from "../modules/companies/get-company.ts";
 import type { PrincipalKind, RequestContext } from "./context.ts";
 import { handleData, ok, runOperation, type OperationCall } from "./operation.ts";
 
-/** The challenge of the session cookie, the one credential in this part. */
-const SESSION_CHALLENGE = CHALLENGES.sessionCookie;
+/** The challenge of an operation that a token may call by its scope: the session cookie's, and the bearer token's beside it. */
+const TOKEN_CHALLENGE = `${CHALLENGES.sessionCookie}, ${CHALLENGES.bearer}`;
 
 /** PostgreSQL's SQLSTATE for a write in a READ ONLY transaction. */
 const READ_ONLY_SQL_TRANSACTION = "25006";
@@ -164,7 +164,7 @@ describe("the runner's read path", () => {
     const held = await pool.pool.connect();
     try {
       const deps = runnerDeps(pool.database);
-      expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
+      expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: TOKEN_CHALLENGE } });
       expect(await runOperation(readSettings, call(await contextIn(company, [])), deps)).toEqual({
         ok: false,
         refusal: { kind: "permission-missing", permission: "test:read" },

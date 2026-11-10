@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The permissions a membership holds by being one, and by its admin level
-// (issue 12, "Roles, admin levels, programs and permissions"): every active
-// member reads the company, and the owner and the admin hold the same (open
-// point 1), with none of the catalogue's work rights. Each permission is on
+// (issue 12, "Roles, admin levels, programs and permissions"; "API tokens"
+// 3): every active member reads the company and runs their own API tokens,
+// and the owner and the admin hold the same (open point 1), every token of
+// the company among it, with none of the catalogue's work rights. Each permission is on
 // the contract's list. The admin levels are the database's.
 
 import { describe, expect, it } from "vitest";
@@ -12,9 +13,9 @@ import { PERMISSIONS } from "../operation.ts";
 import { ADMIN_LEVELS, MEMBER_PERMISSIONS, PROGRAM_ADMINISTRATOR_PERMISSIONS, SYSTEM_ADMINISTRATOR_PERMISSIONS, platformPermissions } from "./permissions.ts";
 
 describe("the platform permissions", () => {
-  it("gives a member with no admin level exactly the member's own: reading the company", () => {
-    expect([...platformPermissions(null)]).toEqual(["company:read"]);
-    expect(MEMBER_PERMISSIONS).toEqual(["company:read"]);
+  it("gives a member with no admin level exactly the member's own: reading the company, and their own API tokens", () => {
+    expect([...platformPermissions(null)]).toEqual(["company:read", "tokens:own"]);
+    expect(MEMBER_PERMISSIONS).toEqual(["company:read", "tokens:own"]);
   });
 
   it.each(ADMIN_LEVELS)("gives the %s the member's own and a system administrator's", (level) => {
@@ -28,9 +29,9 @@ describe("the platform permissions", () => {
     expect(platformPermissions("owner")).toEqual(platformPermissions("admin"));
   });
 
-  it("gives a system administrator the company's details, its users and their programs, and no work right", () => {
-    expect(SYSTEM_ADMINISTRATOR_PERMISSIONS).toEqual(["company:update", "users:read", "users:admin", "programs:grant"]);
-    expect([...platformPermissions("owner")]).toEqual(["company:read", "company:update", "users:read", "users:admin", "programs:grant"]);
+  it("gives a system administrator the company's details, its users and their programs, every API token of the company, and no work right", () => {
+    expect(SYSTEM_ADMINISTRATOR_PERMISSIONS).toEqual(["company:update", "users:read", "users:admin", "programs:grant", "tokens:all"]);
+    expect([...platformPermissions("owner")]).toEqual(["company:read", "tokens:own", "company:update", "users:read", "users:admin", "programs:grant", "tokens:all"]);
   });
 
   it("gives a program administrator the users to read and the programs to grant, and never what runs the users or the company", () => {

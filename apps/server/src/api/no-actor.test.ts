@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// With no actor, every operation that needs one answers 401 with the Bearer
-// challenge: every operation with a permission, and every signed-in one. An
+// With no actor, every operation that needs one answers 401 with the
+// challenge of each credential it takes: every operation with a permission,
+// and every signed-in one. Each takes the session cookie, and one that a
+// token may call by its scope takes a bearer token too. An
 // actor without the operation's permission gets 403. Both come before any
 // part of the request is read, so a bad request gets them too, a refused
 // body is never read, and the database is never asked. The health check and
@@ -9,7 +11,7 @@
 // need no actor (modules/auth), and by MCP the tools of the browser's
 // session refuse every call with browser-only first (mcp-session-tools).
 
-import { NONE, OPEN_PERMISSIONS, PUBLIC, type Operation } from "@nortfox/contract";
+import { NONE, OPEN_PERMISSIONS, PUBLIC, challengeOf, type Operation } from "@nortfox/contract";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -104,6 +106,9 @@ describe("no actor", () => {
       "resendInvitation",
       "disconnectUserIdentity",
       "leaveCompany",
+      "createApiToken",
+      "listApiTokens",
+      "revokeApiToken",
       "testBookVoucher",
       "testListAccounts",
     ]);
@@ -121,6 +126,9 @@ describe("no actor", () => {
       "inviteUser",
       "resendInvitation",
       "disconnectUserIdentity",
+      "createApiToken",
+      "listApiTokens",
+      "revokeApiToken",
       "testBookVoucher",
       "testListAccounts",
     ]);
@@ -148,16 +156,26 @@ describe("no actor", () => {
       ...writeLabels("/v1/users/{memberId}/invitation"),
       ...writeLabels("/v1/users/{memberId}/disconnect"),
       ...writeLabels("/v1/me/companies/{companyId}/leave"),
+      ...writeLabels("/v1/api-tokens"),
+      ...writeLabels("/v1/api-tokens/{tokenId}", "DELETE"),
       ...writeLabels("/v1/test-vouchers"),
     ]);
   });
 
-  it.each(CASES)("%s answers 401 with the challenge of the session cookie, which it takes, and asks no database", async (_label, sent) => {
+  it("names the session cookie's challenge, and beside it the bearer token's for an operation that a token may call", () => {
+    const cookie = `Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`;
+    for (const operation of DATA_OPERATIONS) {
+      const scoped = operation["x-nortfox"].scope !== null;
+      expect(challengeOf(operation), operation.operationId).toBe(scoped ? `${cookie}, Bearer realm="NortFox"` : cookie);
+    }
+  });
+
+  it.each(CASES)("%s answers 401 with the challenge of each credential it takes, and asks no database", async (_label, sent, operation) => {
     for (const credential of [{}, bearer("unknown-token"), { authorization: "Basic YTpi" }]) {
       const database = untouchedDatabase();
       const response = await send(database, sent, credential);
       expect(response.status).toBe(401);
-      expect(response.headers.get("www-authenticate")).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`);
+      expect(response.headers.get("www-authenticate")).toBe(challengeOf(operation));
       expect(await problemIn(response)).toEqual({
         type: "about:blank",
         title: "Unauthorized",
@@ -276,6 +294,9 @@ describe("no actor by MCP", () => {
       "resendInvitation",
       "disconnectUserIdentity",
       "leaveCompany",
+      "createApiToken",
+      "listApiTokens",
+      "revokeApiToken",
       "testBookVoucher",
       "testListAccounts",
     ]);

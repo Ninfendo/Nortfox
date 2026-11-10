@@ -145,7 +145,7 @@ describe("a session's permissions", () => {
     expect(await statusOf(session, "vouchers.view")).toBe(200);
     expect(await statusOf(session, "vouchers.book")).toBe(200);
     expect((await chooseCompany(server, session, company.id)).status).toBe(200);
-    expect(await permissionsOf(session)).toEqual(["company:read"]);
+    expect(await permissionsOf(session)).toEqual(["company:read", "tokens:own"]);
     expect(await statusOf(session, "vouchers.view")).toBe(403);
   });
 
@@ -166,7 +166,7 @@ describe("a session's permissions", () => {
     const session = await sessionInCompany(person);
     const stored = await owner.query<{ permissions: Record<string, string | null> }>("SELECT permissions FROM access.sessions WHERE token_hash = $1", [tokenHash(session)]);
     expect(stored.rows).toEqual([
-      { permissions: Object.fromEntries(["company:read", ...fullPermissions("bookkeeping")].map((permission) => [permission, null])) },
+      { permissions: Object.fromEntries(["company:read", "tokens:own", ...fullPermissions("bookkeeping")].map((permission) => [permission, null])) },
     ]);
   });
 

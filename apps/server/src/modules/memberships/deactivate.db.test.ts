@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// M7 (issue 12, "Users in a company" 4; Sessions 2): "Aktiv användare" off.
-// A deactivated member cannot choose the company, and their session for it
-// is refused on the next request. Their rights are kept, and reactivating
-// restores the same rights. This is the session half: API tokens (part 4)
-// and MCP tokens (part 5) extend this file.
+// M7 (issue 12, "Users in a company" 4; Sessions 2; "API tokens" 4):
+// "Aktiv användare" off. A deactivated member cannot choose the company,
+// and their session and their API token for it are refused on the next
+// request. Their rights are kept, and reactivating restores the same
+// rights: the session stays ended, and the token works again, with the same
+// permissions (choice 11). MCP tokens (part 5) complete this file.
 
 import { fullPermissions } from "@nortfox/contract";
 import type { Client } from "pg";
@@ -23,6 +24,7 @@ import {
   testClock,
   type SignInApp,
 } from "../../../test/sign-in.ts";
+import { asToken, makeApiToken } from "../../../test/tokens.ts";
 import { apiCompany, calls, newMember, sessionIn, type ApiCompany } from "../../../test/users.ts";
 
 describe("a deactivated member", () => {
@@ -57,17 +59,21 @@ describe("a deactivated member", () => {
     expect(companies.items).toEqual([]);
   });
 
-  it("their session is refused on the next request", async () => {
+  it("their session and API token are refused on the next request", async () => {
     const member = await newMember(server, { app, owner }, company);
     const session = await sessionIn(server, member.person, company.id);
+    const { token } = await makeApiToken(server, session, { scopes: ["companyinformation", "profile"] });
     expect((await getAs(server, session, "/v1/company")).status).toBe(200);
+    expect((await asToken(server, token, "GET", "/v1/company")).status).toBe(200);
     expect((await calls.updateUser(server, company.session, member.id, { active: false })).status).toBe(200);
-    const refused = await getAs(server, session, "/v1/company");
-    expect(refused.status).toBe(401);
-    expect(((await refused.json()) as ProblemBody).code).toBe("authentication-required");
-    // It stays ended when the member is active again.
+    for (const refused of [await getAs(server, session, "/v1/company"), await asToken(server, token, "GET", "/v1/company")]) {
+      expect(refused.status).toBe(401);
+      expect(((await refused.json()) as ProblemBody).code).toBe("authentication-required");
+    }
+    // The session stays ended when the member is active again; the token works again.
     expect((await calls.updateUser(server, company.session, member.id, { active: true })).status).toBe(200);
     expect((await getAs(server, session, "/v1/me")).status).toBe(401);
+    expect((await asToken(server, token, "GET", "/v1/me")).status).toBe(200);
   });
 
   it("reactivating restores the same rights", async () => {
@@ -75,8 +81,12 @@ describe("a deactivated member", () => {
     await calls.assignProgram(server, company.session, member.id, "bookkeeping", { permissions: ["vouchers.view", "vouchers.book", "reports.vat"] });
     await calls.assignProgram(server, company.session, member.id, "auditor");
     await calls.updateUser(server, company.session, member.id, { programsAdministered: [{ program: "read" }], idleTimeout: 60 });
-    const before = await jsonOf<{ permissions: string[]; membership: unknown }>(await getAs(server, await sessionIn(server, member.person, company.id), "/v1/me"));
-    expect(before.permissions).toEqual(["company:read", "programs:grant", "users:read", ...new Set([...fullPermissions("auditor"), "vouchers.book", "reports.vat"])].sort());
+    const session = await sessionIn(server, member.person, company.id);
+    const { token } = await makeApiToken(server, session, { scopes: ["profile"] });
+    const before = await jsonOf<{ permissions: string[]; membership: unknown }>(await getAs(server, session, "/v1/me"));
+    expect(before.permissions).toEqual(["company:read", "programs:grant", "tokens:own", "users:read", ...new Set([...fullPermissions("auditor"), "vouchers.book", "reports.vat"])].sort());
+    const beforeByToken = await jsonOf<{ permissions: string[] }>(await asToken(server, token, "GET", "/v1/me"));
+    expect(beforeByToken.permissions).toEqual(before.permissions);
     await calls.updateUser(server, company.session, member.id, { active: false });
     const inactive = await jsonOf<{ status: string; programs: unknown[] }>(await calls.getUser(server, company.session, member.id));
     expect(inactive.status).toBe("inactive");
@@ -84,6 +94,7 @@ describe("a deactivated member", () => {
     await calls.updateUser(server, company.session, member.id, { active: true });
     const after = await jsonOf<{ permissions: string[]; membership: unknown }>(await getAs(server, await sessionIn(server, member.person, company.id), "/v1/me"));
     expect(after).toEqual(before);
+    expect(await jsonOf(await asToken(server, token, "GET", "/v1/me"))).toEqual(beforeByToken);
   });
 
   it("leaves no token in an answer and no secret at rest", async () => {

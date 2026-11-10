@@ -122,12 +122,12 @@ describe("a Revisor grant", () => {
     expect(await statusOf(server, session, "vouchers.view")).toBe(200);
     expect(await statusOf(server, session, "reports.processing-history")).toBe(200);
     const inside = await meOf(server, session);
-    expect(inside.permissions).toEqual(["company:read", ...fullPermissions("auditor")].sort());
+    expect(inside.permissions).toEqual(["company:read", "tokens:own", ...fullPermissions("auditor")].sort());
     expect(inside.membership?.roles).toEqual(["auditor"]);
     // The session keeps each of the grant's rights with the grant's end.
     const stored = await owner.query<{ permissions: Record<string, string | null> }>("SELECT permissions FROM access.sessions WHERE token_hash = $1", [tokenHash(session)]);
     expect(stored.rows).toEqual([
-      { permissions: { "company:read": null, ...Object.fromEntries(fullPermissions("auditor").map((permission) => [permission, end.toISOString()])) } },
+      { permissions: { "company:read": null, "tokens:own": null, ...Object.fromEntries(fullPermissions("auditor").map((permission) => [permission, end.toISOString()])) } },
     ]);
     // A millisecond before the end it still holds.
     server.clock.advance(HOUR - 1);
@@ -139,7 +139,7 @@ describe("a Revisor grant", () => {
     expect(await problemIn(refused)).toMatchObject({ code: "permission-missing", permission: "vouchers.view" });
     expect(await statusOf(server, session, "reports.processing-history")).toBe(403);
     const after = await meOf(server, session);
-    expect(after.permissions).toEqual(["company:read"]);
+    expect(after.permissions).toEqual(["company:read", "tokens:own"]);
     expect(after.membership?.roles).toEqual([]);
     // The grant stays, with its end, and nobody changed it.
     expect(after.membership?.programs).toEqual([{ program: "auditor", permissions: fullPermissions("auditor"), full: true, grantedAt: grantedAt.toISOString(), expiresAt: end.toISOString() }]);
@@ -150,9 +150,9 @@ describe("a Revisor grant", () => {
     // A choice of the company after the end takes none of it.
     server.clock.advance(MINUTE);
     expect((await chooseCompany(server, session, company.id)).status).toBe(200);
-    expect((await meOf(server, session)).permissions).toEqual(["company:read"]);
+    expect((await meOf(server, session)).permissions).toEqual(["company:read", "tokens:own"]);
     const chosenAgain = await owner.query<{ permissions: Record<string, string | null> }>("SELECT permissions FROM access.sessions WHERE token_hash = $1", [tokenHash(session)]);
-    expect(chosenAgain.rows).toEqual([{ permissions: { "company:read": null } }]);
+    expect(chosenAgain.rows).toEqual([{ permissions: { "company:read": null, "tokens:own": null } }]);
   });
 
   it("gives nothing to a session that begins after the end", async () => {
@@ -160,7 +160,7 @@ describe("a Revisor grant", () => {
     const server = serverAt(new Date(end.getTime() + DAY));
     const session = await sessionInCompany(server, person);
     expect(await statusOf(server, session, "vouchers.view")).toBe(403);
-    expect((await meOf(server, session)).permissions).toEqual(["company:read"]);
+    expect((await meOf(server, session)).permissions).toEqual(["company:read", "tokens:own"]);
   });
 
   it("Exportera filer and Sie-export are off until switched on", async () => {

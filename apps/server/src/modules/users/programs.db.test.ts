@@ -104,7 +104,7 @@ describe("the program grants", () => {
     // The member's next session holds them.
     const session = await sessionIn(server, person, company.id);
     const me = await jsonOf<{ permissions: string[] }>(await getAs(server, session, "/v1/me"));
-    expect(me.permissions).toEqual(["company:read", ...fullPermissions(program)].sort());
+    expect(me.permissions).toEqual(["company:read", "tokens:own", ...fullPermissions(program)].sort());
   });
 
   it("refuses an action permission without its group's view permission, by the API and by the database", async () => {

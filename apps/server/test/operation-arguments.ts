@@ -36,6 +36,8 @@ export interface ArgumentsFixture {
   readonly invitationToken: () => Promise<string>;
   /** A company where `person` is an active member beside its owner, made as the app does. */
   readonly joinedCompanyOf: (person: TestIdentity) => Promise<string>;
+  /** A live API token of `person` in the company that companyOf made last for them, made as the app does: the token's id. */
+  readonly tokenOf: (person: TestIdentity) => Promise<string>;
 }
 
 /** The arguments of an operation, from the fixture and, for a signed-in operation, the person whose session calls it. */
@@ -90,6 +92,9 @@ export const OPERATION_ARGUMENTS: Readonly<Record<string, ArgumentsOf>> = {
   getInvitation: async (fixture) => ({ token: await fixture.invitationToken() }),
   acceptInvitation: async (fixture) => ({ token: await fixture.invitationToken(), newIdentity: { name: "Sixten Ny", password: "sixtens-lösenord" } }),
   leaveCompany: async (fixture, actor) => ({ companyId: await fixture.joinedCompanyOf(actorOf(actor)), idempotencyKey: "leave-the-company" }),
+  createApiToken: () => Promise.resolve({ name: "Bokföringsexport", scopes: ["bookkeeping"], idempotencyKey: "make-the-token" }),
+  listApiTokens: none,
+  revokeApiToken: async (fixture, actor) => ({ tokenId: await fixture.tokenOf(actorOf(actor)), idempotencyKey: "revoke-the-token" }),
 };
 
 /** A REST request of `operation` from its flat input: the path parameters in the path, the query, the body and the key. */

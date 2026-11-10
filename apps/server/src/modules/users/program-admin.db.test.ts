@@ -90,7 +90,7 @@ describe("a program administrator", () => {
 
   it("holds users:read and programs:grant, and no system administrator's permission", async () => {
     const me = await jsonOf<{ permissions: string[]; membership: MemberJson }>(await getAs(server, session, "/v1/me"));
-    expect(me.permissions).toEqual(["company:read", "programs:grant", "users:read"]);
+    expect(me.permissions).toEqual(["company:read", "programs:grant", "tokens:own", "users:read"]);
     expect(me.membership).toMatchObject({ programsAdministered: [{ program: "bookkeeping" }], roles: [] });
   });
 

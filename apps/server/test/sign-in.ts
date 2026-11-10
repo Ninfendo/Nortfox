@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// What the sign-in tests share: an app with the server's session resolver,
+// What the sign-in tests share: an app with the server's own resolver,
 // a clock the test moves and a fake mail sink, identities with a real
 // password hash and a real sealed TOTP secret, the steps of a sign-in as a
 // browser sends them, and the cookies an answer sets. Every value is made
@@ -19,7 +19,7 @@ import { FakeMailSink, testMail } from "./mail.ts";
 import { expectNoSecretsAtRest, expectNoTokensButChallenges, type SecretsInClear } from "./secrets.ts";
 import type { ContextResolver } from "../src/api/context.ts";
 import type { AppOptions, ServerApp } from "../src/app.ts";
-import { sessionResolver } from "../src/auth/resolver.ts";
+import { credentialResolver } from "../src/auth/resolver.ts";
 import { seal } from "../src/auth/secret-box.ts";
 import { base32Decode, newTotpSecret, totpCode } from "../src/auth/totp.ts";
 import type { PasswordHasher } from "../src/auth/password.ts";
@@ -53,7 +53,7 @@ export function testClock(start: Date = TEST_NOW): TestClock {
   };
 }
 
-/** The test app with the server's session resolver and a clock of its own, and what it reported. */
+/** The test app with the server's own resolver and a clock of its own, and what it reported. */
 export interface SignInApp {
   readonly app: ServerApp;
   readonly clock: TestClock;
@@ -175,7 +175,7 @@ export function signInApp(database: Database, options: SignInAppOptions = {}): S
   const bodies: string[] = [];
   const sent: SignInApp["sent"] = { passwords: [], codes: [] };
   const mail = new FakeMailSink();
-  const sessions = sessionResolver({ database, now: clock.now });
+  const sessions = credentialResolver({ database, now: clock.now });
   const app = buildTestApp({
     database,
     resolve: options.mcpSessions === "on" ? sessionsOnMcp(sessions) : sessions,

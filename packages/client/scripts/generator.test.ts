@@ -24,6 +24,11 @@ const SESSION_SCHEME: Record<string, unknown> = {
   sessionCookie: { type: "apiKey", in: "cookie", name: "__Host-x", description: "The session." },
 };
 
+/** The scheme of a program's API token: a bearer token in Authorization, which the client's option token sends. */
+const BEARER_SCHEME: Record<string, unknown> = {
+  bearer: { type: "http", scheme: "bearer", description: "An API token." },
+};
+
 /** A description with these security schemes and one path, /v1/x. */
 function withSchemes(securitySchemes: unknown, item: unknown): unknown {
   return { openapi: "3.1.0", components: { securitySchemes }, paths: { "/v1/x": item } };
@@ -668,19 +673,27 @@ describe("generateClient", () => {
     ],
     [
       withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: [{ sessionCookie: ["read"] }] })),
-      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: a cookie takes no scopes.',
+      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: neither a cookie nor a bearer token takes scopes there.',
     ],
     [
       withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: [{ sessionCookie: {} }] })),
-      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: a cookie takes no scopes.',
+      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: neither a cookie nor a bearer token takes scopes there.',
     ],
     [
-      withSchemes({ bearer: { type: "http", scheme: "bearer" } }, getOperation({ type: "string" })),
-      "components.securitySchemes.bearer is not an apiKey in a cookie, the one kind of scheme the generator supports yet.",
+      withSchemes({ basic: { type: "http", scheme: "basic" } }, getOperation({ type: "string" })),
+      "components.securitySchemes.basic is neither an apiKey in a cookie nor an http bearer scheme, the kinds of scheme the generator supports.",
     ],
     [
       withSchemes({ key: { type: "apiKey", in: "header", name: "X-Key" } }, getOperation({ type: "string" })),
-      "components.securitySchemes.key is not an apiKey in a cookie, the one kind of scheme the generator supports yet.",
+      "components.securitySchemes.key is neither an apiKey in a cookie nor an http bearer scheme, the kinds of scheme the generator supports.",
+    ],
+    [
+      withSchemes({ bearer: { type: "http", scheme: "bearer", bearerFormat: "JWT" } }, getOperation({ type: "string" })),
+      'components.securitySchemes.bearer uses "bearerFormat", which the generator does not support yet.',
+    ],
+    [
+      withSchemes({ ...SESSION_SCHEME, ...BEARER_SCHEME }, getOperation({ type: "string" }, { security: [{ bearer: ["read"] }] })),
+      'paths["/v1/x"].get.security[0].bearer must be an empty list: neither a cookie nor a bearer token takes scopes there.',
     ],
     [
       withSchemes({ sessionCookie: { type: "apiKey", in: "cookie", name: "__Host-x", scheme: "x" } }, getOperation({ type: "string" })),
@@ -778,20 +791,24 @@ describe("generateClient", () => {
     expect(refusal(input)).toBe(message);
   });
 
-  it("writes an operation's credential, a cookie, into its doc comment, and none for an operation that names none", () => {
+  it("writes an operation's credentials, a cookie or a bearer token, into its doc comment, and none for an operation that names none", () => {
     const source = generateClient({
       openapi: "3.1.0",
-      components: { securitySchemes: SESSION_SCHEME },
+      components: { securitySchemes: { ...SESSION_SCHEME, ...BEARER_SCHEME } },
       paths: {
         "/v1/x": getOperation({ type: "string" }, { security: [{ sessionCookie: [] }] }),
+        "/v1/w": { get: { operationId: "getW", responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } }, security: [{ sessionCookie: [] }, { bearer: [] }] } },
         "/v1/y": { get: { operationId: "getY", responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } }, security: [] } },
         "/v1/z": { get: { operationId: "getZ", responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } } } },
       },
     });
     expect(source).toContain(["   * `GET /v1/x`", "   *", "   * Credential: the cookie `__Host-x`.", "   */", "  getThing("].join("\n"));
+    expect(source).toContain(
+      ["   * `GET /v1/w`", "   *", "   * Credential: the cookie `__Host-x`, or a bearer token in `Authorization`, which the option `token` sends.", "   */", "  getW("].join("\n"),
+    );
     expect(source).toContain(["   * `GET /v1/y`", "   */", "  getY("].join("\n"));
     expect(source).toContain(["   * `GET /v1/z`", "   */", "  getZ("].join("\n"));
-    expect(source.match(/Credential:/g)).toHaveLength(1);
+    expect(source.match(/Credential:/g)).toHaveLength(2);
   });
 
   it("names its error", () => {

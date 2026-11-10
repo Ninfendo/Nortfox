@@ -29,7 +29,7 @@ import {
 } from "../../test/api.ts";
 import { shapeHandlers, shapeLog, testSignIn } from "../../test/shapes.ts";
 import { serverHandlers } from "../handlers.ts";
-import { sessionOf, type Principal, type RequestContext } from "./context.ts";
+import { sessionOf, tokenCompanyOf, type Principal, type RequestContext } from "./context.ts";
 import { authorize, companyNotAvailable, runOperation, type Handler, type OperationCall } from "./operation.ts";
 
 const COMPANY = "6a2f9c1e-3b4d-4e5f-8a7b-9c0d1e2f3a4b";
@@ -57,7 +57,7 @@ function withoutScope(scope: string): Promise<Principal> {
 describe("authorize with a token", () => {
   it("sorts every operation of the registry into one of the three kinds", () => {
     expect(byScope.length + sessionOnly.length + anyone.length).toBe(REGISTRY.length);
-    expect(sessionOnly.map((operation) => operation.operationId)).toEqual(["logout", "getSession", "listRecentCompanies", "selectCompany"]);
+    expect(sessionOnly.map((operation) => operation.operationId)).toEqual(["logout", "getSession", "listRecentCompanies", "selectCompany", "createApiToken"]);
   });
 
   it.each(cases(sessionOnly))("refuses %s, which serves or needs a browser session, with session-required, also with every scope and permission", (_id, operation) => {
@@ -101,6 +101,15 @@ describe("sessionOf", () => {
     const session = await principalOf(COMPANY, { kind: "user" });
     expect(sessionOf("logout", session.credential)).toBe(session.credential);
     expect(() => sessionOf("logout", TOKEN.credential)).toThrow("logout serves the browser's session, and the call came with a token, which authorize refuses.");
+  });
+});
+
+describe("tokenCompanyOf", () => {
+  it("gives a token's company, nothing for a session's call, and throws for a token with no company, which the resolver never gives", async () => {
+    expect(tokenCompanyOf(TOKEN)).toBe(COMPANY);
+    expect(tokenCompanyOf(await principalOf(COMPANY, { kind: "user" }))).toBeUndefined();
+    const nowhere: Principal = { personId: TOKEN.personId, actorKind: TOKEN.actorKind, credential: TOKEN.credential };
+    expect(() => tokenCompanyOf(nowhere)).toThrow("A token works in its one company, and its principal names none.");
   });
 });
 

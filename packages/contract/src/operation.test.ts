@@ -23,7 +23,7 @@ import {
 } from "./operation.ts";
 import { Limit, Cursor } from "./paging.ts";
 import { Problem } from "./problem.ts";
-import { SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
+import { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
 
 const Item = z.strictObject({ id: z.uuid() });
 
@@ -633,7 +633,7 @@ describe("the scope, the session-only mark and the secret output", () => {
 });
 
 describe("the credential an operation takes", () => {
-  it("is the browser's session cookie, which openapi.json names as the scheme sessionCookie", () => {
+  it("is the browser's session cookie, which openapi.json names as the scheme sessionCookie, or an API token as the scheme bearer", () => {
     expect(SESSION_COOKIE).toBe("__Host-nortfox-session");
     expect(SECURITY_SCHEMES).toEqual({
       sessionCookie: {
@@ -642,7 +642,14 @@ describe("the credential an operation takes", () => {
         name: "__Host-nortfox-session",
         description: "The browser's session, which a sign-in sets: verifyTotp, or loginWithPassword on a known device. The browser sends it by itself.",
       },
+      bearer: {
+        type: "http",
+        scheme: "bearer",
+        description:
+          "An API token, which createApiToken makes, sent as Authorization: Bearer <token>. It works in its one company, within its scopes, on /v1 only. A request with a bearer token ignores the session cookie.",
+      },
     });
+    expect(CHALLENGES).toEqual({ sessionCookie: `Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`, bearer: `Bearer realm="NortFox"` });
   });
 
   it("is named on every operation that needs an actor: a read, a write and a list with a permission, and a signed-in one", () => {
@@ -683,12 +690,41 @@ describe("the credential an operation takes", () => {
     }
   });
 
-  it("comes from the permission, a new list each time", () => {
-    expect(securityOf("public")).toBeUndefined();
-    expect(securityOf("none")).toBeUndefined();
-    expect(securityOf("signed-in")).toEqual([{ sessionCookie: [] }]);
-    expect(securityOf("company:read")).toEqual([{ sessionCookie: [] }]);
-    expect(securityOf("signed-in")).not.toBe(securityOf("signed-in"));
+  it("comes from the permission and the scope, a new list each time", () => {
+    expect(securityOf("public", null)).toBeUndefined();
+    expect(securityOf("none", null)).toBeUndefined();
+    expect(securityOf("signed-in", null)).toEqual([{ sessionCookie: [] }]);
+    expect(securityOf("company:read", null)).toEqual([{ sessionCookie: [] }]);
+    expect(securityOf("signed-in", "profile")).toEqual([{ sessionCookie: [] }, { bearer: [] }]);
+    expect(securityOf("company:read", "companyinformation")).toEqual([{ sessionCookie: [] }, { bearer: [] }]);
+    expect(securityOf("signed-in", null)).not.toBe(securityOf("signed-in", null));
+    expect(securityOf("company:read", "companyinformation")).not.toBe(securityOf("company:read", "companyinformation"));
+  });
+
+  it("is the session cookie and a bearer token for an operation that a token may call by its scope", () => {
+    const scoped = defineOperation({
+      id: "getScopedItem",
+      method: "get",
+      path: "/v1/scoped-items",
+      tags: ["items"],
+      summary: "Read",
+      description: "Reads.",
+      output: Item,
+      permission: "test:read",
+      scope: "bookkeeping",
+      tool: "Reads.",
+      writes: false,
+    });
+    expect(scoped.security).toEqual([{ sessionCookie: [] }, { bearer: [] }]);
+    expect(challengeOf(scoped)).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox"`);
+    expect(scoped.responses[401]).toMatchObject({
+      headers: {
+        "WWW-Authenticate": {
+          description: `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox".`,
+          schema: { type: "string" },
+        },
+      },
+    });
   });
 });
 

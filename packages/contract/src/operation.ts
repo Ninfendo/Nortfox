@@ -35,6 +35,8 @@ export const PERMISSIONS = {
     "Run the company's users: invite a person and send a new invitation, activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, disconnect a member's identity, and remove a member.",
   "programs:grant":
     "Grant, narrow, move and remove the members' programs, and set their Rapporter and Register/Övrigt rights. A program administrator does it only for the programs they administer.",
+  "tokens:own": "Make API tokens of your own in the company, in a browser session, and list and revoke them.",
+  "tokens:all": "List and revoke every API token of the company, beside your own. No operation needs it by itself: it widens what tokens:own gives.",
 } as const;
 
 export type Permission = keyof typeof PERMISSIONS;
@@ -306,13 +308,17 @@ function refusal(status: RefusalStatus, texts: RefusalTexts): ResponseConfig {
 export type SecurityRequirement = Partial<Record<SecurityScheme, string[]>>;
 
 /**
- * The credentials an operation takes, by its permission: the browser's
- * session for every operation that needs an actor, and none for a public one
- * or one that runs before sign-in. A new list each time, so no entry shares
- * one with another.
+ * The credentials an operation takes, by its permission and its scope: the
+ * browser's session for every operation that needs an actor, and beside it
+ * an API token for one that names a scope, which a token may call; none for
+ * a public one or one that runs before sign-in. A new list each time, so no
+ * entry shares one with another.
  */
-export function securityOf(permission: string): SecurityRequirement[] | undefined {
-  return permission === PUBLIC || permission === NONE ? undefined : [{ sessionCookie: [] }];
+export function securityOf(permission: string, scope: string | null): SecurityRequirement[] | undefined {
+  if (permission === PUBLIC || permission === NONE) {
+    return undefined;
+  }
+  return scope === null ? [{ sessionCookie: [] }] : [{ sessionCookie: [] }, { bearer: [] }];
 }
 
 /**
@@ -322,7 +328,8 @@ export function securityOf(permission: string): SecurityRequirement[] | undefine
  * answers no 401, so it has none.
  */
 export function challengeOf(operation: Pick<Operation, "x-nortfox">): string {
-  const security = securityOf(operation["x-nortfox"].permission);
+  const { permission, scope } = operation["x-nortfox"];
+  const security = securityOf(permission, scope);
   if (security === undefined) {
     throw new Error("An operation that needs no actor answers no 401, so it has no challenge.");
   }
@@ -472,7 +479,7 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
   for (const code of refusals(meta, body !== undefined, params !== undefined, texts.forbidden)) {
     responses[code] = refusal(code, texts);
   }
-  const security = securityOf(permission);
+  const security = securityOf(permission, meta.scope);
   const route = createRoute({
     operationId: definition.id,
     method: definition.method,

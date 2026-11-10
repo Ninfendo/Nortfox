@@ -72,6 +72,7 @@ import {
   type SignInApp,
   type TestIdentity,
 } from "../../test/sign-in.ts";
+import { makeApiToken } from "../../test/tokens.ts";
 import { apiCompany, calls, invite, newMember, sessionIn, type ApiCompany, type TestMember } from "../../test/users.ts";
 
 /** Every permission of the catalogue, in its order. */
@@ -86,11 +87,19 @@ const OPERATIONS: readonly Operation[] = [
   ...RIGHT_CHECKS,
 ];
 
-/** What every active member holds (issue 12, "Roles, admin levels, programs and permissions" 2): they read the company. */
-const MEMBER = ["company:read"];
+/** What every active member holds (issue 12, "Roles, admin levels, programs and permissions" 2; "API tokens" 3): they read the company, and run their own API tokens. */
+const MEMBER = ["company:read", "tokens:own"];
 
-/** What a system administrator holds, the owner and the admin alike: a member's own, the company's details, its users and their programs. */
-const SYSTEM_ADMINISTRATOR = [...MEMBER, "company:update", "users:read", "users:admin", "programs:grant"];
+/** What a system administrator holds, the owner and the admin alike: a member's own, the company's details, its users and their programs, and every API token of the company. */
+const SYSTEM_ADMINISTRATOR = [...MEMBER, "company:update", "users:read", "users:admin", "programs:grant", "tokens:all"];
+
+/**
+ * The permissions that no operation needs: each widens what an operation
+ * gives. tokens:all lets listApiTokens and revokeApiToken, which need
+ * tokens:own, reach every token of the company, not only the actor's own
+ * (modules/tokens/own-and-all.db.test.ts).
+ */
+const WIDENING = ["tokens:all"];
 
 /** What a program administrator holds: a member's own, and the users and the grants of their programs. */
 const PROGRAM_ADMINISTRATOR = [...MEMBER, "users:read", "programs:grant"];
@@ -184,10 +193,11 @@ describe("every operation and every role", () => {
   let pool: AppPool;
   let server: SignInApp;
   let company: ApiCompany;
-  /** The members that the operations' arguments name: one with no program, one with Läs, and one invited. */
+  /** The members that the operations' arguments name: one with no program, one with Läs, and one invited; and a token of the owner. */
   let target: TestMember;
   let reader: TestMember;
   let invited: string;
+  let ownersToken: string;
 
   beforeAll(async () => {
     db = await freshDatabase();
@@ -202,6 +212,7 @@ describe("every operation and every role", () => {
     reader = await newMember(server, { app, owner }, company);
     await jsonOf(await calls.assignProgram(server, company.session, reader.id, "read", { full: true }));
     invited = (await invite(server, company.session, "tove.ny@example.com", "Tove Ny")).id;
+    ownersToken = (await makeApiToken(server, company.session, { name: "Bokföringsexport", scopes: ["companyinformation"] })).id;
   });
 
   afterAll(async () => {
@@ -219,6 +230,7 @@ describe("every operation and every role", () => {
     invitedOf: () => Promise.resolve(invited),
     invitationToken: () => Promise.reject(new Error("No operation with a permission takes an invitation's link.")),
     joinedCompanyOf: () => Promise.reject(new Error("No operation with a permission takes another company.")),
+    tokenOf: () => Promise.resolve(ownersToken),
   };
 
   /** Arguments of `operation` that succeed for a holder: the test-only reads take none. */
@@ -339,6 +351,9 @@ describe("every operation and every role", () => {
       "inviteUser",
       "resendInvitation",
       "disconnectUserIdentity",
+      "createApiToken",
+      "listApiTokens",
+      "revokeApiToken",
     ]);
     expect(RIGHT_CHECKS).toHaveLength(64);
     const holders = [...SIX_ROLES, ...SMALLEST_SETS];
@@ -356,8 +371,13 @@ describe("every operation and every role", () => {
       ).toBe(!MEMBER.includes(permission));
     }
     expect(holders.every((holder) => MEMBER.every((permission) => holder.holds.includes(permission)))).toBe(true);
-    // Every permission of the contract is some operation's.
-    expect(Object.keys(PERMISSIONS).filter((permission) => !OPERATIONS.some((operation) => operation["x-nortfox"].permission === permission))).toEqual([]);
+    // Every permission of the contract is some operation's, but those that widen one.
+    expect(Object.keys(PERMISSIONS).filter((permission) => !OPERATIONS.some((operation) => operation["x-nortfox"].permission === permission))).toEqual(WIDENING);
+    // A widening permission is held by a member and lacked by another.
+    for (const permission of WIDENING) {
+      expect(holders.some((holder) => holder.holds.includes(permission))).toBe(true);
+      expect(holders.some((holder) => !holder.holds.includes(permission))).toBe(true);
+    }
   });
 
   it("reads R1's smallest sets from the view rule: alone where it can be, with its group's view permission where it must be", () => {

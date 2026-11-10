@@ -143,6 +143,7 @@ export const PROBLEM_CODES = {
   "sign-in-required": 422,
   "email-taken": 422,
   "personal-identity-number-taken": 422,
+  "api-token-not-found": 422,
   "too-many-attempts": 429,
   "internal-error": 500,
   "server-busy": 503,

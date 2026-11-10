@@ -3,12 +3,12 @@
 // M8 (issue 12, "Users in a company" 5; What the law requires: a removed
 // member stays the actor on every entry). "Ta bort användaren" needs a
 // system administrator and never works on yourself. The member's row stays,
-// with the status removed, and their session is refused on the next request,
-// also after they accept a new invitation, which makes a new membership.
-// The removed member's work contacts are erased, and an invited member's
-// removal stops the link of their invitation. This is the session half: API
-// tokens (part 4) and MCP tokens (part 5) extend this file. Each member is
-// invited with inviteUser and accepts with acceptInvitation.
+// with the status removed, and their session and API token are refused on
+// the next request, also after they accept a new invitation, which makes a
+// new membership. The removed member's work contacts are erased, and an
+// invited member's removal stops the link of their invitation. MCP tokens
+// (part 5) complete this file. Each member is invited with inviteUser and
+// accepts with acceptInvitation.
 
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -24,6 +24,7 @@ import {
   writeAs,
   type SignInApp,
 } from "../../../test/sign-in.ts";
+import { asToken, makeApiToken } from "../../../test/tokens.ts";
 import { apiCompany, calls, invite, joinWith, newMember, sessionIn, type ApiCompany } from "../../../test/users.ts";
 
 describe("removing a member", () => {
@@ -128,12 +129,15 @@ describe("removing a member", () => {
     expect(stopped.rows).toEqual([{ stopped: true }]);
   });
 
-  it("their session is refused on the next request, also after a new invitation is accepted", async () => {
+  it("their session and API token are refused on the next request, also after a new invitation is accepted", async () => {
     const target = await newMember(server, { app, owner }, company);
     const session = await sessionIn(server, target.person, company.id);
+    const { token } = await makeApiToken(server, session);
     expect((await getAs(server, session, "/v1/company")).status).toBe(200);
+    expect((await asToken(server, token, "GET", "/v1/company")).status).toBe(200);
     expect((await calls.removeUser(server, company.session, target.id)).status).toBe(204);
     expect((await getAs(server, session, "/v1/company")).status).toBe(401);
+    expect((await asToken(server, token, "GET", "/v1/company")).status).toBe(401);
     // Invited again, and accepted: a new membership, active, and the old one stays removed.
     const renewed = await joinWith(server, target.person, (await invite(server, company.session, target.person.email)).token);
     expect(renewed).not.toBe(target.id);
@@ -141,6 +145,8 @@ describe("removing a member", () => {
     expect((await statusOf(target.id))?.status).toBe("removed");
     expect((await getAs(server, session, "/v1/company")).status).toBe(401);
     expect((await writeAs(server, session, "PATCH", `/v1/me/companies/${company.id}`, { idleTimeout: 30 })).status).toBe(401);
+    expect((await asToken(server, token, "GET", "/v1/company")).status).toBe(401);
+    expect((await asToken(server, token, "PATCH", `/v1/me/companies/${company.id}`, { body: { idleTimeout: 30 } })).status).toBe(401);
     // A new session works with the new membership.
     const next = await sessionIn(server, target.person, company.id);
     const me = await jsonOf<{ membership: { id: string; status: string } }>(await getAs(server, next, "/v1/me"));

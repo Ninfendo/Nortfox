@@ -1,6 +1,6 @@
 # 8. Authentication
 
-Status: accepted, 2026-11-01. Amended 2026-11-02: the login of the compatible API. Amended 2026-11-04, in slice 2c: the session's cookies, the cross-site rule, and the company of a request that works in one. Amended 2026-11-05, in slice 2c: the company of a signed-in person's own request. Amended 2026-11-09, in slice 2c: a session's permissions.
+Status: accepted, 2026-11-01. Amended 2026-11-02: the login of the compatible API. Amended 2026-11-04, in slice 2c: the session's cookies, the cross-site rule, and the company of a request that works in one. Amended 2026-11-05, in slice 2c: the company of a signed-in person's own request. Amended 2026-11-09, in slice 2c: a session's permissions. Amended 2026-11-10, in slice 2c: an API token's permissions and its membership.
 
 ## Context
 
@@ -39,6 +39,7 @@ People log in from the web app. Programs and MCP clients need access too. Progra
 - A revoked session or token stops working on the next request, because every token is looked up.
 - That lookup is one indexed database read per request.
 - A session takes the person's permissions in a company when it chooses the company, and keeps them until it chooses a company again, as in the established system: a change of the person's rights reaches it then, or in the person's next session. The programs that a program administrator administers are taken and kept with them. A right whose grant ends by itself, such as a Revisor grant's, stops at its end on the next request, also in a session that chose the company before ([docs/api.md](../api.md#the-roles-and-the-programs)).
+- An API token has no snapshot: it takes its person's permissions in its company on every request, so a change of the person's rights reaches it on its next request. It works only while its person's membership is active: a deactivation stops it until the member is active again, and a removal, a leave or a disconnect revokes it, so a new invitation brings it back for no one ([docs/api.md](../api.md#the-api-tokens)).
 - A real BankID login needs an agreement with the provider the install chooses. Tests use a fake provider.
 - A token of the compatible login works only on the compatible API, and an MCP token only on `/mcp`.
 - Logins, failed logins, and created and revoked tokens are in the behandlingshistorik.

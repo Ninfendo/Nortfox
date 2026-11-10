@@ -102,7 +102,7 @@ describe("the six roles", () => {
       ...groupOf("reports"),
       ...groupOf("register"),
     ].filter((key) => !APPROVAL_READ_ONLY.includes(key) && !MANUAL_ONLY.includes(key));
-    expect(keys).toEqual(["company:read", ...wanted]);
+    expect(keys).toEqual(["company:read", "tokens:own", ...wanted]);
     expect(wanted).toHaveLength(17 + 13 + 18 + 7);
     for (const key of [...APPROVAL_READ_ONLY, ...MANUAL_ONLY]) {
       expect(keys).not.toContain(key);
@@ -111,11 +111,11 @@ describe("the six roles", () => {
 
   it.each(["approver", "viewer", "auditor"] as const)("gives the %s only its program's set", (role) => {
     const program = { approver: "approval-read", viewer: "read", auditor: "auditor" } as const;
-    expect(keysOf(MEMBER_OF[role])).toEqual(["company:read", ...fullPermissions(program[role])]);
+    expect(keysOf(MEMBER_OF[role])).toEqual(["company:read", "tokens:own", ...fullPermissions(program[role])]);
   });
 
   it("gives the viewer the view rights and the reports of Bokföring, and no action right", () => {
-    expect(keysOf(MEMBER_OF.viewer)).toEqual(["company:read", "vouchers.view", "supplier-invoices.view", ...groupOf("reports").filter((key) => !APPROVAL_READ_ONLY.includes(key))]);
+    expect(keysOf(MEMBER_OF.viewer)).toEqual(["company:read", "tokens:own", "vouchers.view", "supplier-invoices.view", ...groupOf("reports").filter((key) => !APPROVAL_READ_ONLY.includes(key))]);
   });
 
   it("gives the auditor Exportera filer and Sie-export only once they are switched on, and the auditor stays the auditor", () => {
@@ -155,8 +155,8 @@ describe("the six roles", () => {
 });
 
 describe("the effective permissions", () => {
-  it("gives a plain member reading the company, with no end", () => {
-    expect(effectivePermissions(PLAIN, NOW)).toEqual(new Map([["company:read", null]]));
+  it("gives a plain member reading the company and their own API tokens, with no end", () => {
+    expect(effectivePermissions(PLAIN, NOW)).toEqual(new Map([["company:read", null], ["tokens:own", null]]));
   });
 
   it("gives a program administrator a program administrator's permissions and none of the programs' rights", () => {
@@ -168,13 +168,13 @@ describe("the effective permissions", () => {
     const end = new Date(NOW.getTime() + 30 * DAY_MS);
     const auditor: MemberAccess = { ...PLAIN, grants: [full("auditor", end)] };
     const before = effectivePermissions(auditor, new Date(end.getTime() - 1));
-    expect([...before.keys()]).toEqual(["company:read", ...fullPermissions("auditor")]);
+    expect([...before.keys()]).toEqual(["company:read", "tokens:own", ...fullPermissions("auditor")]);
     expect(before.get("company:read")).toBeNull();
     for (const permission of fullPermissions("auditor")) {
       expect(before.get(permission)).toEqual(end);
     }
-    expect([...effectivePermissions(auditor, end).keys()]).toEqual(["company:read"]);
-    expect([...effectivePermissions(auditor, new Date(end.getTime() + DAY_MS)).keys()]).toEqual(["company:read"]);
+    expect([...effectivePermissions(auditor, end).keys()]).toEqual(["company:read", "tokens:own"]);
+    expect([...effectivePermissions(auditor, new Date(end.getTime() + DAY_MS)).keys()]).toEqual(["company:read", "tokens:own"]);
     expect(grantHolds({ expiresAt: end }, new Date(end.getTime() - 1))).toBe(true);
     expect(grantHolds({ expiresAt: end }, end)).toBe(false);
     expect(grantHolds({ expiresAt: null }, new Date("2999-12-31T00:00:00.000Z"))).toBe(true);
@@ -200,7 +200,7 @@ describe("the effective permissions", () => {
     expect(effectivePermissions(twoEnds, NOW).get("vouchers.view")).toEqual(later);
     expect(effectivePermissions(twoEnds, NOW).get("vouchers.created-by")).toEqual(soon);
     // Once the first has ended, only the second gives anything.
-    expect([...effectivePermissions(twoEnds, soon).keys()]).toEqual(["company:read", "vouchers.view"]);
+    expect([...effectivePermissions(twoEnds, soon).keys()]).toEqual(["company:read", "tokens:own", "vouchers.view"]);
   });
 
   it("gives the union of the grants' rights, in the catalogue's order, each once", () => {
@@ -211,7 +211,7 @@ describe("the effective permissions", () => {
         { program: "approval-read", permissions: ["vouchers.see-all-series", "vouchers.view", "reports.vat"], expiresAt: null },
       ],
     };
-    expect(keysOf(two)).toEqual(["company:read", "vouchers.view", "vouchers.see-all-series", "reports.vat"]);
+    expect(keysOf(two)).toEqual(["company:read", "tokens:own", "vouchers.view", "vouchers.see-all-series", "reports.vat"]);
   });
 
   it("gives only the rights of a grant that its program's set holds, and an action right only beside its group's view right in the same grant", () => {
@@ -223,7 +223,7 @@ describe("the effective permissions", () => {
         { program: "bookkeeping", permissions: ["supplier-invoices.save", "reports.supplier-invoices", "register.removed-users"], expiresAt: null },
       ],
     };
-    expect(keysOf(odd)).toEqual(["company:read", "vouchers.view", "register.removed-users"]);
+    expect(keysOf(odd)).toEqual(["company:read", "tokens:own", "vouchers.view", "register.removed-users"]);
     expect(grantRights({ program: "read", permissions: ["vouchers.book", "vouchers.view", "vouchers.view"] })).toEqual(["vouchers.view"]);
     expect(grantRights({ program: "bookkeeping", permissions: ["vouchers.book", "vouchers.view"] })).toEqual(["vouchers.view", "vouchers.book"]);
     expect(grantRights({ program: "bookkeeping", permissions: ["vouchers.book"] })).toEqual([]);
@@ -232,7 +232,7 @@ describe("the effective permissions", () => {
 
   it("gives a grant's rights however far in the past it was granted, until its end", () => {
     const longAgo: MemberAccess = { ...PLAIN, grants: [{ program: "read", permissions: ["vouchers.view"], expiresAt: null }] };
-    expect(keysOf(longAgo, new Date("2999-12-31T00:00:00.000Z"))).toEqual(["company:read", "vouchers.view"]);
+    expect(keysOf(longAgo, new Date("2999-12-31T00:00:00.000Z"))).toEqual(["company:read", "tokens:own", "vouchers.view"]);
   });
 
   it("gives a new map each call, and leaves the member as it was", () => {

@@ -52,8 +52,8 @@ import {
   type PersonCall,
 } from "./operation.ts";
 
-/** The challenge of the session cookie, the one credential in this part. */
-const SESSION_CHALLENGE = CHALLENGES.sessionCookie;
+/** The challenge of an operation that a token may call by its scope: the session cookie's, and the bearer token's beside it. */
+const TOKEN_CHALLENGE = `${CHALLENGES.sessionCookie}, ${CHALLENGES.bearer}`;
 
 const COMPANY = "5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a";
 const CONTEXT: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "mcp" };
@@ -150,7 +150,7 @@ describe("authorize", () => {
   });
 
   it("lets a signed-in person call a signed-in operation, with a company or without, and refuses no actor", async () => {
-    expect(authorize(testGetPerson, undefined)).toEqual({ kind: "authentication-required", challenge: SESSION_CHALLENGE });
+    expect(authorize(testGetPerson, undefined)).toEqual({ kind: "authentication-required", challenge: TOKEN_CHALLENGE });
     expect(authorize(testGetPerson, personOf())).toBeUndefined();
     expect(authorize(testGetPerson, await principalOf(COMPANY, { permissions: [] }))).toBeUndefined();
   });
@@ -160,7 +160,7 @@ describe("authorize", () => {
   });
 
   it("refuses no actor, then an actor without the permission", async () => {
-    expect(authorize(getCompany, undefined)).toEqual({ kind: "authentication-required", challenge: SESSION_CHALLENGE });
+    expect(authorize(getCompany, undefined)).toEqual({ kind: "authentication-required", challenge: TOKEN_CHALLENGE });
     expect(authorize(getCompany, await principalOf(COMPANY, { permissions: ["test:read"] }))).toEqual({
       kind: "permission-missing",
       permission: "company:read",
@@ -282,7 +282,7 @@ describe("runOperation", () => {
   it("refuses no actor with 401 before it reads any input, and asks no database", async () => {
     const { database, transactions } = recordingDatabase();
     const outcome = await runOperation(getCompanyHandler, call(undefined, { limit: "abc" }, [UNKNOWN]), runnerDeps(database));
-    expect(outcome).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
+    expect(outcome).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: TOKEN_CHALLENGE } });
     expect(transactions).toEqual([]);
   });
 
@@ -1014,7 +1014,7 @@ describe("runOperation for a signed-in person's operation", () => {
   it("refuses no actor with 401, and asks no database", async () => {
     const { database, transactions } = recordingDatabase();
     const handler = handlePerson(testGetPerson, ({ context }) => Promise.resolve(ok({ personId: context.personId })));
-    expect(await runOperation(handler, call(undefined), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
+    expect(await runOperation(handler, call(undefined), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: TOKEN_CHALLENGE } });
     expect(transactions).toEqual([]);
   });
 

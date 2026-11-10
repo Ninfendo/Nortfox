@@ -822,6 +822,127 @@ const INVITATION_TOOLS = [
   },
 ];
 
+/** A scope, as a list of scopes holds it. */
+const SCOPE = {
+  type: "string",
+  enum: [
+    "companyinformation",
+    "profile",
+    "companies",
+    "users",
+    "tokens",
+    "bookkeeping",
+    "settings",
+    "costcenter",
+    "project",
+    "currency",
+    "supplier",
+    "supplierinvoice",
+    "payment",
+    "connectfile",
+    "inbox",
+    "archive",
+    "deletevoucher",
+  ],
+  description:
+    "A scope: what a token may be used for. Each operation that a token may call names one. companyinformation and profile are the established API's, as are the scopes that no operation names yet; companies, users and tokens are NortFox's own. A name is case-sensitive.",
+};
+
+/** An API token's fields, as the lists and createApiToken give them. */
+const API_TOKEN_FIELDS = {
+  id: { ...UUID, description: "The token's id, which revokeApiToken takes." },
+  name: { type: "string", description: "The token's name, which its maker gave it." },
+  scopes: { type: "array", items: SCOPE, description: "The token's scopes, each once, in the order of the list of scopes." },
+  userId: { ...UUID, description: "The person the token acts as: the one who made it." },
+  createdAt: { ...DATE_TIME, description: "When the token was made." },
+};
+
+const TOKEN_TOOLS = [
+  {
+    name: "createApiToken",
+    title: "Create an API token",
+    description: "Makes an API token. It needs a browser session, so this tool refuses a call that comes with a token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", minLength: 1, maxLength: 100, description: "The token's name, on one line, so its maker knows it again." },
+        scopes: {
+          minItems: 1,
+          maxItems: 17,
+          type: "array",
+          items: SCOPE,
+          description: "The token's scopes, one or more, each by its exact name. Each is kept once, in the order of the list of scopes.",
+        },
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+      required: ["name", "scopes", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        ...API_TOKEN_FIELDS,
+        token: {
+          type: "string",
+          description: "The token, nft_ and 43 characters: send it as Authorization: Bearer <token>. It is shown once, in this answer, and the server keeps only its hash.",
+        },
+      },
+      required: ["id", "name", "scopes", "userId", "createdAt", "token"],
+      additionalProperties: false,
+      description: "A new API token: its facts, and the token itself, which no other answer gives.",
+    },
+    annotations: { readOnlyHint: false },
+  },
+  {
+    name: "listApiTokens",
+    title: "List the API tokens",
+    description: "Lists the live API tokens of the company you work in: your own, or every one for a system administrator.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", default: 100, description: "How many items a page holds: from 1 to 500. Any other whole number gives 100." },
+        cursor: { description: "Where the page starts: the nextCursor of the page before. Leave it out for the first page.", type: "string" },
+      },
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: API_TOKEN_FIELDS,
+            required: ["id", "name", "scopes", "userId", "createdAt"],
+            additionalProperties: false,
+            description: "An API token of the company, without the token itself, which only the answer of createApiToken gives.",
+          },
+          description: "The items of this page, in the list's order.",
+        },
+        nextCursor: { description: "Where the next page starts. It is absent on the last page.", type: "string" },
+        total: { type: "integer", minimum: 0, maximum: 9007199254740991, description: "How many items the whole list holds." },
+      },
+      required: ["items", "total"],
+      additionalProperties: false,
+      description: "A page of the list.",
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "revokeApiToken",
+    title: "Revoke an API token",
+    description: "Revokes an API token of the company you work in: your own, or any for a system administrator.",
+    inputSchema: {
+      type: "object",
+      properties: { tokenId: { ...UUID, description: "The token's id." }, idempotencyKey: IDEMPOTENCY_KEY },
+      required: ["tokenId", "idempotencyKey"],
+      additionalProperties: false,
+    },
+    outputSchema: NO_OUTPUT,
+    annotations: { readOnlyHint: false },
+  },
+];
+
 const SIGN_IN_TOOLS = [
   {
     name: "completeSetup",
@@ -1015,6 +1136,7 @@ const TOOLS = [
   ...COMPANY_TOOLS,
   ...USER_TOOLS,
   ...INVITATION_TOOLS,
+  ...TOKEN_TOOLS,
   {
     name: "testBookVoucher",
     title: "Book a voucher",
@@ -1342,7 +1464,7 @@ describe("/mcp on the real server", () => {
         era === "2025" ? {} : { versionNegotiation: { mode: { pin: "2026-07-28" } } },
       );
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${String(server.port)}/mcp`)));
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...[...SIGN_IN_TOOLS, ...COMPANY_TOOLS, ...USER_TOOLS, ...INVITATION_TOOLS].map((tool) => tool.name)]);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["getHealth", "getCompany", ...[...SIGN_IN_TOOLS, ...COMPANY_TOOLS, ...USER_TOOLS, ...INVITATION_TOOLS, ...TOKEN_TOOLS].map((tool) => tool.name)]);
       expect(await callTool(client, "getHealth")).toEqual({ isError: false, structured: { status: "ok", version: TEST_VERSION } });
       await client.close();
     } finally {

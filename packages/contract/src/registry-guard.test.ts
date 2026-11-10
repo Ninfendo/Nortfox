@@ -616,32 +616,60 @@ describe("registryProblems", () => {
   });
 
   describe("the credential in security", () => {
-    const SESSION = '[{"sessionCookie":[]}]';
+    /** The session's cookie alone: an operation that serves or needs a browser session. */
+    const SESSION = [{ sessionCookie: [] }];
+    /** The cookie, or a bearer token: an operation that a token may call by its scope. */
+    const SESSION_OR_TOKEN = [{ sessionCookie: [] }, { bearer: [] }];
+    const NEEDING_AN_ACTOR = [
+      [readThing, "getThing", SESSION_OR_TOKEN],
+      [bookThing, "bookThing", SESSION_OR_TOKEN],
+      [getPerson, "getPerson", SESSION_OR_TOKEN],
+      [endSession, "endSession", SESSION],
+    ] as const;
+
+    it("takes the cookie, and a bearer token beside it where a token may call the operation by its scope", () => {
+      for (const [entry, , wanted] of NEEDING_AN_ACTOR) {
+        expect(entry.security, entry.operationId).toEqual(wanted);
+        expect(problemsOf(entry), entry.operationId).toEqual([]);
+      }
+    });
 
     it.each([
       ["none", undefined],
       ["an empty list", []],
-      ["another scheme", [{ bearer: [] }]],
+      ["another scheme", [{ apiKey: [] }]],
+      ["the bearer token alone", [{ bearer: [] }]],
       ["the session with a scope", [{ sessionCookie: ["read"] }]],
       ["the session twice", [{ sessionCookie: [] }, { sessionCookie: [] }]],
-      ["the session and another scheme at once", [{ sessionCookie: [], bearer: [] }]],
+      ["the session and the bearer token at once", [{ sessionCookie: [], bearer: [] }]],
+      ["the bearer token before the session", [{ bearer: [] }, { sessionCookie: [] }]],
       ["the session as an object, not a list", { sessionCookie: [] }],
     ])("fails an operation that needs an actor and names %s", (_what, security) => {
+      for (const [entry, name, wanted] of NEEDING_AN_ACTOR) {
+        const bad = security === undefined ? without(entry, "security") : changed(entry, { security });
+        expect(problemsOf(bad)).toEqual([
+          `${name} needs an actor, so its security is ${JSON.stringify(wanted)}, not ${security === undefined ? "undefined" : JSON.stringify(security)}.`,
+        ]);
+      }
+    });
+
+    it("fails an operation that a token may call and names the session alone, and one that needs a browser session and names a bearer token too", () => {
       for (const [entry, name] of [
         [readThing, "getThing"],
-        [bookThing, "bookThing"],
         [getPerson, "getPerson"],
-        [endSession, "endSession"],
       ] as const) {
-        const bad = security === undefined ? without(entry, "security") : changed(entry, { security });
-        expect(problemsOf(bad)).toEqual([`${name} needs an actor, so its security is ${SESSION}, not ${security === undefined ? "undefined" : JSON.stringify(security)}.`]);
+        expect(problemsOf(changed(entry, { security: SESSION }))).toEqual([`${name} needs an actor, so its security is ${JSON.stringify(SESSION_OR_TOKEN)}, not ${JSON.stringify(SESSION)}.`]);
       }
+      expect(problemsOf(changed(endSession, { security: SESSION_OR_TOKEN }))).toEqual([
+        `endSession needs an actor, so its security is ${JSON.stringify(SESSION)}, not ${JSON.stringify(SESSION_OR_TOKEN)}.`,
+      ]);
     });
 
     it.each([
       ["the session", [{ sessionCookie: [] }]],
       ["an empty list", []],
       ["another scheme", [{ bearer: [] }]],
+      ["the session or a bearer token", [{ sessionCookie: [] }, { bearer: [] }]],
     ])("fails an operation that needs no actor and names %s", (_what, security) => {
       for (const [entry, name] of [
         [health, "getStatus"],
@@ -762,7 +790,7 @@ describe("registryProblems", () => {
       expect(problemsOf(changed(startRedirect, { method: "post" }))).toEqual([
         "startRedirect answers 303, which only a GET operation that runs before sign-in may do.",
       ]);
-      const signedIn = changed(startRedirect, { request: { ...startRedirect.request, headers: bookThing.request.headers }, security: getPerson.security });
+      const signedIn = changed(startRedirect, { request: { ...startRedirect.request, headers: bookThing.request.headers }, security: endSession.security });
       expect(problemsOf(withMeta(signedIn, { permission: "signed-in" }))).toEqual([
         "startRedirect answers 303, which only a GET operation that runs before sign-in may do.",
       ]);

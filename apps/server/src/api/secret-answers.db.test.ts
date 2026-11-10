@@ -6,18 +6,15 @@
 // same request with the key gets 409 answer-shown-once, with the answer it
 // kept as the problem's answer, so a client can end what the first call made
 // and try again with a new key. The same key with another request gets 422,
-// as for any write. These run through /v1 and /mcp as nortfox_app, with a
-// test-only operation that makes an API token of the session's membership in
-// access.api_tokens, as createApiToken will: a token shown once, which the
-// database keeps only as its hash. The scan of the database at the end finds
-// no token anywhere, the stored answers and the behandlingshistorik
-// included.
+// as for any write. These run through /v1 and /mcp as nortfox_app, with
+// createApiToken: a token shown once, which the database keeps only as its
+// hash. The scan of the database at the end finds no token anywhere, the
+// stored answers and the behandlingshistorik included.
 
-import { defineOperation, secret } from "@nortfox/contract";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { TEST_REGISTRY, appPool, callTool, mcpClient, testHandlers, type AppPool, type ProblemBody } from "../../test/api.ts";
+import { appPool, callTool, mcpClient, type AppPool, type ProblemBody } from "../../test/api.ts";
 import { freshDatabase, type TestDatabase } from "../../test/database.ts";
 import { expectNoTokens, tokensIn } from "../../test/secrets.ts";
 import {
@@ -33,48 +30,22 @@ import {
   writeAs,
   type SignInApp,
 } from "../../test/sign-in.ts";
-import { newToken, tokenHash } from "../auth/tokens.ts";
-import { handleData, ok } from "./operation.ts";
+import { tokenHash } from "../auth/tokens.ts";
 
-/** What the test-only write answers: the token's id, name and scopes, and the token, shown once. */
+/** What createApiToken answers: the token's facts, and the token, shown once. */
 const MadeToken = z.strictObject({
-  id: z.uuid().meta({ description: "The token's id." }),
-  name: z.string().meta({ description: "The token's name." }),
-  scopes: z.array(z.string()).meta({ description: "The token's scopes." }),
-  token: secret(z.string().meta({ description: "The token, shown once." })),
+  id: z.uuid(),
+  name: z.string(),
+  scopes: z.array(z.string()),
+  userId: z.uuid(),
+  createdAt: z.string(),
+  token: z.string(),
 });
 
-/** A write that makes an API token, only for these tests. It needs a browser session, so no token makes a token. */
-const testMakeToken = defineOperation({
-  id: "testMakeToken",
-  method: "post",
-  path: "/v1/test-tokens",
-  tags: ["test"],
-  summary: "Make a token",
-  description: "Makes an API token of the session's membership, shown once. Only the tests serve it.",
-  body: z.strictObject({ name: z.string().min(1).max(100).meta({ description: "The token's name." }) }),
-  output: MadeToken,
-  status: 201,
-  permission: "company:read",
-  session: "only",
-  tool: "Makes an API token. Only the tests serve it.",
-  writes: true,
-});
-
-/** Adds the token to access.api_tokens as its hash, for the session's membership: the database stamps the person and the time, and writes its entry. */
-const testMakeTokenHandler = handleData(testMakeToken, async ({ context, tx }, { body }) => {
-  const token = newToken("apiToken");
-  const made = await tx.query<{ id: string; name: string; scopes: string[] }>(
-    `INSERT INTO access.api_tokens (token_hash, token_company_id, membership_id, name, scopes)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id, name, scopes`,
-    [tokenHash(token), context.company.companyId, context.company.membershipId, body.name, ["bookkeeping"]],
-  );
-  const [row] = made.rows;
-  if (row === undefined) {
-    throw new Error("The token was not added.");
-  }
-  return ok({ ...row, token });
-});
+/** The answer that createApiToken keeps with its key: the same, without the token. */
+function keptOf(made: z.infer<typeof MadeToken>): Record<string, unknown> {
+  return { id: made.id, name: made.name, scopes: made.scopes, userId: made.userId, createdAt: made.createdAt };
+}
 
 describe("a write whose answer holds a secret", () => {
   let db: TestDatabase;
@@ -91,10 +62,7 @@ describe("a write whose answer holds a secret", () => {
     owner = await db.connect("owner");
     superuser = await db.admin();
     pool = appPool(db, 4);
-    server = signInApp(pool.database, {
-      options: { registry: [...TEST_REGISTRY, testMakeToken], handlers: [...testHandlers(), testMakeTokenHandler] },
-      mcpSessions: "on",
-    });
+    server = signInApp(pool.database, { mcpSessions: "on" });
     const person = await addSignInIdentity(owner);
     session = (await signIn(server, person)).session;
     companyId = (await jsonOf<{ id: string }>(await writeAs(server, session, "POST", "/v1/companies", { name: "Testbolaget Alfa AB", organizationNumber: "556000-0167" }), 201)).id;
@@ -108,10 +76,10 @@ describe("a write whose answer holds a secret", () => {
 
   /** The first call, past the sign-in app's record of answers: its answer holds the token, as it must, so the scan of the other answers stays strict. */
   async function firstCall(key: string, name: string): Promise<Response> {
-    return server.app.hono.request("/v1/test-tokens", {
+    return server.app.hono.request("/v1/api-tokens", {
       method: "POST",
       headers: { origin: TEST_ORIGIN, "content-type": "application/json", "idempotency-key": key, ...cookieHeader({ session }) },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, scopes: ["bookkeeping"] }),
     });
   }
 
@@ -127,15 +95,15 @@ describe("a write whose answer holds a secret", () => {
 
   it("answers the token once, and keeps the answer of its key without it", async () => {
     const made = MadeToken.parse(await jsonOf(await firstCall("make-export", "Bokföringsexport"), 201));
-    expect(made).toEqual({ id: made.id, name: "Bokföringsexport", scopes: ["bookkeeping"], token: made.token });
+    expect(made).toMatchObject({ name: "Bokföringsexport", scopes: ["bookkeeping"] });
     expect(made.token).toMatch(/^nft_[A-Za-z0-9_-]{43}$/);
     expect(await tokensNamed("Bokföringsexport")).toEqual([{ id: made.id, token_hash: tokenHash(made.token) }]);
-    expect(await keptAnswers("make-export")).toEqual([{ id: made.id, name: "Bokföringsexport", scopes: ["bookkeeping"] }]);
+    expect(await keptAnswers("make-export")).toEqual([keptOf(made)]);
   });
 
   it("refuses a repeat of the same request with 409 answer-shown-once and the token's id, by REST and by MCP, and makes no second token", async () => {
     const made = MadeToken.parse(await jsonOf(await firstCall("make-import", "Bankimport"), 201));
-    const kept = { id: made.id, name: "Bankimport", scopes: ["bookkeeping"] };
+    const kept = keptOf(made);
     const shownOnce: ProblemBody & { readonly answer: unknown } = {
       type: "about:blank",
       title: "Conflict",
@@ -146,18 +114,18 @@ describe("a write whose answer holds a secret", () => {
       code: "answer-shown-once",
       answer: kept,
     };
-    const again = await writeAs(server, session, "POST", "/v1/test-tokens", { name: "Bankimport" }, { key: "make-import" });
+    const again = await writeAs(server, session, "POST", "/v1/api-tokens", { name: "Bankimport", scopes: ["bookkeeping"] }, { key: "make-import" });
     expect(again.headers.get("content-type")).toBe("application/problem+json");
     expect(await jsonOf(again, 409)).toEqual(shownOnce);
     const client = await mcpClient(server.app, { token: session });
-    expect(await callTool(client, "testMakeToken", { name: "Bankimport", idempotencyKey: "make-import" })).toEqual({ isError: true, structured: shownOnce });
+    expect(await callTool(client, "createApiToken", { name: "Bankimport", scopes: ["bookkeeping"], idempotencyKey: "make-import" })).toEqual({ isError: true, structured: shownOnce });
     await client.close();
     expect((await tokensNamed("Bankimport")).map((row) => row.id)).toEqual([made.id]);
   });
 
   it("refuses the same key with another request with 422 idempotency-key-reused, and makes no token", async () => {
     await jsonOf(await firstCall("make-payroll", "Lönefil"), 201);
-    const other = await writeAs(server, session, "POST", "/v1/test-tokens", { name: "Lönefil två" }, { key: "make-payroll" });
+    const other = await writeAs(server, session, "POST", "/v1/api-tokens", { name: "Lönefil två", scopes: ["bookkeeping"] }, { key: "make-payroll" });
     expect((await jsonOf<ProblemBody>(other, 422)).code).toBe("idempotency-key-reused");
     expect(await tokensNamed("Lönefil två")).toEqual([]);
   });

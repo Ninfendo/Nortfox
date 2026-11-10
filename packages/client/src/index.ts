@@ -4,6 +4,7 @@ import { createOperations, type Operations } from "./generated.ts";
 import { createSend, type ClientOptions } from "./runtime.ts";
 
 export type {
+  ApiToken,
   Company,
   CompanyChoice,
   CompanySummary,
@@ -14,6 +15,7 @@ export type {
   Me,
   Member,
   Membership,
+  NewApiToken,
   PasswordSignIn,
   Permission,
   PermissionCatalogue,
@@ -31,7 +33,7 @@ export type {
   UserRights,
   Operations
 } from "./generated.ts";
-export type { PermissionGroupKey, PermissionKey, Program, RightKey, Role, SysAdmin } from "./generated.ts";
+export type { PermissionGroupKey, PermissionKey, Program, RightKey, Role, Scope, SysAdmin } from "./generated.ts";
 export { ApiError } from "./runtime.ts";
 export type { CallOptions, ClientOptions, FetchFunction, WriteOptions } from "./runtime.ts";
 

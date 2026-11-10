@@ -7,6 +7,7 @@ import { getMe } from "./operations/me.ts";
 import { listPermissions } from "./operations/permissions.ts";
 import { getSession, selectCompany } from "./operations/session.ts";
 import { getHealth } from "./operations/status.ts";
+import { createApiToken, listApiTokens, revokeApiToken } from "./operations/tokens.ts";
 import {
   assignProgram,
   disconnectUserIdentity,
@@ -55,4 +56,7 @@ export const REGISTRY = [
   getInvitation,
   acceptInvitation,
   leaveCompany,
+  createApiToken,
+  listApiTokens,
+  revokeApiToken,
 ] as const;

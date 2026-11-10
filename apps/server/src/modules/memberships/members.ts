@@ -238,14 +238,36 @@ export async function writeMember(tx: Queryable, member: HeldMember, change: Mem
 }
 
 /**
+ * Revokes the live API tokens of a held membership whose person it no longer
+ * holds, at the database's clock, with the transaction's actor as the one who
+ * revoked them: a removal, a leave and a disconnect. A token is bound to its
+ * membership (issue 12, "API tokens" 4; choice 11), so none of them would
+ * work again anyway: a removed or a left membership is final, and a new
+ * invitation makes a new one. But a disconnect invites the same membership
+ * again, and its tokens must not come back with an acceptance, even by the
+ * same person. Revoked, they leave the list of live tokens, and the
+ * database writes each revocation in the behandlingshistorik. A
+ * deactivation revokes nothing: its tokens work again once the member is
+ * active again.
+ */
+async function revokeTokens(tx: Queryable, member: HeldMember): Promise<void> {
+  await tx.query(
+    "UPDATE access.api_tokens SET revoked_at = date_trunc('milliseconds', pg_catalog.clock_timestamp()) WHERE token_company_id = $1 AND membership_id = $2 AND revoked_at IS NULL",
+    [member.companyId, member.id],
+  );
+}
+
+/**
  * Removes a held member: the status removed, which is final, and its
  * sessions end, by the database. The row stays, so the member stays the
  * actor on every entry. The work contacts are erased: they are profile
- * data, which only an active or inactive member keeps.
+ * data, which only an active or inactive member keeps. The member's API
+ * tokens are revoked.
  */
 export async function removeMember(tx: Queryable, member: HeldMember): Promise<void> {
   await tx.query("UPDATE access.memberships SET status = 'removed' WHERE id = $1", [member.id]);
   await tx.query("DELETE FROM access.membership_contacts WHERE contact_company_id = $1 AND membership_id = $2", [member.companyId, member.id]);
+  await revokeTokens(tx, member);
 }
 
 /**
@@ -274,20 +296,22 @@ export async function invitedAgain(tx: Queryable, member: HeldMember): Promise<{
  * behandlingshistorik holds, and keeps its admin level, its idle time and
  * its programs. The database ends its sessions. The old person's work
  * contacts are erased, so the caller reads whom to invite first
- * (invitedAgain).
+ * (invitedAgain), and the old person's API tokens are revoked.
  */
 export async function disconnectMember(tx: Queryable, member: HeldMember): Promise<void> {
   await tx.query("UPDATE access.memberships SET status = 'invited', user_id = NULL WHERE id = $1", [member.id]);
   await tx.query("DELETE FROM access.membership_contacts WHERE contact_company_id = $1 AND membership_id = $2", [member.companyId, member.id]);
+  await revokeTokens(tx, member);
 }
 
 /**
  * The person leaves the company with their held active membership: the
  * status left, which is final and only the member's own person sets, and
- * the database ends its sessions. The row stays, and the work contacts are
- * erased.
+ * the database ends its sessions. The row stays, the work contacts are
+ * erased, and the person's API tokens there are revoked.
  */
 export async function leaveMember(tx: Queryable, member: HeldMember): Promise<void> {
   await tx.query("UPDATE access.memberships SET status = 'left' WHERE id = $1", [member.id]);
   await tx.query("DELETE FROM access.membership_contacts WHERE contact_company_id = $1 AND membership_id = $2", [member.companyId, member.id]);
+  await revokeTokens(tx, member);
 }

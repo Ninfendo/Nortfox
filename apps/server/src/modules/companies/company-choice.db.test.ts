@@ -210,7 +210,7 @@ describe("the company choice", () => {
       [tokenHash(session)],
     );
     const membership = await superuser.query<{ id: string }>("SELECT id FROM access.memberships WHERE company_id = $1 AND user_id = $2", [beta.id, person.id]);
-    expect(stored.rows).toEqual([{ current_company_id: beta.id, current_membership_id: membership.rows[0]?.id, permissions: { "company:read": null } }]);
+    expect(stored.rows).toEqual([{ current_company_id: beta.id, current_membership_id: membership.rows[0]?.id, permissions: { "company:read": null, "tokens:own": null } }]);
   });
 
   it("gives getMe the current company, the membership and the permissions there", async () => {
@@ -222,12 +222,12 @@ describe("the company choice", () => {
       company: await companyOf(alfa.id),
       membership: { id: alfa.membership, companyId: alfa.id, userId: person.id, status: "active", adminLevel: "owner", idleTimeout: 120, roles: ["owner"], programs: [], programsAdministered: [] },
       // The owner is a system administrator there.
-      permissions: ["company:read", "company:update", "programs:grant", "users:admin", "users:read"],
+      permissions: ["company:read", "company:update", "programs:grant", "tokens:all", "tokens:own", "users:admin", "users:read"],
     });
     await chooseCompany(server, session, beta.id);
     const inBeta = await jsonOf(await getAs(server, session, "/v1/me"));
     expect(inBeta["membership"]).toEqual({ id: betaMembership, companyId: beta.id, userId: person.id, status: "active", idleTimeout: 120, roles: [], programs: [], programsAdministered: [] });
-    expect(inBeta["permissions"]).toEqual(["company:read"]);
+    expect(inBeta["permissions"]).toEqual(["company:read", "tokens:own"]);
   });
 
   it("refuses any other company with the same answer as a company that does not exist", async () => {

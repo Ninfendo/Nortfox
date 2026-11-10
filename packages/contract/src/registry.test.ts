@@ -12,7 +12,7 @@ describe("REGISTRY", () => {
     expect(registryProblems(REGISTRY, Object.keys(PERMISSIONS))).toEqual([]);
   });
 
-  it("holds getHealth and getCompany, the browser's sign-in, the person's own operations, the companies, the catalogue, the users and their programs, and the invitations", () => {
+  it("holds getHealth and getCompany, the browser's sign-in, the person's own operations, the companies, the catalogue, the users and their programs, the invitations and the API tokens", () => {
     expect(
       REGISTRY.map((entry) => {
         const { permission, assistant, writes, list, session, company, personalOutput } = entry["x-nortfox"];
@@ -157,6 +157,9 @@ describe("REGISTRY", () => {
         "signed-in",
         { assistant: false, writes: true, list: false, session: null, company: { input: "companyId" }, personalOutput: [] },
       ],
+      ["createApiToken", "POST /v1/api-tokens", "tokens:own", { assistant: false, writes: true, list: false, session: "only", company: "credential", personalOutput: [] }],
+      ["listApiTokens", "GET /v1/api-tokens", "tokens:own", { assistant: false, writes: false, list: true, session: null, company: "credential", personalOutput: [] }],
+      ["revokeApiToken", "DELETE /v1/api-tokens/{tokenId}", "tokens:own", { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] }],
     ]);
   });
 
@@ -198,6 +201,9 @@ describe("REGISTRY", () => {
       getInvitation: "Reads an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
       acceptInvitation: "Accepts an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
       leaveCompany: "Leaves a company where you are an active member. Only a new invitation lets you back.",
+      createApiToken: "Makes an API token. It needs a browser session, so this tool refuses a call that comes with a token.",
+      listApiTokens: "Lists the live API tokens of the company you work in: your own, or every one for a system administrator.",
+      revokeApiToken: "Revokes an API token of the company you work in: your own, or any for a system administrator.",
     });
   });
 
@@ -239,6 +245,9 @@ describe("REGISTRY", () => {
       getInvitation: { scope: null, session: "flow", secretOutput: [] },
       acceptInvitation: { scope: null, session: "flow", secretOutput: ["/totpEnrolment/otpauthUri"] },
       leaveCompany: { scope: "companies", session: null, secretOutput: [] },
+      createApiToken: { scope: null, session: "only", secretOutput: ["/token"] },
+      listApiTokens: { scope: "tokens", session: null, secretOutput: [] },
+      revokeApiToken: { scope: "tokens", session: null, secretOutput: [] },
     });
   });
 
@@ -258,11 +267,12 @@ describe("REGISTRY", () => {
     }
   });
 
-  it("uses every permission on the list, so none is dead", () => {
+  it("uses every permission on the list, so none is dead: each is an operation's, or widens what tokens:own gives", () => {
     const used = new Set(REGISTRY.map((entry) => entry["x-nortfox"].permission));
-    for (const permission of Object.keys(PERMISSIONS)) {
-      expect(used).toContain(permission);
-    }
+    // tokens:all needs no operation of its own: listApiTokens and revokeApiToken, which need tokens:own, reach every token of the company with it.
+    const widening = ["tokens:all"];
+    expect(Object.keys(PERMISSIONS).filter((permission) => !used.has(permission))).toEqual(widening);
+    expect(used).toContain("tokens:own");
   });
 
   it("describes each permission in a sentence", () => {
@@ -275,6 +285,8 @@ describe("REGISTRY", () => {
         "Run the company's users: invite a person and send a new invitation, activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, disconnect a member's identity, and remove a member.",
       "programs:grant":
         "Grant, narrow, move and remove the members' programs, and set their Rapporter and Register/Övrigt rights. A program administrator does it only for the programs they administer.",
+      "tokens:own": "Make API tokens of your own in the company, in a browser session, and list and revoke them.",
+      "tokens:all": "List and revoke every API token of the company, beside your own. No operation needs it by itself: it widens what tokens:own gives.",
     });
   });
 

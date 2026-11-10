@@ -246,11 +246,15 @@ function metaProblems(name: string, meta: Entry, permissions: ReadonlySet<string
 
 /**
  * What is wrong with the credentials in OpenAPI's security: an operation that
- * needs an actor names the ones that can name it, and an operation that needs
- * none names none, so openapi.json says what the permission asks.
+ * needs an actor names the ones that can name it, the session's cookie and,
+ * for one that a token may call by its scope, a bearer token; and an
+ * operation that needs none names none. So openapi.json says what the
+ * permission and the scope ask. The marks are read only once each is right,
+ * so the scope here is null or a scope of SCOPES.
  */
 function securityProblems(name: string, entry: Entry, meta: Entry): string[] {
-  const wanted = securityOf(String(meta["permission"]));
+  const scope = meta["scope"];
+  const wanted = securityOf(String(meta["permission"]), typeof scope === "string" ? scope : null);
   const security = entry["security"];
   if (JSON.stringify(security) === JSON.stringify(wanted)) {
     return [];
