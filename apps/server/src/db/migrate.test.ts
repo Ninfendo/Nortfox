@@ -77,3 +77,27 @@ describe("readMigrations", () => {
     }
   });
 });
+
+/**
+ * The characters of `text` that show as nothing, a space or a control, but
+ * the newline, the carriage return and the space. A reviewer cannot read
+ * such a character, and a control of the text's direction reorders the rest
+ * of its line on the screen.
+ */
+function unseenCharacters(text: string): string[] {
+  return text.match(/(?![\n\r ])[\p{C}\p{Z}\p{Default_Ignorable_Code_Point}]/gu) ?? [];
+}
+
+describe("the migrations' text", () => {
+  it("shows each character it holds: the check finds a control of the text's direction, a line separator and a control character", () => {
+    expect(unseenCharacters("CHECK (name !~ '[‪-‮⁦]')")).toEqual(["‪", "‮", "⁦"]);
+    expect(unseenCharacters("a b c\td​e\u0007")).toEqual([" ", " ", "\t", "​", "\u0007"]);
+    expect(unseenCharacters("SELECT 1;\r\n  -- Företagets namn\n")).toEqual([]);
+  });
+
+  it("holds no unseen character in any migration: a check writes one as an escape, such as \\u202e", () => {
+    for (const migration of readMigrations()) {
+      expect(unseenCharacters(migration.sql), migration.name).toEqual([]);
+    }
+  });
+});

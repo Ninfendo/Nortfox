@@ -119,7 +119,7 @@ describe("the one membership function in the server", () => {
     it("gives the same in a lookup once it acts as the person, as an integration too", async () => {
       for (const kind of ["user", "integration"] as const) {
         const found = await pool.database.lookup("rest", async (tx) => {
-          await tx.actAs(person, kind);
+          await tx.actAs(person, kind, kind === "integration" ? { kind: "api-token", id: randomUUID() } : undefined);
           return commit(await resolveActive(tx, beta.id));
         });
         expect([found?.personId, found?.membershipId]).toEqual([person, inBeta]);
@@ -188,7 +188,7 @@ describe("the one membership function in the server", () => {
 
     it("enters a company of the person's list too", async () => {
       const entered = await pool.database.lookup("mcp", async (tx) => {
-        await tx.actAs(person, "integration");
+        await tx.actAs(person, "integration", { kind: "mcp-client", id: randomUUID() });
         const [first] = await activeMemberships(tx);
         if (first === undefined) {
           throw new Error("The person has active memberships.");

@@ -36,7 +36,7 @@ import { activeMemberships, resolveActive } from "../memberships/resolve.ts";
  */
 export const ENTRY_WORDS = {
   programs: { users: "Användare" },
-  headings: { "sign-in": "Inloggning" },
+  headings: { "sign-in": "Inloggning", "api-token-created": "API-token skapad", "api-token-revoked": "API-token återkallad" },
   events: { "sign-in": "Inloggning via NortFox ID" },
   details: { method: "Identifiering", identifiedAt: "Identifiering", personalIdentityNumber: "Personnummer", application: "Applikation", ipAddress: "IP-adress" },
   applications: { web: "Webb" },

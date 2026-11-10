@@ -12,8 +12,9 @@
 // idempotency key requires it as a call option. A method gives the JSON
 // answer, nothing for 202 and 204, and the location of a 303, which a program
 // reads and a browser follows itself. An operation's credential is a cookie,
-// which the browser sends by itself, so a method takes no option for it; its
-// doc comment names the cookie.
+// which the browser sends by itself, or an API token, which the client's
+// option token sends with every call, so a method takes no option for
+// either; its doc comment names them.
 
 export class GeneratorError extends Error {
   override readonly name = "GeneratorError";
@@ -51,18 +52,22 @@ const OPERATION_KEYS = new Set([
   "x-nortfox",
 ]);
 
-/** The keys of a security scheme: an API key in a cookie, the one kind the API uses so far. */
-const SECURITY_SCHEME_KEYS = new Set(["type", "in", "name", "description"]);
+/** The keys of a security scheme, by its kind: an API key in a cookie, and a bearer token in Authorization. */
+const COOKIE_SCHEME_KEYS = new Set(["type", "in", "name", "description"]);
+const BEARER_SCHEME_KEYS = new Set(["type", "scheme", "description"]);
 
 /**
  * The keys of x-nortfox, NortFox's own parts of an operation. The generator
- * reads the permission, the session mark, the company source and the
- * personal output for the doc comment, and refuses a value of the last three
- * that it does not know; the others only document, for the server and MCP.
+ * reads the permission, the scope, the session mark, the company source and
+ * the personal and secret outputs for the doc comment, and refuses a value
+ * of those but the permission that it does not know; the others only
+ * document, for the server and MCP.
  */
-const NORTFOX_KEYS = new Set(["permission", "tool", "assistant", "writes", "list", "session", "company", "personalOutput"]);
-const SESSION_MARKS = [null, "flow"] as const;
+const NORTFOX_KEYS = new Set(["permission", "scope", "tool", "assistant", "writes", "list", "session", "company", "personalOutput", "secretOutput"]);
+const SESSION_MARKS = [null, "flow", "only"] as const;
 const COMPANY_SOURCES = ["none", "credential", "current", "new"] as const;
+/** A scope's name: small letters a to z alone. */
+const SCOPE_NAME = /^[a-z]+$/;
 
 /** Where a request's company comes from: a source by name, or the field of the input that names it. */
 type CompanySource = (typeof COMPANY_SOURCES)[number] | { readonly input: string };
@@ -280,10 +285,14 @@ function declaration(name: string, schema: Json, where: string): string[] {
 /** NortFox's own parts of an operation that the doc comment tells. */
 interface Meta {
   readonly permission?: string;
-  readonly session?: "flow" | null;
+  /** The scope a token needs, or null when no token calls it by a scope. */
+  readonly scope?: string | null;
+  readonly session?: (typeof SESSION_MARKS)[number];
   readonly company?: CompanySource;
   /** The JSON Pointers of the answer's personal fields. */
   readonly personalOutput?: readonly string[];
+  /** The JSON Pointers of the answer's secret fields. */
+  readonly secretOutput?: readonly string[];
 }
 
 /** One field of an operation's input that is not in its body: a path parameter or a query field. */
@@ -318,17 +327,21 @@ interface Operation {
 /** Each security scheme of the description, by its name, as a doc comment names it. */
 type Schemes = ReadonlyMap<string, string>;
 
-/** The security schemes of components.securitySchemes: each an API key in a cookie. */
+/** The security schemes of components.securitySchemes: each an API key in a cookie, or a bearer token in Authorization. */
 function securitySchemes(value: unknown): Schemes {
   const schemes = new Map<string, string>();
   for (const [name, item] of Object.entries(record(value ?? {}, "components.securitySchemes"))) {
     const where = `components.securitySchemes.${name}`;
     const scheme = record(item, where);
-    if (scheme["type"] !== "apiKey" || scheme["in"] !== "cookie") {
-      throw new GeneratorError(`${where} is not an apiKey in a cookie, the one kind of scheme the generator supports yet.`);
+    if (scheme["type"] === "apiKey" && scheme["in"] === "cookie") {
+      refuseOtherKeys(scheme, COOKIE_SCHEME_KEYS, where);
+      schemes.set(name, `the cookie \`${text(scheme["name"], `${where}.name`)}\``);
+    } else if (scheme["type"] === "http" && scheme["scheme"] === "bearer") {
+      refuseOtherKeys(scheme, BEARER_SCHEME_KEYS, where);
+      schemes.set(name, "a bearer token in `Authorization`, which the option `token` sends");
+    } else {
+      throw new GeneratorError(`${where} is neither an apiKey in a cookie nor an http bearer scheme, the kinds of scheme the generator supports.`);
     }
-    refuseOtherKeys(scheme, SECURITY_SCHEME_KEYS, where);
-    schemes.set(name, `the cookie \`${text(scheme["name"], `${where}.name`)}\``);
   }
   return schemes;
 }
@@ -354,7 +367,7 @@ function credentialsOf(value: unknown, where: string, schemes: Schemes): string[
     }
     const scopes: unknown = (item as Json)[name];
     if (!Array.isArray(scopes) || scopes.length > 0) {
-      throw new GeneratorError(`${at}.${name} must be an empty list: a cookie takes no scopes.`);
+      throw new GeneratorError(`${at}.${name} must be an empty list: neither a cookie nor a bearer token takes scopes there.`);
     }
     return scheme;
   });
@@ -376,7 +389,15 @@ function companySourceOf(value: unknown, where: string): CompanySource | undefin
   return oneOf(value, COMPANY_SOURCES, where);
 }
 
-/** The pointers of the personal output: a list of JSON Pointers, or absent. */
+/** A scope: the name of one in small letters, null, or absent. */
+function scopeOf(value: unknown, where: string): string | null | undefined {
+  if (value === undefined || value === null || (typeof value === "string" && SCOPE_NAME.test(value))) {
+    return value;
+  }
+  throw new GeneratorError(`${where} must be the name of a scope, in small letters, or null.`);
+}
+
+/** The pointers of the personal or the secret output: a list of JSON Pointers, or absent. */
 function pointersOf(value: unknown, where: string): readonly string[] | undefined {
   if (value === undefined) {
     return undefined;
@@ -394,14 +415,18 @@ function metaOf(value: unknown, where: string): Meta {
   }
   const meta = record(value, where);
   refuseOtherKeys(meta, NORTFOX_KEYS, where);
+  const scope = scopeOf(meta["scope"], `${where}.scope`);
   const session = oneOf(meta["session"], SESSION_MARKS, `${where}.session`);
   const company = companySourceOf(meta["company"], `${where}.company`);
   const personalOutput = pointersOf(meta["personalOutput"], `${where}.personalOutput`);
+  const secretOutput = pointersOf(meta["secretOutput"], `${where}.secretOutput`);
   return {
     permission: text(meta["permission"], `${where}.permission`),
+    ...(scope === undefined ? {} : { scope }),
     ...(session === undefined ? {} : { session }),
     ...(company === undefined ? {} : { company }),
     ...(personalOutput === undefined ? {} : { personalOutput }),
+    ...(secretOutput === undefined ? {} : { secretOutput }),
   };
 }
 
@@ -626,16 +651,44 @@ function signedInCompany(company: CompanySource | undefined): string {
   }
 }
 
+/** The line of the doc comment that says whether the operation serves or needs the browser's session. */
+function sessionLine(meta: Meta): string | undefined {
+  if (meta.session === "flow") {
+    return "Serves the browser's session: its MCP tool refuses every call.";
+  }
+  return meta.session === "only" ? "Needs a browser session: a token is refused it with 403 `session-required`." : undefined;
+}
+
+/** The pointers of a doc comment's line, each in backticks. */
+function pointerList(pointers: readonly string[]): string {
+  return pointers.map((pointer) => `\`${pointer}\``).join(", ");
+}
+
+/** The line of the doc comment that names the personal fields of the answer. */
+function personalLine(meta: Meta): string | undefined {
+  const personal = meta.personalOutput ?? [];
+  return personal.length === 0 ? undefined : `The answer holds personal data: ${pointerList(personal)}.`;
+}
+
+/** The line of the doc comment that names the secret fields of the answer, and what a repeat of a write's key gets. */
+function secretLine(operation: Operation): string | undefined {
+  const secrets = operation.meta.secretOutput ?? [];
+  if (secrets.length === 0) {
+    return undefined;
+  }
+  const repeat = operation.key ? " A repeat with its idempotency key gets 409 `answer-shown-once`, without the secret." : "";
+  return `The answer holds a secret, which no other answer gives: ${pointerList(secrets)}.${repeat}`;
+}
+
 function operationDocs(operation: Operation): string[] {
   const parts = [operation.summary, operation.description].filter(
     (part): part is string => part !== undefined,
   );
   const lines = [...parts.flatMap((part) => [part, ""]), `\`${operation.method} ${operation.path}\``];
-  const session = operation.meta.session === "flow" ? "Serves the browser's session: its MCP tool refuses every call." : undefined;
+  const { meta } = operation;
+  const scope = typeof meta.scope === "string" ? `A token needs the scope \`${meta.scope}\`.` : undefined;
   const credential = operation.credentials.length === 0 ? undefined : `Credential: ${operation.credentials.join(", or ")}.`;
-  const personal = operation.meta.personalOutput ?? [];
-  const personalLine = personal.length === 0 ? undefined : `The answer holds personal data: ${personal.map((pointer) => `\`${pointer}\``).join(", ")}.`;
-  for (const line of [permissionLine(operation.meta), credential, session, personalLine]) {
+  for (const line of [permissionLine(meta), scope, credential, sessionLine(meta), personalLine(meta), secretLine(operation)]) {
     if (line !== undefined) {
       lines.push("", line);
     }

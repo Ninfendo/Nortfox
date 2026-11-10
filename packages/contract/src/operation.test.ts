@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { personal } from "./fields.ts";
+import { personal, secret } from "./fields.ts";
 import { IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
 import { Money } from "./money.ts";
 import {
@@ -23,7 +23,7 @@ import {
 } from "./operation.ts";
 import { Limit, Cursor } from "./paging.ts";
 import { Problem } from "./problem.ts";
-import { SECURITY_SCHEMES, SESSION_COOKIE } from "./security.ts";
+import { CHALLENGES, SECURITY_SCHEMES, SESSION_COOKIE, bearerChallenge } from "./security.ts";
 
 const Item = z.strictObject({ id: z.uuid() });
 
@@ -106,6 +106,7 @@ describe("defineOperation", () => {
   it("carries NortFox's own parts in x-nortfox, closed to the assistant unless it says so", () => {
     expect(read["x-nortfox"]).toEqual({
       permission: "test:read",
+      scope: null,
       tool: "Reads the item.",
       assistant: true,
       writes: false,
@@ -113,9 +114,11 @@ describe("defineOperation", () => {
       session: null,
       company: "credential",
       personalOutput: [],
+      secretOutput: [],
     });
     expect(write["x-nortfox"]).toEqual({
       permission: "test:write",
+      scope: null,
       tool: "Books an item.",
       assistant: false,
       writes: true,
@@ -123,6 +126,7 @@ describe("defineOperation", () => {
       session: null,
       company: "credential",
       personalOutput: [],
+      secretOutput: [],
     });
   });
 
@@ -447,8 +451,10 @@ describe("a signed-in operation", () => {
     expect(endSession.request.headers?.shape[IDEMPOTENCY_KEY_HEADER]).toBeDefined();
     expect(endSession["x-nortfox"]).toMatchObject({ permission: "signed-in", session: "flow", company: "none" });
     expect(statuses(endSession)).toEqual(["204", "400", "401", "403", "409", "422", "500"]);
-    // A signed-in operation needs no permission: only another site's page refuses it, and only when it is no GET.
-    expect(endSession.responses[403]?.description).toBe("The request may not call the operation: it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).");
+    // A signed-in operation needs no permission: a token is refused one that serves the browser's session, and another site's page one that is no GET.
+    expect(endSession.responses[403]?.description).toBe(
+      "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+    );
     const readPerson = defineOperation({
       id: "getItemSessionPerson",
       method: "get",
@@ -482,8 +488,152 @@ describe("a signed-in operation", () => {
   });
 });
 
+describe("the scope, the session-only mark and the secret output", () => {
+  const scoped = defineOperation({
+    id: "getScopedItem",
+    method: "get",
+    path: "/v1/scoped-items",
+    tags: ["items"],
+    summary: "Read",
+    description: "Reads.",
+    output: Item,
+    permission: "test:read",
+    scope: "bookkeeping",
+    tool: "Reads.",
+    writes: false,
+  });
+
+  const scopedPerson = defineOperation({
+    id: "getScopedPerson",
+    method: "get",
+    path: "/v1/scoped-people",
+    tags: ["items"],
+    summary: "Read",
+    description: "Reads.",
+    output: Item,
+    permission: "signed-in",
+    scope: "profile",
+    tool: "Reads.",
+    writes: false,
+  });
+
+  const recent = defineOperation({
+    id: "getRecentItems",
+    method: "get",
+    path: "/v1/recent-items",
+    tags: ["items"],
+    summary: "Read",
+    description: "Reads.",
+    output: Item,
+    permission: "signed-in",
+    session: "only",
+    tool: "Reads.",
+    writes: false,
+  });
+
+  const makeToken = defineOperation({
+    id: "makeItemToken",
+    method: "post",
+    path: "/v1/item-tokens",
+    tags: ["items"],
+    summary: "Make a token",
+    description: "Makes a token, shown once.",
+    body: z.strictObject({ name: z.string() }),
+    output: z.strictObject({ id: z.uuid(), token: secret(z.string()) }),
+    status: 201,
+    permission: "test:write",
+    session: "only",
+    tool: "Makes a token.",
+    writes: true,
+  });
+
+  const flowRead = defineOperation({
+    id: "getItemSession",
+    method: "get",
+    path: "/v1/item-sessions",
+    tags: ["items"],
+    summary: "Read",
+    description: "Reads.",
+    output: Item,
+    permission: "signed-in",
+    session: "flow",
+    tool: "Reads.",
+    writes: false,
+  });
+
+  it("takes the scope it is given, and none by default", () => {
+    expect(scoped["x-nortfox"].scope).toBe("bookkeeping");
+    expect(scopedPerson["x-nortfox"].scope).toBe("profile");
+    expect(recent["x-nortfox"]).toMatchObject({ scope: null, session: "only" });
+    expect(read["x-nortfox"].scope).toBeNull();
+  });
+
+  it("names the causes of a 403 that a token gives: a scope it lacks, and an operation that needs a browser session", () => {
+    expect(scoped.responses[403]?.description).toBe(
+      "The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing).",
+    );
+    expect(statuses(scopedPerson)).toEqual(["200", "400", "401", "403", "500"]);
+    expect(scopedPerson.responses[403]?.description).toBe("The request may not call the operation: the credential is a token that lacks the operation's scope (scope-missing).");
+    for (const entry of [recent, flowRead]) {
+      expect(statuses(entry), entry.operationId).toEqual(["200", "400", "401", "403", "500"]);
+      expect(entry.responses[403]?.description, entry.operationId).toBe(
+        "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required).",
+      );
+    }
+    expect(makeToken.responses[403]?.description).toBe(
+      "The request may not call the operation: the credential is a token, and the operation needs a browser session (session-required); or the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing); or it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed).",
+    );
+  });
+
+  it("lists the secret fields of its output, and none for an answer with no body", () => {
+    expect(makeToken["x-nortfox"].secretOutput).toEqual(["/token"]);
+    expect(scoped["x-nortfox"].secretOutput).toEqual([]);
+    const ended = defineOperation({
+      id: "endItemToken",
+      method: "delete",
+      path: "/v1/item-tokens",
+      tags: ["items"],
+      summary: "End",
+      description: "Ends.",
+      output: NoBody,
+      status: 204,
+      permission: "test:write",
+      scope: "tokens",
+      tool: "Ends.",
+      writes: true,
+    });
+    expect(ended["x-nortfox"].secretOutput).toEqual([]);
+  });
+
+  it("names answer-shown-once on the 409 of a write whose answer holds a secret, which a repeat of its key gets", () => {
+    expect(makeToken.responses[409]?.description).toBe(
+      "A request with the same idempotency key is still running; or the same request came again with its key, and its first answer held a secret, which is shown only once (answer-shown-once).",
+    );
+    expect(write.responses[409]?.description).toBe("A request with the same idempotency key is still running.");
+  });
+
+  it("gives no 409 to a write that runs before sign-in, also when its answer holds a secret: it takes no key", () => {
+    const setUp = defineOperation({
+      id: "setUpItem",
+      method: "post",
+      path: "/v1/item-setups",
+      tags: ["items"],
+      summary: "Set up",
+      description: "Sets up.",
+      output: z.strictObject({ code: secret(z.string()) }),
+      status: 201,
+      permission: "none",
+      session: "flow",
+      tool: "Sets up.",
+      writes: true,
+    });
+    expect(setUp["x-nortfox"].secretOutput).toEqual(["/code"]);
+    expect(statuses(setUp)).not.toContain("409");
+  });
+});
+
 describe("the credential an operation takes", () => {
-  it("is the browser's session cookie, which openapi.json names as the scheme sessionCookie", () => {
+  it("is the browser's session cookie, which openapi.json names as the scheme sessionCookie, or an API token as the scheme bearer", () => {
     expect(SESSION_COOKIE).toBe("__Host-nortfox-session");
     expect(SECURITY_SCHEMES).toEqual({
       sessionCookie: {
@@ -492,7 +642,14 @@ describe("the credential an operation takes", () => {
         name: "__Host-nortfox-session",
         description: "The browser's session, which a sign-in sets: verifyTotp, or loginWithPassword on a known device. The browser sends it by itself.",
       },
+      bearer: {
+        type: "http",
+        scheme: "bearer",
+        description:
+          "An API token, which createApiToken makes, sent as Authorization: Bearer <token>. It works in its one company, within its scopes, on /v1 only. A request with a bearer token ignores the session cookie.",
+      },
     });
+    expect(CHALLENGES).toEqual({ sessionCookie: `Cookie realm="NortFox", cookie-name="__Host-nortfox-session"`, bearer: `Bearer realm="NortFox"` });
   });
 
   it("is named on every operation that needs an actor: a read, a write and a list with a permission, and a signed-in one", () => {
@@ -533,12 +690,98 @@ describe("the credential an operation takes", () => {
     }
   });
 
-  it("comes from the permission, a new list each time", () => {
-    expect(securityOf("public")).toBeUndefined();
-    expect(securityOf("none")).toBeUndefined();
-    expect(securityOf("signed-in")).toEqual([{ sessionCookie: [] }]);
-    expect(securityOf("company:read")).toEqual([{ sessionCookie: [] }]);
-    expect(securityOf("signed-in")).not.toBe(securityOf("signed-in"));
+  it("comes from the permission and the scope, a new list each time", () => {
+    expect(securityOf("public", null)).toBeUndefined();
+    expect(securityOf("none", null)).toBeUndefined();
+    expect(securityOf("signed-in", null)).toEqual([{ sessionCookie: [] }]);
+    expect(securityOf("company:read", null)).toEqual([{ sessionCookie: [] }]);
+    expect(securityOf("signed-in", "profile")).toEqual([{ sessionCookie: [] }, { bearer: [] }]);
+    expect(securityOf("company:read", "companyinformation")).toEqual([{ sessionCookie: [] }, { bearer: [] }]);
+    expect(securityOf("signed-in", null)).not.toBe(securityOf("signed-in", null));
+    expect(securityOf("company:read", "companyinformation")).not.toBe(securityOf("company:read", "companyinformation"));
+  });
+
+  it("is the session cookie and a bearer token for an operation that a token may call by its scope", () => {
+    const scoped = defineOperation({
+      id: "getScopedItem",
+      method: "get",
+      path: "/v1/scoped-items",
+      tags: ["items"],
+      summary: "Read",
+      description: "Reads.",
+      output: Item,
+      permission: "test:read",
+      scope: "bookkeeping",
+      tool: "Reads.",
+      writes: false,
+    });
+    expect(scoped.security).toEqual([{ sessionCookie: [] }, { bearer: [] }]);
+    expect(challengeOf(scoped)).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox"`);
+    expect(scoped.responses[401]).toMatchObject({
+      headers: {
+        "WWW-Authenticate": {
+          description:
+            `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox". ` +
+            `To a request whose bearer token names no actor, the Bearer challenge is Bearer realm="NortFox", error="invalid_token" (RFC 6750, 3.1).`,
+          schema: { type: "string" },
+        },
+      },
+    });
+    expect(scoped.responses[403]).toMatchObject({
+      headers: {
+        "WWW-Authenticate": {
+          description:
+            `To a token: Bearer realm="NortFox", error="insufficient_scope", scope="bookkeeping" when the token lacks the scope (scope-missing), ` +
+            `and Bearer realm="NortFox", error="insufficient_scope" when its person lacks the permission (permission-missing) (RFC 6750, 3.1). A session's 403 carries none.`,
+          schema: { type: "string" },
+        },
+      },
+    });
+  });
+
+  it("names RFC 6750's invalid_token in the bearer token's challenge of a 401 to a request whose token names no actor, and leaves the cookie's as it is", () => {
+    const scoped = { "x-nortfox": { ...read["x-nortfox"], scope: "bookkeeping" as const } };
+    expect(challengeOf(scoped, { invalidToken: true })).toBe(`Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox", error="invalid_token"`);
+    expect(challengeOf(scoped, { invalidToken: false })).toBe(challengeOf(scoped));
+    // An operation that takes the cookie alone has no bearer challenge to name it in.
+    expect(challengeOf(read, { invalidToken: true })).toBe(challengeOf(read));
+  });
+
+  it("gives RFC 6750's Bearer challenge with its error code, and the scope when one is lacked", () => {
+    expect(bearerChallenge("invalid_token")).toBe(`Bearer realm="NortFox", error="invalid_token"`);
+    expect(bearerChallenge("insufficient_scope")).toBe(`Bearer realm="NortFox", error="insufficient_scope"`);
+    expect(bearerChallenge("insufficient_scope", "users")).toBe(`Bearer realm="NortFox", error="insufficient_scope", scope="users"`);
+  });
+
+  it("documents the challenge of a token's 403: insufficient_scope, with the scope only where a scope is what it lacks", () => {
+    const signedIn = defineOperation({
+      id: "getOwnThing",
+      method: "get",
+      path: "/v1/own-things",
+      tags: ["items"],
+      summary: "Read",
+      description: "Reads.",
+      output: Item,
+      permission: "signed-in",
+      scope: "profile",
+      tool: "Reads.",
+      writes: false,
+    });
+    expect(signedIn.responses[403]?.headers).toEqual({
+      "WWW-Authenticate": {
+        description: `To a token: Bearer realm="NortFox", error="insufficient_scope", scope="profile" when the token lacks the scope (scope-missing) (RFC 6750, 3.1). A session's 403 carries none.`,
+        schema: { type: "string" },
+      },
+    });
+    // An operation with no scope refuses every token with session-required.
+    expect(read.responses[403]?.headers).toEqual({
+      "WWW-Authenticate": {
+        description: `To a token, which the operation refuses with session-required: Bearer realm="NortFox", error="insufficient_scope" (RFC 6750, 3.1). A session's 403 carries none.`,
+        schema: { type: "string" },
+      },
+    });
+    // An operation that needs no actor answers no token with a 403 of its own.
+    expect(publicRead.responses[403]).toBeUndefined();
   });
 });
 
@@ -546,6 +789,7 @@ describe("defineListOperation", () => {
   it("is a list: limit and cursor beside its own query, and a page of its items", () => {
     expect(list["x-nortfox"]).toEqual({
       permission: "test:read",
+      scope: null,
       tool: "Lists the items.",
       assistant: false,
       writes: false,
@@ -553,6 +797,7 @@ describe("defineListOperation", () => {
       session: null,
       company: "credential",
       personalOutput: [],
+      secretOutput: [],
     });
     const query = querySchema(list);
     expect(Object.keys(query?.shape ?? {})).toEqual(["name", "limit", "cursor"]);

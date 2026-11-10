@@ -64,7 +64,7 @@ describe("the ledger's refusals", () => {
 
   it("are every ledger code that PROBLEM_CODES lists, and no other", () => {
     const listed = Object.entries(PROBLEM_CODES)
-      // The surface's own 422, the sign-in's refusals, the company choice's, the user administration's, the invitations' and the unique keys' are no rule of the ledger.
+      // The surface's own 422, the sign-in's refusals, the company choice's, the user administration's, the invitations', the unique keys' and the API tokens' are no rule of the ledger.
       .filter(
         ([code, status]) =>
           status === 422 &&
@@ -88,6 +88,7 @@ describe("the ledger's refusals", () => {
             "invitation-link-invalid",
             "sign-in-required",
             "email-taken",
+            "api-token-not-found",
             "personal-identity-number-taken",
           ].includes(code),
       )

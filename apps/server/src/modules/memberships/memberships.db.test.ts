@@ -24,7 +24,7 @@ import {
   type TestDatabase,
 } from "../../../test/database.ts";
 import { addIdentity, tokenHash } from "../../../test/identities.ts";
-import { insertCompany } from "../../../test/ledger.ts";
+import { insertCompany, someIntegration } from "../../../test/ledger.ts";
 import {
   STATUSES,
   aCompany,
@@ -242,7 +242,7 @@ describe("the memberships", () => {
       for (const who of [company.asOwner, { actor: user ?? "", kind: "system" } as const]) {
         await expectRefusal(changeMembership(app, company, id, "status = 'left'", [], who), "immutable_field", { field: "status", operation: "update" });
       }
-      expect(await changeMembership(app, company, id, "status = 'left'", [], { actor: user ?? "", kind: "integration" })).toMatchObject({ status: "left" });
+      expect(await changeMembership(app, company, id, "status = 'left'", [], someIntegration(user ?? ""))).toMatchObject({ status: "left" });
       const inactive = await membershipIn(app, owner, company, "inactive");
       expect(await changeMembership(app, company, inactive.id, "status = 'left'", [], { actor: inactive.user ?? "", kind: "user" })).toMatchObject({
         status: "left",

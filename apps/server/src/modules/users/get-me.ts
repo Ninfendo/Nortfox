@@ -9,16 +9,26 @@
 // administers. A session's permissions are its snapshot of when it chose the
 // company, less a right whose grant has ended since (auth/resolver.ts), so
 // a change of the grants reaches them when the session chooses the company
-// again.
+// again. A token's are its person's in its company now (auth/api-token.ts).
+// Through a token, getMe gives the token's company, and no personnummer and
+// no mobile number (issue 12, "Who acts" 4): a program gets only what it
+// needs to know whom it acts for.
 
 import { getMe } from "@nortfox/contract";
+import { isToken } from "../../api/context.ts";
 import { handlePerson, ok } from "../../api/operation.ts";
 import { readCompany } from "../companies/get-company.ts";
 import { readMembership } from "../memberships/membership.ts";
-import { readMe } from "./identity.ts";
+import { readMe, type MyIdentity } from "./identity.ts";
+
+/** The identity as a token's call gives it: without the personnummer and the mobile number. */
+function forToken(identity: MyIdentity): MyIdentity {
+  return { user: identity.user, twoStep: identity.twoStep };
+}
 
 export const getMeHandler = handlePerson(getMe, async ({ context, tx, company, now }) => {
-  const me = await readMe(tx, context.personId);
+  const identity = await readMe(tx, context.personId);
+  const me = isToken(context.credential) ? forToken(identity) : identity;
   if (company.kind !== "current") {
     return ok({ ...me, permissions: [] });
   }

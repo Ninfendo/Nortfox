@@ -24,6 +24,11 @@ const SESSION_SCHEME: Record<string, unknown> = {
   sessionCookie: { type: "apiKey", in: "cookie", name: "__Host-x", description: "The session." },
 };
 
+/** The scheme of a program's API token: a bearer token in Authorization, which the client's option token sends. */
+const BEARER_SCHEME: Record<string, unknown> = {
+  bearer: { type: "http", scheme: "bearer", description: "An API token." },
+};
+
 /** A description with these security schemes and one path, /v1/x. */
 function withSchemes(securitySchemes: unknown, item: unknown): unknown {
   return { openapi: "3.1.0", components: { securitySchemes }, paths: { "/v1/x": item } };
@@ -214,6 +219,49 @@ describe("generateClient", () => {
     expect(source).toContain("   * `GET /v1/e`\n   *\n   * Needs a signed-in person, and works in the company it makes.\n   */\n  getE(");
     expect(source).toContain(
       "   * `GET /v1/f`\n   *\n   * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.\n   */\n  getF(",
+    );
+  });
+
+  it("writes the scope, the session-only mark and the secret fields of the answer into the doc comment", () => {
+    const meta = (extra: Record<string, unknown>) => ({
+      permission: "signed-in",
+      tool: "T.",
+      assistant: false,
+      writes: false,
+      list: false,
+      session: null,
+      company: "none",
+      personalOutput: [],
+      secretOutput: [],
+      scope: null,
+      ...extra,
+    });
+    const keyHeader = { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string" } };
+    const created = { "201": { content: { "application/json": { schema: { type: "string" } } } } };
+    const source = generateClient(
+      documentWith(
+        {},
+        {
+          "/v1/g": getOperation({ type: "string" }, { operationId: "getG", "x-nortfox": meta({ scope: "profile" }) }),
+          "/v1/h": getOperation({ type: "string" }, { operationId: "getH", "x-nortfox": meta({ session: "only" }) }),
+          "/v1/i": {
+            post: { operationId: "makeI", parameters: [keyHeader], responses: created, "x-nortfox": meta({ permission: "tokens:own", session: "only", writes: true, secretOutput: ["/token"] }) },
+          },
+          "/v1/j": { post: { operationId: "startJ", responses: created, "x-nortfox": meta({ permission: "none", session: "flow", writes: true, secretOutput: ["/challenge"] }) } },
+        },
+      ),
+    );
+    expect(source).toContain("   * `GET /v1/g`\n   *\n   * Needs a signed-in person, and works in no company.\n   *\n   * A token needs the scope `profile`.\n   */\n  getG(");
+    expect(source).toContain(
+      "   * `GET /v1/h`\n   *\n   * Needs a signed-in person, and works in no company.\n   *\n   * Needs a browser session: a token is refused it with 403 `session-required`.\n   */\n  getH(",
+    );
+    expect(source).toContain(
+      "   * `POST /v1/i`\n   *\n   * Needs the permission `tokens:own`.\n   *\n   * Needs a browser session: a token is refused it with 403 `session-required`.\n   *\n" +
+        "   * The answer holds a secret, which no other answer gives: `/token`. A repeat with its idempotency key gets 409 `answer-shown-once`, without the secret.\n   */\n  makeI(",
+    );
+    expect(source).toContain(
+      "   * `POST /v1/j`\n   *\n   * Needs no actor: anyone may call it, before signing in.\n   *\n   * Serves the browser's session: its MCP tool refuses every call.\n   *\n" +
+        "   * The answer holds a secret, which no other answer gives: `/challenge`.\n   */\n  startJ(",
     );
   });
 
@@ -490,8 +538,28 @@ describe("generateClient", () => {
     [documentWith({}, { "/v1/x": { trace: {} } }), 'paths["/v1/x"].trace: only GET, PUT, POST, DELETE and PATCH operations are supported yet.'],
     [documentWith({}, { "/v1/x": { query: {} } }), 'paths["/v1/x"].query: only GET, PUT, POST, DELETE and PATCH operations are supported yet.'],
     [
-      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", session: "only" } }) }),
-      'paths["/v1/x"].get.x-nortfox.session is "only", which the generator does not support yet.',
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", session: "Only" } }) }),
+      'paths["/v1/x"].get.x-nortfox.session is "Only", which the generator does not support yet.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", scope: 7 } }) }),
+      'paths["/v1/x"].get.x-nortfox.scope must be the name of a scope, in small letters, or null.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", scope: "Book keeping" } }) }),
+      'paths["/v1/x"].get.x-nortfox.scope must be the name of a scope, in small letters, or null.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", scope: "" } }) }),
+      'paths["/v1/x"].get.x-nortfox.scope must be the name of a scope, in small letters, or null.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", secretOutput: "/token" } }) }),
+      'paths["/v1/x"].get.x-nortfox.secretOutput must be a list of JSON Pointers.',
+    ],
+    [
+      documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", secretOutput: [null] } }) }),
+      'paths["/v1/x"].get.x-nortfox.secretOutput must be a list of JSON Pointers.',
     ],
     [
       documentWith({}, { "/v1/x": getOperation({ type: "string" }, { "x-nortfox": { permission: "public", company: "Current" } }) }),
@@ -605,19 +673,27 @@ describe("generateClient", () => {
     ],
     [
       withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: [{ sessionCookie: ["read"] }] })),
-      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: a cookie takes no scopes.',
+      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: neither a cookie nor a bearer token takes scopes there.',
     ],
     [
       withSchemes(SESSION_SCHEME, getOperation({ type: "string" }, { security: [{ sessionCookie: {} }] })),
-      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: a cookie takes no scopes.',
+      'paths["/v1/x"].get.security[0].sessionCookie must be an empty list: neither a cookie nor a bearer token takes scopes there.',
     ],
     [
-      withSchemes({ bearer: { type: "http", scheme: "bearer" } }, getOperation({ type: "string" })),
-      "components.securitySchemes.bearer is not an apiKey in a cookie, the one kind of scheme the generator supports yet.",
+      withSchemes({ basic: { type: "http", scheme: "basic" } }, getOperation({ type: "string" })),
+      "components.securitySchemes.basic is neither an apiKey in a cookie nor an http bearer scheme, the kinds of scheme the generator supports.",
     ],
     [
       withSchemes({ key: { type: "apiKey", in: "header", name: "X-Key" } }, getOperation({ type: "string" })),
-      "components.securitySchemes.key is not an apiKey in a cookie, the one kind of scheme the generator supports yet.",
+      "components.securitySchemes.key is neither an apiKey in a cookie nor an http bearer scheme, the kinds of scheme the generator supports.",
+    ],
+    [
+      withSchemes({ bearer: { type: "http", scheme: "bearer", bearerFormat: "JWT" } }, getOperation({ type: "string" })),
+      'components.securitySchemes.bearer uses "bearerFormat", which the generator does not support yet.',
+    ],
+    [
+      withSchemes({ ...SESSION_SCHEME, ...BEARER_SCHEME }, getOperation({ type: "string" }, { security: [{ bearer: ["read"] }] })),
+      'paths["/v1/x"].get.security[0].bearer must be an empty list: neither a cookie nor a bearer token takes scopes there.',
     ],
     [
       withSchemes({ sessionCookie: { type: "apiKey", in: "cookie", name: "__Host-x", scheme: "x" } }, getOperation({ type: "string" })),
@@ -715,20 +791,24 @@ describe("generateClient", () => {
     expect(refusal(input)).toBe(message);
   });
 
-  it("writes an operation's credential, a cookie, into its doc comment, and none for an operation that names none", () => {
+  it("writes an operation's credentials, a cookie or a bearer token, into its doc comment, and none for an operation that names none", () => {
     const source = generateClient({
       openapi: "3.1.0",
-      components: { securitySchemes: SESSION_SCHEME },
+      components: { securitySchemes: { ...SESSION_SCHEME, ...BEARER_SCHEME } },
       paths: {
         "/v1/x": getOperation({ type: "string" }, { security: [{ sessionCookie: [] }] }),
+        "/v1/w": { get: { operationId: "getW", responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } }, security: [{ sessionCookie: [] }, { bearer: [] }] } },
         "/v1/y": { get: { operationId: "getY", responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } }, security: [] } },
         "/v1/z": { get: { operationId: "getZ", responses: { "200": { content: { "application/json": { schema: { type: "string" } } } } } } },
       },
     });
     expect(source).toContain(["   * `GET /v1/x`", "   *", "   * Credential: the cookie `__Host-x`.", "   */", "  getThing("].join("\n"));
+    expect(source).toContain(
+      ["   * `GET /v1/w`", "   *", "   * Credential: the cookie `__Host-x`, or a bearer token in `Authorization`, which the option `token` sends.", "   */", "  getW("].join("\n"),
+    );
     expect(source).toContain(["   * `GET /v1/y`", "   */", "  getY("].join("\n"));
     expect(source).toContain(["   * `GET /v1/z`", "   */", "  getZ("].join("\n"));
-    expect(source.match(/Credential:/g)).toHaveLength(1);
+    expect(source.match(/Credential:/g)).toHaveLength(2);
   });
 
   it("names its error", () => {

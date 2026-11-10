@@ -65,6 +65,7 @@ describe("GET /openapi.json", () => {
     const health = document.paths["/v1/health"]?.get;
     expect(health?.["x-nortfox"]).toEqual({
       permission: "public",
+      scope: null,
       tool: "Checks that the NortFox server is up, and gives its version. It reads no data.",
       assistant: false,
       writes: false,
@@ -72,6 +73,7 @@ describe("GET /openapi.json", () => {
       session: null,
       company: "none",
       personalOutput: [],
+      secretOutput: [],
     });
     expect(Object.keys(health?.responses ?? {})).toEqual(["200", "400", "500"]);
     expect(health?.responses?.["400"]?.content).toEqual({
@@ -80,6 +82,7 @@ describe("GET /openapi.json", () => {
     const company = document.paths["/v1/company"]?.get;
     expect(company?.["x-nortfox"]).toEqual({
       permission: "company:read",
+      scope: "companyinformation",
       tool: getCompany["x-nortfox"].tool,
       assistant: true,
       writes: false,
@@ -87,12 +90,18 @@ describe("GET /openapi.json", () => {
       session: null,
       company: "credential",
       personalOutput: [],
+      secretOutput: [],
     });
     expect(Object.keys(company?.responses ?? {})).toEqual(["200", "400", "401", "403", "500"]);
     expect(company?.responses?.["401"]?.headers).toEqual({
-      "WWW-Authenticate": { description: `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session".`, schema: { type: "string" } },
+      "WWW-Authenticate": {
+        description: `The challenge, as RFC 9110 asks of every 401: Cookie realm="NortFox", cookie-name="__Host-nortfox-session", Bearer realm="NortFox". ` +
+          `To a request whose bearer token names no actor, the Bearer challenge is Bearer realm="NortFox", error="invalid_token" (RFC 6750, 3.1).`,
+        schema: { type: "string" },
+      },
     });
     expect(Object.keys(document.components.schemas).sort()).toEqual([
+      "ApiToken",
       "Company",
       "CompanyChoice",
       "CompanySummary",
@@ -103,6 +112,7 @@ describe("GET /openapi.json", () => {
       "Me",
       "Member",
       "Membership",
+      "NewApiToken",
       "PasswordSignIn",
       "Permission",
       "PermissionCatalogue",
@@ -118,6 +128,7 @@ describe("GET /openapi.json", () => {
       "RightKey",
       "Role",
       "RoleDefinition",
+      "Scope",
       "Session",
       "SetupResult",
       "SysAdmin",
@@ -169,6 +180,7 @@ describe("createApp", () => {
       description: "Another entry with the same id.",
       output: z.strictObject({}),
       permission: "company:read",
+      scope: "companyinformation",
       tool: "Gives nothing.",
       writes: false,
     });
@@ -188,6 +200,7 @@ describe("createApp", () => {
       description: "An entry with no MCP tool text.",
       output: z.strictObject({}),
       permission: "company:read",
+      scope: "companyinformation",
       tool: " ",
       writes: false,
     });

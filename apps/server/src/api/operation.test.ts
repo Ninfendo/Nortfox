@@ -9,7 +9,7 @@
 // the key while it runs, looks it up, and stores it with the checked answer
 // before it commits; a refusal of the ledger is a rule's refusal or a fault.
 
-import { CHALLENGES, NoBody, defineListOperation, defineOperation, getCompany, getHealth, personal, type FieldIssue } from "@nortfox/contract";
+import { CHALLENGES, NoBody, defineListOperation, defineOperation, getCompany, getHealth, personal, secret, type FieldIssue } from "@nortfox/contract";
 import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -52,8 +52,8 @@ import {
   type PersonCall,
 } from "./operation.ts";
 
-/** The challenge of the session cookie, the one credential in this part. */
-const SESSION_CHALLENGE = CHALLENGES.sessionCookie;
+/** The challenge of an operation that a token may call by its scope: the session cookie's, and the bearer token's beside it. */
+const TOKEN_CHALLENGE = `${CHALLENGES.sessionCookie}, ${CHALLENGES.bearer}`;
 
 const COMPANY = "5d1e7c3a-9b2f-4e8d-a6c4-1f0e2d3c4b5a";
 const CONTEXT: RequestContext = { ...(await principalOf(COMPANY, { kind: "user" })), channel: "mcp" };
@@ -150,7 +150,7 @@ describe("authorize", () => {
   });
 
   it("lets a signed-in person call a signed-in operation, with a company or without, and refuses no actor", async () => {
-    expect(authorize(testGetPerson, undefined)).toEqual({ kind: "authentication-required", challenge: SESSION_CHALLENGE });
+    expect(authorize(testGetPerson, undefined)).toEqual({ kind: "authentication-required", challenge: TOKEN_CHALLENGE });
     expect(authorize(testGetPerson, personOf())).toBeUndefined();
     expect(authorize(testGetPerson, await principalOf(COMPANY, { permissions: [] }))).toBeUndefined();
   });
@@ -160,7 +160,7 @@ describe("authorize", () => {
   });
 
   it("refuses no actor, then an actor without the permission", async () => {
-    expect(authorize(getCompany, undefined)).toEqual({ kind: "authentication-required", challenge: SESSION_CHALLENGE });
+    expect(authorize(getCompany, undefined)).toEqual({ kind: "authentication-required", challenge: TOKEN_CHALLENGE });
     expect(authorize(getCompany, await principalOf(COMPANY, { permissions: ["test:read"] }))).toEqual({
       kind: "permission-missing",
       permission: "company:read",
@@ -282,7 +282,7 @@ describe("runOperation", () => {
   it("refuses no actor with 401 before it reads any input, and asks no database", async () => {
     const { database, transactions } = recordingDatabase();
     const outcome = await runOperation(getCompanyHandler, call(undefined, { limit: "abc" }, [UNKNOWN]), runnerDeps(database));
-    expect(outcome).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
+    expect(outcome).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: TOKEN_CHALLENGE } });
     expect(transactions).toEqual([]);
   });
 
@@ -762,6 +762,77 @@ describe("runOperation", () => {
         "Another transaction stored the idempotency key k-1 first, and it is not there.",
       );
     });
+
+    describe("whose answer holds a secret", () => {
+      const makeSecret = defineOperation({
+        id: "testMakeSecret",
+        method: "post",
+        path: "/v1/test-secrets",
+        tags: ["test"],
+        summary: "Make a secret",
+        description: "Makes a secret, shown once.",
+        body: z.strictObject({ name: z.string() }),
+        output: z.strictObject({
+          id: z.uuid(),
+          name: z.string(),
+          token: secret(z.string()),
+          codes: z.array(z.strictObject({ code: secret(z.string()), label: z.string() })),
+        }),
+        status: 201,
+        permission: "test:write",
+        session: "only",
+        tool: "Makes a secret.",
+        writes: true,
+      });
+      const TOKEN = `nft_${"Q".repeat(43)}`;
+      const ANSWER = { id: KEY_ID, name: "Kassa", token: TOKEN, codes: [{ code: "1234-5678", label: "first" }] };
+      /** The answer as the key keeps it: without the token and the codes. */
+      const KEPT = { id: KEY_ID, name: "Kassa", codes: [{ label: "first" }] };
+      const SECRET_HASH = requestHash(FINGERPRINT_KEY, "testMakeSecret", {}, { name: "Kassa" });
+      const OTHER_SECRET_HASH = requestHash(FINGERPRINT_KEY, "testMakeSecret", {}, { name: "Bank" });
+
+      function maker() {
+        const calls: string[] = [];
+        const handler: Handler = handleData(makeSecret, (_call, input) => {
+          calls.push(input.body.name);
+          return Promise.resolve(ok(ANSWER));
+        });
+        return { calls, handler };
+      }
+
+      function keptRow(hash: string): QueryResultRow {
+        return { request_hash: hash, response_status: 201, response_body: KEPT };
+      }
+
+      it("answers the secret the first time, and stores the answer without it", async () => {
+        const { database, transactions, queries } = recordingDatabase(keyAnswers([[]]));
+        expect(await runOperation(maker().handler, writing({ name: "Kassa" }), runnerDeps(database))).toEqual({ ok: true, status: 201, output: ANSWER });
+        expect(transactions.map((transaction) => transaction.ended)).toEqual(["commit"]);
+        expect(queries.filter(isInsert).map((query) => query.values)).toEqual([[COMPANY, "k-1", "testMakeSecret", SECRET_HASH, 201, JSON.stringify(KEPT)]]);
+      });
+
+      it("refuses a repeat of the same request with answer-shown-once and the answer it kept, and rolls back without running the handler", async () => {
+        const { database, transactions, queries } = recordingDatabase(keyAnswers([[keptRow(SECRET_HASH)]]));
+        const { handler, calls } = maker();
+        expect(await runOperation(handler, writing({ name: "Kassa" }), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "answer-shown-once", answer: KEPT } });
+        expect(calls).toEqual([]);
+        expect(transactions.map((transaction) => transaction.ended)).toEqual(["rollback"]);
+        expect(queries.filter(isInsert)).toEqual([]);
+      });
+
+      it("refuses the key with another request with idempotency-key-reused, as for any write", async () => {
+        const { database } = recordingDatabase(keyAnswers([[keptRow(OTHER_SECRET_HASH)]]));
+        expect(await runOperation(maker().handler, writing({ name: "Kassa" }), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "idempotency-key-reused" } });
+      });
+
+      it("refuses with answer-shown-once when another process stored the key first: that answer's secret went to the other request", async () => {
+        const { database, transactions } = recordingDatabase(keyAnswers([[], [keptRow(SECRET_HASH)]], false));
+        const { handler, calls } = maker();
+        expect(await runOperation(handler, writing({ name: "Kassa" }), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "answer-shown-once", answer: KEPT } });
+        expect(calls).toEqual(["Kassa"]);
+        expect(transactions.map((transaction) => transaction.ended)).toEqual(["rollback", "commit"]);
+      });
+    });
   });
 });
 
@@ -943,7 +1014,7 @@ describe("runOperation for a signed-in person's operation", () => {
   it("refuses no actor with 401, and asks no database", async () => {
     const { database, transactions } = recordingDatabase();
     const handler = handlePerson(testGetPerson, ({ context }) => Promise.resolve(ok({ personId: context.personId })));
-    expect(await runOperation(handler, call(undefined), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
+    expect(await runOperation(handler, call(undefined), runnerDeps(database))).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: TOKEN_CHALLENGE } });
     expect(transactions).toEqual([]);
   });
 

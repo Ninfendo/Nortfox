@@ -2,13 +2,14 @@
 
 // The parts of the idempotency keys that need no database: the header's
 // forms on REST, the key's check, the request's fingerprint and the keys in
-// flight. idempotency.db.test.ts runs the whole flow on PostgreSQL.
+// flight, and the answer a write keeps when its first answer holds a
+// secret. idempotency.db.test.ts runs the whole flow on PostgreSQL.
 
 import { createHmac } from "node:crypto";
 import { IDEMPOTENCY_KEY_MAX_LENGTH } from "@nortfox/contract";
 import { describe, expect, it } from "vitest";
 import { FINGERPRINT_KEY } from "../../test/api.ts";
-import { KeysInFlight, canonicalJson, checkKey, readKeyHeader, requestHash } from "./idempotency.ts";
+import { KeysInFlight, canonicalJson, checkKey, readKeyHeader, requestHash, withoutSecrets } from "./idempotency.ts";
 
 const MISSING = {
   code: "idempotency-key-missing",
@@ -144,6 +145,18 @@ describe("requestHash", () => {
     expect(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "a" })).toBe(hmacOf(text));
     expect(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "b" })).not.toBe(requestHash(FINGERPRINT_KEY, "testRemoveThing", {}, undefined, { thingId: "a" }));
   });
+
+  it("holds the token a person's own write came through, when it names one, so a session's and each token's requests are apart", () => {
+    const token = { kind: "api-token", id: "0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e" } as const;
+    const text = '{"body":{"name":"Testbolaget Gamma AB"},"operation":"createCompany","query":{},"via":{"id":"0b1c2d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e","kind":"api-token"}}';
+    const bySession = requestHash(FINGERPRINT_KEY, "createCompany", {}, { name: "Testbolaget Gamma AB" });
+    const byToken = requestHash(FINGERPRINT_KEY, "createCompany", {}, { name: "Testbolaget Gamma AB" }, undefined, token);
+    expect(byToken).toBe(hmacOf(text));
+    expect(byToken).not.toBe(bySession);
+    expect(requestHash(FINGERPRINT_KEY, "createCompany", {}, { name: "Testbolaget Gamma AB" }, undefined, { ...token, id: "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f" })).not.toBe(byToken);
+    // No via is the fingerprint as it was before the via came in.
+    expect(requestHash(FINGERPRINT_KEY, "createCompany", {}, { name: "Testbolaget Gamma AB" }, undefined, undefined)).toBe(bySession);
+  });
 });
 
 describe("KeysInFlight", () => {
@@ -177,5 +190,44 @@ describe("KeysInFlight", () => {
     const keys = new KeysInFlight();
     expect(keys.claim("a", "b,c", "d")).toBeTypeOf("function");
     expect(keys.claim("a,b", "c", "d")).toBeTypeOf("function");
+  });
+});
+
+describe("withoutSecrets", () => {
+  const TOKEN = `nft_${"A".repeat(43)}`;
+
+  it("leaves an answer as it is when its operation names no secret field", () => {
+    const answer = { id: "a", name: "Kassa" };
+    expect(withoutSecrets(answer, [])).toEqual(answer);
+  });
+
+  it("takes out each secret field, at any depth, and keeps the rest", () => {
+    const answer = { id: "a", token: TOKEN, enrolment: { otpauthUri: "otpauth://totp/x", label: "x" } };
+    expect(withoutSecrets(answer, ["/token", "/enrolment/otpauthUri"])).toEqual({ id: "a", enrolment: { label: "x" } });
+  });
+
+  it("follows * through each item of a list and each value of a record, and takes out a secret item itself", () => {
+    const answer = { codes: [{ code: "1", label: "a" }, { code: "2", label: "b" }], byName: { a: { code: "3" } }, plain: ["x", "y"] };
+    expect(withoutSecrets(answer, ["/codes/*/code", "/byName/*/code", "/plain/*"])).toEqual({ codes: [{ label: "a" }, { label: "b" }], byName: { a: {} }, plain: [] });
+  });
+
+  it("reads a pointer's escapes, ~1 as / and ~0 as ~", () => {
+    expect(withoutSecrets({ "a/b": "1", "c~d": "2", e: "3" }, ["/a~1b", "/c~0d"])).toEqual({ e: "3" });
+  });
+
+  it("passes over a field that the answer leaves out, is null for, or holds no object in, and an index of a list, which the registry never names", () => {
+    const answer = { enrolment: null, list: "text", count: 2, codes: [{ code: "1" }] };
+    expect(withoutSecrets(answer, ["/token", "/enrolment/otpauthUri", "/list/*/code", "/count/x", "/codes/0/code"])).toEqual(answer);
+  });
+
+  it("keeps nothing of an answer that is a secret as a whole", () => {
+    expect(withoutSecrets({ token: TOKEN }, [""])).toEqual({});
+  });
+
+  it("changes no part of the answer it is given, which the first call still answers", () => {
+    const answer = { token: TOKEN, nested: { code: "1" }, list: [{ code: "2" }] };
+    const copy = structuredClone(answer);
+    withoutSecrets(answer, ["/token", "/nested/code", "/list/*/code"]);
+    expect(answer).toEqual(copy);
   });
 });

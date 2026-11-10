@@ -99,6 +99,7 @@ export const listPermissions = defineOperation({
     "the groups, and every permission, each in the catalogue's order, with its view and manual-only marks.",
   output: PermissionCatalogue,
   permission: "signed-in",
+  scope: "users",
   tool: "Gives the permission catalogue: the roles, the programs with their sets, the groups and every permission in order, with the view and manual-only marks.",
   writes: false,
 });

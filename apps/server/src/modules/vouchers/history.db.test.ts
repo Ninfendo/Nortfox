@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
-import { addBooks, balanced, someUser, writeRow, type Actor } from "../../../test/ledger.ts";
+import { addBooks, balanced, someIntegration, someUser, writeRow, type Actor } from "../../../test/ledger.ts";
 
 type Row = Record<string, unknown>;
 
@@ -86,7 +86,7 @@ describe("the history of a voucher", () => {
         await writeRow(app, company, voucher, row);
       }
     });
-    const changer: Actor = { actor: randomUUID(), kind: "integration" };
+    const changer: Actor = someIntegration();
     const system: Actor = { actor: randomUUID(), kind: "system" };
     await step(voucher, changer, () => app.query("UPDATE ledger.vouchers SET description = 'Pennor och papper' WHERE id = $1", [voucher]));
     await step(voucher, system, () => app.query("UPDATE ledger.vouchers SET transaction_date = '2090-03-20' WHERE id = $1", [voucher]));

@@ -5,19 +5,21 @@
  * registry is the list of them (docs/decisions/0003-contract-first-rest-and-mcp.md).
  * The REST route, the generated client's method and the MCP tool all come
  * from it. NortFox's own parts of an entry sit in the OpenAPI extension
- * x-nortfox, so openapi.json shows each operation's permission, its MCP tool
- * text, whether it writes, is a list or is open to the assistant, whether it
- * serves the browser's session, and where its company comes from. OpenAPI's
- * own `security` names the credentials that can name its actor.
+ * x-nortfox, so openapi.json shows each operation's permission and scope,
+ * its MCP tool text, whether it writes, is a list or is open to the
+ * assistant, whether it serves or needs the browser's session, where its
+ * company comes from, and which fields of its answer are personal or secret.
+ * OpenAPI's own `security` names the credentials that can name its actor.
  */
 
 import { createRoute, type RouteConfig } from "@hono/zod-openapi";
 import { z } from "zod";
-import { personalPointers } from "./fields.ts";
+import { personalPointers, secretPointers } from "./fields.ts";
 import { IDEMPOTENCY_KEY_DESCRIPTION, IDEMPOTENCY_KEY_HEADER } from "./idempotency-key.ts";
 import { Cursor, Limit, pageOf } from "./paging.ts";
 import { Problem } from "./problem.ts";
-import { CHALLENGES, type SecurityScheme } from "./security.ts";
+import type { Scope } from "./scopes.ts";
+import { CHALLENGES, bearerChallenge, type SecurityScheme } from "./security.ts";
 
 /**
  * The permissions an operation can need, each with what it allows. Which
@@ -33,6 +35,8 @@ export const PERMISSIONS = {
     "Run the company's users: invite a person and send a new invitation, activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, disconnect a member's identity, and remove a member.",
   "programs:grant":
     "Grant, narrow, move and remove the members' programs, and set their Rapporter and Register/Övrigt rights. A program administrator does it only for the programs they administer.",
+  "tokens:own": "Make API tokens of your own in the company, in a browser session, and list and revoke them.",
+  "tokens:all": "List and revoke every API token of the company, beside your own. No operation needs it by itself: it widens what tokens:own gives.",
 } as const;
 
 export type Permission = keyof typeof PERMISSIONS;
@@ -56,9 +60,15 @@ export const OPEN_PERMISSIONS = [PUBLIC, NONE, SIGNED_IN] as const;
 /**
  * The session mark. "flow" marks an operation that serves the browser's
  * session, such as a sign-in or a logout: its MCP tool refuses every call.
- * null marks every other operation.
+ * /v1 refuses a token's call of one that needs an actor, such as logout,
+ * getSession or selectCompany, with session-required, and runs a token's
+ * call of one that runs before sign-in, such as loginWithPassword, as a call
+ * with no actor. "only" marks an operation that needs a browser session
+ * though it does not serve it, such as listRecentCompanies: /v1 and its MCP
+ * tool refuse a token's call with session-required. null marks every other
+ * operation.
  */
-export type SessionMark = "flow" | null;
+export type SessionMark = "flow" | "only" | null;
 
 /**
  * Where a request's company comes from, by name:
@@ -97,6 +107,12 @@ export type Method = (typeof METHODS)[number];
 export interface OperationMeta {
   /** The permission the actor needs: "public", "none", "signed-in" or a key of PERMISSIONS. */
   readonly permission: string;
+  /**
+   * The scope a token needs, one of SCOPES (scopes.ts); null for an operation
+   * that no token calls by a scope: a public one, and one that serves or
+   * needs a browser session.
+   */
+  readonly scope: Scope | null;
   /** The MCP tool's description, for the agents that read it. */
   readonly tool: string;
   /** Whether the AI assistant may call it. Closed unless the entry opens it. */
@@ -105,7 +121,7 @@ export interface OperationMeta {
   readonly writes: boolean;
   /** Whether it is a list: it takes limit and cursor, and answers a page. */
   readonly list: boolean;
-  /** "flow" for an operation that serves the browser's session; null for any other. */
+  /** "flow" for an operation that serves the browser's session, "only" for one that needs it; null for any other. */
   readonly session: SessionMark;
   /** Where the request's company comes from. */
   readonly company: CompanySource;
@@ -115,6 +131,12 @@ export interface OperationMeta {
    * from the output schema.
    */
   readonly personalOutput: readonly string[];
+  /**
+   * The JSON Pointers of the output's secret fields: a value that works as a
+   * credential, which secret() marks (fields.ts). The registry derives the
+   * list from the output schema. A write's key keeps its answer without them.
+   */
+  readonly secretOutput: readonly string[];
 }
 
 /** An object schema, for the path parameters, a query or a body. */
@@ -190,11 +212,13 @@ interface Texts {
   readonly summary: string;
   readonly description: string;
   readonly permission: string;
+  /** The scope a token needs. None by default, for an operation that no token calls by a scope. */
+  readonly scope?: Scope;
   readonly tool: string;
   /** Opens the operation to the AI assistant. Closed by default. */
   readonly assistant?: boolean;
-  /** Marks an operation that serves the browser's session. */
-  readonly session?: "flow";
+  /** Marks an operation that serves the browser's session ("flow"), or that needs one ("only"). */
+  readonly session?: "flow" | "only";
   /** Where the request's company comes from. By default the credential for an operation with a permission, and none for any other. */
   readonly company?: CompanySource;
 }
@@ -240,26 +264,51 @@ type RefusalStatus = keyof typeof REFUSALS;
 
 /** The causes of a 403, each by its problem code. */
 const FORBIDDEN = {
+  session: "the credential is a token, and the operation needs a browser session (session-required)",
+  scope: "the credential is a token that lacks the operation's scope (scope-missing)",
   permission: "the credential names no company (company-required), or the actor lacks the operation's permission (permission-missing)",
   cookieOrigin: "it carries the session cookie without the install's own Origin, as a page of another site sends it (origin-not-allowed)",
   noneOrigin: "its Origin is another site's, not the install's own (origin-not-allowed)",
 } as const;
 
-/** The texts of the refusals that differ from one operation to another: the causes of its 403, and the challenge of its 401. */
+/** The cause of a 409 of a write whose answer holds a secret, beside the key in use. */
+const SHOWN_ONCE = "or the same request came again with its key, and its first answer held a secret, which is shown only once (answer-shown-once)";
+
+/**
+ * The texts of the refusals that differ from one operation to another: the
+ * causes of its 403 and the challenge a token's 403 carries, the challenge
+ * of its 401 and whether a bearer token can name it, and whether its answer
+ * holds a secret.
+ */
 interface RefusalTexts {
   readonly forbidden: readonly string[];
+  readonly tokenForbidden: string | undefined;
   readonly challenge: () => string;
+  readonly bearer: boolean;
+  readonly secret: boolean;
+}
+
+/** The description of a refusal, by its status and the operation's texts. */
+function refusalText(status: RefusalStatus, texts: RefusalTexts): string {
+  if (status === 403) {
+    return `${REFUSALS[403]}: ${texts.forbidden.join("; or ")}.`;
+  }
+  return status === 409 && texts.secret ? `${REFUSALS[409].slice(0, -1)}; ${SHOWN_ONCE}.` : REFUSALS[status];
 }
 
 function refusal(status: RefusalStatus, texts: RefusalTexts): ResponseConfig {
   const response: ResponseConfig = {
-    description: status === 403 ? `${REFUSALS[403]}: ${texts.forbidden.join("; or ")}.` : REFUSALS[status],
+    description: refusalText(status, texts),
     content: { "application/problem+json": { schema: Problem } },
   };
   if (status === 401) {
+    const invalid = texts.bearer ? ` To a request whose bearer token names no actor, the Bearer challenge is ${bearerChallenge("invalid_token")} (RFC 6750, 3.1).` : "";
     response.headers = {
-      "WWW-Authenticate": { description: `The challenge, as RFC 9110 asks of every 401: ${texts.challenge()}.`, schema: { type: "string" } },
+      "WWW-Authenticate": { description: `The challenge, as RFC 9110 asks of every 401: ${texts.challenge()}.${invalid}`, schema: { type: "string" } },
     };
+  }
+  if (status === 403 && texts.tokenForbidden !== undefined) {
+    response.headers = { "WWW-Authenticate": { description: texts.tokenForbidden, schema: { type: "string" } } };
   }
   if (status === 429 || status === 503) {
     response.headers = {
@@ -273,33 +322,71 @@ function refusal(status: RefusalStatus, texts: RefusalTexts): ResponseConfig {
 export type SecurityRequirement = Partial<Record<SecurityScheme, string[]>>;
 
 /**
- * The credentials an operation takes, by its permission: the browser's
- * session for every operation that needs an actor, and none for a public one
- * or one that runs before sign-in. A new list each time, so no entry shares
- * one with another.
+ * The credentials an operation takes, by its permission and its scope: the
+ * browser's session for every operation that needs an actor, and beside it
+ * an API token for one that names a scope, which a token may call; none for
+ * a public one or one that runs before sign-in. A new list each time, so no
+ * entry shares one with another.
  */
-export function securityOf(permission: string): SecurityRequirement[] | undefined {
-  return permission === PUBLIC || permission === NONE ? undefined : [{ sessionCookie: [] }];
+export function securityOf(permission: string, scope: string | null): SecurityRequirement[] | undefined {
+  if (permission === PUBLIC || permission === NONE) {
+    return undefined;
+  }
+  return scope === null ? [{ sessionCookie: [] }] : [{ sessionCookie: [] }, { bearer: [] }];
 }
 
 /**
  * The challenge that a 401 of the operation carries in WWW-Authenticate
  * (RFC 9110, 11.6.1): one for each credential that it takes, so it names a
- * credential that the operation takes. An operation that needs no actor
- * answers no 401, so it has none.
+ * credential that the operation takes. To a request whose bearer token
+ * names no actor (`invalidToken`), the Bearer challenge names RFC 6750's
+ * invalid_token (3.1). An operation that needs no actor answers no 401, so
+ * it has none.
  */
-export function challengeOf(operation: Pick<Operation, "x-nortfox">): string {
-  const security = securityOf(operation["x-nortfox"].permission);
+export function challengeOf(operation: Pick<Operation, "x-nortfox">, options: { readonly invalidToken?: boolean } = {}): string {
+  const { permission, scope } = operation["x-nortfox"];
+  const security = securityOf(permission, scope);
   if (security === undefined) {
     throw new Error("An operation that needs no actor answers no 401, so it has no challenge.");
   }
-  return security.flatMap((requirement) => Object.keys(requirement).map((scheme) => CHALLENGES[scheme as SecurityScheme])).join(", ");
+  const challenge = (scheme: SecurityScheme): string => (scheme === "bearer" && options.invalidToken === true ? bearerChallenge("invalid_token") : CHALLENGES[scheme]);
+  return security.flatMap((requirement) => Object.keys(requirement).map((scheme) => challenge(scheme as SecurityScheme))).join(", ");
 }
 
-/** The causes of a 403 that /v1 can give an operation, by who may call it and its method. */
-function forbiddenCauses(permission: string, method: Method): string[] {
+/**
+ * What the WWW-Authenticate of a 403 holds, by the operation, when a token
+ * is refused (RFC 6750, 3.1): insufficient_scope, with the operation's scope
+ * when the token lacks it. A session's 403 carries no challenge. Undefined
+ * for an operation that no token reaches with a 403: one that needs no
+ * actor.
+ */
+function tokenForbiddenText(meta: OperationMeta): string | undefined {
+  const { permission, scope } = meta;
+  if (permission === PUBLIC || permission === NONE) {
+    return undefined;
+  }
+  const refused = bearerChallenge("insufficient_scope");
+  if (scope === null) {
+    return `To a token, which the operation refuses with session-required: ${refused} (RFC 6750, 3.1). A session's 403 carries none.`;
+  }
+  const lacked = `${bearerChallenge("insufficient_scope", scope)} when the token lacks the scope (scope-missing)`;
+  const permissionText = (OPEN_PERMISSIONS as readonly string[]).includes(permission) ? "" : `, and ${refused} when its person lacks the permission (permission-missing)`;
+  return `To a token: ${lacked}${permissionText} (RFC 6750, 3.1). A session's 403 carries none.`;
+}
+
+/**
+ * The causes of a 403 that /v1 can give an operation, by who may call it,
+ * its session mark, its scope and its method, in the order the server checks
+ * them. Anyone may call an operation that runs before sign-in, so no token
+ * is refused one.
+ */
+function forbiddenCauses(meta: OperationMeta, method: Method): string[] {
+  const { permission, session, scope } = meta;
   const open = (OPEN_PERMISSIONS as readonly string[]).includes(permission);
+  const actor = permission !== PUBLIC && permission !== NONE;
   return [
+    ...(actor && session !== null ? [FORBIDDEN.session] : []),
+    ...(scope === null ? [] : [FORBIDDEN.scope]),
     ...(open ? [] : [FORBIDDEN.permission]),
     ...(permission !== PUBLIC && method !== "get" ? [FORBIDDEN.cookieOrigin] : []),
     ...(permission === NONE ? [FORBIDDEN.noneOrigin] : []),
@@ -407,6 +494,7 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
   }
   const meta: OperationMeta = {
     permission,
+    scope: definition.scope ?? null,
     tool: definition.tool,
     assistant: definition.assistant ?? false,
     writes,
@@ -414,16 +502,24 @@ function build<Query extends Shape | undefined, Body extends Shape | undefined, 
     session: definition.session ?? null,
     company: definition.company ?? ((OPEN_PERMISSIONS as readonly string[]).includes(permission) ? "none" : "credential"),
     personalOutput: answersNoBody(status) ? [] : personalPointers(output),
+    secretOutput: answersNoBody(status) ? [] : secretPointers(output),
   };
-  if (takesIdempotencyKey({ "x-nortfox": meta })) {
+  const keyed = takesIdempotencyKey({ "x-nortfox": meta });
+  if (keyed) {
     request.headers = IdempotencyKeyHeaders;
   }
   const responses: Record<string, ResponseConfig> = { [status]: successResponse(definition.id, status, output) };
-  const texts: RefusalTexts = { forbidden: forbiddenCauses(permission, definition.method), challenge: () => challengeOf({ "x-nortfox": meta }) };
+  const texts: RefusalTexts = {
+    forbidden: forbiddenCauses(meta, definition.method),
+    tokenForbidden: tokenForbiddenText(meta),
+    challenge: () => challengeOf({ "x-nortfox": meta }),
+    bearer: meta.scope !== null,
+    secret: keyed && meta.secretOutput.length > 0,
+  };
   for (const code of refusals(meta, body !== undefined, params !== undefined, texts.forbidden)) {
     responses[code] = refusal(code, texts);
   }
-  const security = securityOf(permission);
+  const security = securityOf(permission, meta.scope);
   const route = createRoute({
     operationId: definition.id,
     method: definition.method,

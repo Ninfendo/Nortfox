@@ -20,6 +20,7 @@ import {
   nextNumberOf,
   rowsOf,
   setLock,
+  someIntegration,
   someUser,
   voucherOf,
   writeRow,
@@ -70,10 +71,12 @@ describe("the transaction's actor", () => {
   }
 
   /** The statement that sets the actor and its kind for the rest of the transaction, as the server does. */
-  const SWITCH = "SELECT pg_catalog.set_config('nortfox.actor_id', $1, true), pg_catalog.set_config('nortfox.actor_kind', $2, true)";
+  const SWITCH = `SELECT pg_catalog.set_config('nortfox.actor_id', $1, true), pg_catalog.set_config('nortfox.actor_kind', $2, true),
+    pg_catalog.set_config('nortfox.via_kind', $3, true), pg_catalog.set_config('nortfox.via_id', $4, true)`;
 
+  /** Switches to `who`, with the via of an integration and none for another actor. */
   async function switchTo(who: Actor): Promise<void> {
-    await app.query(SWITCH, [who.actor, who.kind]);
+    await app.query(SWITCH, [who.actor, who.kind, who.viaKind ?? "", who.viaId ?? ""]);
   }
 
   it("refuses rows that another actor adds to a voucher booked earlier in the same transaction", async () => {
@@ -141,7 +144,7 @@ describe("the transaction's actor", () => {
     await expectError(
       inTransaction(app, { company: books.company, ...booker }, async () => {
         await app.query("UPDATE ledger.vouchers SET description = 'Ändrad' WHERE id = $1", [voucher.id]);
-        await switchTo({ actor: booker.actor, kind: "integration" });
+        await switchTo(someIntegration(booker.actor));
         await writeRow(app, books.company, voucher.id, { account: 3001 });
       }),
       INSUFFICIENT_PRIVILEGE,
@@ -203,7 +206,7 @@ describe("the transaction's actor", () => {
   it("takes the actor of a transaction's first write when its backend's row carries the transaction's id but was kept before it", async () => {
     const books = await addBooks(app);
     const admin = await db.admin();
-    const earlier = { actor: randomUUID(), kind: "integration" } as const;
+    const earlier = someIntegration();
     const RENAME = "UPDATE ledger.accounts SET description = $2 WHERE fiscal_year_id = $1 AND number = 1930";
     /**
      * Keeps `earlier` as the actor of the backend's row, in a transaction of

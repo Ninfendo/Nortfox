@@ -37,6 +37,7 @@ import {
   isAfter,
   nextNumberOf,
   rowsOf,
+  someActor,
   someUser,
   writeRow,
   writeVoucher,
@@ -499,7 +500,7 @@ describe("booking a voucher", () => {
       { setting: "nortfox.actor_id" },
     );
     for (const kind of ["user", "system", "integration"] as const) {
-      const actor = { actor: randomUUID(), kind };
+      const actor = someActor(kind);
       const voucher = await bookVoucher(app, books.company, aVoucher(books), actor);
       expect(voucher).toMatchObject({ created_by: actor.actor, created_by_kind: kind });
       for (const row of await rowsOf(app, books.company, voucher.id)) {

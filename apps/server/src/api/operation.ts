@@ -34,11 +34,14 @@
 // 1. A public operation reads no data: its input is checked, its handler
 //    runs with no context and no database, and its output is checked.
 // 2. authorize: an operation that runs before sign-in passes. No actor gets
-//    401. A credential that names no company gets 403 company-required for an
-//    operation in the credential's company, and an actor without the
-//    operation's permission 403 permission-missing. Nothing of the input is
-//    read, and the database is not asked. A principal whose company access
-//    the one membership function did not give is a fault of the server.
+//    401. A token gets 403 session-required for an operation that serves or
+//    needs a browser session, and 403 scope-missing for one whose scope it
+//    lacks, whatever its person's permissions. A credential that names no
+//    company gets 403 company-required for an operation in the credential's
+//    company, and an actor without the operation's permission 403
+//    permission-missing. Nothing of the input is read, and the database is
+//    not asked. A principal whose company access the one membership function
+//    did not give is a fault of the server.
 // 3. The input: a list's limit by the paging rule, then the path parameters,
 //    the query and the body by the operation's schemas, with the problems the
 //    surface's reader found, and a write's idempotency key when the
@@ -47,7 +50,9 @@
 //    a list's cursor, which must be one this server made for this list and
 //    company.
 // 4. An operation that runs before sign-in: its handler runs, with no
-//    transaction of the runner's, and its output is checked.
+//    transaction of the runner's, and its output is checked. It sees the
+//    principal of a session, and none of a token's call: a token is no
+//    browser's sign-in.
 // 5. A write with a key: the key in flight. A running request of the actor
 //    that holds the key gives 409, before the pool is asked for a connection.
 //    Then a write whose handler takes a turn of its company, such as
@@ -56,9 +61,11 @@
 // 6. One transaction (db/database.ts): in the credential's company for an
 //    operation with a permission, as the person in the company of its source
 //    for a person's operation, with the actor, its kind and the channel. A
-//    company that the input names comes first: where the person has no
-//    active membership, also one that does not exist, the call gets 422
-//    company-not-available and rolls back; but a write whose answer is
+//    company that the input names comes first. A token stays in its company:
+//    a token's input that names another gets 422 company-not-available,
+//    before the key is claimed and the database is asked. Where the person
+//    has no active membership, also one that does not exist, the call gets
+//    422 company-not-available and rolls back; but a write whose answer is
 //    empty, such as leaveCompany, which its own success makes the person no
 //    member of, gives the answer of its key there first, from the person's
 //    keys. A read runs at REPEATABLE READ
@@ -82,7 +89,10 @@
 //    transaction commits. So nothing commits, and no answer is stored, before
 //    the output passed its check. When another process stored the key first,
 //    the write rolls back, and the stored key is read in a new transaction.
-//    A replay gives the stored answer and no cookie effects.
+//    A replay gives the stored answer and no cookie effects. A write whose
+//    answer holds a secret (secretOutput) stores the answer without each
+//    secret field, so no secret is stored, and its replay is 409
+//    answer-shown-once with the stored answer: a secret is shown once.
 // 9. A handler's refusal rolls back: a rule's refusal (422), fields that the
 //    handler's own check refused (400, such as a new password that is too
 //    short), too many attempts (429, with the seconds to wait), or a
@@ -129,12 +139,23 @@ import { z } from "zod";
 import type { CookieEffect } from "../auth/cookies.ts";
 import type { InstallKey } from "../auth/install-key.ts";
 import { ServerBusy, type PasswordHasher } from "../auth/password.ts";
-import { commit, rollBack, type Channel, type CompanySettings, type Database, type Ending, type PersonSettings, type Queryable, type TransactionSettings } from "../db/database.ts";
+import { commit, rollBack, type Channel, type CompanySettings, type Database, type Ending, type PersonSettings, type Queryable, type TransactionSettings, type Via } from "../db/database.ts";
 import { CompanyAccess, resolveActive, type ResolvedMembership } from "../modules/memberships/resolve.ts";
 import type { AfterAnswerTask } from "./after-answer.ts";
-import type { CompanyContext, Principal, RequestContext } from "./context.ts";
+import { actorOf, isToken, type CompanyContext, type Principal, type RequestContext } from "./context.ts";
 import { readCursor, signCursor, type CursorScope } from "./cursor.ts";
-import { checkKey, companyKeys, personCompanyKeys, personKeys, requestHash, type KeyCheck, type KeyStore, type KeysInFlight, type StoredAnswer } from "./idempotency.ts";
+import {
+  checkKey,
+  companyKeys,
+  personCompanyKeys,
+  personKeys,
+  requestHash,
+  withoutSecrets,
+  type KeyCheck,
+  type KeyStore,
+  type KeysInFlight,
+  type StoredAnswer,
+} from "./idempotency.ts";
 import { ledgerRule } from "./ledger-refusals.ts";
 import type { CompanyTurns, Turn } from "./turns.ts";
 import type { InstallMail } from "../mail/mailer.ts";
@@ -497,6 +518,10 @@ export function handleList<Op extends Operation>(
 export type Refusal =
   /** No actor. The challenge names the credentials that the operation takes (RFC 9110, 11.6.1). */
   | { readonly kind: "authentication-required"; readonly challenge: string }
+  /** A token's call of an operation that serves or needs a browser session. */
+  | { readonly kind: "session-required" }
+  /** A token whose scopes lack the operation's scope. */
+  | { readonly kind: "scope-missing"; readonly scope: string }
   /** The operation works in the credential's company, and the credential names none. */
   | { readonly kind: "company-required" }
   | { readonly kind: "permission-missing"; readonly permission: string }
@@ -506,6 +531,8 @@ export type Refusal =
   | { readonly kind: "idempotency-key-in-use" }
   /** The actor's idempotency key belongs to another request. */
   | { readonly kind: "idempotency-key-reused" }
+  /** The same request came again with its key, and its first answer held a secret: `answer` is that answer without it. */
+  | { readonly kind: "answer-shown-once"; readonly answer: Readonly<Record<string, unknown>> }
   /** An attempt that comes too soon after failed ones: the caller waits `retryAfterSeconds`. */
   | { readonly kind: "too-many-attempts"; readonly retryAfterSeconds: number }
   /** The server checks as many passwords as it can at once, and its queue is full. */
@@ -572,6 +599,13 @@ const MADE_ELSEWHERE = "The principal's company access was not made from the one
  * registry guard holds that), so a credential that names no company is
  * refused before its permissions are read.
  *
+ * A token is refused, before its company and its permissions are read, an
+ * operation that names no scope, which is one that serves or needs a browser
+ * session (the registry guard holds that), with session-required, and an
+ * operation whose scope it lacks with scope-missing. A session is not
+ * limited by scopes. Anyone may call an operation that runs before sign-in,
+ * so it passes for a token too, and its handler sees no token (runNone).
+ *
  * A principal's company access is made only from a membership that the one
  * membership function gave (modules/memberships/resolve.ts). Any other, such
  * as a plain object, is a fault of the server: authorize throws, for every
@@ -581,12 +615,21 @@ export function authorize(operation: Operation, principal: Principal | undefined
   if (principal?.company !== undefined && !(principal.company instanceof CompanyAccess)) {
     throw new Error(MADE_ELSEWHERE);
   }
-  const { permission } = operation["x-nortfox"];
+  const { permission, scope } = operation["x-nortfox"];
   if (permission === PUBLIC || permission === NONE) {
     return undefined;
   }
   if (principal === undefined) {
     return { kind: "authentication-required", challenge: challengeOf(operation) };
+  }
+  const { credential } = principal;
+  if (isToken(credential)) {
+    if (scope === null) {
+      return { kind: "session-required" };
+    }
+    if (!credential.scopes.has(scope)) {
+      return { kind: "scope-missing", scope };
+    }
   }
   if (permission === SIGNED_IN) {
     return undefined;
@@ -741,9 +784,19 @@ async function answered<T>(operation: Operation, transaction: () => Promise<T>):
   }
 }
 
-/** The stored answer of a key: the first answer again for the same request, 422 for another. */
-function replay(stored: StoredAnswer, hash: string): Outcome {
-  return stored.hash === hash ? { ok: true, status: stored.status, output: stored.body } : refuse({ kind: "idempotency-key-reused" });
+/**
+ * The stored answer of a key: the first answer again for the same request,
+ * or 409 answer-shown-once with the stored answer when the first held a
+ * secret, which was stored without it; 422 for another request.
+ */
+function replay(operation: Operation, stored: StoredAnswer, hash: string): Outcome {
+  if (stored.hash !== hash) {
+    return refuse({ kind: "idempotency-key-reused" });
+  }
+  if (operation["x-nortfox"].secretOutput.length > 0) {
+    return refuse({ kind: "answer-shown-once", answer: stored.body as Readonly<Record<string, unknown>> });
+  }
+  return { ok: true, status: stored.status, output: stored.body };
 }
 
 /** Marks a write whose key another process stored first, while this write ran. */
@@ -801,6 +854,8 @@ interface KeyedWrite {
   readonly store: KeyStore;
   /** The company's other table of keys, for a write in a company: its lookup there reads it too, so one key never serves two writes of the company. */
   readonly other?: KeyStore | undefined;
+  /** The token or client of a person's own write that came through one: its fingerprint holds it, so no other credential of the person replays its answer. */
+  readonly via?: Via | undefined;
   /** Opens the write's transactions. */
   readonly frame: Frame;
 }
@@ -824,18 +879,18 @@ function replaysWhereUnavailable(operation: Operation): boolean {
  * it commits.
  */
 async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outcome> {
-  const { operation, actorId, input, key, store, other, frame } = write;
+  const { operation, actorId, input, key, store, other, via, frame } = write;
   const release = deps.keysInFlight.claim(store.scope, actorId, key);
   if (release === undefined) {
     return refuse({ kind: "idempotency-key-in-use" });
   }
   try {
     const params = paramsSchema(operation) === undefined ? undefined : input.params;
-    const hash = requestHash(deps.fingerprintKey, operation.operationId, input.query, input.body, params);
+    const hash = requestHash(deps.fingerprintKey, operation.operationId, input.query, input.body, params, via);
     // The write's own table; in a company, the other table too. Where the person no longer reaches the company, the own table alone.
     const storedAnswer = async (tx: Queryable, everywhere = true): Promise<Outcome | undefined> => {
       const stored = (await store.find(tx, actorId, key)) ?? (everywhere && other !== undefined ? await other.find(tx, actorId, key) : undefined);
-      return stored === undefined ? undefined : replay(stored, hash);
+      return stored === undefined ? undefined : replay(operation, stored, hash);
     };
     const first = await answered(operation, () =>
       frame(
@@ -850,7 +905,9 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
             return rollBack(refusedBy(operation, answer.refusal));
           }
           const outcome = success(operation, answer) as Extract<Outcome, { readonly ok: true }>;
-          const kept = await store.store(tx, { key, operationId: operation.operationId, hash, status: outcome.status, body: outcome.output });
+          // The answer is kept without its secrets: the first call alone gives them.
+          const body = withoutSecrets(outcome.output, operation["x-nortfox"].secretOutput);
+          const kept = await store.store(tx, { key, operationId: operation.operationId, hash, status: outcome.status, body });
           return kept ? commit(outcome) : rollBack(STORED_FIRST_ELSEWHERE);
         },
         replaysWhereUnavailable(operation) ? (tx) => storedAnswer(tx, false) : undefined,
@@ -864,7 +921,7 @@ async function runKeyedWrite(write: KeyedWrite, deps: RunnerDeps): Promise<Outco
       if (stored === undefined) {
         throw new Error(`Another transaction stored the idempotency key ${key} first, and it is not there.`);
       }
-      return commit(replay(stored, hash));
+      return commit(replay(operation, stored, hash));
     });
   } finally {
     release();
@@ -925,10 +982,15 @@ function companyContext(operation: Operation, context: RequestContext | undefine
   return { ...context, company };
 }
 
-/** Runs an operation that runs before sign-in: its handler opens its own transactions. */
+/**
+ * Runs an operation that runs before sign-in: its handler opens its own
+ * transactions. It gets the principal of a session, and none of a token's
+ * call, which is no browser's: so a token links nothing to an invitation.
+ */
 async function runNone(handler: NoneHandler, call: OperationCall, input: AnyInput, later: Later, deps: RunnerDeps): Promise<Outcome> {
+  const { context } = call;
   const noneCall: NoneCall = {
-    principal: call.context,
+    principal: context === undefined || isToken(context.credential) ? undefined : context,
     database: deps.database,
     services: deps.services,
     channel: "rest",
@@ -997,6 +1059,17 @@ function inputFrame(settings: PersonSettings, field: string, companyId: unknown,
     });
 }
 
+/**
+ * Whether a call may name `companyId` in its input: any company for a
+ * session, which the one membership function then answers, and only the
+ * token's own company for a token, in any letter case. A token stays in its
+ * company: another of its person's gets the answer of a company that does
+ * not exist, before the database is asked (plan 2.3).
+ */
+function inTokenCompany(context: RequestContext, companyId: unknown): boolean {
+  return !isToken(context.credential) || String(companyId).toLowerCase() === context.company?.companyId.toLowerCase();
+}
+
 /** The frame of a call that makes its company: a person's transaction, in which the handler runs in the new company, whose id the database layer picks. */
 function newCompanyFrame(settings: PersonSettings, run: (tx: Queryable, companyId: string) => Promise<Answer<unknown>>, deps: RunnerDeps): Frame {
   return (mode, work) => deps.database.person(mode, settings, (tx) => work(tx, () => tx.inNewCompany((companyId) => run(tx, companyId))));
@@ -1007,24 +1080,32 @@ function newCompanyFrame(settings: PersonSettings, run: (tx: Queryable, companyI
  * the company that its company source says: none; the credential's
  * (current); the one its input names (input); or the one it makes (new).
  * A write's key is kept per person in no company and in a new company, and
- * in a company as keysFor says.
+ * in a company as keysFor says. A person's own key of a call through a token
+ * names the token in the fingerprint: such a key belongs to no company, so
+ * the token's company does not keep it apart from the person's other
+ * credentials, and a token never replays what they stored.
  */
 function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCall, later: Later, request: RequestFacts, deps: RunnerDeps): Promise<Outcome> {
   const { operation } = handler;
   const { input, key } = read;
   const source = operation["x-nortfox"].company;
-  const person: PersonSettings = { actorId: context.personId, actorKind: context.actorKind, channel: context.channel };
+  const person: PersonSettings = { ...actorOf(context), channel: context.channel };
   const runIn = (tx: Queryable, company: PersonCompany): Promise<Answer<unknown>> => handler.run({ context, tx, company, request, now: deps.now, later }, input);
-  const keyed = (stores: KeyStores): Omit<KeyedWrite, "operation" | "frame"> | undefined =>
-    key === undefined ? undefined : { actorId: context.personId, input, key, ...stores };
+  const keyed = (stores: KeyStores, via?: Via): Omit<KeyedWrite, "operation" | "frame"> | undefined =>
+    key === undefined ? undefined : { actorId: context.personId, input, key, ...stores, via };
+  // A person's own keys, which belong to no company: the call's token is in the fingerprint.
+  const ownKeys = (): Omit<KeyedWrite, "operation" | "frame"> | undefined => keyed({ store: personKeys }, context.via);
   if (isCompanyInput(source)) {
     const companyId = inputValue(input, source.input);
+    if (!inTokenCompany(context, companyId)) {
+      return Promise.resolve(ruleOf(notAvailable(source.input)));
+    }
     const frame = inputFrame(person, source.input, companyId, (tx, membership) => runIn(tx, { kind: "input", membership }), deps);
     // The company's id in lower case, as a credential's is, so one company has one turn. The turn comes before the membership's check, which ends a call where the person has none at once, so such a call holds it only that long.
     return runFramed(operation, inTurn(handler.turn?.(input), String(companyId).toLowerCase(), frame, deps), keyed(keysFor(operation, String(companyId))), deps);
   }
   if (source === "new") {
-    return runFramed(operation, newCompanyFrame(person, (tx, companyId) => runIn(tx, { kind: "new", companyId }), deps), keyed({ store: personKeys }), deps);
+    return runFramed(operation, newCompanyFrame(person, (tx, companyId) => runIn(tx, { kind: "new", companyId }), deps), ownKeys(), deps);
   }
   const access = source === "current" ? context.company : undefined;
   if (access !== undefined) {
@@ -1032,7 +1113,7 @@ function runPerson(handler: PersonHandler, context: RequestContext, read: ReadCa
     const frame = inTurn(handler.turn?.(input), access.companyId, settingsFrame(settings, (tx) => runIn(tx, { kind: "current", access }), deps), deps);
     return runFramed(operation, frame, keyed(keysFor(operation, access.companyId)), deps);
   }
-  return runFramed(operation, settingsFrame(person, (tx) => runIn(tx, { kind: "none" }), deps), keyed({ store: personKeys }), deps);
+  return runFramed(operation, settingsFrame(person, (tx) => runIn(tx, { kind: "none" }), deps), ownKeys(), deps);
 }
 
 /**
@@ -1046,7 +1127,7 @@ function runPersonList(handler: PersonListHandler, context: RequestContext, inpu
   if (!page.ok) {
     return Promise.resolve(refuse({ kind: "invalid", problems: page.problems }));
   }
-  const settings: PersonSettings = { actorId: context.personId, actorKind: context.actorKind, channel: context.channel };
+  const settings: PersonSettings = { ...actorOf(context), channel: context.channel };
   const listed = async (tx: Queryable): Promise<Answer<unknown>> => {
     const answer = await handler.run({ context, tx, page: page.value }, input);
     return answer.ok ? ok(wirePage(answer.output, scope, deps.cursorKey)) : answer;
@@ -1058,12 +1139,7 @@ function runPersonList(handler: PersonListHandler, context: RequestContext, inpu
 function runData(handler: DataHandler | ListHandler, context: CompanyContext, read: ReadCall, deps: RunnerDeps): Promise<Outcome> {
   const { operation } = handler;
   const { input, key } = read;
-  const settings: TransactionSettings = {
-    company: context.company,
-    actorId: context.personId,
-    actorKind: context.actorKind,
-    channel: context.channel,
-  };
+  const settings: TransactionSettings = { company: context.company, ...actorOf(context), channel: context.channel };
   if (handler.kind === "list") {
     const scope: CursorScope = { operationId: operation.operationId, companyId: context.company.companyId };
     const page = pageRequest(input.query, scope, deps.cursorKey);

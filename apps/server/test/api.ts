@@ -8,7 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Client as McpClient, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { Money, PERMISSIONS, REGISTRY, defineListOperation, defineOperation, moneyToOre, oreToMoney, type AdminLevel, type Operation } from "@nortfox/contract";
+import { Money, PERMISSIONS, REGISTRY, SCOPES, defineListOperation, defineOperation, moneyToOre, oreToMoney, type AdminLevel, type Operation, type Scope } from "@nortfox/contract";
 import type { Client, QueryResult, QueryResultRow } from "pg";
 import { Pool } from "pg";
 import { z } from "zod";
@@ -21,7 +21,7 @@ import { createApp, type AppOptions, type ServerApp } from "../src/app.ts";
 import { InstallKey } from "../src/auth/install-key.ts";
 import { PasswordHasher, type PasswordCost } from "../src/auth/password.ts";
 import { connectionConfig } from "../src/db/connect.ts";
-import { databaseOver, type Database, type Queryable } from "../src/db/database.ts";
+import { databaseOver, type Database, type Queryable, type Via } from "../src/db/database.ts";
 import { serverHandlers } from "../src/handlers.ts";
 import { resolveActive, type MembershipRow, type ResolvedMembership } from "../src/modules/memberships/resolve.ts";
 import { urlOf } from "./cluster.ts";
@@ -75,6 +75,7 @@ export const testListAccounts = defineListOperation({
   description: "Lists the company's accounts, ordered by id. Only the tests serve it.",
   item: TestAccount,
   permission: "test:read",
+  scope: "bookkeeping",
   tool: "Lists the accounts of the company you work in. Only the tests serve it.",
 });
 
@@ -120,6 +121,7 @@ export const testBookVoucher = defineOperation({
   output: TestVoucher,
   status: 201,
   permission: "test:write",
+  scope: "bookkeeping",
   tool: "Books a voucher of one amount in the company you work in. Only the tests serve it.",
   writes: true,
 });
@@ -257,22 +259,27 @@ export function runnerDeps(database: Database): RunnerDeps {
   };
 }
 
-/** Who a test principal is: its person, its kind and, in a company, its permissions. */
+/** Who a test principal is: its person, its kind, an integration's via and, in a company, its permissions. */
 export interface PrincipalOptions {
   readonly personId?: string;
   readonly kind?: PrincipalKind;
+  /** The token or the client an integration acts through: by default a made-up API token. */
+  readonly via?: Via;
   readonly permissions?: readonly string[];
 }
 
 /**
  * A signed-in person with no company: a user, unless the options say
- * otherwise. Its credential is a session that only the test knows; the
- * test's resolver hands it out for a bearer token.
+ * otherwise. An integration acts through the options' via, or a made-up API
+ * token. Its credential is a session that only the test knows; the test's
+ * resolver hands it out for a bearer token.
  */
 export function personOf(options: Omit<PrincipalOptions, "permissions"> = {}): Principal {
+  const actorKind = options.kind ?? "user";
   return {
     personId: options.personId ?? randomUUID(),
-    actorKind: options.kind ?? "user",
+    actorKind,
+    ...(actorKind === "integration" ? { via: options.via ?? { kind: "api-token", id: randomUUID() } } : {}),
     credential: { kind: "session", sessionId: randomUUID(), method: "password-email", identifiedAt: new Date("2090-03-15T09:00:00.000Z") },
   };
 }
@@ -311,9 +318,41 @@ export async function testMembership(companyId: string, personId: string, adminL
  * that resolve.ts made (testMembership), as the resolver makes it.
  */
 export async function principalOf(companyId: string, options: PrincipalOptions = {}): Promise<Principal & { readonly company: CompanyAccess }> {
-  const person = personOf({ kind: options.kind ?? "integration", ...(options.personId === undefined ? {} : { personId: options.personId }) });
+  const person = personOf({
+    kind: options.kind ?? "integration",
+    ...(options.personId === undefined ? {} : { personId: options.personId }),
+    ...(options.via === undefined ? {} : { via: options.via }),
+  });
   const membership = await testMembership(companyId, person.personId);
   return { ...person, company: membership.access(options.permissions ?? ALL_PERMISSIONS) };
+}
+
+/** Who a test token is: its person, its scopes and the permissions its person holds in its company. */
+export interface TokenOptions {
+  readonly personId?: string;
+  /** The token's scopes: every scope by default. */
+  readonly scopes?: readonly Scope[];
+  /** The permissions its person holds in its company: every one by default. */
+  readonly permissions?: readonly string[];
+}
+
+/**
+ * An API token's principal in `companyId`, as the resolver makes it: an
+ * integration that acts through the token, with the token's scopes, in the
+ * token's company. Its company access is made from a membership that
+ * resolve.ts made (testMembership).
+ */
+export async function tokenPrincipalOf(companyId: string, options: TokenOptions = {}): Promise<Principal & { readonly company: CompanyAccess }> {
+  const personId = options.personId ?? randomUUID();
+  const tokenId = randomUUID();
+  const membership = await testMembership(companyId, personId);
+  return {
+    personId,
+    actorKind: "integration",
+    via: { kind: "api-token", id: tokenId },
+    credential: { kind: "api-token", tokenId, scopes: new Set(options.scopes ?? SCOPES) },
+    company: membership.access(options.permissions ?? ALL_PERMISSIONS),
+  };
 }
 
 /** A resolver that maps `Authorization: Bearer <token>` to the token's principal, and anything else to no actor. */

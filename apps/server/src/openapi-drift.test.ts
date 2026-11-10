@@ -73,6 +73,7 @@ describe("the shapes of slice 2c in the API description", () => {
     const signIn = pathOf("/v1/test-sign-ins", "post");
     expect(signIn?.["x-nortfox"]).toEqual({
       permission: "none",
+      scope: null,
       tool: "Signs in. Only the tests serve it.",
       assistant: false,
       writes: true,
@@ -80,9 +81,10 @@ describe("the shapes of slice 2c in the API description", () => {
       session: "flow",
       company: "none",
       personalOutput: [],
+      secretOutput: [],
     });
     expect(signIn?.parameters).toBeUndefined();
-    expect(pathOf("/v1/test-person", "get")?.["x-nortfox"]).toMatchObject({ permission: "signed-in", session: null, company: "none" });
+    expect(pathOf("/v1/test-person", "get")?.["x-nortfox"]).toMatchObject({ permission: "signed-in", scope: "profile", session: null, company: "none" });
   });
 });
 
@@ -96,7 +98,7 @@ describe("the credentials in the API description", () => {
     Object.values(document.paths).flatMap((item) => Object.values(item).map((operation) => [operation.operationId, operation.security])),
   );
 
-  it("names the session cookie as the scheme sessionCookie", () => {
+  it("names the session cookie as the scheme sessionCookie, and an API token as the scheme bearer", () => {
     expect(document.components.securitySchemes).toEqual({
       sessionCookie: {
         type: "apiKey",
@@ -104,40 +106,49 @@ describe("the credentials in the API description", () => {
         name: "__Host-nortfox-session",
         description: "The browser's session, which a sign-in sets: verifyTotp, or loginWithPassword on a known device. The browser sends it by itself.",
       },
+      bearer: {
+        type: "http",
+        scheme: "bearer",
+        description:
+          "An API token, which createApiToken makes, sent as Authorization: Bearer <token>. It works in its one company, within its scopes, on /v1 only. A request with a bearer token ignores the session cookie.",
+      },
     });
   });
 
-  it("names it on each operation that needs an actor, and on no other", () => {
+  it("names the cookie on each operation that needs an actor, and beside it the bearer token on each that a token may call by its scope", () => {
     expect(security).toEqual({
       getHealth: undefined,
-      getCompany: [{ sessionCookie: [] }],
+      getCompany: [{ sessionCookie: [] }, { bearer: [] }],
       completeSetup: undefined,
       loginWithPassword: undefined,
       verifyTotp: undefined,
       logout: [{ sessionCookie: [] }],
       getSession: [{ sessionCookie: [] }],
-      getMe: [{ sessionCookie: [] }],
-      createCompany: [{ sessionCookie: [] }],
-      listCompanies: [{ sessionCookie: [] }],
+      getMe: [{ sessionCookie: [] }, { bearer: [] }],
+      createCompany: [{ sessionCookie: [] }, { bearer: [] }],
+      listCompanies: [{ sessionCookie: [] }, { bearer: [] }],
       listRecentCompanies: [{ sessionCookie: [] }],
       selectCompany: [{ sessionCookie: [] }],
-      updateMyMembership: [{ sessionCookie: [] }],
-      updateCompany: [{ sessionCookie: [] }],
-      listPermissions: [{ sessionCookie: [] }],
-      listUsers: [{ sessionCookie: [] }],
-      getUser: [{ sessionCookie: [] }],
-      updateUser: [{ sessionCookie: [] }],
-      removeUser: [{ sessionCookie: [] }],
-      assignProgram: [{ sessionCookie: [] }],
-      removeProgram: [{ sessionCookie: [] }],
-      moveProgram: [{ sessionCookie: [] }],
-      updateUserRights: [{ sessionCookie: [] }],
-      inviteUser: [{ sessionCookie: [] }],
-      resendInvitation: [{ sessionCookie: [] }],
-      disconnectUserIdentity: [{ sessionCookie: [] }],
+      updateMyMembership: [{ sessionCookie: [] }, { bearer: [] }],
+      updateCompany: [{ sessionCookie: [] }, { bearer: [] }],
+      listPermissions: [{ sessionCookie: [] }, { bearer: [] }],
+      listUsers: [{ sessionCookie: [] }, { bearer: [] }],
+      getUser: [{ sessionCookie: [] }, { bearer: [] }],
+      updateUser: [{ sessionCookie: [] }, { bearer: [] }],
+      removeUser: [{ sessionCookie: [] }, { bearer: [] }],
+      assignProgram: [{ sessionCookie: [] }, { bearer: [] }],
+      removeProgram: [{ sessionCookie: [] }, { bearer: [] }],
+      moveProgram: [{ sessionCookie: [] }, { bearer: [] }],
+      updateUserRights: [{ sessionCookie: [] }, { bearer: [] }],
+      inviteUser: [{ sessionCookie: [] }, { bearer: [] }],
+      resendInvitation: [{ sessionCookie: [] }, { bearer: [] }],
+      disconnectUserIdentity: [{ sessionCookie: [] }, { bearer: [] }],
       getInvitation: undefined,
       acceptInvitation: undefined,
-      leaveCompany: [{ sessionCookie: [] }],
+      leaveCompany: [{ sessionCookie: [] }, { bearer: [] }],
+      createApiToken: [{ sessionCookie: [] }],
+      listApiTokens: [{ sessionCookie: [] }, { bearer: [] }],
+      revokeApiToken: [{ sessionCookie: [] }, { bearer: [] }],
     });
   });
 

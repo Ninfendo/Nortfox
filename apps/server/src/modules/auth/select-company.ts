@@ -39,6 +39,7 @@
 // its idempotency key is kept outside every company table.
 
 import { effectivePermissions, selectCompany } from "@nortfox/contract";
+import { sessionOf } from "../../api/context.ts";
 import { companyNotAvailable, credentialEnded, handlePerson, inputMembership, ok } from "../../api/operation.ts";
 import { permissionSnapshot } from "../../auth/resolver.ts";
 import { addEntry, signInEntryDetails } from "../audit/entries.ts";
@@ -54,7 +55,7 @@ export const selectCompanyHandler = handlePerson(selectCompany, async ({ context
     return companyNotAvailable(selectCompany);
   }
   const at = now();
-  const { credential } = context;
+  const credential = sessionOf(selectCompany.operationId, context.credential);
   const programs = await readPrograms(tx, membership.membershipId);
   const permissions = permissionSnapshot(effectivePermissions(memberAccess(held.adminLevel, programs), at), programs.administered);
   const chosen = await tx.query<{ chosen: boolean }>("SELECT access.choose_company($1, $2, $3, $4, $5, $6) AS chosen", [

@@ -22,7 +22,11 @@
 //   stored fingerprint tells nothing.
 // - Keys are kept per company and actor, and a signed-in person's own write,
 //   which works in no company, keeps its keys per person, as createCompany
-//   does, whose company is new on each try. While a request runs, its key is
+//   does, whose company is new on each try. Such a write through a token
+//   holds the token in its fingerprint: a key that the person's session or
+//   another of the person's tokens used is another request for it (422), so
+//   a token never replays an answer that another credential stored, such as
+//   a company that the token did not make. While a request runs, its key is
 //   in flight in this process, and a second request with it gets 409 before
 //   it asks the pool for a connection. NortFox runs one server process
 //   (decision 3); across processes the database's unique key decides.
@@ -42,12 +46,17 @@
 //   common: the key in flight, whose scope is the company for both, keeps
 //   two such writes of one process apart. A refused or failed write stores
 //   nothing, so a retry with the key runs again.
+// - A write whose answer holds a secret, such as a token shown once
+//   (secretOutput), keeps its key with the answer less each secret field
+//   (withoutSecrets), so no table and no behandlingshistorik holds the
+//   secret. A repeat of the same request gets 409 answer-shown-once with
+//   that answer, such as the id of what the first call made (operation.ts).
 // - A write that runs before sign-in takes no key: there is no actor to keep
 //   it for.
 
 import { createHmac } from "node:crypto";
 import { IDEMPOTENCY_KEY_ARGUMENT, IDEMPOTENCY_KEY_MAX_LENGTH, IDEMPOTENCY_KEY_PATTERN, jsonPointer, type FieldIssue, type JsonValue } from "@nortfox/contract";
-import type { Queryable } from "../db/database.ts";
+import type { Queryable, Via } from "../db/database.ts";
 
 /** A key after its check: the key, or its one problem. */
 export type KeyCheck = { readonly ok: true; readonly value: string } | { readonly ok: false; readonly problems: readonly FieldIssue[] };
@@ -129,11 +138,51 @@ export function canonicalJson(value: unknown): string {
 /**
  * The request's fingerprint: the HMAC-SHA256 under `key`, the install's
  * fingerprint key, of the canonical JSON of the operation, its path
- * parameters when it takes any, the query and the body, as 64 lower-case
- * hexadecimal digits.
+ * parameters when it takes any, the query and the body, and the token or
+ * client a person's own write came through when it names one (`via`), as 64
+ * lower-case hexadecimal digits.
  */
-export function requestHash(key: Uint8Array, operationId: string, query: unknown, body: unknown, params?: unknown): string {
-  return createHmac("sha256", key).update(canonicalJson({ operation: operationId, params, query, body })).digest("hex");
+export function requestHash(key: Uint8Array, operationId: string, query: unknown, body: unknown, params?: unknown, via?: Via): string {
+  return createHmac("sha256", key).update(canonicalJson({ operation: operationId, params, query, body, via })).digest("hex");
+}
+
+/** The segments of a JSON Pointer (RFC 6901), unescaped: "" is the whole value, "/a~1b/*" is "a/b" and "*". */
+function segmentsOf(pointer: string): string[] {
+  return pointer === "" ? [] : pointer.slice(1).split("/").map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+}
+
+/**
+ * A copy of `value` without the field that the segments name, or undefined
+ * when they name the value itself. "*" stands for each item of a list and
+ * each value of an object, as the registry's pointers write it. A field that
+ * the value does not have, or a value that holds no field, is passed over.
+ */
+function without(value: unknown, segments: readonly string[]): unknown {
+  const [head, ...rest] = segments;
+  if (head === undefined) {
+    return undefined;
+  }
+  const keep = (item: unknown): unknown[] => {
+    const kept = without(item, rest);
+    return kept === undefined ? [] : [kept];
+  };
+  if (Array.isArray(value)) {
+    return head === "*" ? value.flatMap(keep) : value;
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).flatMap(([name, item]) => (head === "*" || head === name ? keep(item).map((kept) => [name, kept]) : [[name, item]])));
+}
+
+/**
+ * The answer a write keeps with its key: its first answer less each secret
+ * field that `pointers`, the operation's secretOutput, names. The answer
+ * itself is not changed: the first call still gives it whole. An answer
+ * that is a secret as a whole keeps nothing, an empty object.
+ */
+export function withoutSecrets(answer: unknown, pointers: readonly string[]): unknown {
+  return pointers.reduce<unknown>((kept, pointer) => without(kept, segmentsOf(pointer)) ?? {}, answer);
 }
 
 /**

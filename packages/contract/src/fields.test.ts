@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// personal() marks a person's contact data in an output, and the registry
-// derives each operation's list of the marked fields from its output schema
-// (plan 2.1 and 2.2), so a marked field is never left off. These tests pin
-// the pointers it gives through every shape an output takes: nested objects,
-// a schema with a name of its own, optional and nullable fields, lists,
-// unions, intersections, tuples and records. A mark that no pointer names
-// throws.
+// personal() marks a person's contact data in an output, and secret() a
+// value that works as a credential. The registry derives each operation's
+// list of the marked fields from its output schema (plan 2.1 and 2.2), so a
+// marked field is never left off. These tests pin the pointers it gives
+// through every shape an output takes: nested objects, a schema with a name
+// of its own, optional and nullable fields, lists, unions, intersections,
+// tuples and records. A mark that no pointer names throws.
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { isPersonal, personal, personalPointers } from "./fields.ts";
+import { isPersonal, isSecret, personal, personalPointers, secret, secretPointers } from "./fields.ts";
 
 const Person = z
   .strictObject({
@@ -107,5 +107,52 @@ describe("personalPointers", () => {
     expect(personalPointers(output)).toEqual(["/x-nortfox-personal/email", "/plain/x-nortfox-personal"]);
     // A mark that no pointer reaches still throws inside such a field.
     expect(() => personalPointers(z.strictObject({ "x-nortfox-personal": z.record(personal(z.email()), z.int()) }))).toThrow("(1)");
+  });
+});
+
+describe("secret", () => {
+  it("marks the schema it is given, and gives the same schema back", () => {
+    const text = z.string();
+    expect(secret(text)).toBe(text);
+    expect(isSecret(text)).toBe(true);
+    expect(isSecret(z.string())).toBe(false);
+  });
+
+  it("is a mark of its own: a secret field is not personal, and a personal field is not secret", () => {
+    const code = secret(z.string());
+    const name = personal(z.string());
+    expect(isPersonal(code)).toBe(false);
+    expect(isSecret(name)).toBe(false);
+    const output = z.strictObject({ name, code });
+    expect(personalPointers(output)).toEqual(["/name"]);
+    expect(secretPointers(output)).toEqual(["/code"]);
+  });
+});
+
+describe("secretPointers", () => {
+  it("gives nothing for an output with no secret field", () => {
+    expect(secretPointers(z.strictObject({ id: z.uuid(), name: personal(z.string()) }))).toEqual([]);
+  });
+
+  it("gives each secret field by its pointer, as personalPointers does: a nested field, an optional one, and the items of a list", () => {
+    const Enrolment = z.strictObject({ otpauthUri: secret(z.string()) }).meta({ id: "FieldsTestEnrolment" });
+    const output = z.strictObject({
+      id: z.uuid(),
+      token: secret(z.string()).optional(),
+      enrolment: Enrolment,
+      later: Enrolment.optional(),
+      codes: z.array(secret(z.string())),
+    });
+    expect(secretPointers(output)).toEqual(["/token", "/enrolment/otpauthUri", "/later/otpauthUri", "/codes/*"]);
+  });
+
+  it("throws for a mark that no pointer names, so a secret field is never left off its list", () => {
+    expect(() => secretPointers(z.strictObject({ byToken: z.record(secret(z.string()), z.int()) }))).toThrow(
+      "The output holds secret() marks that no JSON Pointer reaches (1), under a key that secretPointers does not follow. Mark the field that holds each one.",
+    );
+  });
+
+  it("reads a field that has the mark's own name like any other field", () => {
+    expect(secretPointers(z.strictObject({ "x-nortfox-secret": z.strictObject({ code: secret(z.string()) }) }))).toEqual(["/x-nortfox-secret/code"]);
   });
 });

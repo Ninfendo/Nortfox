@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { appPool, buildTestApp, callTool, mcpClient, postVoucher, principalOf, testResolver, voucherBody } from "../../../test/api.ts";
 import { CHECK_VIOLATION, INSUFFICIENT_PRIVILEGE, expectError, freshDatabase, inTransaction, type TestDatabase } from "../../../test/database.ts";
 import { CHANNELS } from "../../../test/every-table.ts";
-import { addBooks, balanced, bookVoucher, someUser, writeVoucher, type Actor, type Books, type NewVoucher } from "../../../test/ledger.ts";
+import { addBooks, balanced, bookVoucher, someIntegration, someUser, writeVoucher, type Actor, type Books, type NewVoucher } from "../../../test/ledger.ts";
 
 const ANOTHER_CHANNEL = /A transaction keeps one channel/;
 
@@ -25,6 +25,8 @@ interface HistoryRow {
   readonly operation: string;
   readonly actor_id: string;
   readonly actor_kind: string;
+  readonly via_kind: string | null;
+  readonly via_id: string | null;
   readonly channel: string | null;
 }
 
@@ -48,7 +50,7 @@ describe("the channel in the behandlingshistorik", () => {
   /** The history rows of `company`, in the order they were written, as the app reads them. */
   async function historyOf(company: string): Promise<HistoryRow[]> {
     return inTransaction(app, { company }, async () => {
-      const found = await app.query<HistoryRow>("SELECT table_name, operation, actor_id, actor_kind, channel FROM audit.history ORDER BY id");
+      const found = await app.query<HistoryRow>("SELECT table_name, operation, actor_id, actor_kind, via_kind, via_id::text AS via_id, channel FROM audit.history ORDER BY id");
       return found.rows;
     });
   }
@@ -67,7 +69,7 @@ describe("the channel in the behandlingshistorik", () => {
 
   it.each(CHANNELS)("records the channel %s that the transaction sets, with its actor and kind, on every history row of the transaction", async (channel) => {
     const books = await addBooks(app);
-    for (const who of [someUser(), { actor: someUser().actor, kind: "integration" } as const]) {
+    for (const who of [someUser(), someIntegration()]) {
       const written = await added(books.company, () =>
         inTransaction(app, { company: books.company, ...who, channel }, async () => {
           await writeVoucher(app, books.company, aVoucher(books));
@@ -82,8 +84,8 @@ describe("the channel in the behandlingshistorik", () => {
         "UPDATE ledger.accounts",
         "UPDATE ledger.voucher_counters",
       ]);
-      expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.channel])))).toEqual(
-        new Set([JSON.stringify([who.actor, who.kind, channel])]),
+      expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.via_kind, row.via_id, row.channel])))).toEqual(
+        new Set([JSON.stringify([who.actor, who.kind, who.viaKind ?? null, who.viaId ?? null, channel])]),
       );
     }
   });
@@ -95,7 +97,7 @@ describe("the channel in the behandlingshistorik", () => {
       const written = await added(books.company, () =>
         inTransaction(app, { company: books.company, ...who, ...settings }, () => app.query(RENAME, [books.year.id, "Bank"])),
       );
-      expect(written).toEqual([{ table_name: "ledger.accounts", operation: "UPDATE", actor_id: who.actor, actor_kind: "user", channel: null }]);
+      expect(written).toEqual([{ table_name: "ledger.accounts", operation: "UPDATE", actor_id: who.actor, actor_kind: "user", via_kind: null, via_id: null, channel: null }]);
     }
   });
 
@@ -154,14 +156,15 @@ describe("the channel in the behandlingshistorik", () => {
     expect(await historyOf(books.company)).toEqual(before);
   });
 
-  it("records a write through REST by an integration: its actor, the kind integration and the channel rest on every history row of the request", async () => {
+  it("records a write through REST by an integration: its actor, the kind integration, its token and the channel rest on every history row of the request", async () => {
     const books = await addBooks(app);
     const actor = randomUUID();
+    const token = randomUUID();
     const pool = appPool(db, 1);
     try {
       const { hono } = buildTestApp({
         database: pool.database,
-        resolve: testResolver({ integration: await principalOf(books.company, { personId: actor, kind: "integration" }) }),
+        resolve: testResolver({ integration: await principalOf(books.company, { personId: actor, kind: "integration", via: { kind: "api-token", id: token } }) }),
       });
       let voucher = "";
       const written = await added(books.company, async () => {
@@ -177,8 +180,8 @@ describe("the channel in the behandlingshistorik", () => {
         "INSERT ledger.vouchers",
         "UPDATE ledger.voucher_counters",
       ]);
-      expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.channel])))).toEqual(
-        new Set([JSON.stringify([actor, "integration", "rest"])]),
+      expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.via_kind, row.via_id, row.channel])))).toEqual(
+        new Set([JSON.stringify([actor, "integration", "api-token", token, "rest"])]),
       );
       const ofVoucher = await inTransaction(app, { company: books.company }, () =>
         app.query<{ table_name: string }>(
@@ -218,8 +221,8 @@ describe("the channel in the behandlingshistorik", () => {
         "INSERT ledger.vouchers",
         "UPDATE ledger.voucher_counters",
       ]);
-      expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.channel])))).toEqual(
-        new Set([JSON.stringify([actor, "user", "mcp"])]),
+      expect(new Set(written.map((row) => JSON.stringify([row.actor_id, row.actor_kind, row.via_kind, row.via_id, row.channel])))).toEqual(
+        new Set([JSON.stringify([actor, "user", null, null, "mcp"])]),
       );
       const ofVoucher = await inTransaction(app, { company: books.company }, () =>
         app.query<{ table_name: string }>(
@@ -247,6 +250,6 @@ describe("the channel in the behandlingshistorik", () => {
         await app.query(RENAME, [books.year.id, "Kassa och bank"]);
       }),
     );
-    expect(written).toEqual([{ table_name: "ledger.accounts", operation: "UPDATE", actor_id: who.actor, actor_kind: "user", channel: "rest" }]);
+    expect(written).toEqual([{ table_name: "ledger.accounts", operation: "UPDATE", actor_id: who.actor, actor_kind: "user", via_kind: null, via_id: null, channel: "rest" }]);
   });
 });

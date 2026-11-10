@@ -62,6 +62,7 @@ describe("the table guard", () => {
   it("lists every table and view, and keeps exactly the pinned exceptions", async () => {
     expect(await guardedRelations(owner)).toEqual([
       "access.account_events",
+      "access.api_tokens",
       "access.attempt_counters",
       "access.catalogue_groups",
       "access.catalogue_permissions",
@@ -560,6 +561,7 @@ describe("the table guard", () => {
     it("pins the install-wide tables, each with its class and its reason", () => {
       expect([...INSTALL_TABLES.keys()].sort()).toEqual([
         "access.account_events",
+        "access.api_tokens",
         "access.attempt_counters",
         "access.catalogue_groups",
         "access.catalogue_permissions",
@@ -590,6 +592,8 @@ describe("the table guard", () => {
         column: "contact_company_id",
         commands: ["SELECT", "INSERT", "UPDATE", "DELETE"],
       });
+      // A token is never deleted: the app reads, adds and revokes.
+      expect(INSTALL_TABLES.get("access.api_tokens")).toMatchObject({ class: "company", column: "token_company_id", commands: ["SELECT", "INSERT", "UPDATE"] });
       for (const table of ["access.catalogue_programs", "access.catalogue_groups", "access.catalogue_permissions", "access.catalogue_program_permissions"]) {
         expect(INSTALL_TABLES.get(table), table).toMatchObject({ class: "public" });
       }

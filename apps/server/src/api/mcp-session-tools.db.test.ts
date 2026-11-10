@@ -163,6 +163,7 @@ describe("the session operations on /mcp", () => {
       await addMembership(app, owner, { ...made, id: made.row.company_id, asOwner: { actor: other.id, kind: "user" } }, { user: person.id });
       return made.row.company_id;
     },
+    tokenOf: () => Promise.reject(new Error("No operation that serves the browser's session takes an API token.")),
   };
 
   it("covers every session operation, and every operation of the registry has its arguments", () => {

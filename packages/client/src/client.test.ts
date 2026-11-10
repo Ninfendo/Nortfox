@@ -277,6 +277,49 @@ describe("createClient", () => {
     ]);
   });
 
+  it("sends each operation of the API tokens as its operation takes it", async () => {
+    const listed = { id: "5f6a7b8c-9d0e-4f1a-8b2c-3d4e5f6a7b8c", name: "Bokföringsexport", scopes: ["bookkeeping"], userId: "4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b", createdAt: "2090-03-15T10:00:00.000Z" };
+    const made = { ...listed, token: "the-api-token" };
+    const answers: Response[] = [Response.json(made, { status: 201 }), Response.json({ items: [listed], total: 1 }), new Response(null, { status: 204 })];
+    const calls: [string, RequestInit][] = [];
+    const client = createClient({
+      baseUrl: "https://nortfox.example",
+      fetch: (input, init) => {
+        calls.push([input, init]);
+        return Promise.resolve(answers.shift() ?? Response.json({}));
+      },
+    });
+    await expect(client.createApiToken({ name: "Bokföringsexport", scopes: ["bookkeeping"] }, { idempotencyKey: "make-1" })).resolves.toEqual(made);
+    await expect(client.listApiTokens({ limit: 10 })).resolves.toEqual({ items: [listed], total: 1 });
+    await expect(client.revokeApiToken({ tokenId: listed.id }, { idempotencyKey: "revoke-1" })).resolves.toBeUndefined();
+    expect(calls).toEqual([
+      [
+        "https://nortfox.example/v1/api-tokens",
+        { method: "POST", headers: { accept: "application/json", "content-type": "application/json", "idempotency-key": "make-1" }, body: '{"name":"Bokföringsexport","scopes":["bookkeeping"]}' },
+      ],
+      ["https://nortfox.example/v1/api-tokens?limit=10", { method: "GET", headers: { accept: "application/json" } }],
+      [`https://nortfox.example/v1/api-tokens/${listed.id}`, { method: "DELETE", headers: { accept: "application/json", "idempotency-key": "revoke-1" } }],
+    ]);
+  });
+
+  it("sends an API token as a bearer token with every call, when the options give one", async () => {
+    const calls: [string, RequestInit][] = [];
+    const client = createClient({
+      baseUrl: "https://nortfox.example",
+      token: "the-api-token",
+      fetch: (input, init) => {
+        calls.push([input, init]);
+        return Promise.resolve(Response.json({ items: [], total: 0 }));
+      },
+    });
+    await client.listApiTokens();
+    await client.getHealth();
+    expect(calls.map(([, init]) => init.headers)).toEqual([
+      { accept: "application/json", authorization: "Bearer the-api-token" },
+      { accept: "application/json", authorization: "Bearer the-api-token" },
+    ]);
+  });
+
   it("uses the global fetch when none is given", async () => {
     const server = answering(200, { status: "ok", version: "2.0.0" });
     vi.stubGlobal("fetch", server.fetch);

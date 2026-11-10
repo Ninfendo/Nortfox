@@ -51,6 +51,9 @@ const INVITATION_REFUSALS = [
   "personal-identity-number-taken",
 ] as const;
 
+/** The refusals of the API tokens, each at 422. */
+const TOKEN_REFUSALS = ["api-token-not-found"] as const;
+
 describe("jsonPointer", () => {
   it.each([
     [[], ""],
@@ -349,7 +352,7 @@ describe("the problem codes", () => {
       "fiscal-year-strands-rows",
     ];
     expect(Object.entries(PROBLEM_CODES).filter(([, status]) => status === 422).map(([code]) => code).sort()).toEqual(
-      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid", "company-not-available", ...USER_REFUSALS, ...INVITATION_REFUSALS].sort(),
+      [...rules, "idempotency-key-reused", "sign-in-failed", "setup-link-invalid", "company-not-available", ...USER_REFUSALS, ...INVITATION_REFUSALS, ...TOKEN_REFUSALS].sort(),
     );
   });
 
@@ -359,6 +362,10 @@ describe("the problem codes", () => {
 
   it("list the refusals of the invitations and of the unique keys, each at 422", () => {
     expect(Object.fromEntries(INVITATION_REFUSALS.map((code) => [code, PROBLEM_CODES[code]]))).toEqual(Object.fromEntries(INVITATION_REFUSALS.map((code) => [code, 422])));
+  });
+
+  it("list the refusals of the API tokens, each at 422", () => {
+    expect(Object.fromEntries(TOKEN_REFUSALS.map((code) => [code, PROBLEM_CODES[code]]))).toEqual({ "api-token-not-found": 422 });
   });
 
   it("list every code a field problem can have", () => {

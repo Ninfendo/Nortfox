@@ -2,16 +2,20 @@
 
 // docs/api.md lists what a client of /v1 relies on: each operation with its
 // method, path, permission and whether the assistant may call it, each
-// problem code with its status, and each field problem code. This test reads
-// those tables and holds them to the contract, so a new operation or code
-// changes docs/api.md in the same change, and a stale row fails. The ledger's
-// rules are not listed one by one there: one row stands for them, and
-// db/README.md lists every reason.
+// problem code with its status, each field problem code, each scope with the
+// operations that name it, the operations that serve or need a browser
+// session, and the permissions that a member and an administrator hold by
+// being one. This test reads those tables and holds them to the contract, so
+// a new operation, code, scope or permission changes docs/api.md in the same
+// change, and a stale row fails. The ledger's rules are not listed one by one
+// there: one row stands for them, and db/README.md lists every reason.
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { MEMBER_PERMISSIONS, PROGRAM_ADMINISTRATOR_PERMISSIONS, SYSTEM_ADMINISTRATOR_PERMISSIONS } from "./access/permissions.ts";
 import { FIELD_PROBLEM_CODES, LEDGER_RULES, PROBLEM_CODES } from "./problem.ts";
 import { REGISTRY } from "./registry.ts";
+import { SCOPES } from "./scopes.ts";
 
 /** docs/api.md, as lines. */
 const LINES = readFileSync(new URL("../../../docs/api.md", import.meta.url), "utf8").split(/\r?\n/);
@@ -126,5 +130,51 @@ describe("docs/api.md's field problem codes", () => {
     for (const code of listed) {
       expect(FIELD_PROBLEM_CODES, code).toContain(code);
     }
+  });
+});
+
+describe("docs/api.md's scopes", () => {
+  const rows = table("### Scopes", ["Scope", "Operations"]);
+
+  it("lists every scope of SCOPES once, in its order", () => {
+    expect(rows.flatMap((cells) => names(cells[0]))).toEqual([...SCOPES]);
+  });
+
+  it("names in each row exactly the operations whose scope is one of the row's, in the registry's order", () => {
+    for (const cells of rows) {
+      const scopes = names(cells[0]);
+      const wanted = REGISTRY.filter((operation) => scopes.includes(String(operation["x-nortfox"].scope))).map((operation) => operation.operationId);
+      expect(names(cells[1]), scopes.join(", ")).toEqual(wanted);
+    }
+  });
+});
+
+describe("docs/api.md's operations of a browser session", () => {
+  /** The ids of the registry's operations that pass the test, in its order. */
+  function ids(test: (meta: (typeof REGISTRY)[number]["x-nortfox"]) => boolean): string[] {
+    return REGISTRY.filter((operation) => test(operation["x-nortfox"])).map((operation) => operation.operationId);
+  }
+
+  it("lists, in the registry's order, the operations that serve the session with an actor, those that serve it before sign-in, and those that need it", () => {
+    const rows = table("### Scopes", ["Session", "Operations", "A token's call"]);
+    expect(rows.map((cells) => names(cells[0]))).toEqual([["flow"], ["flow"], ["only"]]);
+    expect(rows.map((cells) => names(cells[1]))).toEqual([
+      ids((meta) => meta.session === "flow" && meta.permission !== "none"),
+      ids((meta) => meta.session === "flow" && meta.permission === "none"),
+      ids((meta) => meta.session === "only"),
+    ]);
+  });
+
+  it("gives a token's call of each the problem codes that the server gives", () => {
+    const rows = table("### Scopes", ["Session", "Operations", "A token's call"]);
+    const codes = rows.map((cells) => names(cells[2]).filter((name) => Object.hasOwn(PROBLEM_CODES, name)));
+    expect(codes).toEqual([["session-required", "browser-only"], ["browser-only"], ["session-required"]]);
+  });
+});
+
+describe("docs/api.md's permissions in a company", () => {
+  it("lists what every member, a system administrator and a program administrator hold by being one, in the contract's order", () => {
+    const rows = table("## The companies", ["Who", "Holds"]);
+    expect(rows.map((cells) => names(cells[1]))).toEqual([[...MEMBER_PERMISSIONS], [...SYSTEM_ADMINISTRATOR_PERMISSIONS], [...PROGRAM_ADMINISTRATOR_PERMISSIONS]]);
   });
 });

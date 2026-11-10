@@ -11,15 +11,34 @@ import { inTransaction } from "./database.ts";
 import type { ActorKind } from "./every-table.ts";
 import { addIdentity } from "./identities.ts";
 
-/** Who acts in a transaction. */
+/** What an integration acts through (decision 2): an API token or an MCP client. */
+export type ViaKind = "api-token" | "mcp-client";
+
+/** Who acts in a transaction. An integration names the token or the client it acts through. */
 export interface Actor {
   readonly actor: string;
   readonly kind: ActorKind;
+  readonly viaKind?: ViaKind;
+  readonly viaId?: string;
 }
 
 /** A user, made up for one test. */
 export function someUser(): Actor {
   return { actor: randomUUID(), kind: "user" };
+}
+
+/**
+ * An integration that acts for the person `actor`, made up for one test,
+ * through a made-up API token or MCP client: as a request with a token
+ * sets it.
+ */
+export function someIntegration(actor: string = randomUUID(), viaKind: ViaKind = "api-token"): Actor {
+  return { actor, kind: "integration", viaKind, viaId: randomUUID() };
+}
+
+/** An actor of `kind`, made up for one test: an integration acts through a made-up API token. */
+export function someActor(kind: ActorKind): Actor {
+  return kind === "integration" ? someIntegration() : { actor: randomUUID(), kind };
 }
 
 /** What a test may give a new company. Each value left out takes a made-up one. */

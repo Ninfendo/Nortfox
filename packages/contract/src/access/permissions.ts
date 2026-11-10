@@ -17,14 +17,15 @@ export const ADMIN_LEVELS = ["owner", "admin"] as const;
 
 export type AdminLevel = (typeof ADMIN_LEVELS)[number];
 
-/** What every active member holds in their company. */
-export const MEMBER_PERMISSIONS: readonly Permission[] = ["company:read"];
+/** What every active member holds in their company: they read it, and make, list and revoke their own API tokens. */
+export const MEMBER_PERMISSIONS: readonly Permission[] = ["company:read", "tokens:own"];
 
 /**
  * What a system administrator holds beside a member's own: the company's
- * details, its users and their programs. None of it is a work right.
+ * details, its users and their programs, and every API token of the
+ * company. None of it is a work right.
  */
-export const SYSTEM_ADMINISTRATOR_PERMISSIONS: readonly Permission[] = ["company:update", "users:read", "users:admin", "programs:grant"];
+export const SYSTEM_ADMINISTRATOR_PERMISSIONS: readonly Permission[] = ["company:update", "users:read", "users:admin", "programs:grant", "tokens:all"];
 
 /**
  * What a program administrator holds beside a member's own: a member who

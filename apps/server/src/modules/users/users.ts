@@ -85,7 +85,8 @@ export const updateUserHandler = handleData(updateUser, async ({ context, tx, no
   }
   await setWorkContacts(tx, member.companyId, member.id, body);
   const at = now();
-  if (body.idleTimeout !== undefined && member.id === context.company.membershipId) {
+  // A system administrator who changes their own idle logout notes their session again; a token has none.
+  if (body.idleTimeout !== undefined && member.id === context.company.membershipId && context.credential.kind === "session") {
     await seeSession(tx, context.credential.sessionId, at, idleTimeoutMinutes, member.id);
   }
   // updateUser needs users:admin, which only a system administrator holds: they see every program.

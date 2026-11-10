@@ -33,8 +33,8 @@ import { getCompanyHandler } from "../modules/companies/get-company.ts";
 import type { PrincipalKind, RequestContext } from "./context.ts";
 import { handleData, ok, runOperation, type OperationCall } from "./operation.ts";
 
-/** The challenge of the session cookie, the one credential in this part. */
-const SESSION_CHALLENGE = CHALLENGES.sessionCookie;
+/** The challenge of an operation that a token may call by its scope: the session cookie's, and the bearer token's beside it. */
+const TOKEN_CHALLENGE = `${CHALLENGES.sessionCookie}, ${CHALLENGES.bearer}`;
 
 /** PostgreSQL's SQLSTATE for a write in a READ ONLY transaction. */
 const READ_ONLY_SQL_TRANSACTION = "25006";
@@ -46,6 +46,8 @@ const Settings = z.strictObject({
   actor: z.string(),
   kind: z.string(),
   channel: z.string(),
+  viaKind: z.string(),
+  viaId: z.string(),
 });
 
 const testReadSettings = defineOperation({
@@ -57,6 +59,7 @@ const testReadSettings = defineOperation({
   description: "Gives the transaction's isolation level and settings. Only the tests run it.",
   output: Settings,
   permission: "test:read",
+  scope: "bookkeeping",
   tool: "Gives the transaction's settings. Only the tests run it.",
   writes: false,
 });
@@ -65,14 +68,15 @@ const readSettings = handleData(testReadSettings, async ({ tx }) => {
   const found = await tx.query<z.infer<typeof Settings>>(
     `SELECT pg_catalog.current_setting('transaction_isolation') AS level, pg_catalog.current_setting('transaction_read_only') AS "readOnly",
        pg_catalog.current_setting('nortfox.company_id') AS company, pg_catalog.current_setting('nortfox.actor_id') AS actor,
-       pg_catalog.current_setting('nortfox.actor_kind') AS kind, pg_catalog.current_setting('nortfox.channel') AS channel`,
+       pg_catalog.current_setting('nortfox.actor_kind') AS kind, pg_catalog.current_setting('nortfox.channel') AS channel,
+       pg_catalog.current_setting('nortfox.via_kind') AS "viaKind", pg_catalog.current_setting('nortfox.via_id') AS "viaId"`,
   );
-  return ok(found.rows[0] ?? { level: "", readOnly: "", company: "", actor: "", kind: "", channel: "" });
+  return ok(found.rows[0] ?? { level: "", readOnly: "", company: "", actor: "", kind: "", channel: "", viaKind: "", viaId: "" });
 });
 
 const writeInRead = handleData(testReadSettings, async ({ tx }) => {
   await tx.query("UPDATE ledger.companies SET name = 'Testbolaget Beta AB'");
-  return ok({ level: "", readOnly: "", company: "", actor: "", kind: "", channel: "" });
+  return ok({ level: "", readOnly: "", company: "", actor: "", kind: "", channel: "", viaKind: "", viaId: "" });
 });
 
 function call(context: RequestContext | undefined, query: Record<string, unknown> = {}): OperationCall {
@@ -105,13 +109,13 @@ describe("the runner's read path", () => {
     return { ...(await principalOf(companyId, { kind: "user", ...(permissions === undefined ? {} : { permissions }) })), channel: "rest" };
   }
 
-  it("runs a read in one transaction at REPEATABLE READ READ ONLY, with the request's company, actor, kind and channel", async () => {
+  it("runs a read in one transaction at REPEATABLE READ READ ONLY, with the request's company, actor, kind, no via for a user, and channel", async () => {
     const context = await contextIn(company);
     const outcome = await runOperation(readSettings, call(context), runnerDeps(pool.database));
     expect(outcome).toEqual({
       ok: true,
       status: 200,
-      output: { level: "repeatable read", readOnly: "on", company, actor: context.personId, kind: "user", channel: "rest" },
+      output: { level: "repeatable read", readOnly: "on", company, actor: context.personId, kind: "user", channel: "rest", viaKind: "", viaId: "" },
     });
   });
 
@@ -160,7 +164,7 @@ describe("the runner's read path", () => {
     const held = await pool.pool.connect();
     try {
       const deps = runnerDeps(pool.database);
-      expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: SESSION_CHALLENGE } });
+      expect(await runOperation(readSettings, call(undefined), deps)).toEqual({ ok: false, refusal: { kind: "authentication-required", challenge: TOKEN_CHALLENGE } });
       expect(await runOperation(readSettings, call(await contextIn(company, [])), deps)).toEqual({
         ok: false,
         refusal: { kind: "permission-missing", permission: "test:read" },
@@ -201,6 +205,7 @@ describe("the runner's write path", () => {
     description: "Gives the isolation level and the settings of a write's transaction. Only the tests run it.",
     output: Settings,
     permission: "test:write",
+    scope: "bookkeeping",
     tool: "Gives a write's settings. Only the tests run it.",
     writes: true,
   });
@@ -209,22 +214,23 @@ describe("the runner's write path", () => {
     const found = await tx.query<z.infer<typeof Settings>>(
       `SELECT pg_catalog.current_setting('transaction_isolation') AS level, pg_catalog.current_setting('transaction_read_only') AS "readOnly",
          pg_catalog.current_setting('nortfox.company_id') AS company, pg_catalog.current_setting('nortfox.actor_id') AS actor,
-         pg_catalog.current_setting('nortfox.actor_kind') AS kind, pg_catalog.current_setting('nortfox.channel') AS channel`,
+         pg_catalog.current_setting('nortfox.actor_kind') AS kind, pg_catalog.current_setting('nortfox.channel') AS channel,
+         pg_catalog.current_setting('nortfox.via_kind') AS "viaKind", pg_catalog.current_setting('nortfox.via_id') AS "viaId"`,
     );
-    return ok(found.rows[0] ?? { level: "", readOnly: "", company: "", actor: "", kind: "", channel: "" });
+    return ok(found.rows[0] ?? { level: "", readOnly: "", company: "", actor: "", kind: "", channel: "", viaKind: "", viaId: "" });
   });
 
   async function contextOf(kind: PrincipalKind): Promise<RequestContext> {
     return { ...(await principalOf(books.company, { kind })), channel: "rest" };
   }
 
-  it("runs a write in one transaction at READ COMMITTED, with the request's company, actor, kind and channel", async () => {
+  it("runs a write in one transaction at READ COMMITTED, with the request's company, actor, kind, via and channel", async () => {
     const context = await contextOf("integration");
     const outcome = await runOperation(writeSettings, { context, input: { query: {}, body: undefined }, idempotency: "none" }, runnerDeps(pool.database));
     expect(outcome).toEqual({
       ok: true,
       status: 200,
-      output: { level: "read committed", readOnly: "off", company: books.company, actor: context.personId, kind: "integration", channel: "rest" },
+      output: { level: "read committed", readOnly: "off", company: books.company, actor: context.personId, kind: "integration", channel: "rest", viaKind: "api-token", viaId: context.via?.id },
     });
   });
 

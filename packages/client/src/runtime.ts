@@ -13,6 +13,12 @@ export interface ClientOptions {
   readonly baseUrl: string;
   /** The fetch to use. The default is the global fetch. */
   readonly fetch?: FetchFunction;
+  /**
+   * An API token, nft_ and 43 characters, for a program: the client sends it
+   * as Authorization: Bearer with every call. A browser leaves it out, since
+   * it sends its session cookie by itself.
+   */
+  readonly token?: string;
 }
 
 export interface CallOptions {
@@ -127,7 +133,7 @@ export function createSend(options: ClientOptions): Send {
   const callFetch: FetchFunction = options.fetch ?? ((input, init) => fetch(input, init));
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
   return async (call, input = {}, callOptions) => {
-    const headers: Record<string, string> = { accept: "application/json" };
+    const headers: Record<string, string> = { accept: "application/json", ...(options.token === undefined ? {} : { authorization: `Bearer ${options.token}` }) };
     const init: RequestInit = { method: call.method, headers };
     if (call.body === true) {
       headers["content-type"] = "application/json";

@@ -45,6 +45,7 @@ export const testGetThing = defineOperation({
   query: z.strictObject({ view: z.enum(["short", "long"]).optional().meta({ description: "How much to show." }) }),
   output: TestThing,
   permission: "test:read",
+  scope: "bookkeeping",
   tool: "Reads a thing by its id. Only the tests serve it.",
   writes: false,
 });
@@ -60,6 +61,7 @@ export const testRemoveThing = defineOperation({
   output: NoBody,
   status: 204,
   permission: "test:write",
+  scope: "bookkeeping",
   tool: "Removes a thing. Only the tests serve it.",
   writes: true,
 });
@@ -123,6 +125,7 @@ export const testGetPerson = defineOperation({
   description: "Gives the signed-in person's id. Only the tests serve it.",
   output: z.strictObject({ personId: z.uuid().meta({ description: "The person's id." }) }),
   permission: "signed-in",
+  scope: "profile",
   tool: "Gives the signed-in person's id. Only the tests serve it.",
   writes: false,
 });

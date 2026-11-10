@@ -33,7 +33,8 @@ export const updateMyMembershipHandler = handlePerson(updateMyMembership, async 
   if (changed === undefined) {
     return companyNotAvailable(updateMyMembership);
   }
-  if (body.idleTimeout !== undefined) {
+  // A token has no session to note: only a browser session keeps an idle time.
+  if (body.idleTimeout !== undefined && context.credential.kind === "session") {
     await seeSession(tx, context.credential.sessionId, at, changed.idleTimeout, membership.membershipId);
   }
   return ok(changed);

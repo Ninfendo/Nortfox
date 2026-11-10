@@ -6,6 +6,32 @@
 import type { CallOptions, Send, WriteOptions } from "./runtime.ts";
 
 /**
+ * An API token of the company, without the token itself, which only the answer of createApiToken gives.
+ */
+export interface ApiToken {
+  /**
+   * The token's id, which revokeApiToken takes.
+   */
+  readonly id: string;
+  /**
+   * The token's name, which its maker gave it.
+   */
+  readonly name: string;
+  /**
+   * The token's scopes, each once, in the order of the list of scopes.
+   */
+  readonly scopes: readonly Scope[];
+  /**
+   * The person the token acts as: the one who made it.
+   */
+  readonly userId: string;
+  /**
+   * When the token was made.
+   */
+  readonly createdAt: string;
+}
+
+/**
  * A company: its id, name, organisation number and tenant id, and its postal and visiting addresses and contact details when they are set.
  */
 export interface Company {
@@ -174,11 +200,11 @@ export interface InvitationAcceptance {
 export interface Me {
   readonly user: User;
   /**
-   * The person's personnummer, in twelve digits with a hyphen. Absent until one is added.
+   * The person's personnummer, in twelve digits with a hyphen. Absent until one is added, and always through a token.
    */
   readonly personalIdentityNumber?: string;
   /**
-   * The person's mobile number. Absent when none is set.
+   * The person's mobile number. Absent when none is set, and always through a token.
    */
   readonly mobile?: string;
   /**
@@ -188,7 +214,7 @@ export interface Me {
   readonly company?: Company;
   readonly membership?: Membership;
   /**
-   * The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. Empty when the request works in no company.
+   * The permissions the request holds in that company, in alphabetical order: a member's own, the admin level's, a program administrator's while the member administers a program, and the rights of the member's program grants. A session holds those it took when it chose the company, less a right whose grant has ended since. A token holds its person's there now, on every request. Empty when the request works in no company.
    */
   readonly permissions: readonly string[];
 }
@@ -289,6 +315,36 @@ export interface Membership {
    * The programs the member administers, in the catalogue's order.
    */
   readonly programsAdministered: readonly ProgramAdmin[];
+}
+
+/**
+ * A new API token: its facts, and the token itself, which no other answer gives.
+ */
+export interface NewApiToken {
+  /**
+   * The token's id, which revokeApiToken takes.
+   */
+  readonly id: string;
+  /**
+   * The token's name, which its maker gave it.
+   */
+  readonly name: string;
+  /**
+   * The token's scopes, each once, in the order of the list of scopes.
+   */
+  readonly scopes: readonly Scope[];
+  /**
+   * The person the token acts as: the one who made it.
+   */
+  readonly userId: string;
+  /**
+   * When the token was made.
+   */
+  readonly createdAt: string;
+  /**
+   * The token, nft_ and 43 characters: send it as Authorization: Bearer <token>. It is shown once, in this answer, and the server keeps only its hash.
+   */
+  readonly token: string;
 }
 
 /**
@@ -405,6 +461,14 @@ export interface Problem {
    */
   readonly permission?: string;
   /**
+   * For scope-missing: the scope the operation needs, which the token lacks.
+   */
+  readonly scope?: string;
+  /**
+   * For answer-shown-once: the first answer to the idempotency key without the secret it held, such as the id of what it made.
+   */
+  readonly answer?: Readonly<Record<string, unknown>>;
+  /**
    * For a rule's refusal that concerns one field: that field's JSON Pointer.
    */
   readonly pointer?: string;
@@ -508,6 +572,11 @@ export interface RoleDefinition {
 }
 
 /**
+ * A scope: what a token may be used for. Each operation that a token may call names one. companyinformation and profile are the established API's, as are the scopes that no operation names yet; companies, users and tokens are NortFox's own. A name is case-sensitive.
+ */
+export type Scope = "companyinformation" | "profile" | "companies" | "users" | "tokens" | "bookkeeping" | "settings" | "costcenter" | "project" | "currency" | "supplier" | "supplierinvoice" | "payment" | "connectfile" | "inbox" | "archive" | "deletevoucher";
+
+/**
  * The browser's session: the person it signed in, and the company it works in once one is chosen.
  */
 export interface Session {
@@ -576,6 +645,98 @@ export interface UserRights {
 
 export interface Operations {
   /**
+   * List the API tokens
+   *
+   * Lists the live API tokens of the company, in the order they were made, without the tokens themselves: the actor's own, or every one of the company for a system administrator. A revoked token is not listed.
+   *
+   * `GET /v1/api-tokens`
+   *
+   * Needs the permission `tokens:own`, in the company that the credential names.
+   *
+   * A token needs the scope `tokens`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
+   */
+  listApiTokens(
+    input?: {
+      /**
+       * How many items a page holds: from 1 to 500. Any other whole number gives 100.
+       */
+      readonly limit?: number;
+      /**
+       * Where the page starts: the nextCursor of the page before. Leave it out for the first page.
+       */
+      readonly cursor?: string;
+    },
+    options?: CallOptions,
+  ): Promise<{
+  /**
+   * The items of this page, in the list's order.
+   */
+  readonly items: readonly ApiToken[];
+  /**
+   * Where the next page starts. It is absent on the last page.
+   */
+  readonly nextCursor?: string;
+  /**
+   * How many items the whole list holds.
+   */
+  readonly total: number;
+}>;
+
+  /**
+   * Create an API token
+   *
+   * Makes an API token for the company the session works in, with a name and scopes. The token acts as the signed-in person, in that company, on /v1: it may do what its scopes and the person's permissions there both allow, and it works until it is revoked or the person's membership stops. The answer shows the token once; the server keeps only its hash. It needs a browser session, so a token never makes a token: a token is refused it with 403 session-required.
+   *
+   * `POST /v1/api-tokens`
+   *
+   * Needs the permission `tokens:own`, in the company that the credential names.
+   *
+   * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * Needs a browser session: a token is refused it with 403 `session-required`.
+   *
+   * The answer holds a secret, which no other answer gives: `/token`. A repeat with its idempotency key gets 409 `answer-shown-once`, without the secret.
+   */
+  createApiToken(
+    input: {
+      /**
+       * The token's name, on one line, so its maker knows it again.
+       */
+      readonly name: string;
+      /**
+       * The token's scopes, one or more, each by its exact name. Each is kept once, in the order of the list of scopes.
+       */
+      readonly scopes: readonly Scope[];
+    },
+    options: WriteOptions,
+  ): Promise<NewApiToken>;
+
+  /**
+   * Revoke an API token
+   *
+   * Revokes a live API token of the company: the actor's own, or any of the company's for a system administrator. It is refused from the next request on. Any other id, also one of a revoked token or of another's for a member, gets 422 api-token-not-found.
+   *
+   * `DELETE /v1/api-tokens/{tokenId}`
+   *
+   * Needs the permission `tokens:own`, in the company that the credential names.
+   *
+   * A token needs the scope `tokens`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
+   */
+  revokeApiToken(
+    input: {
+      /**
+       * The token's id.
+       */
+      readonly tokenId: string;
+    },
+    options: WriteOptions,
+  ): Promise<void>;
+
+  /**
    * Sign out
    *
    * Ends the browser's session, so its cookie is refused from the next request, and clears the cookie.
@@ -600,6 +761,8 @@ export interface Operations {
    * Needs no actor: anyone may call it, before signing in.
    *
    * Serves the browser's session: its MCP tool refuses every call.
+   *
+   * The answer holds a secret, which no other answer gives: `/challenge`.
    */
   loginWithPassword(
     input: {
@@ -643,13 +806,15 @@ export interface Operations {
   /**
    * List your companies
    *
-   * Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen.
+   * Lists the companies where the signed-in person is an active member, by name, with the person's system administrator's level in each. query keeps the companies whose name holds it, in any letter case, or whose organisation number holds it, with or without the hyphen. Through a token it lists the token's company alone.
    *
    * `GET /v1/companies`
    *
    * Needs a signed-in person, and works in no company.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `companies`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   listCompanies(
     input?: {
@@ -691,7 +856,9 @@ export interface Operations {
    *
    * Needs a signed-in person, and works in the company it makes.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `companies`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   createCompany(
     input: {
@@ -716,7 +883,9 @@ export interface Operations {
    *
    * Needs the permission `company:read`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `companyinformation`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   getCompany(options?: CallOptions): Promise<Company>;
 
@@ -729,7 +898,9 @@ export interface Operations {
    *
    * Needs the permission `company:update`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `companies`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   updateCompany(
     input: {
@@ -827,6 +998,8 @@ export interface Operations {
    * Serves the browser's session: its MCP tool refuses every call.
    *
    * The answer holds personal data: `/user/name`, `/user/email`, `/membership/workEmail`, `/membership/workPhone`.
+   *
+   * The answer holds a secret, which no other answer gives: `/totpEnrolment/otpauthUri`.
    */
   acceptInvitation(
     input: {
@@ -855,13 +1028,15 @@ export interface Operations {
   /**
    * Read yourself
    *
-   * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there.
+   * Gives the signed-in person: their name, e-mail address and language, their personnummer and mobile number when set, and their two-step choice. When the request works in a company, it gives that company too, with the person's membership there, its roles, program grants and programs administered, and the permissions the request holds there. Through a token it gives no personnummer and no mobile number, even when they are set, and the permissions are its person's in the token's company now.
    *
    * `GET /v1/me`
    *
    * Needs a signed-in person, and works in the company that the credential names, or in none.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `profile`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/user/name`, `/user/email`, `/personalIdentityNumber`, `/mobile`, `/membership/workEmail`, `/membership/workPhone`.
    */
@@ -870,26 +1045,30 @@ export interface Operations {
   /**
    * List your recent companies
    *
-   * Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member.
+   * Gives the three companies the signed-in person chose last, the latest first, of those where the person is still an active member. It tells of the person's other companies, so it needs a browser session: a token is refused it with 403 session-required.
    *
    * `GET /v1/me/companies/recent`
    *
    * Needs a signed-in person, and works in no company.
    *
    * Credential: the cookie `__Host-nortfox-session`.
+   *
+   * Needs a browser session: a token is refused it with 403 `session-required`.
    */
   listRecentCompanies(options?: CallOptions): Promise<RecentCompanies>;
 
   /**
    * Change your membership
    *
-   * Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away.
+   * Changes the signed-in person's own membership in the company that the path names, where the person must be an active member: the work e-mail address and phone number there, and the idle logout. A field left out stays as it is. The work e-mail address is required, so it can be changed but not taken away; null takes the phone number away. Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.
    *
    * `PATCH /v1/me/companies/{companyId}`
    *
    * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `companies`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/workEmail`, `/workPhone`.
    */
@@ -919,13 +1098,15 @@ export interface Operations {
   /**
    * Leave a company
    *
-   * The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, and its sessions end; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave.
+   * The signed-in person leaves the company that the path names, where the person must be an active member. The membership stays, with the status left, its sessions end and its API tokens are revoked; the work contacts there are erased. Only a new invitation lets the person back. The company always keeps an active system administrator, so its last one cannot leave. Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.
    *
    * `POST /v1/me/companies/{companyId}/leave`
    *
    * Needs a signed-in person, and works in the company that `companyId` names, where the person must be an active member.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `companies`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   leaveCompany(
     input: {
@@ -946,7 +1127,9 @@ export interface Operations {
    *
    * Needs a signed-in person, and works in no company.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   listPermissions(options?: CallOptions): Promise<PermissionCatalogue>;
 
@@ -1004,6 +1187,8 @@ export interface Operations {
    * Serves the browser's session: its MCP tool refuses every call.
    *
    * The answer holds personal data: `/user/name`, `/user/email`.
+   *
+   * The answer holds a secret, which no other answer gives: `/totpEnrolment/otpauthUri`.
    */
   completeSetup(
     input: {
@@ -1037,7 +1222,9 @@ export interface Operations {
    *
    * Needs the permission `users:read`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/items/*\/name`, `/items/*\/workEmail`, `/items/*\/workPhone`.
    */
@@ -1077,7 +1264,9 @@ export interface Operations {
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
    */
@@ -1104,7 +1293,9 @@ export interface Operations {
    *
    * Needs the permission `users:read`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
    */
@@ -1121,13 +1312,15 @@ export interface Operations {
   /**
    * Remove a user
    *
-   * Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, and its sessions end. The member's work contacts are erased. The company always keeps an active system administrator.
+   * Ta bort användaren: removes a member of the company, never yourself. The membership stays, with the status removed, its sessions end and its API tokens are revoked. The member's work contacts are erased. The company always keeps an active system administrator.
    *
    * `DELETE /v1/users/{memberId}`
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   removeUser(
     input: {
@@ -1148,7 +1341,9 @@ export interface Operations {
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
    */
@@ -1190,13 +1385,15 @@ export interface Operations {
   /**
    * Disconnect a user's identity
    *
-   * Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. The company always keeps an active system administrator.
+   * Takes the identity from an active or inactive member, so it no longer reaches the company, and sends the member a new invitation, to the person's name and the member's work e-mail address: a new or an existing identity may accept it. The member keeps the admin level and the programs, and is invited again; their sessions end, their API tokens are revoked, and their work contacts are erased. The mail holds a link that works once, for 14 days, and stops the link of the member's earlier invitation. With no mail set up for the install, the call gets 422 mail-not-configured, and nothing changes. An invited member gets 422 user-invited. A member whose work e-mail address has its local part, before the @, outside ASCII gets 422 work-email-not-mailable, since NortFox sends no mail to it: set another work e-mail first. The company always keeps an active system administrator.
    *
    * `POST /v1/users/{memberId}/disconnect`
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    *
    * The answer holds personal data: `/name`, `/workEmail`, `/workPhone`.
    */
@@ -1219,7 +1416,9 @@ export interface Operations {
    *
    * Needs the permission `users:admin`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   resendInvitation(
     input: {
@@ -1240,7 +1439,9 @@ export interface Operations {
    *
    * Needs the permission `programs:grant`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   assignProgram(
     input: {
@@ -1274,7 +1475,9 @@ export interface Operations {
    *
    * Needs the permission `programs:grant`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   removeProgram(
     input: {
@@ -1299,7 +1502,9 @@ export interface Operations {
    *
    * Needs the permission `programs:grant`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   moveProgram(
     input: {
@@ -1333,7 +1538,9 @@ export interface Operations {
    *
    * Needs the permission `programs:grant`, in the company that the credential names.
    *
-   * Credential: the cookie `__Host-nortfox-session`.
+   * A token needs the scope `users`.
+   *
+   * Credential: the cookie `__Host-nortfox-session`, or a bearer token in `Authorization`, which the option `token` sends.
    */
   updateUserRights(
     input: {
@@ -1353,6 +1560,22 @@ export interface Operations {
 
 export function createOperations(send: Send): Operations {
   return {
+    listApiTokens: async (input, options) => (await send({ method: "GET", path: "/v1/api-tokens", query: ["limit", "cursor"] }, input, options)) as {
+  /**
+   * The items of this page, in the list's order.
+   */
+  readonly items: readonly ApiToken[];
+  /**
+   * Where the next page starts. It is absent on the last page.
+   */
+  readonly nextCursor?: string;
+  /**
+   * How many items the whole list holds.
+   */
+  readonly total: number;
+},
+    createApiToken: async (input, options) => (await send({ method: "POST", path: "/v1/api-tokens", body: true, key: true }, input, options)) as NewApiToken,
+    revokeApiToken: async (input, options) => { await send({ method: "DELETE", path: "/v1/api-tokens/{tokenId}", params: ["tokenId"], key: true, answer: "none" }, input, options); },
     logout: async (options) => { await send({ method: "POST", path: "/v1/auth/logout", key: true, answer: "none" }, undefined, options); },
     loginWithPassword: async (input, options) => (await send({ method: "POST", path: "/v1/auth/password", body: true }, input, options)) as PasswordSignIn,
     verifyTotp: async (input, options) => { await send({ method: "POST", path: "/v1/auth/totp", body: true, answer: "none" }, input, options); },

@@ -182,6 +182,7 @@ function attemptOperation(attempt: Attempt, permission: string, suffix: "" | "-a
     description: `Tries to ${attempt.does}, and needs the permission ${permission}. Only the tests serve it.`,
     output: Attempted,
     permission,
+    scope: "bookkeeping",
     tool: `Tries to ${attempt.does}, and needs the permission ${permission}. Only the tests serve it.`,
     writes: true,
   });
@@ -205,7 +206,7 @@ const ATTEMPT_OPERATIONS = ATTEMPTS.map((attempt) => ({
 const EVERY_PERMISSION = [...Object.keys(PERMISSIONS), ...CATALOGUE_PERMISSIONS.map((permission) => permission.key)].sort();
 
 /** What a system administrator holds: a member's own, the company's details, its users and their programs. */
-const SYSTEM_ADMINISTRATOR = ["company:read", "company:update", "programs:grant", "users:admin", "users:read"];
+const SYSTEM_ADMINISTRATOR = ["company:read", "company:update", "programs:grant", "tokens:all", "tokens:own", "users:admin", "users:read"];
 
 /** The answer of an operation to an actor who lacks its permission. */
 function permissionMissing(permission: string): Record<string, unknown> {

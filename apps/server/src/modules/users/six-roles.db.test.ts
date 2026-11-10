@@ -42,7 +42,7 @@ const APPROVAL_READ_ONLY = [
 const MANUAL_ONLY = ["register.anonymise-fiscal-year", "register.removed-users", "register.delete-processing-history"];
 
 /** What a system administrator holds, the owner and the admin alike: a member's own, the company's details, its users and their programs. */
-const SYSTEM_ADMINISTRATOR = ["company:read", "company:update", "programs:grant", "users:admin", "users:read"];
+const SYSTEM_ADMINISTRATOR = ["company:read", "company:update", "programs:grant", "tokens:all", "tokens:own", "users:admin", "users:read"];
 
 /** The program of each role that is one. */
 const PROGRAM_OF = { bookkeeper: "bookkeeping", approver: "approval-read", viewer: "read", auditor: "auditor" } as const satisfies Partial<Record<Role, Program>>;
@@ -123,9 +123,9 @@ describe("the six roles in getMe", () => {
   it("getMe gives exactly the bookkeeper's permissions", async () => {
     const { person, grant } = await memberWithProgram("bookkeeper");
     const me = await meInCompany(person);
-    expect(me.permissions).toEqual(sorted(["company:read", ...fullPermissions("bookkeeping")]));
-    // Every right of the two Bokföring groups, its eighteen reports and seven Register/Övrigt rights.
-    expect(me.permissions).toHaveLength(1 + 17 + 13 + 18 + 7);
+    expect(me.permissions).toEqual(sorted(["company:read", "tokens:own", ...fullPermissions("bookkeeping")]));
+    // A member's own two, and every right of the two Bokföring groups, its eighteen reports and seven Register/Övrigt rights.
+    expect(me.permissions).toHaveLength(2 + 17 + 13 + 18 + 7);
     for (const permission of [...APPROVAL_READ_ONLY, ...MANUAL_ONLY]) {
       expect(me.permissions).not.toContain(permission);
     }
@@ -139,7 +139,7 @@ describe("the six roles in getMe", () => {
   it.each(["approver", "viewer", "auditor"] as const)("getMe gives exactly the %s's permissions", async (role) => {
     const { person, grant } = await memberWithProgram(role);
     const me = await meInCompany(person);
-    expect(me.permissions).toEqual(sorted(["company:read", ...fullPermissions(PROGRAM_OF[role])]));
+    expect(me.permissions).toEqual(sorted(["company:read", "tokens:own", ...fullPermissions(PROGRAM_OF[role])]));
     for (const permission of MANUAL_ONLY) {
       expect(me.permissions).not.toContain(permission);
     }
@@ -186,7 +186,7 @@ describe("the six roles in getMe", () => {
     expect(me.membership?.roles).toEqual(["viewer", "auditor"]);
     // A program administrator reads the users and grants programs, beside the grants' rights.
     expect(me.permissions).toEqual(
-      sorted(["company:read", "programs:grant", "users:read", ...new Set([...fullPermissions("auditor"), ...fullPermissions("read"), "vouchers.book", "register.projects"])]),
+      sorted(["company:read", "programs:grant", "tokens:own", "users:read", ...new Set([...fullPermissions("auditor"), ...fullPermissions("read"), "vouchers.book", "register.projects"])]),
     );
   });
 

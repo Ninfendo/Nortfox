@@ -64,3 +64,4 @@ The law lives in the SQL migrations. They are not an owner path ([plan, section 
 - A voucher locked for one actor can still be changed by an actor that the lock leaves out, as in the established system.
 - The closing series lets a company lock its periods before the year's closing entries are booked (BFL 5 kap. 3 §).
 - The books stay preliminary until their periods are locked for every actor. Locking in time is the company's duty, as it is in the established system.
+- A write as an integration names what it came through, the API token or the MCP client, beside the person (slice 2c). The database refuses an integration's write that names neither, and a user's that names one, and the behandlingshistorik keeps it on every row ([db/README.md](../../db/README.md#the-behandlingshistorik)).

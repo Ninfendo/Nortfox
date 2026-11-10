@@ -5,12 +5,14 @@
 // principal, or nothing when the request names no actor.
 //
 // - On /v1, a request with a bearer token is a program's, and it ignores the
-//   cookie. API tokens come in a later part of slice 2c, so until then a
-//   bearer token names no actor. Without one, the session cookie: exactly one
+//   cookie: the token must be an API token, which names its person, an
+//   integration, in its one company (auth/api-token.ts). Any other bearer
+//   token names no actor. Without one, the session cookie: exactly one
 //   __Host-nortfox-session in the form NortFox writes, holding a session's
 //   token.
-// - On /mcp, never the cookie: an MCP client signs in through OAuth, in a
-//   later part. Until then /mcp knows no actor.
+// - On /mcp, never the cookie and never an API token (open point 7): an MCP
+//   client signs in through OAuth, in a later part. Until then /mcp knows no
+//   actor.
 //
 // The session is looked up on every request, by its token's hash, in one
 // lookup transaction before the request's own (Database.lookup). An ended
@@ -49,6 +51,7 @@
 import { PROGRAMS, type Program } from "@nortfox/contract";
 import type { ContextResolver, Principal, SecondStep, SignInMethod } from "../api/context.ts";
 import { commit, type Database, type LookupQueryable, type Queryable } from "../db/database.ts";
+import { apiTokenPrincipal, bearerToken } from "./api-token.ts";
 import { resolveActive, type CompanyAccess } from "../modules/memberships/resolve.ts";
 import { SESSION_COOKIE, readCookie } from "./cookies.ts";
 import { carriesBearer } from "./origin.ts";
@@ -98,11 +101,8 @@ type SessionRow = {
   | { readonly current_company_id: string; readonly current_membership_id: string; readonly permissions: PermissionSnapshot }
 );
 
-/** The session's token in the request's cookie, or undefined when the request names none. */
+/** The session's token in the request's cookie, or undefined when the request names none. A request with a bearer token never comes here (credentialResolver). */
 function sessionToken(request: Request): string | undefined {
-  if (carriesBearer(request.headers)) {
-    return undefined;
-  }
   const token = readCookie(request.headers, SESSION_COOKIE);
   return token !== undefined && tokenKind(token) === "session" ? token : undefined;
 }
@@ -204,8 +204,8 @@ async function judge(tx: LookupQueryable, session: SessionRow, at: Date, actAs: 
   return { ...chosen, note };
 }
 
-/** The resolver of the browser's sessions on /v1. */
-export function sessionResolver(options: SessionResolverOptions): ContextResolver {
+/** The resolver of the browser's sessions on /v1, for a request without a bearer token. */
+function sessionResolver(options: SessionResolverOptions): ContextResolver {
   const { database, now } = options;
   return async (request, surface) => {
     const token = surface === "rest" ? sessionToken(request) : undefined;
@@ -256,5 +256,21 @@ export function sessionResolver(options: SessionResolverOptions): ContextResolve
       };
       return commit(principal);
     });
+  };
+}
+
+/**
+ * The server's resolver: on /v1, an API token for a request with a bearer
+ * token, whose cookie it never reads, and the browser's session for any
+ * other; on /mcp, no actor yet.
+ */
+export function credentialResolver(options: SessionResolverOptions): ContextResolver {
+  const sessions = sessionResolver(options);
+  return (request, surface) => {
+    if (surface === "rest" && carriesBearer(request.headers)) {
+      const token = bearerToken(request.headers);
+      return token === undefined ? Promise.resolve(undefined) : apiTokenPrincipal(options.database, token, options.now());
+    }
+    return sessions(request, surface);
   };
 }

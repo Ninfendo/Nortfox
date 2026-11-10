@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { describe, expect, it } from "vitest";
+import { jsonSchemaOf } from "./json-schema.ts";
 import * as contract from "./index.ts";
-import { PERMISSIONS } from "./operation.ts";
+import { secretPointers } from "./fields.ts";
+import { PERMISSIONS, outputSchema } from "./operation.ts";
+import { Me } from "./operations/me.ts";
 import { REGISTRY } from "./registry.ts";
 import { registryProblems } from "./registry-guard.ts";
 
@@ -11,7 +14,7 @@ describe("REGISTRY", () => {
     expect(registryProblems(REGISTRY, Object.keys(PERMISSIONS))).toEqual([]);
   });
 
-  it("holds getHealth and getCompany, the browser's sign-in, the person's own operations, the companies, the catalogue, the users and their programs, and the invitations", () => {
+  it("holds getHealth and getCompany, the browser's sign-in, the person's own operations, the companies, the catalogue, the users and their programs, the invitations and the API tokens", () => {
     expect(
       REGISTRY.map((entry) => {
         const { permission, assistant, writes, list, session, company, personalOutput } = entry["x-nortfox"];
@@ -54,7 +57,7 @@ describe("REGISTRY", () => {
         "listRecentCompanies",
         "GET /v1/me/companies/recent",
         "signed-in",
-        { assistant: false, writes: false, list: false, session: null, company: "none", personalOutput: [] },
+        { assistant: false, writes: false, list: false, session: "only", company: "none", personalOutput: [] },
       ],
       [
         "selectCompany",
@@ -156,13 +159,18 @@ describe("REGISTRY", () => {
         "signed-in",
         { assistant: false, writes: true, list: false, session: null, company: { input: "companyId" }, personalOutput: [] },
       ],
+      ["createApiToken", "POST /v1/api-tokens", "tokens:own", { assistant: false, writes: true, list: false, session: "only", company: "credential", personalOutput: [] }],
+      ["listApiTokens", "GET /v1/api-tokens", "tokens:own", { assistant: false, writes: false, list: true, session: null, company: "credential", personalOutput: [] }],
+      ["revokeApiToken", "DELETE /v1/api-tokens/{tokenId}", "tokens:own", { assistant: false, writes: true, list: false, session: null, company: "credential", personalOutput: [] }],
     ]);
   });
 
   it("gives each operation its MCP tool text", () => {
     expect(Object.fromEntries(REGISTRY.map((entry) => [entry.operationId, entry["x-nortfox"].tool]))).toEqual({
       getHealth: "Checks that the NortFox server is up, and gives its version. It reads no data.",
-      getCompany: "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names.",
+      getCompany:
+        "Gives the company you work in: its id, name, organisation number and database number, and its postal and visiting addresses and its phone number and e-mail address when they are set. Each tool that needs a permission works in this company too, and a tool that takes a companyId works in the company it names. " +
+        "Through a token, a companyId may name only the token's company.",
       completeSetup: "Makes the first identity of an empty install. It serves the browser's sign-in, so this tool refuses every call.",
       loginWithPassword: "Signs a browser in with a password. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
       verifyTotp: "Gives the TOTP code of a browser's sign-in. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
@@ -170,13 +178,15 @@ describe("REGISTRY", () => {
       getSession: "Reads the browser's session. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
       getMe:
         "Gives the person you act as: their name, e-mail address, language, personnummer and mobile number when set, and how often a sign-in asks for a TOTP code; " +
-        "and the company you work in, with your membership and permissions there.",
+        "and the company you work in, with your membership and permissions there. Through a token it gives no personnummer and no mobile number.",
       createCompany: "Creates a company and makes you its owner. Its organisation number never changes.",
-      listCompanies: "Lists the companies where you are an active member, with your system administrator's level in each.",
-      listRecentCompanies: "Gives the three companies you chose last, where you are still an active member.",
+      listCompanies: "Lists the companies where you are an active member, with your system administrator's level in each. Through a token it lists the token's company alone.",
+      listRecentCompanies:
+        "Gives the three companies you chose last, where you are still an active member. It needs a browser session, so this tool refuses a call that comes with a token.",
       selectCompany:
         "Chooses the browser session's company. It serves the browser's sign-in, so this tool refuses every call: an MCP client signs in through OAuth.",
-      updateMyMembership: "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member.",
+      updateMyMembership:
+        "Changes your own work e-mail address, work phone number and idle logout in a company where you are an active member. Through a token, only in the token's company.",
       updateCompany: "Changes the company you work in: its name, its addresses, its phone number and its e-mail address. Its organisation number never changes.",
       listPermissions:
         "Gives the permission catalogue: the roles, the programs with their sets, the groups and every permission in order, with the view and manual-only marks.",
@@ -184,7 +194,7 @@ describe("REGISTRY", () => {
       getUser: "Gives one user of the company you work in, by the member's id.",
       updateUser:
         "Changes a user of the company you work in: whether they are active, their system administrator's level, the programs they administer, their idle logout and their work contacts.",
-      removeUser: "Removes a user from the company you work in. You cannot remove yourself.",
+      removeUser: "Removes a user from the company you work in, and revokes their API tokens there. You cannot remove yourself.",
       assignProgram: "Grants a program to a user of the company you work in, with Full behörighet or with a list of its rights.",
       removeProgram: "Takes a program from a user of the company you work in.",
       moveProgram: "Moves a program from one user of the company you work in to another, narrowed first if you give a list of its rights.",
@@ -192,18 +202,107 @@ describe("REGISTRY", () => {
       inviteUser: "Invites a person to the company you work in, with a name and an e-mail address: the invitation goes to that address by mail.",
       resendInvitation: "Sends a new invitation to a user of the company you work in who has not accepted theirs, and stops the old link.",
       disconnectUserIdentity:
-        "Disconnects the identity of a user of the company you work in, and sends the user a new invitation that a new or an existing identity may accept.",
+        "Disconnects the identity of a user of the company you work in, revokes their API tokens there, and sends the user a new invitation that a new or an existing identity may accept.",
       getInvitation: "Reads an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
       acceptInvitation: "Accepts an invitation by its link. It serves the browser's sign-in, so this tool refuses every call.",
-      leaveCompany: "Leaves a company where you are an active member. Only a new invitation lets you back.",
+      leaveCompany:
+        "Leaves a company where you are an active member, and revokes your API tokens there. Only a new invitation lets you back. Through a token, only the token's company.",
+      createApiToken: "Makes an API token. It needs a browser session, so this tool refuses a call that comes with a token.",
+      listApiTokens: "Lists the live API tokens of the company you work in: your own, or every one for a system administrator.",
+      revokeApiToken: "Revokes an API token of the company you work in: your own, or any for a system administrator.",
     });
   });
 
-  it("uses every permission on the list, so none is dead", () => {
-    const used = new Set(REGISTRY.map((entry) => entry["x-nortfox"].permission));
-    for (const permission of Object.keys(PERMISSIONS)) {
-      expect(used).toContain(permission);
+  it("tells, in the description that openapi.json and the client carry, what a token's call gives where it differs from a session's", () => {
+    const descriptions = Object.fromEntries(REGISTRY.map((entry) => [entry.operationId, entry.description]));
+    const sentences: Readonly<Record<string, readonly string[]>> = {
+      getMe: ["Through a token it gives no personnummer and no mobile number, even when they are set, and the permissions are its person's in the token's company now."],
+      listCompanies: ["Through a token it lists the token's company alone."],
+      updateMyMembership: ["Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does."],
+      leaveCompany: [
+        "its sessions end and its API tokens are revoked",
+        "Through a token, the path must name the token's own company: any other gets 422 company-not-available, as a company that does not exist does.",
+      ],
+      removeUser: ["its sessions end and its API tokens are revoked"],
+      disconnectUserIdentity: ["their sessions end, their API tokens are revoked, and their work contacts are erased"],
+    };
+    for (const [id, expected] of Object.entries(sentences)) {
+      for (const sentence of expected) {
+        expect(descriptions[id], id).toContain(sentence);
+      }
     }
+    const me = jsonSchemaOf(Me, "output") as { properties: Record<string, { description?: string }> };
+    expect(me.properties["personalIdentityNumber"]?.description).toBe("The person's personnummer, in twelve digits with a hyphen. Absent until one is added, and always through a token.");
+    expect(me.properties["mobile"]?.description).toBe("The person's mobile number. Absent when none is set, and always through a token.");
+    expect(me.properties["permissions"]?.description).toContain("A token holds its person's there now, on every request.");
+  });
+
+  it("names each operation's scope, session mark and secret output", () => {
+    expect(
+      Object.fromEntries(
+        REGISTRY.map((entry) => {
+          const { scope, session, secretOutput } = entry["x-nortfox"];
+          return [entry.operationId, { scope, session, secretOutput }];
+        }),
+      ),
+    ).toEqual({
+      getHealth: { scope: null, session: null, secretOutput: [] },
+      getCompany: { scope: "companyinformation", session: null, secretOutput: [] },
+      completeSetup: { scope: null, session: "flow", secretOutput: ["/totpEnrolment/otpauthUri"] },
+      loginWithPassword: { scope: null, session: "flow", secretOutput: ["/challenge"] },
+      verifyTotp: { scope: null, session: "flow", secretOutput: [] },
+      logout: { scope: null, session: "flow", secretOutput: [] },
+      getSession: { scope: null, session: "flow", secretOutput: [] },
+      getMe: { scope: "profile", session: null, secretOutput: [] },
+      createCompany: { scope: "companies", session: null, secretOutput: [] },
+      listCompanies: { scope: "companies", session: null, secretOutput: [] },
+      listRecentCompanies: { scope: null, session: "only", secretOutput: [] },
+      selectCompany: { scope: null, session: "flow", secretOutput: [] },
+      updateMyMembership: { scope: "companies", session: null, secretOutput: [] },
+      updateCompany: { scope: "companies", session: null, secretOutput: [] },
+      listPermissions: { scope: "users", session: null, secretOutput: [] },
+      listUsers: { scope: "users", session: null, secretOutput: [] },
+      getUser: { scope: "users", session: null, secretOutput: [] },
+      updateUser: { scope: "users", session: null, secretOutput: [] },
+      removeUser: { scope: "users", session: null, secretOutput: [] },
+      assignProgram: { scope: "users", session: null, secretOutput: [] },
+      removeProgram: { scope: "users", session: null, secretOutput: [] },
+      moveProgram: { scope: "users", session: null, secretOutput: [] },
+      updateUserRights: { scope: "users", session: null, secretOutput: [] },
+      inviteUser: { scope: "users", session: null, secretOutput: [] },
+      resendInvitation: { scope: "users", session: null, secretOutput: [] },
+      disconnectUserIdentity: { scope: "users", session: null, secretOutput: [] },
+      getInvitation: { scope: null, session: "flow", secretOutput: [] },
+      acceptInvitation: { scope: null, session: "flow", secretOutput: ["/totpEnrolment/otpauthUri"] },
+      leaveCompany: { scope: "companies", session: null, secretOutput: [] },
+      createApiToken: { scope: null, session: "only", secretOutput: ["/token"] },
+      listApiTokens: { scope: "tokens", session: null, secretOutput: [] },
+      revokeApiToken: { scope: "tokens", session: null, secretOutput: [] },
+    });
+  });
+
+  it("lets a token call exactly the operations that name a scope: neither public, nor serving or needing a browser session", () => {
+    for (const entry of REGISTRY) {
+      const { permission, session, scope } = entry["x-nortfox"];
+      expect(scope === null, entry.operationId).toBe(permission === "public" || session !== null);
+    }
+  });
+
+  it("gives a token no secret: no operation that names a scope has a secret field in its output", () => {
+    const reachable = REGISTRY.filter((entry) => entry["x-nortfox"].scope !== null);
+    expect(reachable.length).toBeGreaterThan(0);
+    for (const entry of reachable) {
+      expect(secretPointers(outputSchema(entry)), entry.operationId).toEqual([]);
+      expect(entry["x-nortfox"].secretOutput, entry.operationId).toEqual([]);
+    }
+  });
+
+  it("uses every permission on the list, so none is dead: each is an operation's, or widens what tokens:own gives", () => {
+    const used = new Set(REGISTRY.map((entry) => entry["x-nortfox"].permission));
+    // tokens:all needs no operation of its own: listApiTokens and revokeApiToken, which need tokens:own, reach every token of the company with it.
+    const widening = ["tokens:all"];
+    expect(Object.keys(PERMISSIONS).filter((permission) => !used.has(permission))).toEqual(widening);
+    expect(used).toContain("tokens:own");
   });
 
   it("describes each permission in a sentence", () => {
@@ -216,6 +315,8 @@ describe("REGISTRY", () => {
         "Run the company's users: invite a person and send a new invitation, activate and deactivate a member, make a member system administrator or no longer one, appoint program administrators, set a member's idle logout and work contacts, disconnect a member's identity, and remove a member.",
       "programs:grant":
         "Grant, narrow, move and remove the members' programs, and set their Rapporter and Register/Övrigt rights. A program administrator does it only for the programs they administer.",
+      "tokens:own": "Make API tokens of your own in the company, in a browser session, and list and revoke them.",
+      "tokens:all": "List and revoke every API token of the company, beside your own. No operation needs it by itself: it widens what tokens:own gives.",
     });
   });
 

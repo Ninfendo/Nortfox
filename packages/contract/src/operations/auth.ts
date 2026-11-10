@@ -3,9 +3,11 @@
 // The browser's sign-in (docs/decisions/0008-authentication.md). Each of these
 // operations serves the browser's session, so its MCP tool refuses every
 // call: an MCP client signs in through OAuth. No answer body holds a session's
-// token: the session and the known device come in cookies.
+// token: the session and the known device come in cookies. A TOTP secret and
+// a login challenge work as credentials, so secret() marks them.
 
 import { z } from "zod";
+import { secret } from "../fields.ts";
 import { NoBody, defineOperation } from "../operation.ts";
 import { newPassword } from "../password.ts";
 import { identityAddress } from "../address.ts";
@@ -22,9 +24,11 @@ export function token(letter: string, description: string): z.ZodString {
 
 export const TotpEnrolment = z
   .strictObject({
-    otpauthUri: z.string().meta({
-      description: "The TOTP secret as an otpauth URI, for an authenticator app: show it as a QR code. The first right code of it confirms it.",
-    }),
+    otpauthUri: secret(
+      z.string().meta({
+        description: "The TOTP secret as an otpauth URI, for an authenticator app: show it as a QR code. The first right code of it confirms it.",
+      }),
+    ),
   })
   .meta({ id: "TotpEnrolment", description: "A new TOTP secret, which the person adds to an authenticator app." });
 
@@ -72,8 +76,7 @@ export const PasswordSignIn = z
     outcome: z.enum(["signed-in", "totp-required"]).meta({
       description: "signed-in: the session cookie is set, on a known device inside its 90 days. totp-required: verifyTotp comes next, with the challenge.",
     }),
-    challenge: token("c", "The login challenge, for verifyTotp, when the outcome is totp-required. It works for 20 minutes and for five codes.")
-      .optional(),
+    challenge: secret(token("c", "The login challenge, for verifyTotp, when the outcome is totp-required. It works for 20 minutes and for five codes.")).optional(),
   })
   .meta({ id: "PasswordSignIn", description: "What a right password gives: a session, or the TOTP step." });
 

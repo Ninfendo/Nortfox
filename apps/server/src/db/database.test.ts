@@ -13,9 +13,12 @@ import type { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { testMembership } from "../../test/api.ts";
 import type { ResolvedMembership } from "../modules/memberships/resolve.ts";
-import { commit, databaseOver, type TransactionSettings } from "./database.ts";
+import { commit, databaseOver, type PersonSettings, type TransactionSettings } from "./database.ts";
 
 const SETTINGS: TransactionSettings = { actorId: "an actor", actorKind: "user", channel: "mcp" };
+
+/** A made-up API token's id, as a via. */
+const TOKEN = "0c9b8a7f-6e5d-4c3b-9a1f-2e3d4c5b6a79";
 
 /** A fake connection that answers each statement as `answer` says, and notes how it was released. */
 class FakeConnection extends EventEmitter {
@@ -151,7 +154,77 @@ describe("a transaction in a company", () => {
     };
     const database = databaseOver(poolOf(connection), () => undefined);
     const access = (await testMembership(COMPANY, ACTOR)).access([]);
-    expect(await database.read({ company: access, actorId: ACTOR, actorKind: "integration", channel: "mcp" }, () => Promise.resolve(commit(1)))).toBe(1);
-    expect(values[1]).toEqual([COMPANY, ACTOR, "integration", "mcp"]);
+    expect(await database.read({ company: access, actorId: ACTOR, actorKind: "integration", via: { kind: "mcp-client", id: TOKEN }, channel: "mcp" }, () => Promise.resolve(commit(1)))).toBe(1);
+    expect(values[1]).toEqual([COMPANY, ACTOR, "integration", "mcp", "mcp-client", TOKEN]);
+  });
+});
+
+// An integration acts through an API token or an MCP client, and names it in
+// its transaction: the via (decision 2). A user and the system user name
+// none. The database refuses a write otherwise (modules/audit/via.db.test.ts),
+// and the layer refuses the transaction before any statement, a read too.
+describe("the via of a transaction", () => {
+  const ACTOR = "4f3e2d1c-0b9a-4876-9543-210fedcba987";
+  const VIA_MISSING = new Error("An integration acts through an API token or an MCP client: its transaction names the via.");
+  const VIA_NOT_ITS = new Error("Only an integration acts through a token or a client: a transaction of a user or of the system user names no via.");
+
+  /** The values that each statement got, beside the fake connection. */
+  function recording(): { connection: FakeConnection; values: unknown[][] } {
+    const values: unknown[][] = [];
+    const connection = new FakeConnection(() => Promise.resolve({ rows: [] }));
+    const query = connection.query.bind(connection);
+    connection.query = (text: string, sent?: unknown[]) => {
+      values.push(sent ?? []);
+      return query(text);
+    };
+    return { connection, values };
+  }
+
+  it("sets the via of an integration, and none for a user or the system user", async () => {
+    const { connection, values } = recording();
+    const database = databaseOver(poolOf(connection), () => undefined);
+    await database.write({ actorId: ACTOR, actorKind: "integration", via: { kind: "api-token", id: TOKEN }, channel: "rest" }, () => Promise.resolve(commit(1)));
+    await database.read({ actorId: ACTOR, actorKind: "user", channel: "rest" }, () => Promise.resolve(commit(1)));
+    await database.person("write", { actorId: ACTOR, actorKind: "system", channel: "mcp" }, () => Promise.resolve(commit(1)));
+    await database.read({ channel: "mcp" }, () => Promise.resolve(commit(1)));
+    expect(values.filter((sent) => sent.length > 0)).toEqual([
+      ["", ACTOR, "integration", "rest", "api-token", TOKEN],
+      ["", ACTOR, "user", "rest", "", ""],
+      ["", ACTOR, "system", "mcp", "", ""],
+      ["", "", "", "mcp", "", ""],
+    ]);
+  });
+
+  it("refuses an integration without a via, and a user or the system user with one, and sends no statement", async () => {
+    const via = { kind: "api-token", id: TOKEN } as const;
+    for (const [settings, refusal] of [
+      [{ actorId: ACTOR, actorKind: "integration", channel: "rest" }, VIA_MISSING],
+      [{ actorId: ACTOR, actorKind: "user", via, channel: "rest" }, VIA_NOT_ITS],
+      [{ actorId: ACTOR, actorKind: "system", via, channel: "mcp" }, VIA_NOT_ITS],
+      [{ channel: "rest", via }, VIA_NOT_ITS],
+    ] as const) {
+      const connection = new FakeConnection(() => Promise.resolve({ rows: [] }));
+      const database = databaseOver(poolOf(connection), () => undefined);
+      const given = settings as unknown as TransactionSettings & PersonSettings;
+      await expect(database.read(given, () => Promise.resolve(commit(1)))).rejects.toEqual(refusal);
+      await expect(database.write(given, () => Promise.resolve(commit(1)))).rejects.toEqual(refusal);
+      await expect(database.person("write", given, () => Promise.resolve(commit(1)))).rejects.toEqual(refusal);
+      expect(connection.sent).toEqual([]);
+    }
+  });
+
+  it("lets a lookup act as an integration only with its via, and as a user only without one, before any statement", async () => {
+    const { connection, values } = recording();
+    const database = databaseOver(poolOf(connection), () => undefined);
+    const refused = await database.lookup("rest", async (tx) => {
+      const missing = await tx.actAs(ACTOR, "integration").then(() => undefined, (error: unknown) => error);
+      const notIts = await tx.actAs(ACTOR, "user", { kind: "api-token", id: TOKEN }).then(() => undefined, (error: unknown) => error);
+      await tx.actAs(ACTOR, "integration", { kind: "mcp-client", id: TOKEN });
+      return commit([missing, notIts]);
+    });
+    expect(refused).toEqual([VIA_MISSING, VIA_NOT_ITS]);
+    // BEGIN, the settings, the one actAs that passed, and COMMIT.
+    expect(connection.sent).toEqual(["BEGIN", "SELECT", "SELECT", "COMMIT"]);
+    expect(values[2]).toEqual([ACTOR, "integration", "mcp-client", TOKEN]);
   });
 });

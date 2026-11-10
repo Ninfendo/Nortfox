@@ -13,17 +13,22 @@
 // with the permissions held there when the credential names one. It gives
 // nothing when the request names no actor. It never reads the body. The
 // surface tells the resolver which surface asks, and adds the channel to the
-// principal. The server's resolver (auth/resolver.ts) reads the session
-// cookie on /v1, and knows no credential on /mcp yet, so a tool that needs an
-// actor answers 401 there. The tests pass their own resolver. No setting
-// turns on a fixed actor.
+// principal. The server's resolver (auth/resolver.ts) reads an API token or
+// the session cookie on /v1, and knows no credential on /mcp yet, so a tool
+// that needs an actor answers 401 there. The tests pass their own resolver.
+// No setting turns on a fixed actor.
+//
+// A token, an API token or later an MCP client's, is an integration in its
+// one company, within its scopes (api/operation.ts, authorize). A session is
+// its user, and no scope limits it.
 //
 // The company in a principal comes only from the one membership function
 // (modules/memberships/resolve.ts): a CompanyAccess is made from a membership
 // that it gave, and authorize refuses a principal whose company is anything
 // else.
 
-import type { ActorKind, Channel } from "../db/database.ts";
+import type { Scope } from "@nortfox/contract";
+import type { ActorKind, Channel, Via } from "../db/database.ts";
 import type { CompanyAccess } from "../modules/memberships/resolve.ts";
 
 /** The kinds of actor a credential can name. A session acts as its user (decision 2); the system user is never a request's actor. */
@@ -35,7 +40,7 @@ export type SignInMethod = "password-email" | "password-personnummer" | "bankid"
 /** The second step of a password sign-in: a TOTP code, or a device the person knows inside its 90 days. */
 export type SecondStep = "totp" | "known-device";
 
-/** A browser session, from the session cookie. API tokens and MCP tokens come later in slice 2c. */
+/** A browser session, from the session cookie. */
 export interface SessionCredential {
   readonly kind: "session";
   readonly sessionId: string;
@@ -46,8 +51,55 @@ export interface SessionCredential {
   readonly identifiedAt: Date;
 }
 
+/**
+ * An API token, from the Authorization header (auth/api-token.ts). It acts
+ * as its person, an integration, in its one company, within its scopes. The
+ * MCP clients' tokens come in a later part of slice 2c.
+ */
+export interface ApiTokenCredential {
+  readonly kind: "api-token";
+  readonly tokenId: string;
+  readonly scopes: ReadonlySet<Scope>;
+}
+
 /** What the request's credential is. */
-export type Credential = SessionCredential;
+export type Credential = SessionCredential | ApiTokenCredential;
+
+/** A credential that is not a browser session: a token, which its scopes limit. */
+export type TokenCredential = Exclude<Credential, SessionCredential>;
+
+/** Whether the credential is a token, not a browser session. */
+export function isToken(credential: Credential): credential is TokenCredential {
+  return credential.kind !== "session";
+}
+
+/**
+ * The browser session of a call of an operation that serves the browser's
+ * session, such as logout. authorize refuses a token's call of one with
+ * session-required, so a token here is a fault of the server.
+ */
+export function sessionOf(operationId: string, credential: Credential): SessionCredential {
+  if (isToken(credential)) {
+    throw new Error(`${operationId} serves the browser's session, and the call came with a token, which authorize refuses.`);
+  }
+  return credential;
+}
+
+/**
+ * The company that a token's call is held to, or undefined for a session's
+ * call, which is held to no company. A token works in its one company,
+ * which the resolver gives it from the one membership function, so a token
+ * without one is a fault of the server.
+ */
+export function tokenCompanyOf(principal: Principal): string | undefined {
+  if (!isToken(principal.credential)) {
+    return undefined;
+  }
+  if (principal.company === undefined) {
+    throw new Error("A token works in its one company, and its principal names none.");
+  }
+  return principal.company.companyId;
+}
 
 /**
  * The company a request works in: the membership, its admin level and the
@@ -62,9 +114,28 @@ export interface Principal {
   /** The person: the identity's id, which is the actor's id. */
   readonly personId: string;
   readonly actorKind: PrincipalKind;
+  /**
+   * The API token or the MCP client an integration acts through, which the
+   * behandlingshistorik records with the person (decision 2). An
+   * integration has one, and a user none: the database layer refuses a
+   * transaction otherwise.
+   */
+  readonly via?: Via;
   readonly credential: Credential;
   /** The company the credential works in, when it names one. */
   readonly company?: CompanyAccess;
+}
+
+/** The actor that a principal's transaction sets: the person, its kind, and an integration's via. */
+export interface PrincipalActor {
+  readonly actorId: string;
+  readonly actorKind: PrincipalKind;
+  readonly via?: Via;
+}
+
+/** The actor that `principal`'s transaction sets. */
+export function actorOf(principal: Principal): PrincipalActor {
+  return { actorId: principal.personId, actorKind: principal.actorKind, ...(principal.via === undefined ? {} : { via: principal.via }) };
 }
 
 /** The principal, and the channel the request came through. */

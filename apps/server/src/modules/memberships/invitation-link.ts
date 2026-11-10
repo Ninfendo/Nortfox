@@ -39,6 +39,7 @@
 
 import { randomUUID } from "node:crypto";
 import { acceptInvitation, getInvitation, type User } from "@nortfox/contract";
+import { actorOf } from "../../api/context.ts";
 import { handleNone, invalidInput, ok, refused, type Answer, type RuleRefusal } from "../../api/operation.ts";
 import { seal } from "../../auth/secret-box.ts";
 import { newTotpSecret, otpauthUri } from "../../auth/totp.ts";
@@ -130,7 +131,7 @@ export const acceptInvitationHandler = handleNone(acceptInvitation, async ({ pri
       return refused(SIGN_IN_REQUIRED);
     }
     const at = now();
-    const settings = { actorId: principal.personId, actorKind: principal.actorKind, channel };
+    const settings = { ...actorOf(principal), channel };
     const useLink: UseLink = async (tx) => {
       const used = await tx.query<{ used: boolean }>("SELECT access.use_invitation_link($1, $2) AS used", [linkHash, at]);
       // A SELECT of one function call gives one row.
